@@ -11,9 +11,9 @@ if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 ## --- 1. Config ---------------------------------------------------------
-
-base_dir <- "MEDBSsurvey_2024"
-out_dir  <- "plots"
+setwd('/Users/daniel/Work/iMARES/')
+base_dir <- "./WMed EwE Model/data/2024_MEDBSsurvey/"
+out_dir  <- "./WMed EwE Model/data/plots"
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
 # Keep facets readable: NULL = use everything, or set e.g. c("ITA","ESP","FRA")
