@@ -28,7 +28,8 @@ tidy_col_types <- cols(
   landings = col_double(),
   landings_unit = col_character(),
   catches = col_double(),
-  catches_unit = col_character()
+  catches_unit = col_character(),
+  landings_flag = col_logical()
 )
 
 star_tidy <- read_csv("star_data_tidy.csv", col_types = tidy_col_types)
@@ -132,7 +133,10 @@ message("\nSaved plot: plots/combined_westmed_biomass.png")
 ## --- 5. Same treatment for landings ------------------------------------------
 
 westmed_landings <- combined %>%
-  filter(str_detect(subregion, "Western Mediterranean"), !is.na(landings))
+  filter(str_detect(subregion, "Western Mediterranean"), !is.na(landings), !landings_flag)
+
+n_excluded <- sum(combined$landings_flag %in% TRUE)
+if (n_excluded > 0) message("Excluded ", n_excluded, " flagged row(s) with landings > catches from the combined landings plot.")
 
 top_species_l <- westmed_landings %>%
   count(common_name, sort = TRUE) %>%
