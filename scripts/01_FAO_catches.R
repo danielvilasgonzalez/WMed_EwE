@@ -1,318 +1,441 @@
-# Load package
-library(readxl)
-library(dplyr)
-library(ggplot2)
+## ---------------------------------------------------------------
+## Configuration
+## ---------------------------------------------------------------
 
-# catch data from FAO from previous model #####
+setwd("/Users/daniel/Work/iMARES/")
 
-#wd
-if (Sys.info()[['machine']]=='arm64') {
-  setwd('/Users/daniel/Work/iMARES/')
-  file <- "./MPA4FISH/data/raw/FAO-GFCM-CapturepProduction-1970_2020.xlsx"
-} else {
-  setwd('C:/Documents and Settings/danie/Desktop/iMARES/')
-  file <- "./WMed EwE Model/FutureMares/New fitting/gfcm catch data/FAO-GFCM-CapturepProduction-1970_2020/FAO-GFCM-CapturepProduction-1970_2020.xlsx"
+BASE_DIR <- "./WMed EwE Model"
+START_YEAR <- 1995
+
+## Available datasets:
+##   "FAO_2020"     = original Excel dataset
+##   "GFCM_2025"    = latest GFCM regional database
+##   "FAO_2026"     = global FAO capture database
+
+DATASET_VERSION <- "GFCM_2025"
+
+WESTMED_DIVISIONS <- c(
+  "37.1.1",
+  "37.1.2",
+  "37.1.3"
+)
+
+TOP_N_SPECIES <- 20
+
+OUT_DIR <- file.path(BASE_DIR, "data", "processed")
+if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
+
+## ---------------------------------------------------------------
+## Dataset-specific paths
+## ---------------------------------------------------------------
+
+if (DATASET_VERSION == "FAO_2020") {
+  
+  catch_file <- file.path(
+    BASE_DIR,
+    "data/raw/FAO-GFCM-CapturepProduction-1970_2020.xlsx"
+  )
+  
+  fg_file <- file.path(
+    BASE_DIR,
+    "data/FG_WMed.xlsx"
+  )
+  
 }
 
-#catch File
-excel_sheets(file)
-df1 <- read_excel(file, sheet = 1)
-head(df1)
-colnames(df1)
-#unique(df$`Area (FAO subarea)`)
-
-#west med
-west_med <- df1 %>%
-  filter(`Area (FAO subarea)` == "Western Med (37.1)" & Year >= 1995)
-unique(west_med$Country)
-
-#by year
-west_med_year <- west_med %>%
-  group_by(Year, Country,`Area (FAO division)`) %>%
-  summarise(Catch = sum(Quantity, na.rm = TRUE),
-            .groups = "drop")
-
-#plot
-ggplot(west_med_year,
-       aes(x = Year,
-           y = Catch,
-           color = Country,
-           group = Country)) +
-  geom_line() +
-  facet_wrap(~ `Area (FAO division)`,
-             ncol = 1,
-             scales = "free_y") +
-  theme_minimal() +
-  labs(y = "Catch (t)")
-
-#fg file code
-file <- "./WMed EwE Model/FutureMares/New fitting/FG_WMed.xlsx"
-df2 <- read_excel(file, sheet = 4)
-head(df2)
-
-
-#check unmatching specise
-unmatched_species <- df1 %>%
-  anti_join(
-    df2,
-    by = c("Species (scientific name)" = "ESPECIE")
-  ) %>%
-  group_by(`Species (scientific name)`) %>%
-  summarise(
-    Catch = sum(Quantity, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  rename(
-    Species = `Species (scientific name)`
-  ) %>%
-  arrange(desc(Catch)) %>%
-  mutate(
-    FG_num = NA,
-    FG_name = NA
-  ) %>%
-  select(Species, Catch, FG_num, FG_name)
-
-#save file
-write.csv(
-  unmatched_species,
-  paste0(gitdir,"data/processed/unmatched_species_FG_assignment.csv"),
-  row.names = FALSE
-)
-
-# catch data from GFCM-FAO last update #####
-
-## ---------------------------------------------------------------
-## Read GFCM Capture Production dataset
-## Download manually from:
-## https://www.fao.org/fishery/en/collection/gfcm_capture
-## Save the downloaded ZIP as:
-##   data/raw/GFCM_Capture.zip
-## ---------------------------------------------------------------
-## ---------------------------------------------------------------
-## Download & inspect GFCM Capture Production dataset
-## ---------------------------------------------------------------
-
-url      <- "https://www.fao.org/fishery/collection/gfcm_capture/en#:~:text=Regional%20capture%20fisheries%20(CSV%20raw%20data)"
-zip_file <- "./WMed EwE Model/data/FI_Regional_2025.1.0.zip"
-out_dir  <- "./WMed EwE Model/data/FI_Regional_2025.1.0"
-
-## --- 1. Download (skip if already present) ----------------------
-
-if (!file.exists(zip_file)) {
-  message("Downloading GFCM Capture Production dataset...")
-  download.file(
-    url,
-    destfile = zip_file,
-    mode = "wb",
-    method = "libcurl"
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  data_dir <- file.path(
+    BASE_DIR,
+    "data/FI_Regional_2025.1.0"
   )
-} else {
-  message("Zip already exists locally, skipping download.")
+  
+  capture_file <- file.path(
+    data_dir,
+    "GFCM_Capture_Quantity.csv"
+  )
+  
+  species_file <- file.path(
+    data_dir,
+    "CL_FI_SPECIES_GROUPS.csv"
+  )
+  
+  countries_file <- file.path(
+    data_dir,
+    "CL_FI_COUNTRY_GROUPS.csv"
+  )
+  
+  divisions_file <- file.path(
+    data_dir,
+    "CL_FI_WATERAREA_DIVISION.csv"
+  )
+  
+  fg_file <- file.path(
+    BASE_DIR,
+    "data/FG_WMed.xlsx"
+  )
+  
 }
 
-## --- 2. Unzip ---------------------------------------------------
-
-if (!dir.exists(out_dir)) dir.create(out_dir)
-
-unzip(zip_file, exdir = out_dir)
-
-files <- list.files(
-  out_dir,
-  recursive = TRUE,
-  full.names = TRUE
-)
-
-message("Extracted ", length(files), " file(s):")
-print(files)
-
-## --- Preview CSVs -----------------------------------------------
-
-csv_files <- files[grepl("\\.csv$", files, ignore.case = TRUE)]
-
-for (f in csv_files) {
+if (DATASET_VERSION == "FAO_2026") {
   
-  cat("\n============================\n")
-  cat(basename(f), "\n")
-  cat("============================\n")
-  
-  first_line <- readLines(f, n = 1, warn = FALSE)
-  sep <- if (grepl(";", first_line)) ";" else ","
-  
-  df <- tryCatch(
-    read.csv(
-      f,
-      sep = sep,
-      nrows = 5,
-      stringsAsFactors = FALSE,
-      check.names = FALSE
-    ),
-    error = function(e) NULL
+  data_dir <- file.path(
+    BASE_DIR,
+    "data/Capture_2026.1.0"
   )
   
-  if (!is.null(df)) {
-    cat("Columns:\n")
-    print(names(df))
-    cat("\nFirst rows:\n")
-    print(df)
-  }
+  capture_file <- file.path(
+    data_dir,
+    "Capture_Quantity.csv"
+  )
+  
+  species_file <- file.path(
+    data_dir,
+    "CL_FI_SPECIES_GROUPS.csv"
+  )
+  
+  countries_file <- file.path(
+    data_dir,
+    "CL_FI_COUNTRY_GROUPS.csv"
+  )
+  
+  areas_file <- file.path(
+    data_dir,
+    "CL_FI_WATERAREA_GROUPS.csv"
+  )
+  
+  fg_file <- file.path(
+    BASE_DIR,
+    "data/raw/FG_WMed.xlsx"
+  )
+  
 }
 
+## ---------------------------------------------------------------
+## Load selected dataset
+## ---------------------------------------------------------------
 
-westmed_divisions <- c(
-  "37.1.1", # Western Mediterranean
-  "37.1.2", # Gulf of Lions
-  "37.1.3"  # Sardinia / Tyrrhenian
+if (DATASET_VERSION == "FAO_2020") {
+  
+  catch_data <- readxl::read_excel(catch_file)
+  
+}
+
+if (DATASET_VERSION %in% c("GFCM_2025", "FAO_2026")) {
+  
+  capture   <- data.table::fread(capture_file)
+  species   <- data.table::fread(species_file)
+  countries <- data.table::fread(countries_file)
+  
+}
+
+if (DATASET_VERSION == "GFCM_2025") {
+  divisions <- data.table::fread(divisions_file)
+}
+
+if (DATASET_VERSION == "FAO_2026") {
+  areas <- data.table::fread(areas_file)
+}
+
+fg <- readxl::read_excel(
+  fg_file,
+  sheet = 4
 )
 
-library(data.table)
-library(ggplot2)
+message("Dataset loaded: ", DATASET_VERSION)
 
 ## ---------------------------------------------------------------
-## Read GFCM capture data and lookup tables
+## Process Data
 ## ---------------------------------------------------------------
 
-capture <- fread(
-  file.path(out_dir, "GFCM_Capture_Quantity.csv")
-)
-
-species <- fread(
-  file.path(out_dir, "CL_FI_SPECIES_GROUPS.csv")
-)
-
-countries <- fread(
-  file.path(out_dir, "CL_FI_COUNTRY_GROUPS.csv")
-)
-
-divisions <- fread(
-  file.path(out_dir, "CL_FI_WATERAREA_DIVISION.csv")
-)
-
-## ---------------------------------------------------------------
-## Keep only columns needed for joins
-## ---------------------------------------------------------------
-
-species <- species[
-  ,
-  .(
-    SPECIES.ALPHA_3_CODE = `3A_Code`,
-    Species = Name_En
-  )
-]
-
-countries <- countries[
-  ,
-  .(
-    COUNTRY.UN_CODE = UN_Code,
-    Country = Name_En
-  )
-]
-
-divisions <- divisions[
-  ,
-  .(
-    DIVISION.CODE = Code,
-    Division = Name_En
-  )
-]
-
-## ---------------------------------------------------------------
-## Join lookup tables
-## ---------------------------------------------------------------
-
-capture <- merge(
-  capture,
-  species,
-  by = "SPECIES.ALPHA_3_CODE",
-  all.x = TRUE
-)
-
-capture <- merge(
-  capture,
-  countries,
-  by = "COUNTRY.UN_CODE",
-  all.x = TRUE
-)
-
-capture <- merge(
-  capture,
-  divisions,
-  by = "DIVISION.CODE",
-  all.x = TRUE
-)
-
-## ---------------------------------------------------------------
-## Filter Western Mediterranean divisions
-## ---------------------------------------------------------------
-
-westmed_divisions <- c(
-  "37.1.1",  # Western Mediterranean
-  "37.1.2",  # Gulf of Lions
-  "37.1.3"   # Sardinia / Tyrrhenian
-)
-
-westmed <- capture[
-  DIVISION.CODE %in% westmed_divisions &
-    MEASURE == "Q_tlw" &
-    PERIOD >= 1995
-]
-
-## ---------------------------------------------------------------
-## Select top species by total catch
-## ---------------------------------------------------------------
-
-top_species <- x[
-  ,
-  .(TotalCatch = sum(VALUE, na.rm = TRUE)),
-  by = Species
-][order(-TotalCatch)][1:20, Species]
-
-## ---------------------------------------------------------------
-## Aggregate catches by year, species and division
-## ---------------------------------------------------------------
-
-species_ts <- westmed[
-  Species %in% top_species,
-  .(
-    Catch = sum(VALUE, na.rm = TRUE)
-  ),
-  by = .(
-    PERIOD,
-    Species,
-    DIVISION.CODE
-  )
-]
-
-## ---------------------------------------------------------------
-## Pretty division labels
-## ---------------------------------------------------------------
-
-species_ts[
-  ,
-  Division := factor(
-    DIVISION.CODE,
-    levels = c(
-      "37.1.1",
-      "37.1.2",
-      "37.1.3"
-    ),
-    labels = c(
-      "Western Med",
-      "Gulf of Lions",
-      "Sardinia-Tyrrhenian"
+if (DATASET_VERSION == "FAO_2020") {
+  
+  westmed <- catch_data %>%
+    filter(
+      `Area (FAO subarea)` == "Western Med (37.1)",
+      Year >= START_YEAR
     )
+  
+  country_ts <- westmed %>%
+    group_by(
+      Year,
+      Country,
+      `Area (FAO division)`
+    ) %>%
+    summarise(
+      Catch = sum(Quantity, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  species_ts <- westmed %>%
+    group_by(
+      Year,
+      `Species (scientific name)`,
+      `Area (FAO division)`
+    ) %>%
+    summarise(
+      Catch = sum(Quantity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rename(
+      Species = `Species (scientific name)`,
+      Division = `Area (FAO division)`
+    )
+  
+}
+
+
+if (DATASET_VERSION %in% c("GFCM_2025", "FAO_2026")) {
+  
+  species <- species[
+    ,
+    .(
+      SPECIES.ALPHA_3_CODE = `3A_Code`,
+      Species = Name_En
+    )
+  ]
+  
+  countries <- countries[
+    ,
+    .(
+      COUNTRY.UN_CODE = UN_Code,
+      Country = Name_En
+    )
+  ]
+  
+  capture <- merge(
+    capture,
+    species,
+    by = "SPECIES.ALPHA_3_CODE",
+    all.x = TRUE
   )
-]
+  
+  capture <- merge(
+    capture,
+    countries,
+    by = "COUNTRY.UN_CODE",
+    all.x = TRUE
+  )
+  
+}
+
+
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  divisions <- divisions[
+    ,
+    .(
+      DIVISION.CODE = Code,
+      Division = Name_En
+    )
+  ]
+  
+  capture <- merge(
+    capture,
+    divisions,
+    by = "DIVISION.CODE",
+    all.x = TRUE
+  )
+  capture$PERIOD<-as.numeric(capture$PERIOD)
+  
+  westmed <- capture[
+    DIVISION.CODE %in% WESTMED_DIVISIONS &
+      MEASURE == "Q_tlw" &
+      PERIOD >= START_YEAR
+  ]
+  
+  country_ts <- westmed[
+    ,
+    .(
+      Catch = sum(VALUE, na.rm = TRUE)
+    ),
+    by = .(
+      PERIOD,
+      Country,
+      DIVISION.CODE
+    )
+  ]
+  
+  species_ts <- westmed[
+    ,
+    .(
+      Catch = sum(VALUE, na.rm = TRUE)
+    ),
+    by = .(
+      PERIOD,
+      Species,
+      DIVISION.CODE
+    )
+  ]
+  
+  setnames(
+    species_ts,
+    "DIVISION.CODE",
+    "Division"
+  )
+  
+}
+
 
 ## ---------------------------------------------------------------
-## Plot
+## Functional Group Matching
 ## ---------------------------------------------------------------
 
-ggplot(
-  species_ts,
+if (DATASET_VERSION == "FAO_2020") {
+  
+  unmatched_species <- catch_data %>%
+    anti_join(
+      fg,
+      by = c(
+        "Species (scientific name)" = "ESPECIE"
+      )
+    ) %>%
+    group_by(`Species (scientific name)`) %>%
+    summarise(
+      Catch = sum(Quantity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rename(
+      Species = `Species (scientific name)`
+    ) %>%
+    arrange(desc(Catch)) %>%
+    mutate(
+      FG_num = NA,
+      FG_name = NA
+    )
+  
+}
+
+
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  unmatched_species <- westmed[
+    !Species %in% fg$ESPECIE,
+    .(
+      Catch = sum(VALUE, na.rm = TRUE)
+    ),
+    by = Species
+  ][order(-Catch)]
+  
+  unmatched_species[
+    ,
+    `:=`(
+      FG_num = NA,
+      FG_name = NA
+    )
+  ]
+  
+}
+
+
+## ---------------------------------------------------------------
+## Summary Statistics
+## ---------------------------------------------------------------
+
+if (DATASET_VERSION == "FAO_2020") {
+  
+  top_species <- species_ts %>%
+    group_by(Species) %>%
+    summarise(
+      TotalCatch = sum(Catch),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(TotalCatch)) %>%
+    slice_head(n = TOP_N_SPECIES) %>%
+    pull(Species)
+  
+  species_plot <- species_ts %>%
+    filter(Species %in% top_species)
+  
+}
+
+
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  top_species <- westmed[
+    ,
+    .(
+      TotalCatch = sum(VALUE, na.rm = TRUE)
+    ),
+    by = Species
+  ][order(-TotalCatch)][
+    1:TOP_N_SPECIES,
+    Species
+  ]
+  
+  species_plot <- species_ts[
+    Species %in% top_species
+  ]
+  
+}
+
+
+## ---------------------------------------------------------------
+## Plots
+## ---------------------------------------------------------------
+
+if (DATASET_VERSION == "FAO_2020") {
+  
+  p_country <- ggplot(
+    country_ts,
+    aes(
+      x = Year,
+      y = Catch,
+      colour = Country,
+      group = Country
+    )
+  ) +
+    geom_line() +
+    facet_wrap(
+      ~ `Area (FAO division)`,
+      scales = "free_y",
+      ncol = 1
+    ) +
+    theme_bw() +
+    labs(
+      x = "Year",
+      y = "Catch (t)"
+    )
+  
+}
+
+
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  p_country <- ggplot(
+    country_ts,
+    aes(
+      x = PERIOD,
+      y = Catch,
+      colour = Country
+    )
+  ) +
+    geom_line() +
+    facet_wrap(
+      ~ DIVISION.CODE,
+      scales = "free_y"
+    ) +
+    theme_bw() +
+    labs(
+      x = "Year",
+      y = "Catch (t)"
+    )
+  
+}
+
+
+species_plot <- species_plot %>%
+  mutate(
+    Year = if ("PERIOD" %in% names(.)) PERIOD else Year
+  )
+
+p_species <- ggplot(
+  species_plot,
   aes(
-    x = PERIOD,
+    x = Year,
     y = Catch,
-    colour = Division
+    colour = Division,
+    group = Division
   )
 ) +
   geom_line(linewidth = 0.8) +
@@ -328,6 +451,73 @@ ggplot(
     colour = NULL
   ) +
   theme(
-    strip.text = element_text(size = 8),
-    legend.position = "bottom"
+    legend.position = "bottom",
+    strip.text = element_text(size = 8)
   )
+
+
+print(p_country)
+print(p_species)
+
+## ---------------------------------------------------------------
+## Export Results
+## ---------------------------------------------------------------
+
+write.csv(
+  unmatched_species,
+  file.path(
+    OUT_DIR,
+    "unmatched_species_FG_assignment.csv"
+  ),
+  row.names = FALSE
+)
+
+if (DATASET_VERSION == "FAO_2020") {
+  
+  write.csv(
+    species_ts,
+    file.path(
+      OUT_DIR,
+      "westmed_species_timeseries.csv"
+    ),
+    row.names = FALSE
+  )
+  
+}
+
+if (DATASET_VERSION == "GFCM_2025") {
+  
+  fwrite(
+    species_ts,
+    file.path(
+      OUT_DIR,
+      "westmed_species_timeseries.csv"
+    )
+  )
+  
+}
+
+ggsave(
+  file.path(
+    OUT_DIR,
+    "country_catch_timeseries.png"
+  ),
+  p_country,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+ggsave(
+  file.path(
+    OUT_DIR,
+    "species_catch_timeseries.png"
+  ),
+  p_species,
+  width = 14,
+  height = 10,
+  dpi = 300
+)
+
+message("Analysis completed.")
+
