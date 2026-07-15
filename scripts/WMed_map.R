@@ -21,15 +21,29 @@ if (!requireNamespace("rnaturalearthhires", quietly = TRUE)) {
 
 ## --- 1. Download & unzip official GFCM GSA shapefile -------------------
 
-zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-zip_file <- "GFCM_GSA.zip"
-shp_dir  <- "GFCM_GSA_shp"
+setwd('/Users/daniel/Work/iMARES/')
 
-if (!file.exists(zip_file)) {
-  download.file(zip_url, destfile = zip_file, mode = "wb", method = "libcurl")
+zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
+zip_file <- "./WMed EwE Model/shapefiles/GFCM_GSA.zip"
+shp_dir  <- "./WMed EwE Model/shapefiles/GFCM_GSA_shp"
+
+# Download only if neither zip nor extracted folder exist
+if (!file.exists(zip_file) && !dir.exists(shp_dir)) {
+  dir.create(dirname(zip_file), recursive = TRUE, showWarnings = FALSE)
+  download.file(
+    zip_url,
+    destfile = zip_file,
+    mode = "wb",
+    method = "libcurl"
+  )
+  unzip(zip_file, exdir = shp_dir)
+} else if (!file.exists(zip_file) && dir.exists(shp_dir)) {
+  message("Shapefile folder already exists. Using existing files.")
+} else if (file.exists(zip_file) && !dir.exists(shp_dir)) {
+  unzip(zip_file, exdir = shp_dir)
+} else {
+  message("Zip file and extracted folder already exist.")
 }
-if (!dir.exists(shp_dir)) dir.create(shp_dir)
-unzip(zip_file, exdir = shp_dir)
 
 shp_path <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
 gsa_sf <- st_read(shp_path, quiet = TRUE)   # native CRS: WGS84 (EPSG:4326)
