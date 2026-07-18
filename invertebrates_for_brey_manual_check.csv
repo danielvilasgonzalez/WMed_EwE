@@ -1,0 +1,5 @@
+Species,FG,Biomass,dispatch_group,M_Pauly_1980,M_FishLife_2023,M_Gascuel_2008,M_Hoenig_1983,M_Then_2015,M_AlversonCarney_1975,Fmort,PB_Pauly_1980,PB_FishLife_2023,PB_Gascuel_2008,PB_Hoenig_1983,PB_Then_2015,PB_AlversonCarney_1975,PB,PB_method,QB_PalomaresPauly_1998Z,QB_PalomaresPauly_1998noZ,QB_ChristensenPauly_1992,QB_ChristensenEtAl_2008,QB,QB_method,PB_BarlowBoveng_1991,QB_InnesTrites_1997,QB_NilssonNilsson_1976,PB_TumbioloDowning_1994,PB_Brey_1999
+Paracentrotus lividus,75,0.6,invertebrate,,,,,,,,,,,,,,,,,,,,,,,,,,
+Nephrops norvegicus,71,0.5,invertebrate,,,,,,,,,,,,,,,,,,,,,,,,,,
+Octopus vulgaris,60,0.4,invertebrate,,,,,,,,,,,,,,0.344532607772666,Tumbiolo & Downing 1994 (Eq.17),,,,1.033597823318,1.033597823318,Q/P=3 (Christensen et al. 2008),,,,0.344532607772666,
+Aristeus antennatus,67,0.35,invertebrate,,,,,,,,,,,,,,,,,,,,,,,,,,
