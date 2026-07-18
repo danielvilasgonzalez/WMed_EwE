@@ -7,7 +7,7 @@ library(data.table)
 # USER INPUT
 #====================================================
 
-file <- "C:/Users/danie/Downloads/WMed_EwE.xlsx"
+file <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed//WMed_EwE.xlsx"
 
 #====================================================
 # READ DATA
