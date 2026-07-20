@@ -28,6 +28,49 @@ library(progress)
 if (!requireNamespace("rfishbase", quietly = TRUE)) install.packages("rfishbase")
 library(rfishbase)
 
+## =================================================================
+## rfishbase/duckdbfs compatibility check - catches, at the very start,
+## the exact class of bug that cost a long debugging session: an old
+## rfishbase (<4.0, e.g. the "3.1.9.99" transitional build) can crash
+## outright on a basic species() call, and even a modern rfishbase can
+## still fail if duckdbfs is a CRAN release that predates duckdb_config
+## being exported (confirmed: CRAN's 0.1.0 lacked it, GitHub's 0.1.2.99
+## had it). Checking the ACTUAL exported function directly, not just a
+## version number string, since that's the more reliable test - a
+## version comparison can be fooled by how different CRAN/GitHub builds
+## number themselves.
+## =================================================================
+
+rfishbase_version <- tryCatch(packageVersion("rfishbase"), error = function(e) NULL)
+if (is.null(rfishbase_version) || rfishbase_version < "4.0.0") {
+  stop(
+    "rfishbase is missing or too old (found: ", if (is.null(rfishbase_version)) "not installed" else as.character(rfishbase_version), ").\n",
+    "Versions before 4.0.0 use an outdated architecture known to crash on basic\n",
+    "calls like species(). Fix with:\n\n",
+    "  install.packages('remotes')\n",
+    "  remotes::install_github('ropensci/rfishbase')\n\n",
+    "Then restart R completely (quit and reopen, not just clear the workspace)\n",
+    "and re-run this script."
+  )
+}
+
+duckdbfs_ok <- requireNamespace("duckdbfs", quietly = TRUE) &&
+  exists("duckdb_config", where = asNamespace("duckdbfs"))
+if (!duckdbfs_ok) {
+  stop(
+    "duckdbfs is missing 'duckdb_config', which rfishbase 4.0+ requires.\n",
+    "This happens when duckdbfs was installed from CRAN, which can lag behind\n",
+    "the version rfishbase actually needs (confirmed: CRAN 0.1.0 lacks this\n",
+    "export, GitHub's dev build has it). Fix with:\n\n",
+    "  remotes::install_github('cboettig/duckdbfs')\n\n",
+    "Then restart R completely (quit and reopen, not just clear the workspace)\n",
+    "and re-run this script."
+  )
+}
+
+message("Version check passed - rfishbase ", as.character(rfishbase_version),
+        ", duckdbfs ", as.character(packageVersion("duckdbfs")), " (duckdb_config available).")
+
 ## --- Load species_df (built and saved by test_species_df.R, or your
 ## own real data saved the same way) --------------------------------
 PIPELINE_START_TIME <- Sys.time()
@@ -45,22 +88,75 @@ PIPELINE_STAGES <- c(
   "Calculate PB/QB (all groups)", "Aggregate to FG level",
   "Export CSVs + generate plots"
 )
-STAGE_PB <- progress_bar$new(
-  format = "PIPELINE [:bar] :percent | Stage :current/:total: :stage_name | Elapsed: :elapsedfull",
-  total = length(PIPELINE_STAGES), clear = FALSE, width = 100
-)
+
+## Set to FALSE to force the plain console bar instead of a GUI window
+## (e.g. if running on a headless server, or if Tcl/Tk isn't available -
+## on macOS this sometimes needs XQuartz installed for the Tk graphics
+## backend to work). Falls back to console automatically either way if
+## the window can't actually be opened, rather than erroring out.
+USE_GUI_PROGRESS <- TRUE
+
+make_stage_tracker <- function(stages, use_gui = TRUE) {
+  n <- length(stages)
+  current <- 0
+  start_time <- Sys.time()
+  
+  gui_ok <- FALSE
+  tk_pb <- NULL
+  if (use_gui && requireNamespace("tcltk", quietly = TRUE)) {
+    tk_pb <- tryCatch(
+      tcltk::tkProgressBar(title = "Pipeline Progress", label = "Starting...",
+                           min = 0, max = n, width = 420),
+      error = function(e) {
+        message("Could not open a GUI progress window (", conditionMessage(e),
+                ") - falling back to the console bar. On macOS this often",
+                " means Tcl/Tk needs XQuartz installed.")
+        NULL
+      }
+    )
+    gui_ok <- !is.null(tk_pb)
+  }
+  
+  console_pb <- if (!gui_ok) {
+    progress_bar$new(
+      format = "PIPELINE [:bar] :percent | Stage :current/:total: :stage_name | Elapsed: :elapsedfull",
+      total = n, clear = FALSE, width = 100
+    )
+  } else NULL
+  
+  list(
+    tick = function(tokens = list()) {
+      current <<- current + 1
+      stage_name <- if (!is.null(tokens$stage_name)) tokens$stage_name else ""
+      if (gui_ok) {
+        elapsed_s <- round(as.numeric(Sys.time() - start_time, units = "secs"))
+        pct <- round(100 * current / n)
+        tcltk::setTkProgressBar(tk_pb, value = current,
+                                title = paste0("Pipeline Progress - ", pct, "%"),
+                                label = paste0("Stage ", current, "/", n, ": ", stage_name, " | Elapsed: ", elapsed_s, "s"))
+        if (current >= n) close(tk_pb)
+        invisible(NULL)
+      } else {
+        invisible(console_pb$tick(tokens = tokens))
+      }
+    }
+  )
+}
+
+STAGE_PB <- make_stage_tracker(PIPELINE_STAGES, use_gui = USE_GUI_PROGRESS)
 message(strrep("=", 70))
-message("Starting pipeline - ", length(PIPELINE_STAGES), " stages")
+message("Starting pipeline - ", length(PIPELINE_STAGES), " stages",
+        if (USE_GUI_PROGRESS) " (GUI progress window, if available)" else " (console progress bar)")
 message(strrep("=", 70))
 
-SPECIES_DF_PATH <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/processed/test_species_df.rds"
+SPECIES_DF_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/test_species_df.rds"
 species_df <- readRDS(SPECIES_DF_PATH)
 
 setDT(species_df)
 stopifnot(all(c("Species", "FG", "Biomass") %in% names(species_df)))
 if (!"Yield" %in% names(species_df)) species_df[, Yield := NA_real_]
 sp_list <- unique(species_df$Species)
-STAGE_PB$tick(tokens = list(stage_name = "Load species_df"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Load species_df")))
 
 ## =================================================================
 ## STEP 1: taxonomic classification -> dispatch group
@@ -106,13 +202,20 @@ if (length(unresolved) > 0) {
           " attempting synonym -> accepted-name resolution via WoRMS.")
   
   resolve_via_accepted_name <- function(sp) {
-    rec <- tryCatch(worrms::wm_records_names(sp, marine_only = FALSE)[[1]], error = function(e) NULL)
+    Sys.sleep(1)  # space out requests in case WoRMS's API is rate-sensitive
+    rec <- tryCatch(worrms::wm_records_names(sp, marine_only = FALSE)[[1]], error = function(e) {
+      message("  WoRMS lookup failed for '", sp, "': ", conditionMessage(e))
+      NULL
+    })
     if (is.null(rec) || nrow(rec) == 0) return(NULL)
     rec <- rec[1, ]
     ## if this is a synonym/unaccepted record with its own classification
     ## missing, re-query WoRMS directly by the accepted name's AphiaID
     if (!is.na(rec$valid_AphiaID) && rec$valid_AphiaID != rec$AphiaID && is.na(rec$class)) {
-      accepted <- tryCatch(worrms::wm_record(id = rec$valid_AphiaID), error = function(e) NULL)
+      accepted <- tryCatch(worrms::wm_record(id = rec$valid_AphiaID), error = function(e) {
+        message("  WoRMS accepted-name lookup failed for '", sp, "': ", conditionMessage(e))
+        NULL
+      })
       if (!is.null(accepted) && nrow(accepted) > 0) rec <- accepted[1, ]
     }
     data.table(Species = sp, Genus_r = rec$genus, Family_r = rec$family,
@@ -151,7 +254,7 @@ species_df <- merge(species_df, taxonomy, by = "Species", all.x = TRUE)
 
 message("\nDispatch group counts:")
 print(species_df[, .N, by = dispatch_group])
-STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (WoRMS)"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (WoRMS)")))
 
 ## =================================================================
 ## HELPER: pick the best row per species from a multi-record FishBase/
@@ -198,6 +301,28 @@ select_best_rows <- function(dt) {
 }
 
 ## =================================================================
+## Capture WHERE a selected best-row's parameters came from - Locality,
+## Year, and a reference/author field if FishBase exposes one. This is
+## metadata select_best_rows() would otherwise discard once it's picked
+## the winning row, and it's needed for the species reference/
+## provenance output table.
+## =================================================================
+
+extract_provenance <- function(best_dt, param_type) {
+  if (nrow(best_dt) == 0) return(data.table(Species = character()))
+  loc_col  <- intersect(c("Locality", "Country", "Loc"), names(best_dt))[1]
+  year_col <- intersect(c("Year", "YearStart"), names(best_dt))[1]
+  ref_col  <- intersect(c("Author", "Authors", "Ref", "Reference", "RefID"), names(best_dt))[1]
+  best_dt[, .(
+    Species,
+    parameter_type = param_type,
+    Locality  = if (!is.na(loc_col)) get(loc_col) else NA_character_,
+    Year      = if (!is.na(year_col)) get(year_col) else NA_real_,
+    Reference = if (!is.na(ref_col)) as.character(get(ref_col)) else NA_character_
+  )]
+}
+
+## =================================================================
 ## Fetch species-INTRINSIC traits (growth, weight, longevity, trophic
 ## level, aspect ratio) for an arbitrary external species list - reuses
 ## the exact same fetch infrastructure as Step 2, just applied to
@@ -230,7 +355,7 @@ fetch_intrinsic_traits <- function(candidates) {
     Longevity = if (!is.na(lcol)) get(lcol) else NA_real_
   )], by = "Species") else data.table(Species = character())
   
-  swim_c <- fetch_both(swimming, candidates)
+  swim_c <- fetch_both(swimming, candidates, fishbase_only = TRUE)
   arcol <- if (nrow(swim_c) > 0) intersect(c("AspectRatio", "Aspect"), names(swim_c))[1] else NA
   swt <- if (nrow(swim_c) > 0) unique(swim_c[, .(
     Species, AspectRatio = if (!is.na(arcol)) get(arcol) else NA_real_
@@ -327,7 +452,7 @@ fill_by_taxonomic_proximity <- function(dt, value_col, levels = c("Genus", "Fami
       total = nrow(still_missing), clear = FALSE, width = 90
     )
     for (i in seq_len(nrow(still_missing))) {
-      pb$tick()
+      invisible(pb$tick())
       row <- still_missing[i]
       for (lvl in levels) {
         if (!lvl %in% names(dt) || is.na(row[[lvl]])) next
@@ -407,7 +532,7 @@ fetch_per_species <- function(fun, sp_list, server) {
     total = length(sp_list), clear = FALSE, width = 90
   )
   for (i in seq_along(sp_list)) {
-    pb$tick()
+    invisible(pb$tick())
     results[[i]] <- tryCatch(as.data.table(fun(sp_list[i], server = server)),
                              error = function(e) {
                                message("  Skipping '", sp_list[i], "' for this trait: ", conditionMessage(e))
@@ -417,13 +542,15 @@ fetch_per_species <- function(fun, sp_list, server) {
   rbindlist(results, fill = TRUE)
 }
 
-fetch_both <- function(fun, sp_list, ...) {
+fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
   fb <- retry_fetch(function() as.data.table(fun(sp_list, server = "fishbase", ...)))
   if (nrow(fb) == 0 && length(sp_list) > 1) {
     message("Batch fetch (fishbase) returned nothing - falling back to per-species",
             " calls to isolate which species is causing it...")
     fb <- fetch_per_species(fun, sp_list, "fishbase")
   }
+  
+  if (fishbase_only) return(fb)
   
   slb <- retry_fetch(function() as.data.table(fun(sp_list, server = "sealifebase", ...)))
   if (nrow(slb) == 0 && length(sp_list) > 1) {
@@ -461,7 +588,7 @@ message("Coverage - MaxWeight: ", sp_traits[!is.na(MaxWeight), .N], "/", length(
         " | Depth: ", sp_traits[!is.na(Depth), .N], "/", length(sp_list),
         " | Longevity: ", sp_traits[!is.na(Longevity), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(long_col), "NONE FOUND", long_col), ")")
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a: species() traits"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a: species() traits")))
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
 growth_raw <- fetch_both(popgrowth, sp_list)
@@ -474,7 +601,11 @@ growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
   Winf = if ("Winfinity" %in% names(growth_best)) Winfinity else NA_real_,
   tmax = if (!is.na(tmax_col)) get(tmax_col) else NA_real_
 )] else data.table(Species = character())
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params"))
+
+## Capture WHERE this selected record came from (Locality/Year), not
+## just the numeric values - needed for the reference/provenance table
+growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)")
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
 lw_raw <- fetch_both(poplw, sp_list)
@@ -484,7 +615,8 @@ lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
   a_lw = if ("a" %in% names(lw_best)) a else NA_real_,
   b_lw = if ("b" %in% names(lw_best)) b else NA_real_
 )] else data.table(Species = character())
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b"))
+lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)")
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b")))
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
 maturity_raw <- fetch_both(maturity, sp_list)
@@ -496,10 +628,11 @@ maturity_traits <- if (nrow(maturity_best) > 0) maturity_best[, .(
   Lm   = if (!is.na(lm_col)) get(lm_col) else NA_real_,
   Tmat = if (!is.na(tmat_col)) get(tmat_col) else NA_real_
 )] else data.table(Species = character())
+maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)")
 
 message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(lm_col), "NONE FOUND", lm_col), ")")
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2d: maturity"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2d: maturity")))
 
 ## --- 2e. Ecology: trophic level ---------------------------------------
 ecol <- fetch_both(ecology, sp_list)
@@ -507,15 +640,17 @@ tl_col <- if (nrow(ecol) > 0) intersect(c("DietTroph", "FoodTroph"), names(ecol)
 ecol_traits <- if (nrow(ecol) > 0) unique(ecol[, .(
   Species, TrophicLevel = if (!is.na(tl_col)) get(tl_col) else NA_real_
 )], by = "Species") else data.table(Species = character())
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2e: ecology/trophic level"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2e: ecology/trophic level")))
 
-## --- 2f. Swimming: aspect ratio (fish only) ---------------------------
-swim <- fetch_both(swimming, sp_list)
+## --- 2f. Swimming: aspect ratio (fish-specific caudal-fin morphology -
+## SeaLifeBase never has this, so skip that call entirely rather than
+## waste time on a query that can never succeed) -----------------------
+swim <- fetch_both(swimming, sp_list, fishbase_only = TRUE)
 ar_col <- if (nrow(swim) > 0) intersect(c("AspectRatio", "Aspect"), names(swim))[1] else NA
 swim_traits <- if (nrow(swim) > 0) unique(swim[, .(
   Species, AspectRatio = if (!is.na(ar_col)) get(ar_col) else NA_real_
 )], by = "Species") else data.table(Species = character())
-STAGE_PB$tick(tokens = list(stage_name = "Fetch 2f: swimming/aspect ratio"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2f: swimming/aspect ratio")))
 
 ## --- assemble ----------------------------------------------------------
 species_df <- Reduce(function(x, y) merge(x, y, by = "Species", all.x = TRUE),
@@ -551,7 +686,7 @@ print(species_df[, .(
   Winf = sum(!is.na(Winf)), Lm = sum(!is.na(Lm)), TrophicLevel = sum(!is.na(TrophicLevel)),
   AspectRatio = sum(!is.na(AspectRatio)), Longevity = sum(!is.na(Longevity)), Depth = sum(!is.na(Depth))
 ), by = dispatch_group])
-STAGE_PB$tick(tokens = list(stage_name = "Assemble + derive traits (Froese-Binohlan)"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Assemble + derive traits (Froese-Binohlan)")))
 
 ## Fill gaps in the RAW TRAITS themselves (before any formula runs) by
 ## taxonomic proximity - local donors within species_df first, external
@@ -569,7 +704,7 @@ print(species_df[, .(
   TrophicLevel = sum(!is.na(TrophicLevel)), AspectRatio = sum(!is.na(AspectRatio)),
   Longevity = sum(!is.na(Longevity))
 ), by = dispatch_group])
-STAGE_PB$tick(tokens = list(stage_name = "Raw-trait gap filling"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Raw-trait gap filling")))
 
 ## =================================================================
 ## FISH: Pauly (1980) M [Eq. 9] -> FishLife (phylogenetic imputation,
@@ -680,7 +815,7 @@ fetch_fishlife <- function(taxonomy_dt) {
     total = nrow(taxonomy_dt), clear = FALSE, width = 90
   )
   for (i in seq_len(nrow(taxonomy_dt))) {
-    pb$tick()
+    invisible(pb$tick())
     row <- taxonomy_dt[i]
     parts <- strsplit(row$Species, " ")[[1]]
     if (length(parts) < 2) next
@@ -762,7 +897,7 @@ fetch_tropfishr_M <- function(sp_dt) {
     total = nrow(sp_dt), clear = FALSE, width = 90
   )
   for (i in seq_len(nrow(sp_dt))) {
-    pb$tick()
+    invisible(pb$tick())
     row <- sp_dt[i]
     pred <- tryCatch(
       TropFishR::M_empirical(Linf = row$Loo, K_l = row$K, temp = row$Temp,
@@ -935,7 +1070,7 @@ calc_fish <- function(out) {
                                      fifelse(!is.na(QB_ChristensenPauly_1992), "Christensen & Pauly 1992",
                                              fifelse(!is.na(QB_ChristensenEtAl_2008), "Q/P=3 (Christensen et al. 2008)", NA_character_))))]
   
-  out[, .(Species, FG, Biomass, dispatch_group,
+  out[, .(Species, FG, FG_name, Biomass, dispatch_group,
           M_Pauly_1980, M_FishLife_2023, M_Gascuel_2008, M_Hoenig_1983, M_Then_2015, M_AlversonCarney_1975, Fmort,
           PB_Pauly_1980, PB_FishLife_2023, PB_Gascuel_2008, PB_Hoenig_1983, PB_Then_2015, PB_AlversonCarney_1975, PB, PB_method,
           QB_PalomaresPauly_1998Z, QB_PalomaresPauly_1998noZ, QB_ChristensenPauly_1992, QB_ChristensenEtAl_2008, QB, QB_method)]
@@ -1003,7 +1138,7 @@ calc_mammal <- function(out) {
   out[, QB_method := fifelse(!is.na(QB_InnesTrites_1997), "Innes/Trites 1987/1997 (Eq.31)",
                              fifelse(!is.na(QB_ChristensenEtAl_2008), "Q/P=3 (Christensen et al. 2008)", NA_character_))]
   
-  out[, .(Species, FG, Biomass, dispatch_group,
+  out[, .(Species, FG, FG_name, Biomass, dispatch_group,
           PB_BarlowBoveng_1991, PB_Gascuel_2008, PB, PB_method,
           QB_InnesTrites_1997, QB_ChristensenEtAl_2008, QB, QB_method)]
 }
@@ -1027,15 +1162,18 @@ calc_seabird <- function(out) {
   out[, logDR := -0.293 + 0.85 * log10(MaxWeight)]
   out[, QB_NilssonNilsson_1976 := (10^logDR / MaxWeight) * 365]
   out <- fill_by_taxonomic_proximity(out, "QB_NilssonNilsson_1976")
-  ## Method 2: Q/P=3 fallback, using chosen PB
-  out[, QB_ChristensenEtAl_2008 := 3 * PB]
   
-  out[, QB := fcoalesce(QB_NilssonNilsson_1976, QB_ChristensenEtAl_2008)]
-  out[, QB_method := fifelse(!is.na(QB_NilssonNilsson_1976), "Nilsson & Nilsson 1976 (Eq.30)",
-                             fifelse(!is.na(QB_ChristensenEtAl_2008), "Q/P=3 (Christensen et al. 2008)", NA_character_))]
+  ## NOTE: deliberately NO Q/P=3 fallback here. That heuristic is
+  ## derived largely from fish/ectotherm biology - birds are endotherms
+  ## with much higher metabolic costs, so a fixed 3x ratio would likely
+  ## badly underestimate seabird QB rather than serve as a reasonable
+  ## fallback. If Nilsson & Nilsson fails (missing MaxWeight even after
+  ## gap-filling), QB stays NA for that species rather than guessing.
+  out[, QB := QB_NilssonNilsson_1976]
+  out[, QB_method := fifelse(!is.na(QB_NilssonNilsson_1976), "Nilsson & Nilsson 1976 (Eq.30)", NA_character_)]
   
-  out[, .(Species, FG, Biomass, dispatch_group, PB_Gascuel_2008, PB, PB_method,
-          QB_NilssonNilsson_1976, QB_ChristensenEtAl_2008, QB, QB_method)]
+  out[, .(Species, FG, FG_name, Biomass, dispatch_group, PB_Gascuel_2008, PB, PB_method,
+          QB_NilssonNilsson_1976, QB, QB_method)]
 }
 
 ## =================================================================
@@ -1089,7 +1227,7 @@ calc_invertebrate <- function(out) {
   out[, QB := QB_ChristensenEtAl_2008]
   out[, QB_method := fifelse(!is.na(QB), "Q/P=3 (Christensen et al. 2008)", NA_character_)]
   
-  out[, .(Species, FG, Biomass, dispatch_group, PB_TumbioloDowning_1994, PB_Brey_1999, PB_Gascuel_2008, PB, PB_method,
+  out[, .(Species, FG, FG_name, Biomass, dispatch_group, PB_TumbioloDowning_1994, PB_Brey_1999, PB_Gascuel_2008, PB, PB_method,
           QB_ChristensenEtAl_2008, QB, QB_method)]
 }
 
@@ -1103,7 +1241,7 @@ results <- rbindlist(list(
   if (nrow(species_df[dispatch_group == "seabird"]) > 0) calc_seabird(species_df[dispatch_group == "seabird"]),
   if (nrow(species_df[dispatch_group == "invertebrate"]) > 0) calc_invertebrate(species_df[dispatch_group == "invertebrate"])
 ), fill = TRUE)
-STAGE_PB$tick(tokens = list(stage_name = "Calculate PB/QB (all groups)"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Calculate PB/QB (all groups)")))
 
 phyto_flagged <- species_df[dispatch_group == "phytoplankton",
                             .(Species, FG, Biomass, note = "phytoplankton - needs separate production sampling data, not computed here")]
@@ -1164,6 +1302,11 @@ message("These per-method columns (PB_Pauly_1980, PB_FishLife_2023, PB_Gascuel_2
 ## Biomass-weighted average up to Functional Group level
 ## =================================================================
 
+## True total biomass per FG - computed from ALL species regardless of
+## whether PB/QB were successfully computed, since Biomass is directly
+## observed input data, not dependent on the PB/QB calculation succeeding
+fg_biomass_total <- results[, .(Biomass_FG = sum(Biomass, na.rm = TRUE)), by = FG]
+
 fg_weighted <- results[!is.na(PB) | !is.na(QB), .(
   PB_FG = sum(Biomass * PB, na.rm = TRUE) / sum(Biomass[!is.na(PB)], na.rm = TRUE),
   QB_FG = sum(Biomass * QB, na.rm = TRUE) / sum(Biomass[!is.na(QB)], na.rm = TRUE),
@@ -1173,6 +1316,7 @@ fg_weighted <- results[!is.na(PB) | !is.na(QB), .(
   biomass_coverage_PB = sum(Biomass[!is.na(PB)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE),
   biomass_coverage_QB = sum(Biomass[!is.na(QB)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE)
 ), by = FG]
+fg_weighted <- merge(fg_biomass_total, fg_weighted, by = "FG", all.x = TRUE)
 
 message("\n=== FG-level PB/QB (biomass-weighted average) ===")
 print(fg_weighted[order(FG)])
@@ -1180,7 +1324,7 @@ print(fg_weighted[order(FG)])
 message("\nFGs with LOW biomass coverage (<50%):")
 print(fg_weighted[biomass_coverage_PB < 0.5 | biomass_coverage_QB < 0.5,
                   .(FG, biomass_coverage_PB, biomass_coverage_QB, n_species_total)])
-STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
 
 ## =================================================================
 ## Export
@@ -1266,7 +1410,312 @@ print(p_pb)
 print(p_qb)
 
 message("\nSaved: fish_PB_methods_comparison.png, fish_QB_methods_comparison.png")
-STAGE_PB$tick(tokens = list(stage_name = "Export CSVs + generate plots"))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Export CSVs + generate plots")))
+
+## =================================================================
+## OUTPUT 1: Reference/provenance table - which study (Locality, Year)
+## backs each species' growth/length-weight/maturity parameters. This
+## is what select_best_rows() used to decide the Western-Med/recent
+## priority, exposed here rather than discarded after the fact.
+## =================================================================
+
+reference_table <- rbindlist(list(growth_provenance, lw_provenance, maturity_provenance), fill = TRUE)
+reference_table <- merge(reference_table, species_df[, .(Species, dispatch_group)], by = "Species", all.x = TRUE)
+setcolorder(reference_table, c("Species", "dispatch_group", "parameter_type", "Locality", "Year", "Reference"))
+setorder(reference_table, Species, parameter_type)
+
+fwrite(reference_table, "species_parameter_references.csv")
+message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
+        " rows - which study/locality/year backs each species' growth,",
+        " length-weight, and maturity parameters)")
+
+## =================================================================
+## Load the full FG reference (FGnum -> FGname) once, used both by the
+## FG-level plot below (for "FGnum_FGname" axis labels) and the
+## Ecopath CSV export later.
+## =================================================================
+
+FG_REFERENCE_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/raw/FG_WMed.xlsx"
+
+fg_ref_unique <- NULL
+if (file.exists(FG_REFERENCE_PATH)) {
+  ## Target "fg_wmed_95" BY NAME specifically - confirmed via diagnostic
+  ## to be the Western Med FG scheme this project actually uses. NOT
+  ## safe to auto-detect by structure alone: this file also has an
+  ## "fg_ebro delta_21" sheet (a DIFFERENT model's FG numbering) that
+  ## would also structurally match a generic GF+FG_name check, and
+  ## picking it by accident would silently mislabel every FG.
+  sheet_names <- tryCatch(readxl::excel_sheets(FG_REFERENCE_PATH), error = function(e) character())
+  target_sheet <- if ("fg_wmed_95" %in% sheet_names) "fg_wmed_95" else NA
+  
+  if (!is.na(target_sheet)) {
+    candidate <- tryCatch(as.data.table(readxl::read_excel(FG_REFERENCE_PATH, sheet = target_sheet)),
+                          error = function(e) NULL)
+    if (!is.null(candidate)) {
+      ## this sheet has duplicate "FG_name" headers in the source file,
+      ## which readxl disambiguates to FG_name...2/FG_name...7 - using
+      ## GF + the first one (...2) as the best guess pending confirmation
+      ## of which duplicate is the canonical one
+      num_col <- intersect(c("GF", "FG_num"), names(candidate))[1]
+      name_col <- grep("^FG_name", names(candidate), value = TRUE)[1]
+      if (!is.na(num_col) && !is.na(name_col)) {
+        fg_ref_unique <- unique(candidate[, .(FG = as.character(as.integer(get(num_col))),
+                                              FG_name = get(name_col))])
+        message("\nFG reference loaded from sheet '", target_sheet, "' of ", FG_REFERENCE_PATH,
+                " (", nrow(fg_ref_unique), " FGs), using columns '", num_col, "' and '", name_col, "'.")
+        message("NOTE: this sheet has TWO differently-named FG_name-like columns in the source",
+                " file (readxl renamed them FG_name...2/FG_name...7) - using '", name_col,
+                "' as a best guess. If FG names in the plot/CSV look wrong, run",
+                " diagnose_fg_wmed_95_columns.R to check whether the other one should be used instead.")
+      }
+    }
+  }
+  if (is.null(fg_ref_unique)) {
+    message("\n", strrep("!", 70))
+    message("FG_REFERENCE_PATH exists but NO sheet in it has both 'GF' and",
+            " 'FG_name' columns - checked sheets: ", paste(sheet_names, collapse = ", "), ".")
+    message("FG plot axis and Ecopath CSV will use bare FG numbers, not FGnum_FGname.")
+    message(strrep("!", 70))
+  }
+} else {
+  message("\n", strrep("!", 70))
+  message("FG_REFERENCE_PATH NOT FOUND: ", FG_REFERENCE_PATH)
+  message("This path has been a GUESS on my part - if your FG reference file is",
+          " actually somewhere else, update FG_REFERENCE_PATH above to the real",
+          " path and re-run. Until then, the FG plot axis and Ecopath CSV will",
+          " use bare FG numbers instead of FGnum_FGname labels.")
+  message(strrep("!", 70))
+}
+
+## =================================================================
+## OUTPUT 2: Dot-whisker comparison plots - species-level (spread
+## across ALL methods attempted, any dispatch group) and FG-level
+## (spread across the chosen PB/QB of species within each FG). PB and
+## QB shown side by side via patchwork for both.
+## =================================================================
+
+if (!requireNamespace("patchwork", quietly = TRUE)) install.packages("patchwork")
+library(patchwork)
+
+## --- Species-level: melt EVERY method column across ALL groups, not
+## just fish - dynamically detected by column name pattern rather than
+## hardcoded per group, so this stays correct if methods are added later
+exclude_cols <- c("PB", "QB", "PB_method", "QB_method")
+all_pb_method_cols <- setdiff(grep("^PB_", names(results), value = TRUE),
+                              c(exclude_cols, grep("_source$", names(results), value = TRUE)))
+all_qb_method_cols <- setdiff(grep("^QB_", names(results), value = TRUE),
+                              c(exclude_cols, grep("_source$", names(results), value = TRUE)))
+
+species_pb_long <- melt(results[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_pb_method_cols)],
+                        id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"),
+                        variable.name = "method", value.name = "PB")
+species_pb_long[, method := gsub("^PB_", "", method)]
+species_pb_long <- species_pb_long[!is.na(PB)]
+
+species_qb_long <- melt(results[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_qb_method_cols)],
+                        id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"),
+                        variable.name = "method", value.name = "QB")
+species_qb_long[, method := gsub("^QB_", "", method)]
+species_qb_long <- species_qb_long[!is.na(QB)]
+
+species_pb_mean <- species_pb_long[, .(PB_mean = mean(PB, na.rm = TRUE), PB_sd = sd(PB, na.rm = TRUE)), by = .(Species, FG)]
+species_qb_mean <- species_qb_long[, .(QB_mean = mean(QB, na.rm = TRUE), QB_sd = sd(QB, na.rm = TRUE)), by = .(Species, FG)]
+
+## y-axis label includes the FG number in brackets, e.g. "Diplodus
+## annularis (35)" - built from FG (a species belongs to exactly one,
+## so this is a 1:1 label, not an aggregation)
+species_pb_mean[, Species_label := paste0(Species, " (", FG, ")")]
+species_pb_long[, Species_label := paste0(Species, " (", FG, ")")]
+species_qb_mean[, Species_label := paste0(Species, " (", FG, ")")]
+species_qb_long[, Species_label := paste0(Species, " (", FG, ")")]
+
+## Species ordered ALPHABETICALLY on the species name itself (not by
+## mean value, and not thrown off by the "(FG)" suffix), and the SAME
+## order used for both PB and QB plots so a species sits on the same
+## row in both, making the side-by-side comparison meaningful
+species_order_dt <- unique(rbindlist(list(species_pb_mean[, .(Species, Species_label)],
+                                          species_qb_mean[, .(Species, Species_label)])))
+setorder(species_order_dt, -Species)  # reversed so A is at the top, not bottom, on a ggplot y-axis
+species_label_order <- species_order_dt$Species_label
+
+species_pb_mean[, Species_label := factor(Species_label, levels = species_label_order)]
+species_pb_long[, Species_label := factor(Species_label, levels = species_label_order)]
+species_qb_mean[, Species_label := factor(Species_label, levels = species_label_order)]
+species_qb_long[, Species_label := factor(Species_label, levels = species_label_order)]
+
+p_species_pb <- ggplot() +
+  geom_segment(data = species_pb_mean,
+               aes(x = PB_mean - PB_sd, xend = PB_mean + PB_sd, y = Species_label, yend = Species_label),
+               linewidth = 0.7, colour = "black") +
+  geom_point(data = species_pb_mean, aes(x = PB_mean, y = Species_label),
+             shape = "|", size = 5, colour = "black") +
+  geom_point(data = species_pb_long, aes(x = PB, y = Species_label, colour = method, fill = method),
+             shape = 21, size = 2.5, alpha = 0.7) +
+  scale_colour_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+  labs(x = expression(P/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
+
+p_species_qb <- ggplot() +
+  geom_segment(data = species_qb_mean,
+               aes(x = QB_mean - QB_sd, xend = QB_mean + QB_sd, y = Species_label, yend = Species_label),
+               linewidth = 0.7, colour = "black") +
+  geom_point(data = species_qb_mean, aes(x = QB_mean, y = Species_label),
+             shape = "|", size = 5, colour = "black") +
+  geom_point(data = species_qb_long, aes(x = QB, y = Species_label, colour = method, fill = method),
+             shape = 21, size = 2.5, alpha = 0.7) +
+  scale_colour_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+  labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
+
+p_species_combined <- p_species_pb + p_species_qb
+ggsave("species_PB_QB_comparison.png", p_species_combined, width = 16, height = max(6, 0.35 * uniqueN(results$Species)), dpi = 150)
+print(p_species_combined)
+
+## --- FG-level: for EACH method, a biomass-weighted average across the
+## species within that FG that have a value for that method - mirrors
+## exactly what the species-level plot does (spread across methods),
+## just aggregated up one level, and colour-coded by method using the
+## SAME palette/mapping so a colour means the same thing in both plots.
+fg_pb_by_method <- species_pb_long[, .(
+  PB = sum(Biomass * PB, na.rm = TRUE) / sum(Biomass[!is.na(PB)], na.rm = TRUE)
+), by = .(FG, FG_name, method)]
+
+fg_qb_by_method <- species_qb_long[, .(
+  QB = sum(Biomass * QB, na.rm = TRUE) / sum(Biomass[!is.na(QB)], na.rm = TRUE)
+), by = .(FG, FG_name, method)]
+
+## Build "FGnum_FGname" labels - PRIORITIZES FG_name already present in
+## species_df/results (the reliable source: known FGs hand-labeled at
+## the input stage) over the external FG_WMed.xlsx join, which is only
+## used as a fallback for FGs where species_df didn't already have a
+## name (e.g. a real run with many species not individually annotated).
+build_fg_label <- function(dt, label = "") {
+  dt[, FG_num := as.character(as.integer(FG))]
+  
+  ## fall back to the external reference ONLY where FG_name is missing
+  if (!is.null(fg_ref_unique) && dt[is.na(FG_name), .N] > 0) {
+    match_idx <- match(dt$FG_num, fg_ref_unique$FG)
+    dt[is.na(FG_name), FG_name := fg_ref_unique$FG_name[match_idx[is.na(FG_name)]]]
+  }
+  
+  n_matched <- dt[!is.na(FG_name), uniqueN(FG_num)]
+  n_total <- uniqueN(dt$FG_num)
+  message("  [", label, "] FG name available: ", n_matched, "/", n_total, " FGs.")
+  if (n_matched < n_total) {
+    message("    Still missing a name for FG numbers: ", paste(sort(unique(dt[is.na(FG_name), FG_num])), collapse = ", "))
+  }
+  
+  dt[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), FG_num)]
+  dt
+}
+fg_pb_by_method <- build_fg_label(fg_pb_by_method, "PB")
+fg_qb_by_method <- build_fg_label(fg_qb_by_method, "QB")
+
+fg_pb_mean <- fg_pb_by_method[, .(PB_mean = mean(PB, na.rm = TRUE), PB_sd = sd(PB, na.rm = TRUE)),
+                              by = .(FG_num, FG_label)]
+fg_qb_mean <- fg_qb_by_method[, .(QB_mean = mean(QB, na.rm = TRUE), QB_sd = sd(QB, na.rm = TRUE)),
+                              by = .(FG_num, FG_label)]
+
+## sorted NUMERICALLY by FG number (not alphabetically on the label,
+## which would wrongly put "10_x" before "2_y"), same order shared by
+## both PB and QB plots so an FG sits on the same row in both
+fg_order_dt <- unique(rbindlist(list(fg_pb_mean[, .(FG_num, FG_label)],
+                                     fg_qb_mean[, .(FG_num, FG_label)])))
+fg_order_dt[, FG_num := as.numeric(FG_num)]
+setorder(fg_order_dt, -FG_num)  # descending so lowest FG number is at the TOP of the y-axis
+fg_label_order <- fg_order_dt$FG_label
+
+fg_pb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
+fg_pb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
+fg_qb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
+fg_qb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
+
+p_fg_pb <- ggplot() +
+  geom_segment(data = fg_pb_mean,
+               aes(x = PB_mean - PB_sd, xend = PB_mean + PB_sd, y = FG_label, yend = FG_label),
+               linewidth = 0.7, colour = "black") +
+  geom_point(data = fg_pb_mean, aes(x = PB_mean, y = FG_label), shape = "|", size = 5, colour = "black") +
+  geom_point(data = fg_pb_by_method, aes(x = PB, y = FG_label, colour = method, fill = method),
+             shape = 21, size = 2.5, alpha = 0.7) +
+  scale_colour_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+  labs(x = expression(P/B~(year^-1)), y = "Functional Group", colour = "Method", fill = "Method")
+
+p_fg_qb <- ggplot() +
+  geom_segment(data = fg_qb_mean,
+               aes(x = QB_mean - QB_sd, xend = QB_mean + QB_sd, y = FG_label, yend = FG_label),
+               linewidth = 0.7, colour = "black") +
+  geom_point(data = fg_qb_mean, aes(x = QB_mean, y = FG_label), shape = "|", size = 5, colour = "black") +
+  geom_point(data = fg_qb_by_method, aes(x = QB, y = FG_label, colour = method, fill = method),
+             shape = 21, size = 2.5, alpha = 0.7) +
+  scale_colour_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+  labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
+
+p_fg_combined <- p_fg_pb + p_fg_qb
+ggsave("FG_PB_QB_comparison.png", p_fg_combined, width = 16, height = max(6, 0.35 * uniqueN(results$FG)), dpi = 150)
+print(p_fg_combined)
+
+message("\nSaved: species_PB_QB_comparison.png, FG_PB_QB_comparison.png")
+
+## =================================================================
+## OUTPUT 3: Ecopath-ready CSV - exactly the 5 columns Ecopath's Basic
+## Estimates table needs: FG_num, FG_name, Biomass (t/km2), PB (year-1),
+## QB (year-1). One row per FG from 1 to the largest FG number in your
+## reference file, sorted numerically - includes every FG in the model,
+## even ones with no species data this run, left blank rather than
+## silently omitted, so you have a complete template to review.
+## =================================================================
+
+ecopath_ready <- copy(fg_weighted)
+ecopath_ready[, FG := as.character(FG)]
+
+## FG_name from results (the reliable source - known FGs, hand-labeled
+## at input for this test data) for whatever FGs have species in this run
+results_fg_names <- unique(results[!is.na(FG_name), .(FG = as.character(FG), FG_name)])
+ecopath_ready <- merge(ecopath_ready, results_fg_names, by = "FG", all.x = TRUE)
+
+if (!is.null(fg_ref_unique)) {
+  ## expand to ALL FGs in the reference (including ones with no species
+  ## data this run), and fill in FG_name from the reference ONLY where
+  ## results didn't already have it
+  ecopath_ready <- merge(fg_ref_unique, ecopath_ready, by = "FG", all.x = TRUE, suffixes = c("_ref", ""))
+  ecopath_ready[is.na(FG_name), FG_name := FG_name_ref]
+  ecopath_ready[, FG_name_ref := NULL]
+  message("\nJoined full FG reference (", nrow(fg_ref_unique), " total FGs) -",
+          " Ecopath output now includes every FG in your model, not just",
+          " the ones with species data in this run.")
+} else {
+  message("\nNo external FG reference loaded - Ecopath CSV will only include",
+          " FGs present in this run's results (using FG_name already in",
+          " species_df where available), not the full model FG list.")
+}
+
+setnames(ecopath_ready, c("FG", "Biomass_FG", "PB_FG", "QB_FG"),
+         c("FG_num", "Biomass (t/km2)", "PB (year-1)", "QB (year-1)"))
+ecopath_ready[, FG_num := as.numeric(FG_num)]
+setorder(ecopath_ready, FG_num)
+ecopath_ready <- ecopath_ready[, .(FG_num, FG_name, `Biomass (t/km2)`, `PB (year-1)`, `QB (year-1)`)]
+
+n_missing <- ecopath_ready[is.na(`PB (year-1)`) | is.na(`QB (year-1)`), .N]
+if (n_missing > 0) {
+  message(n_missing, " FG(s) have no PB and/or QB from this run - these rows",
+          " are included but blank, flagged for manual completion:")
+  print(ecopath_ready[is.na(`PB (year-1)`) | is.na(`QB (year-1)`), .(FG_num, FG_name)])
+}
+
+fwrite(ecopath_ready, "ecopath_ready_PB_QB.csv")
+message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_ready), " FG rows,",
+        " FG_num ", min(ecopath_ready$FG_num), "-", max(ecopath_ready$FG_num), ") -",
+        " ready to paste PB/QB into Ecopath's Basic Estimates table.")
 
 ## =================================================================
 ## Total pipeline runtime
