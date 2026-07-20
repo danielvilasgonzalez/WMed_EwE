@@ -66,6 +66,24 @@ species_df <- data.table(
     90
   ),
   
+  ## FG_name straight from the FG reference (FG_WMed.xlsx, sheet
+  ## "fg_wmed_95") - baked directly into species_df at the source
+  ## rather than joined from the external file later, since that join
+  ## turned out to be fragile (wrong guessed path, multiple sheets
+  ## across different models, duplicate FG_name headers in the source
+  ## file). This is simpler and more reliable for known, fixed FGs -
+  ## the external file is still useful separately for covering FGs
+  ## with no species in this particular run.
+  FG_name = c(
+    "Monk seals", "Bottlenose dolphins",
+    "Gulls and cormorants",
+    "European sardine adult", "European anchovy adult", "European hake adult", "Red mullet",
+    "Sparidae+", "Sparidae+", "Sparidae+",
+    "Scorpaenidae+", "Scorpaenidae+",
+    "Coastal benthic cephalopods", "Blue and red shrimp", "Norway lobster", "Purple sea urchin",
+    "Small phytoplankton"
+  ),
+  
   ## Biomass in t/km^2 - Sparidae+ and Scorpaenidae+ deliberately have
   ## uneven biomass split across species so the weighted average is
   ## visibly pulled toward whichever species dominates
@@ -108,6 +126,6 @@ message("- FG 35 and FG 40 in fg_pb_qb_weighted.csv should show n_species_total 
 ## without needing to re-run this generation script in the same session
 ## (e.g. after an R restart). Adjust the path below if your project's
 ## data folder is structured differently.
-SPECIES_DF_PATH <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/processed/test_species_df.rds"
+SPECIES_DF_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/test_species_df.rds"
 saveRDS(species_df, SPECIES_DF_PATH)
 message("\nSaved to ", SPECIES_DF_PATH)
