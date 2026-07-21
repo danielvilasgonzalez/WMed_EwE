@@ -660,6 +660,49 @@ species_df <- Reduce(function(x, y) merge(x, y, by = "Species", all.x = TRUE),
 DEFAULT_TEMP <- 16
 species_df[, Temp := DEFAULT_TEMP]
 
+## =================================================================
+## How to pick the FINAL "chosen" PB/QB when multiple independent
+## methods are available for a species. Most relevant for fish (6 PB
+## methods, 4 QB methods) but applies wherever more than one method
+## exists (mammal PB/QB, invertebrate PB).
+##   "priority" - use the single best-validated method first (e.g.
+##                Then et al. 2015 for fish M), falling back down an
+##                ordered list only if it's missing. This is what the
+##                pipeline did before this option existed.
+##   "mean"     - average across every method that succeeded for that
+##                species, giving equal weight to each rather than
+##                trusting one method's validated performance over
+##                the others.
+## =================================================================
+PB_QB_SELECTION_MODE <- "priority"  # "priority" or "mean"
+
+select_chosen <- function(dt, method_cols_in_priority_order) {
+  if (PB_QB_SELECTION_MODE == "mean") {
+    vals <- rowMeans(dt[, ..method_cols_in_priority_order], na.rm = TRUE)
+    vals[is.nan(vals)] <- NA_real_  # rowMeans on an all-NA row gives NaN, not NA
+    vals
+  } else {
+    do.call(fcoalesce, as.list(dt[, ..method_cols_in_priority_order]))
+  }
+}
+
+## Matching label helper - "priority" mode names the specific method
+## that won (same as before); "mean" mode says how many methods went
+## into the average, since naming just one would misrepresent it
+describe_chosen <- function(dt, method_col_to_label) {
+  cols <- names(method_col_to_label)
+  if (PB_QB_SELECTION_MODE == "mean") {
+    n_avail <- rowSums(!is.na(dt[, ..cols]))
+    fifelse(n_avail == 0, NA_character_, paste0("Mean of ", n_avail, " method(s)"))
+  } else {
+    result <- rep(NA_character_, nrow(dt))
+    for (i in rev(seq_along(cols))) {
+      result <- fifelse(!is.na(dt[[cols[i]]]), unname(method_col_to_label[i]), result)
+    }
+    result
+  }
+}
+
 ## derive Winf from a/b length-weight relationship (protocol Eq. 11)
 ## when not directly available from popgrowth's Winfinity field
 species_df[, Winf := fcoalesce(Winf, a_lw * Loo^b_lw)]
@@ -1005,13 +1048,11 @@ calc_fish <- function(out) {
   ## (the protocol's own primary method), then the rest - but ALL method
   ## columns remain available for direct comparison regardless of
   ## what gets chosen here
-  out[, PB := fcoalesce(PB_Then_2015, PB_Pauly_1980, PB_Hoenig_1983, PB_AlversonCarney_1975, PB_FishLife_2023, PB_Gascuel_2008)]
-  out[, PB_method := fifelse(!is.na(PB_Then_2015), "Then et al. 2015",
-                             fifelse(!is.na(PB_Pauly_1980), "Pauly 1980 (Eq.9)",
-                                     fifelse(!is.na(PB_Hoenig_1983), "Hoenig 1983",
-                                             fifelse(!is.na(PB_AlversonCarney_1975), "Alverson & Carney 1975",
-                                                     fifelse(!is.na(PB_FishLife_2023), "FishLife",
-                                                             fifelse(!is.na(PB_Gascuel_2008), "Gascuel 2008 (Eq.15)", NA_character_))))))]
+  fish_pb_labels <- c(PB_Then_2015 = "Then et al. 2015", PB_Pauly_1980 = "Pauly 1980 (Eq.9)",
+                      PB_Hoenig_1983 = "Hoenig 1983", PB_AlversonCarney_1975 = "Alverson & Carney 1975",
+                      PB_FishLife_2023 = "FishLife", PB_Gascuel_2008 = "Gascuel 2008 (Eq.15)")
+  out[, PB := select_chosen(out, names(fish_pb_labels))]
+  out[, PB_method := describe_chosen(out, fish_pb_labels)]
   out[!is.na(Fmort) & !is.na(PB), PB_method := paste0(PB_method, "+F(Y/B)")]
   
   ## =================================================================
@@ -1064,11 +1105,12 @@ calc_fish <- function(out) {
   
   ## chosen QB for FG-level weighting: prefer the Z-based equation
   ## (most information used) > the two Z-independent equations > Q/P=3
-  out[, QB := fcoalesce(QB_PalomaresPauly_1998Z, QB_PalomaresPauly_1998noZ, QB_ChristensenPauly_1992, QB_ChristensenEtAl_2008)]
-  out[, QB_method := fifelse(!is.na(QB_PalomaresPauly_1998Z), "Palomares & Pauly 1998 (Z-based)",
-                             fifelse(!is.na(QB_PalomaresPauly_1998noZ), "Palomares & Pauly 1998 (non-Z)",
-                                     fifelse(!is.na(QB_ChristensenPauly_1992), "Christensen & Pauly 1992",
-                                             fifelse(!is.na(QB_ChristensenEtAl_2008), "Q/P=3 (Christensen et al. 2008)", NA_character_))))]
+  fish_qb_labels <- c(QB_PalomaresPauly_1998Z = "Palomares & Pauly 1998 (Z-based)",
+                      QB_PalomaresPauly_1998noZ = "Palomares & Pauly 1998 (non-Z)",
+                      QB_ChristensenPauly_1992 = "Christensen & Pauly 1992",
+                      QB_ChristensenEtAl_2008 = "Q/P=3 (Christensen et al. 2008)")
+  out[, QB := select_chosen(out, names(fish_qb_labels))]
+  out[, QB_method := describe_chosen(out, fish_qb_labels)]
   
   out[, .(Species, FG, FG_name, Biomass, dispatch_group,
           M_Pauly_1980, M_FishLife_2023, M_Gascuel_2008, M_Hoenig_1983, M_Then_2015, M_AlversonCarney_1975, Fmort,
@@ -1123,9 +1165,10 @@ calc_mammal <- function(out) {
   out <- fill_by_taxonomic_proximity(out, "PB_BarlowBoveng_1991")
   out <- fill_by_taxonomic_proximity(out, "PB_Gascuel_2008")
   
-  out[, PB := fcoalesce(PB_BarlowBoveng_1991, PB_Gascuel_2008)]
-  out[, PB_method := fifelse(!is.na(PB_BarlowBoveng_1991), "Barlow & Boveng 1991 (Siler)",
-                             fifelse(!is.na(PB_Gascuel_2008), "Gascuel 2008 general (Eq.23)", NA_character_))]
+  mammal_pb_labels <- c(PB_BarlowBoveng_1991 = "Barlow & Boveng 1991 (Siler)",
+                        PB_Gascuel_2008 = "Gascuel 2008 general (Eq.23)")
+  out[, PB := select_chosen(out, names(mammal_pb_labels))]
+  out[, PB_method := describe_chosen(out, mammal_pb_labels)]
   
   ## Method 1: Innes/Trites (Eq.31) - needs MaxWeight
   out[, W_kg := MaxWeight / 1000]
@@ -1134,9 +1177,10 @@ calc_mammal <- function(out) {
   ## Method 2: Q/P=3 fallback, using chosen PB
   out[, QB_ChristensenEtAl_2008 := 3 * PB]
   
-  out[, QB := fcoalesce(QB_InnesTrites_1997, QB_ChristensenEtAl_2008)]
-  out[, QB_method := fifelse(!is.na(QB_InnesTrites_1997), "Innes/Trites 1987/1997 (Eq.31)",
-                             fifelse(!is.na(QB_ChristensenEtAl_2008), "Q/P=3 (Christensen et al. 2008)", NA_character_))]
+  mammal_qb_labels <- c(QB_InnesTrites_1997 = "Innes/Trites 1987/1997 (Eq.31)",
+                        QB_ChristensenEtAl_2008 = "Q/P=3 (Christensen et al. 2008)")
+  out[, QB := select_chosen(out, names(mammal_qb_labels))]
+  out[, QB_method := describe_chosen(out, mammal_qb_labels)]
   
   out[, .(Species, FG, FG_name, Biomass, dispatch_group,
           PB_BarlowBoveng_1991, PB_Gascuel_2008, PB, PB_method,
@@ -1218,10 +1262,11 @@ calc_invertebrate <- function(out) {
   out <- fill_by_taxonomic_proximity(out, "PB_Gascuel_2008")
   out <- fill_by_taxonomic_proximity(out, "PB_Brey_1999", allow_external = FALSE)
   
-  out[, PB := fcoalesce(PB_TumbioloDowning_1994, PB_Brey_1999, PB_Gascuel_2008)]
-  out[, PB_method := fifelse(!is.na(PB_TumbioloDowning_1994), "Tumbiolo & Downing 1994 (Eq.17)",
-                             fifelse(!is.na(PB_Brey_1999), "Brey 1999 (Eq.19)",
-                                     fifelse(!is.na(PB_Gascuel_2008), "Gascuel 2008 general fallback (Eq.23)", NA_character_)))]
+  invert_pb_labels <- c(PB_TumbioloDowning_1994 = "Tumbiolo & Downing 1994 (Eq.17)",
+                        PB_Brey_1999 = "Brey 1999 (Eq.19)",
+                        PB_Gascuel_2008 = "Gascuel 2008 general fallback (Eq.23)")
+  out[, PB := select_chosen(out, names(invert_pb_labels))]
+  out[, PB_method := describe_chosen(out, invert_pb_labels)]
   
   out[, QB_ChristensenEtAl_2008 := 3 * PB]
   out[, QB := QB_ChristensenEtAl_2008]
@@ -1667,13 +1712,34 @@ print(p_fg_combined)
 message("\nSaved: species_PB_QB_comparison.png, FG_PB_QB_comparison.png")
 
 ## =================================================================
-## OUTPUT 3: Ecopath-ready CSV - exactly the 5 columns Ecopath's Basic
-## Estimates table needs: FG_num, FG_name, Biomass (t/km2), PB (year-1),
-## QB (year-1). One row per FG from 1 to the largest FG number in your
-## reference file, sorted numerically - includes every FG in the model,
-## even ones with no species data this run, left blank rather than
-## silently omitted, so you have a complete template to review.
+## OUTPUT 3: Ecopath-ready CSV - matches the REAL Ecopath Basic Input
+## format exactly (confirmed against an actual exported file from this
+## project: westernmed90s-Basic_input.csv), not a simplified guess:
+##   [blank], Group name, Hab area (proportion),
+##   Biomass in habitat area (t/km^2), Total mortality (/year),
+##   Production / biomass (/year), Consumption / biomass (/year),
+##   Ecotrophic Efficiency, Other mortality, Production / consumption,
+##   Unassim. consumption, Detritus import (t/km^2/year)
+## Uses EUROPEAN COMMA-DECIMAL formatting ("0,003222" not "0.003222"),
+## since that's what the real file uses throughout - a plain fwrite()
+## with R's default period decimals would not import correctly.
+##
+## Columns intentionally left blank, matching the real file's own
+## convention: Total mortality (only used for multi-stanza juv/adult
+## groups, which this pipeline doesn't currently build), Ecotrophic
+## Efficiency and Other mortality (Ecopath solves for these itself,
+## not inputs), Production/consumption (redundant once PB and QB are
+## both given), and Detritus import (only relevant for the Detritus/
+## Discards housekeeping groups themselves, which aren't species-based
+## and outside this pipeline's scope).
 ## =================================================================
+
+## Comma-decimal formatter matching the real file's style - empty
+## string for NA (not "NA" literal, which Ecopath's importer would
+## choke on), otherwise the number with a comma in place of the period
+format_ecopath_num <- function(x, digits = 4) {
+  fifelse(is.na(x), "", sub("\\.", ",", formatC(x, format = "f", digits = digits)))
+}
 
 ecopath_ready <- copy(fg_weighted)
 ecopath_ready[, FG := as.character(FG)]
@@ -1699,23 +1765,47 @@ if (!is.null(fg_ref_unique)) {
           " species_df where available), not the full model FG list.")
 }
 
-setnames(ecopath_ready, c("FG", "Biomass_FG", "PB_FG", "QB_FG"),
-         c("FG_num", "Biomass (t/km2)", "PB (year-1)", "QB (year-1)"))
-ecopath_ready[, FG_num := as.numeric(FG_num)]
+ecopath_ready[, FG_num := as.numeric(FG)]
 setorder(ecopath_ready, FG_num)
-ecopath_ready <- ecopath_ready[, .(FG_num, FG_name, `Biomass (t/km2)`, `PB (year-1)`, `QB (year-1)`)]
 
-n_missing <- ecopath_ready[is.na(`PB (year-1)`) | is.na(`QB (year-1)`), .N]
+## primary producers (phytoplankton) don't consume anything, so QB and
+## Unassim. consumption correctly stay blank for them - matches the
+## real file's own convention for its seagrass/algae/phytoplankton rows
+is_primary_producer <- ecopath_ready$FG_num %in% species_df[dispatch_group == "phytoplankton", FG]
+
+ecopath_final <- data.table(
+  ` ` = ecopath_ready$FG_num,                                             # blank header, matches the real file's unnamed first column
+  `Group name` = ecopath_ready$FG_name,
+  `Hab area (proportion)` = format_ecopath_num(rep(1, nrow(ecopath_ready)), digits = 4),
+  `Biomass in habitat area (t/km^2)` = format_ecopath_num(ecopath_ready$Biomass_FG, digits = 4),
+  `Total mortality (/year)` = "",                                          # multi-stanza only - not built by this pipeline
+  `Production / biomass (/year)` = format_ecopath_num(ecopath_ready$PB_FG, digits = 4),
+  `Consumption / biomass (/year)` = fifelse(is_primary_producer, "", format_ecopath_num(ecopath_ready$QB_FG, digits = 4)),
+  `Ecotrophic Efficiency` = "",                                            # Ecopath solves for this - not an input
+  `Other mortality` = "",
+  `Production / consumption` = "",                                        # redundant once PB and QB are both given
+  `Unassim. consumption` = fifelse(is_primary_producer, "", "0,2000"),     # standard default for consumers
+  `Detritus import (t/km^2/year)` = ""                                    # only relevant for Detritus/Discards housekeeping groups
+)
+
+n_missing <- ecopath_ready[is.na(PB_FG) | (is.na(QB_FG) & !is_primary_producer), .N]
 if (n_missing > 0) {
   message(n_missing, " FG(s) have no PB and/or QB from this run - these rows",
           " are included but blank, flagged for manual completion:")
-  print(ecopath_ready[is.na(`PB (year-1)`) | is.na(`QB (year-1)`), .(FG_num, FG_name)])
+  print(ecopath_ready[is.na(PB_FG) | (is.na(QB_FG) & !is_primary_producer), .(FG_num, FG_name)])
 }
 
-fwrite(ecopath_ready, "ecopath_ready_PB_QB.csv")
-message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_ready), " FG rows,",
+fwrite(ecopath_final, "ecopath_ready_PB_QB.csv", quote = "auto")
+message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_final), " FG rows,",
         " FG_num ", min(ecopath_ready$FG_num), "-", max(ecopath_ready$FG_num), ") -",
-        " ready to paste PB/QB into Ecopath's Basic Estimates table.")
+        " formatted to match Ecopath's real Basic Input structure",
+        " (comma-decimal, correct column set) - selection mode: '",
+        PB_QB_SELECTION_MODE, "'.")
+message("NOTE: multi-stanza groups (e.g. 'European sardine juv'/'adult' pairs) need",
+        " their own header row above the stanza members in the real Ecopath format",
+        " (see row 20 'European sardine' in westernmed90s-Basic_input.csv for the",
+        " pattern) - this export doesn't build those automatically since this",
+        " pipeline doesn't currently model juvenile/adult stanza splits.")
 
 ## =================================================================
 ## Total pipeline runtime
