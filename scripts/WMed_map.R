@@ -5,21 +5,22 @@
 ## Central Mediterranean, passing through GSA 12 and GSA 16
 ## ---------------------------------------------------------------
 
-## --- 0. Packages -------------------------------------------------------
+## --- 0. Packages ---------------------------------------------------------
 
-pkgs <- c("sf", "ggplot2", "dplyr", "stringr", "rnaturalearth", "rnaturalearthdata")
+pkgs <- c("sf", "terra", "ggplot2", "dplyr", "stringr", "tibble", "scales",
+          "rnaturalearth", "rnaturalearthdata", "polylabelr")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 # High-resolution coastline (10m) - needed so islands (Balearics, Corsica,
-# Sardinia, Sicily) actually render instead of being dropped at coarser scales.
-# Not on CRAN by default; installed from the ROpenSci r-universe.
+# Sardinia, Sicily) actually render instead of being dropped at coarser
+# scales. Not on CRAN by default; installed from the ROpenSci r-universe.
 if (!requireNamespace("rnaturalearthhires", quietly = TRUE)) {
   install.packages("rnaturalearthhires", repos = "https://ropensci.r-universe.dev", type = "source")
 }
 
-## --- 1. Download & unzip official GFCM GSA shapefile -------------------
+## --- 1. Download & unzip official GFCM GSA shapefile ---------------------
 
 setwd('/Users/daniel/Work/iMARES/')
 
@@ -27,28 +28,20 @@ zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS
 zip_file <- "./WMed EwE Model/shapefiles/GFCM_GSA.zip"
 shp_dir  <- "./WMed EwE Model/shapefiles/GFCM_GSA_shp"
 
-# Download only if neither zip nor extracted folder exist
-if (!file.exists(zip_file) && !dir.exists(shp_dir)) {
-  dir.create(dirname(zip_file), recursive = TRUE, showWarnings = FALSE)
-  download.file(
-    zip_url,
-    destfile = zip_file,
-    mode = "wb",
-    method = "libcurl"
-  )
-  unzip(zip_file, exdir = shp_dir)
-} else if (!file.exists(zip_file) && dir.exists(shp_dir)) {
-  message("Shapefile folder already exists. Using existing files.")
-} else if (file.exists(zip_file) && !dir.exists(shp_dir)) {
+if (!dir.exists(shp_dir)) {
+  if (!file.exists(zip_file)) {
+    dir.create(dirname(zip_file), recursive = TRUE, showWarnings = FALSE)
+    download.file(zip_url, destfile = zip_file, mode = "wb", method = "libcurl")
+  }
   unzip(zip_file, exdir = shp_dir)
 } else {
-  message("Zip file and extracted folder already exist.")
+  message("Shapefile folder already exists. Using existing files.")
 }
 
 shp_path <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
 gsa_sf <- st_read(shp_path, quiet = TRUE)   # native CRS: WGS84 (EPSG:4326)
 
-## --- 2. Inspect attributes (uncomment to check column names/values) ----
+## --- 2. Inspect attributes (uncomment to check column names/values) ------
 
 # print(names(gsa_sf))
 # print(st_drop_geometry(gsa_sf) %>% select(SMU_CODE, SMU_NAME, F_DIVISION, CENTER_X, CENTER_Y))
@@ -63,13 +56,14 @@ gsa_sf <- st_read(shp_path, quiet = TRUE)   # native CRS: WGS84 (EPSG:4326)
 ## GSA - used directly below instead of an auto-computed point-on-surface,
 ## which is both more reliable for irregular/elongated GSA shapes and
 ## avoids the st_point_on_surface warning entirely.
+
 gsa_sf$gsa_num <- as.numeric(gsa_sf$SMU_CODE)
 gsa_sf$gsa_group <- case_when(
   gsa_sf$gsa_num %in% c(111, 112) ~ 11,
   TRUE ~ gsa_sf$gsa_num
 )
 
-## --- 3. Split into Western Med (target) vs Central Med (context) -------
+## --- 3. Split into Western Med (target) vs Central Med (context) ---------
 
 westmed_ids <- 1:11
 context_ids <- c(12, 16)   # Northern Tunisia, South of Sicily
@@ -100,14 +94,14 @@ if (!any(str_detect(westmed_sf$F_GSA_LIB, "11.1"))) {
   print(gsa_sf %>% st_drop_geometry() %>% filter(gsa_group == 11) %>% select(SMU_CODE, F_GSA_LIB))
 }
 
-## Label placement: st_point_on_surface only guarantees a point INSIDE the
-## polygon, not one far from the edges - for narrow, coastline-hugging GSAs
-## (1, 4, 12 especially) that point can still land right next to land.
-## The correct tool is the "pole of inaccessibility" (the point maximizing
-## distance from any edge) - the same technique Mapbox and other map
-## labeling tools use. polylabelr implements this.
-if (!requireNamespace("polylabelr", quietly = TRUE)) install.packages("polylabelr")
-library(polylabelr)
+## --- 4. Label placement ---------------------------------------------------
+
+## st_point_on_surface only guarantees a point INSIDE the polygon, not one
+## far from the edges - for narrow, coastline-hugging GSAs (1, 4, 12
+## especially) that point can still land right next to land. The correct
+## tool is the "pole of inaccessibility" (the point maximizing distance
+## from any edge) - the same technique Mapbox and other map labeling tools
+## use. polylabelr implements this.
 
 compute_polylabel <- function(sf_obj) {
   coords_out <- matrix(NA_real_, nrow = nrow(sf_obj), ncol = 2)
@@ -164,7 +158,7 @@ print(context_sf %>% st_drop_geometry() %>%
 ## automatic placement (common for irregular/multi-part shapes where
 ## "farthest from any edge" isn't the same as "where you'd expect it"),
 ## add a row here to nudge it. Matches on the label text shown on the map.
-label_overrides <- tibble::tribble(
+label_overrides <- tribble(
   ~label_text, ~new_x, ~new_y
   # ~"GSA 16",  13.7,   37.0    # example - uncomment and adjust once you see the diagnostic above
 )
@@ -181,7 +175,7 @@ apply_overrides <- function(sf_obj, label_col) {
 westmed_sf <- apply_overrides(westmed_sf, "F_GSA_LIB")
 context_sf <- apply_overrides(context_sf, "context_label")
 
-## --- 4. Sicily Channel divide (western/central Med boundary) -----------
+## --- 5. Sicily Channel divide (western/central Med boundary) -------------
 
 sicily_divide <- st_sfc(
   st_linestring(matrix(c(
@@ -191,39 +185,67 @@ sicily_divide <- st_sfc(
   crs = 4326
 )
 
-## --- 5. Basemap (coastline) ----------------------------------------------
+## --- 6. Basemap (coastline) ------------------------------------------------
 
 coast <- ne_countries(scale = 10, returnclass = "sf")
 
-## --- 6. Plot -------------------------------------------------------------
+## --- 7. Clean Western Mediterranean outer contour -------------------------
+## Union all GSAs, rasterize + re-polygonize to dissolve internal GSA
+## boundaries into one smooth outer outline, then keep only the largest
+## piece (drops any tiny disconnected slivers) and extract its boundary.
+
+study_area_union <- st_union(westmed_sf)
+v <- vect(study_area_union)
+r <- rast(ext(v), resolution = 0.01, crs = crs(v))
+r <- rasterize(v, r, field = 1)
+v_poly <- as.polygons(r, dissolve = TRUE)
+
+study_area_clean <- st_as_sf(v_poly)
+study_area_clean <- study_area_clean[which.max(st_area(study_area_clean)), ]
+study_area_outline <- st_boundary(study_area_clean)
+
+## --- 8. Plot ----------------------------------------------------------------
 
 bbox <- st_bbox(bind_rows(westmed_sf, context_sf))
-pad  <- 0.7   # degrees
+pad  <- 0.7
 
 p <- ggplot() +
-  geom_sf(data = coast, fill = "grey92", color = "grey70", linewidth = 0.2) +
-  geom_sf(data = context_sf, fill = "grey85", color = "grey50",
-          linewidth = 0.3, alpha = 0.5) +
+  geom_sf(data = coast, fill = "bisque3", color = "grey70", linewidth = 0.2) +
+  
+  geom_sf(data = context_sf, fill = "grey85", color = "grey50", linewidth = 0.3, alpha = 0.5) +
   geom_text(data = context_sf, aes(x = label_x, y = label_y, label = context_label),
             size = 3, color = "grey40") +
-  geom_sf(data = westmed_sf, aes(fill = division_label), color = "grey30",
-          linewidth = 0.2, alpha = 0.65) +
-  geom_label(data = westmed_sf, aes(x = label_x, y = label_y, label = F_GSA_LIB),
-             size = 3, fill = scales::alpha("white", 0.6), label.size = 0.2) +
+  
+  geom_sf(data = westmed_sf, aes(fill = division_label), color = "grey30", linewidth = 0.2, alpha = 0.65) +
+  
+  # clean outer Western Mediterranean contour
+  geom_sf(data = study_area_outline, color = "black", linewidth = 0.8) +
+  
   geom_sf(data = sicily_divide, color = "red", linewidth = 0.5, linetype = "dashed") +
+  
   coord_sf(
     xlim = c(bbox["xmin"] - pad, bbox["xmax"] + pad),
     ylim = c(bbox["ymin"] - pad, bbox["ymax"] + pad)
   ) +
+  
+  geom_label(data = westmed_sf, aes(x = label_x, y = label_y, label = F_GSA_LIB),
+             size = 3, fill = alpha("white", 0.7), label.size = 0.2) +
+  
   scale_fill_brewer(palette = "Set2", name = "FAO Division") +
-  labs(title = "Western Mediterranean (FAO Subarea 37.1)") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom",
-        panel.grid = element_line(color = "grey85"))
+  
+  labs(title = "Western Mediterranean (FAO Subarea 37.1)", x = "Longitude", y = "Latitude") +
+  
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.ontop = TRUE,
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(color = alpha("grey50", 0.5), linetype = "dashed", linewidth = 0.3),
+    panel.grid.minor = element_line(color = alpha("grey60", 0.3), linetype = "dashed", linewidth = 0.2)
+  )
 
 print(p)
 
 if (!dir.exists("plots")) dir.create("plots")
-ggsave("plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 150)
-
+ggsave("plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 300)
 message("Map saved to plots/westmed_gsa_map.png")
