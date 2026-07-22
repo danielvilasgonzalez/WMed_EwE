@@ -152,7 +152,7 @@ message("\nContext label positions vs polygon bounding box:")
 print(context_sf %>% st_drop_geometry() %>%
         mutate(bbox_ymin = sapply(seq_len(n()), function(i) st_bbox(context_sf[i, ])["ymin"]),
                bbox_ymax = sapply(seq_len(n()), function(i) st_bbox(context_sf[i, ])["ymax"])) %>%
-        select(context_label, label_x, label_y, bbox_ymin, bbox_ymax))
+        dplyr::select(context_label, label_x, label_y, bbox_ymin, bbox_ymax))
 
 ## Manual overrides - if a specific label still looks wrong after the
 ## automatic placement (common for irregular/multi-part shapes where
@@ -233,7 +233,7 @@ p <- ggplot() +
   
   scale_fill_brewer(palette = "Set2", name = "FAO Division") +
   
-  labs(title = "Western Mediterranean (FAO Subarea 37.1)", x = "Longitude", y = "Latitude") +
+  labs(title = "Western Mediterranean Sea (FAO Subarea 37.1)", x = "Longitude", y = "Latitude") +
   
   theme_bw(base_size = 12) +
   theme(
