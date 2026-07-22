@@ -23,7 +23,7 @@ fao_species_file  <- "./WMed EwE Model/data/raw/FAO-GFCM_catches/FI_Regional_202
 tm_list_file      <- "./WMed EwE Model/data/raw/2024_MEDBSsurvey/TM_list_(April_2019).xlsx" #taxonomic list downloaded from MEDITS
 
 FILTER_COUNTRIES <- NULL    # Country filter
-FILTER_AREAS     <- 1:12   # GSA filter
+FILTER_AREAS     <- 1:11   # GSA filter
 TOP_N_AREAS      <- 20    # filter by most abundant areas
 TOP_N_SPECIES    <- 40    # also used as top-N when faceting by FG instead of species
 
@@ -317,8 +317,8 @@ print(still_unmatched[!is.na(Family), .N, by = Family][order(-N)])
 message("\nUnmatched species count by Class (for ones with no Family at all):")
 print(still_unmatched[is.na(Family), .N, by = Class][order(-N)])
 
-fwrite(still_unmatched, file.path(out_dir, "./processed/demersal_unmatched_for_manual_review.csv"))
-message("\nSaved to ", file.path(out_dir, "./processed/demersal_unmatched_for_manual_review.csv"),
+fwrite(still_unmatched, file.path(out_dir, "/processed/demersal_unmatched_for_manual_review.csv"))
+message("\nSaved to ", file.path(out_dir, "/processed/demersal_unmatched_for_manual_review.csv"),
         " - fill in an FG_num/FG_name column in Excel, then re-import as a",
         " MANUAL_DEMERSAL_OVERRIDES-style table (see Section 4b) to apply them.")
 
@@ -456,8 +456,8 @@ message("These are HIGH CONFIDENCE (FG name = taxon name) but still worth a quic
 print(still_unmatched_clean[!is.na(FG_num_assigned),
                             .(species_code, ScientificName, taxon_for_review, FG_num_assigned, FG_name_assigned)])
 
-fwrite(still_unmatched_clean, file.path(out_dir, "./processed/demersal_unmatched_after_taxonomy_rules.csv"))
-message("\nSaved to ", file.path(out_dir, "./processed/demersal_unmatched_after_taxonomy_rules.csv"),
+fwrite(still_unmatched_clean, file.path(out_dir, "/processed/demersal_unmatched_after_taxonomy_rules.csv"))
+message("\nSaved to ", file.path(out_dir, "/processed/demersal_unmatched_after_taxonomy_rules.csv"),
         " - rows with FG_num_assigned filled in are the auto-rule matches;",
         " rows with it blank still need your manual FG_num/FG_name (use",
         " taxon_for_review to group/prioritize, same as the Family/Class",
@@ -890,10 +890,10 @@ p_strata_profile <- ggplot(strata_profile[FG_name %in% top_fg_for_profile],
   theme_minimal(base_size = 10) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-ggsave(file.path(out_dir, "./plots/demersal_fg_depth_strata_profile.png"), p_strata_profile,
+ggsave(file.path(out_dir, "/plots/demersal_fg_depth_strata_profile.png"), p_strata_profile,
        width = 16, height = 12, dpi = 150)
 
-fwrite(strata_profile, file.path(out_dir, "./processed/demersal_fg_depth_strata_profile.csv"))
+fwrite(strata_profile, file.path(out_dir, "/processed/demersal_fg_depth_strata_profile.csv"))
 message("\nDepth-strata validation plot saved - check that known deep-water FGs",
         " (e.g. Bathydemersal fish, deep-water shrimp) actually peak in the",
         " deeper strata (D/E) as expected, and shallow/coastal FGs peak in A/B.",
@@ -906,27 +906,27 @@ a_fg_biom_data <- apply_filters(as_tibble(acoustic_fg_index) %>% filter(total_bi
 p6 <- plot_timeseries(a_fg_biom_data, "total_biomass_fg", "FG_name",
                       "Acoustic survey by FG and GSA",
                       "Total biomass")
-ggsave(file.path(out_dir, "./plots/acoustic_fg_biomass_timeseries.png"), p6, width = 14, height = 10, dpi = 150)
+ggsave(file.path(out_dir, "/plots/acoustic_fg_biomass_timeseries.png"), p6, width = 14, height = 10, dpi = 150)
 
 a_fg_abund_data <- apply_filters(as_tibble(acoustic_fg_index) %>% filter(total_abundance_fg > 0),
                                  species_col = "FG_name", value_col = "total_abundance_fg")
 p7 <- plot_timeseries(a_fg_abund_data, "total_abundance_fg", "FG_name",
                       "Acoustic survey by FG and GSA",
                       "Total abundance")
-ggsave(file.path(out_dir, "./plot/acoustic_fg_abundance_timeseries.png"), p7, width = 14, height = 10, dpi = 150)
+ggsave(file.path(out_dir, "/plots/acoustic_fg_abundance_timeseries.png"), p7, width = 14, height = 10, dpi = 150)
 
 ## =================================================================
 ## Export
 ## =================================================================
 
-fwrite(demersal_fg_index, file.path(out_dir, "./processed/demersal_fg_annual_index.csv"))
-fwrite(acoustic_fg_index, file.path(out_dir, "./processed/acoustic_fg_annual_index.csv"))
+fwrite(demersal_fg_index, file.path(out_dir, "/processed/demersal_fg_annual_index.csv"))
+fwrite(acoustic_fg_index, file.path(out_dir, "/processed/acoustic_fg_annual_index.csv"))
 
 message("\nDone. New FG-level outputs:")
-message("- ", file.path(out_dir, "./processed/demersal_fg_annual_index.csv"), " (now strata-weighted)")
-message("- ", file.path(out_dir, "./processed/acoustic_fg_annual_index.csv"))
+message("- ", file.path(out_dir, "/processed/demersal_fg_annual_index.csv"), " (now strata-weighted)")
+message("- ", file.path(out_dir, "/processed/acoustic_fg_annual_index.csv"))
 message("- ", strata_fact_cache_path, " (bathymetry-derived strata area proportions, cached)")
-message("- ", file.path(out_dir, "./processed/demersal_fg_depth_strata_profile.csv"), " (per-stratum density, for validation)")
+message("- ", file.path(out_dir, "/processed/demersal_fg_depth_strata_profile.csv"), " (per-stratum density, for validation)")
 message("- plots/demersal_fg_density_timeseries.png")
 message("- plots/demersal_fg_depth_strata_profile.png (validation: deep-water FGs should peak in D/E)")
 message("- plots/acoustic_fg_biomass_timeseries.png")
