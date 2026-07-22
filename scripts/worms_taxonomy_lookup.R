@@ -17,11 +17,26 @@
 # WoRMS-derived one for the same actual family.
 # ============================================================
 
-library(worrms)
-library(dplyr)
-library(purrr)
-library(stringr)
+#load libraries
+required_packages <- c(
+  "worrms",
+  "dplyr",
+  "purrr",
+  "stringr"
+)
+missing_packages <- required_packages[
+  !sapply(required_packages, requireNamespace, quietly = TRUE)
+]
+if (length(missing_packages) > 0) {
+  message(
+    "Installing missing packages: ",
+    paste(missing_packages, collapse = ", ")
+  )
+  install.packages(missing_packages)
+}
+invisible(lapply(required_packages, library, character.only = TRUE))
 
+#function
 worms_taxonomy_lookup <- function(names_vector) {
   
   # strip "Genus spp." suffixes so those still resolve at genus level
