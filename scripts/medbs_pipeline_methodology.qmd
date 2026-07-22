@@ -1,0 +1,342 @@
+---
+title: "MEDBS Survey Data Pipeline: Methodology"
+subtitle: "Demersal (MEDITS) and Acoustic (MEDIAS) biomass indices for the Western Mediterranean EwE model"
+author: "Daniel Vilas"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+execute:
+  eval: false
+  echo: true
+---
+
+```{r}
+#| label: setup-copy-figures
+#| eval: true
+#| echo: false
+#| include: false
+## This .qmd lives in /Users/daniel/Documents/Github/WMed_EwE/scripts/, but
+## the actual pipeline outputs (plots, data) live in a completely separate
+## directory tree: /Users/daniel/Work/iMARES/WMed EwE Model/data/. Quarto's
+## preview server generally won't serve files from outside its own project
+## root, regardless of whether the reference is an absolute path or a
+## relative path that escapes upward past the root - so rather than trying
+## to reach across to the original location, copy the needed plots into a
+## local "figures/" folder next to this .qmd, and reference THAT copy.
+## Re-run this chunk (or just re-render) after re-running the pipeline
+## script to pick up updated plots.
+
+source_plots_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/plots"
+local_figures_dir <- "figures"
+if (!dir.exists(local_figures_dir)) dir.create(local_figures_dir)
+
+plots_needed <- c(
+  "demersal_fg_density_timeseries.png",
+  "acoustic_fg_biomass_timeseries.png",
+  "acoustic_fg_abundance_timeseries.png",
+  "demersal_fg_depth_strata_profile.png"
+)
+
+for (p in plots_needed) {
+  src <- file.path(source_plots_dir, p)
+  dst <- file.path(local_figures_dir, p)
+  if (file.exists(src)) {
+    file.copy(src, dst, overwrite = TRUE)
+  } else {
+    warning("Plot not found at ", src, " - run medbs_full_pipeline_with_fg.R first.")
+  }
+}
+```
+
+## Overview
+
+This document explains the methodology implemented in `medbs_full_pipeline_with_fg.R`, which converts raw MEDITS (bottom trawl) and MEDIAS (acoustic) survey data into biomass/density indices by Functional Group (FG), ready for use as Ecopath and Ecosim inputs.
+
+Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren't available at render time. To reproduce the actual numbers, run the source `.R` script directly. (The one exception is the figure-copying setup chunk above, and the `knitr::include_graphics()` calls below, which only need the plot files to already exist on disk.)
+
+The pipeline covers two conceptually different problems in sequence:
+
+1. **Which Functional Group does each species belong to?** (Section 2)
+2. **Given that mapping, what's the correctly-weighted biomass/density estimate for each FG?** (Sections 3–6)
+
+The second problem is the more subtle one - a naive average across hauls or across survey areas can be quietly wrong in ways that matter for the final model, which is most of what this document focuses on.
+
+---
+
+## Functional Group matching
+
+Every species caught in a haul needs to be assigned to one of the model's ~90 Functional Groups before its biomass can contribute to an FG-level index. This happens in stages, each one only attempting species the previous stage couldn't resolve - and at every stage, an **ambiguous** match (a species or taxonomic rank that could plausibly belong to more than one FG) is flagged for manual review rather than guessed.
+
+### Stage 1 - Direct species-level match
+
+The MEDITS species code is translated to a scientific name via the MEDITS taxonomic list (`TM_list`), then matched directly against the FG reference table (`fg_lookup_safe`).
+
+```{r}
+#| label: direct-match
+demersal_haul <- merge(demersal_haul, tm_lookup, by = "species_code", all.x = TRUE)
+demersal_haul <- merge(demersal_haul, fg_lookup_safe[, .(ScientificName, FG_num, FG_name)],
+                       by = "ScientificName", all.x = TRUE)
+```
+
+A species name that maps to more than one FG almost always means a **juvenile/adult life-stage split** in the FG reference table (e.g. "European hake juv." and "European hake adult" as separate FG rows for the same species). The juvenile-labeled row is dropped, keeping the adult FG - anything still ambiguous after that is a genuinely different kind of duplicate and gets excluded from automatic matching entirely, not guessed.
+
+### Stage 2 - Manual overrides
+
+A short table of species codes not present in the MEDITS taxonomic list at all, resolved by hand at whichever taxonomic rank is appropriate (species, genus, family, or class) and matched against `fg_lookup_safe`'s corresponding column.
+
+### Stage 3 - Genus/family fallback
+
+For species with a resolved scientific name but no FG match, WoRMS supplies the genus and family, under the assumption that congeners (same genus) or confamilials (same family) are ecologically similar enough to share a Functional Group.
+
+**Safety rule**: a genus or family is only used for fallback matching if it maps to **exactly one** FG among all species already in the reference table. A genus spanning multiple FGs (e.g. containing both a small pelagic species and a large predatory one) is too ecologically diverse to assign safely, and is excluded from the fallback rather than assigned to whichever FG happens to come up first.
+
+$$
+\text{genus is safe to use} \iff \left| \{\, FG_i : \text{species}_i \in \text{genus} \,\} \right| = 1
+$$
+
+### Stage 4 - Taxonomy-based bulk rules
+
+For whatever remains unmatched after genus/family fallback, a small set of rules assigns species directly from their **Class**, **Order**, **Family**, or **Phylum**, but only where the FG's name essentially *is* the taxon's name (e.g. Class `Bivalvia` → FG "Bivalves") - high-confidence cases, not judgment calls. Applied in priority order (Family, most specific, down to Phylum, broadest), so a more specific rule always wins if a species happens to match more than one.
+
+### Match-rate reporting
+
+At the end of the matching process, both **row-level** and **species-level** match rates are reported:
+
+```{r}
+#| label: match-rate-reporting
+demersal_species_total <- uniqueN(demersal_haul[!is.na(ScientificName), ScientificName])
+demersal_species_unmatched <- uniqueN(demersal_haul[!is.na(ScientificName) & is.na(FG_num), ScientificName])
+message("Demersal species-level: ", demersal_species_unmatched, " of ", demersal_species_total,
+        " distinct species unmatched (",
+        round(100 * demersal_species_unmatched / demersal_species_total, 1), "%)")
+```
+
+These answer genuinely different questions. Row-level match rate can look deceptively good or bad depending on how frequently individual species happen to show up in hauls - a handful of very common species being unmatched dominates the row-level percentage even if the *number of distinct species* still needing review is small. Species-level percentage is the more direct answer to "how much manual review work is actually left."
+
+---
+
+## Swept area (demersal, per haul)
+
+Trawl catch weight on its own isn't comparable between hauls - a haul that swept more seafloor will naturally catch more, independent of true fish density. Standardizing to a **density** (weight per unit area swept) is what makes hauls comparable at all.
+
+$$
+A_{\text{swept}} = \text{distance towed} \times \text{net wing opening}
+$$
+
+```{r}
+#| label: swept-area
+WING_OPENING_UNIT <- "decimetres"
+ta_swept <- ta %>%
+  mutate(
+    distance_m = distance,
+    wing_opening_m = if (WING_OPENING_UNIT == "decimetres") wing_opening / 10 else wing_opening,
+    swept_area_km2 = (distance_m * wing_opening_m) / 1e6
+  ) %>%
+  dplyr::select(country, area, vessel, year, haul_number, month, day, swept_area_km2)
+```
+
+The unit for `wing_opening` (decimetres, not metres) isn't documented directly in the raw data - it's confirmed by cross-checking against `vertical_opening`, which is a constant 20 across hauls using the standard MEDITS GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73's real vertical opening (~2–4m); 20 *metres* would be absurd for a bottom trawl. The wing opening value (130 decimetres = 13.0m) independently matches GOC73's documented ~12–15m wing spread. Both fields pointing the same direction is what makes this a confirmed unit rather than a plausibility guess.
+
+Per-haul density is then:
+
+$$
+D_{\text{haul}} = \frac{\text{catch weight (tonnes)}}{A_{\text{swept}} \;(\text{km}^2)}
+$$
+
+---
+
+## Depth-stratum assignment
+
+MEDITS is a **stratified-random** survey design: the sampling area within each GSA is divided into 5 standard bathymetric strata, and hauls are allocated across them roughly in proportion to each stratum's share of the total survey area.
+
+| Stratum | Depth range |
+|---|---|
+| A | 10–50 m |
+| B | 51–100 m |
+| C | 101–200 m |
+| D | 201–500 m |
+| E | 501–800 m |
+
+The raw data field `number_of_the_stratum` turned out **not** to be a clean stratum code - inspection showed most values are large multi-digit numbers (e.g. `11101`, `22405`) that look like a GSA-prefixed station/site ID for some countries' submissions, not the depth-stratum index the field name suggests. Rather than guess at an undocumented encoding, the stratum is derived directly from mean haul depth instead:
+
+```{r}
+#| label: stratum-from-depth
+MEDITS_STRATA <- data.table(
+  stratum_num = 1:5,
+  depth_min = c(10, 51, 101, 201, 501),
+  depth_max = c(50.9999, 100.9999, 200.9999, 500.9999, 800)
+)
+
+ta_dt[, mean_depth := (shooting_depth + hauling_depth) / 2]
+ta_dt[, stratum_num := MEDITS_STRATA$stratum_num[
+  findInterval(mean_depth, MEDITS_STRATA$depth_min, all.inside = TRUE)]]
+```
+
+Hauls with a mean depth outside 10–800m don't belong to any of the 5 standard strata and are excluded from the strata-weighted index, rather than force-assigned to whichever edge stratum happens to be closest.
+
+---
+
+## Strata-weighted density (within a GSA) {#sec-strata-weighted}
+
+This is the central statistical correction in the pipeline. A **simple mean density across all hauls in a GSA** implicitly assumes every haul represents an equal share of that GSA's seafloor - but different strata are sampled with different numbers of hauls *and* cover different fractions of the total area, so an unweighted mean would be biased toward whichever stratum happened to get more hauls that year, independent of how much of the GSA it actually represents.
+
+The standard stratified-survey estimator instead computes a per-stratum mean, then weights each stratum's contribution by its **true share of the GSA's area** (not its share of hauls):
+
+$$
+D_{\text{GSA}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{GSA}}}, \qquad
+\bar{D}_h = \frac{\sum \text{density in stratum } h}{n_{\text{hauls},\,h}}
+$$
+
+where $\bar{D}_h$ is the mean per-haul density within stratum $h$, and $A_h / A_{\text{GSA}}$ is that stratum's proportional share of the GSA's total surveyable area (10–800m depth range).
+
+The stratum area shares are computed from **bathymetry**, not from haul counts - for each GSA, a NOAA bathymetry raster is downloaded, clipped to the GSA's official GFCM boundary polygon, and each cell's real area (accounting for latitude - grid cells shrink toward the poles, so a naive cell count would itself be biased) is summed within each depth stratum:
+
+```{r}
+#| label: strata-area-proportions
+area_r <- raster::area(bathy_r)  # per-cell area in km^2, latitude-corrected
+
+strata_areas <- bathy_dt[, .(area_km2 = sum(cell_area_km2, na.rm = TRUE)), by = stratum_num]
+strata_areas[, prop := area_km2 / sum(area_km2)]
+```
+
+The full estimator in the pipeline:
+
+```{r}
+#| label: strata-weighted-estimator
+per_stratum_fg[, weighted_density := (density_sum / n_hauls) * prop]
+
+demersal_fg_index <- per_stratum_fg[
+  , .(mean_density_t_km2 = sum(weighted_density, na.rm = TRUE)),
+  by = .(gsa, year, FG_num, FG_name)
+]
+```
+
+::: {.callout-note}
+### Interpretation
+If haul allocation were *exactly* proportional to stratum area (the survey design's own target), this weighted estimator and a simple mean across hauls would converge to the same answer mathematically. But real surveys deviate from the ideal in specific years - weather cancellations, gear damage, logistics - which is exactly why survey statistics practice always applies the explicit area weighting rather than trusting that realized sampling matched the design every single year.
+:::
+
+```{r}
+#| label: fig-demersal-fg
+#| eval: true
+#| echo: false
+#| fig-cap: "MEDITS trawl survey biomass index by Functional Group and GSA, strata-weighted (per-GSA version - see @sec-regional for the region-wide aggregate used in Ecopath/Ecosim inputs)."
+knitr::include_graphics(file.path("figures", "demersal_fg_density_timeseries.png"))
+```
+
+---
+
+## Region-wide aggregation (across GSAs) {#sec-regional}
+
+@sec-strata-weighted gives a correctly-weighted density **per GSA**. Combining multiple GSAs into a single Western-Mediterranean-wide estimate has exactly the same weighting problem one level up: GSAs differ substantially in total area, so a simple mean of per-GSA densities would implicitly treat a small GSA as equally representative of the region as a large one.
+
+Compounding two separate weighting stages (strata within a GSA, then GSA within the region) works, but a single-stage estimator combining every (GSA, stratum) cell directly - using each cell's **absolute** area, not its proportion within its own GSA - is cleaner and avoids any double-weighting error:
+
+$$
+D_{\text{region}} = \frac{\sum_{g,h} \bar{D}_{g,h} \, A_{g,h}}{\sum_{g,h} A_{g,h}}
+$$
+
+where $g$ indexes GSA, $h$ indexes stratum, $\bar{D}_{g,h}$ is the per-haul mean density in GSA $g$'s stratum $h$, and $A_{g,h}$ is that stratum's absolute area (km²) within that specific GSA.
+
+```{r}
+#| label: regional-estimator
+demersal_fg_index_regional <- per_stratum_fg[
+  !is.na(area_km2),
+  .(mean_density_t_km2 = sum((density_sum / n_hauls) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE)),
+  by = .(year, FG_num, FG_name)
+]
+```
+
+This is the version used for Ecopath/Ecosim-facing outputs (the biomass CSVs and the time-series file) - the per-GSA index (@sec-strata-weighted) is retained separately for GSA-level plots and comparisons, where seeing individual GSAs is the point.
+
+---
+
+## Acoustic survey (MEDIAS)
+
+Acoustic biomass/abundance estimates work differently from trawl data: MEDIAS output is already a survey-area estimate (from backscatter integrated across transects), not a per-haul catch needing swept-area standardization. No equivalent of the swept-area or strata-weighting steps applies here - species are matched to FG the same way (via a FAO 3-alpha species code bridge to scientific name, then the same `fg_lookup_safe` table), and biomass/abundance are simply summed across species within the same FG, per country/GSA/year.
+
+```{r}
+#| label: acoustic-fg-index
+acoustic_fg_index <- acoustic[
+  !is.na(FG_num),
+  .(total_biomass_fg   = sum(total_biomass, na.rm = TRUE),
+    total_abundance_fg = sum(total_abundance, na.rm = TRUE)),
+  by = .(country, gsa, year, FG_num, FG_name)
+]
+```
+
+One data-quality check applied before aggregating: raw acoustic records are checked for replication (more than one record per country/GSA/year/species combination) - if that's common, summing would conflate true abundance with how many replicate records happened to exist that year, and the aggregation function automatically switches from `sum()` to `mean()` based on what the data actually shows, rather than assuming one or the other.
+
+::: {layout-ncol=1}
+```{r}
+#| label: fig-acoustic-biomass
+#| eval: true
+#| echo: false
+#| fig-cap: "Acoustic survey total biomass by Functional Group and GSA."
+knitr::include_graphics(file.path("figures", "acoustic_fg_biomass_timeseries.png"))
+```
+
+```{r}
+#| label: fig-acoustic-abundance
+#| eval: true
+#| echo: false
+#| fig-cap: "Acoustic survey total abundance by Functional Group and GSA."
+knitr::include_graphics(file.path("figures", "acoustic_fg_abundance_timeseries.png"))
+```
+:::
+
+---
+
+## Validation: depth-strata density profile
+
+A direct ecological sanity check on the strata-weighting logic itself: for each FG, plot its **raw per-haul density** (deliberately *before* area-weighting, since area-weighting is about scaling to a population estimate, not about revealing where a species actually lives) across the 5 depth strata.
+
+```{r}
+#| label: depth-profile-validation
+per_stratum_fg[, mean_density_per_haul := density_sum / n_hauls]
+
+strata_profile <- per_stratum_fg[
+  , .(mean_density_per_haul = mean(mean_density_per_haul, na.rm = TRUE)),
+  by = .(FG_num, FG_name, stratum_num)]
+```
+
+If the pipeline is working correctly, FGs known to live in deep water (e.g. *Bathydemersal (deep sea) fish*, deep-water shrimp species) should show density concentrated toward strata D/E, and coastal/shallow FGs should concentrate toward A/B. A flat profile, or an unexpected peak for a well-documented species, is worth investigating directly - it could point at a stratum-coding issue, a swept-area problem, or a species-matching error further upstream, rather than being dismissed as noise.
+
+```{r}
+#| label: fig-depth-profile
+#| eval: true
+#| echo: false
+#| fig-cap: "Depth-strata density profile by Functional Group - deep-water FGs should peak toward D/E, coastal/shallow FGs toward A/B."
+knitr::include_graphics(file.path("figures", "demersal_fg_depth_strata_profile.png"))
+```
+
+---
+
+## Outputs
+
+| File | Content |
+|---|---|
+| `demersal_fg_annual_index.csv` | Per-GSA, strata-weighted density by year and FG |
+| `demersal_fg_annual_index_regional.csv` | All GSAs combined, area-weighted - the Ecopath/Ecosim-facing version |
+| `demersal_fg_depth_strata_profile.csv` | Per-stratum density, for the validation check above |
+| `acoustic_fg_annual_index.csv` | Acoustic biomass/abundance by GSA, year, FG |
+| `strata_fact_by_gsa.csv` | Cached bathymetry-derived stratum area proportions per GSA |
+| `ecopath_biomass_input_1995.csv` | Single base-year Ecopath biomass input (real Ecopath column format, comma-decimal) |
+| `ecopath_biomass_input_1994-1996.csv` | 3-year-averaged base-year Ecopath biomass input |
+| `ecosim_ts_biomass.csv` | Relative biomass time series for Ecosim fitting (rescaled to each FG's first available year) |
+
+::: {.callout-warning}
+### On the Ecosim time-series format
+Unlike the Ecopath Basic Input CSV format (verified directly against a real exported file from this project), the time-series file format is built from Ecosim's documented structure, not confirmed against a real example. If an actual exported `.csv` from Ecosim's own time-series import tool becomes available, the pipeline should be checked against it directly rather than relying on the general format currently implemented.
+:::
+
+::: {.callout-note}
+### On PB/QB
+This pipeline produces **Biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (`calculate_pb_qb_fg.R`) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density - the two pipelines are complementary, not overlapping.
+:::
