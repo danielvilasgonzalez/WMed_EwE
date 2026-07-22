@@ -1,10 +1,8 @@
-## ---------------------------------------------------------------
-## MEDBS Survey Analysis: Demersal & Acoustic, with Functional
+## MEDBS Survey Analysis: Demersal & Acoustic, with Functional ####
 ## Group matching, STRATA-WEIGHTED survey-index aggregation, and plots
-## ---------------------------------------------------------------
 
 ## --- 0. Packages -----------------------------------------------------------
-
+#load libraries
 pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "stringr", "forcats", "data.table",
           "marmap", "raster", "terra", "sf")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
@@ -12,36 +10,74 @@ if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 ## --- 1. Config ---------------------------------------------------------
+#set working directory - Github
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  setwd("/Users/daniel/Documents/Github/")
+} else {
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please set the working directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select GitHub Directory",
+    message = paste(
+      "Please select your local GitHub directory.",
+      "\n\nBefore continuing, ensure that you have cloned:",
+      "\ngithub.com/danielvilasgonzalez/WMed_EwE"
+    )
+  )
+  wd <- rstudioapi::selectDirectory()
+  if (is.null(wd) || wd == "" || !dir.exists(wd)) {
+    stop("No valid GitHub directory selected.")
+  }
+  setwd(wd)
+}
 
-setwd('/Users/daniel/Work/iMARES/')
-base_dir <- "./WMed EwE Model/data/raw/2024_MEDBSsurvey/"
-out_dir  <- "./WMed EwE Model/data/"
-if (!dir.exists(out_dir)) dir.create(out_dir)
+#MEDITS data folder
+in_dir <- "./WMed_EwE/data/raw/2024_MEDBSsurvey/"
+#output folder
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/"
+} else {
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the output directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Output Directory",
+    message = paste(
+      "Please select the directory where output files",
+      "and intermediate results will be saved."
+    )
+  )
+  out_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid output directory selected.")
+  }
+}
 
-fg_file           <- "./WMed EwE Model/data/raw/FG_WMed.xlsx"
-fao_species_file  <- "./WMed EwE Model/data/raw/FAO-GFCM_catches/FI_Regional_2025.1.0/CL_FI_SPECIES_GROUPS.csv" #FAO list of species
-tm_list_file      <- "./WMed EwE Model/data/raw/2024_MEDBSsurvey/TM_list_(April_2019).xlsx" #taxonomic list downloaded from MEDITS
+#fg, species and taxonomy files
+fg_file           <- "./WMed_EwE/data/raw/FG_WMed.xlsx"
+fao_species_file  <- "./WMed_EwE/data/raw/FI_Regional_2025.1.0/CL_FI_SPECIES_GROUPS.csv" #FAO list of species
+tm_list_file      <- "./WMed_EwE/data/raw/2024_MEDBSsurvey/TM_list_(April_2019).xlsx" #taxonomic list downloaded from MEDITS
 
+#filters if modification is needed
 FILTER_COUNTRIES <- NULL    # Country filter
 FILTER_AREAS     <- 1:11   # GSA filter
 TOP_N_AREAS      <- 20    # filter by most abundant areas
 TOP_N_SPECIES    <- 40    # also used as top-N when faceting by FG instead of species
 
 ## --- 2. FG reference ---------------------------------------------------------
-
+#read fg and species from reference excel file
 fg <- as.data.table(readxl::read_excel(fg_file, sheet = 4))
 fg_lookup <- unique(fg[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)])
 
 ## --- 2b. Safe-dedup fg_lookup by ScientificName before ANY merge ----------
-## A ScientificName mapping to multiple FG_num usually means a life-stage
-## split (e.g. "European hake juv." and "European hake adult" as separate
-## FG rows for the SAME species). Rule: drop the juvenile-labeled row and
-## keep the adult one - this resolves that specific, expected case
-## automatically. Anything STILL ambiguous after removing juv. rows is a
-## genuinely different kind of duplicate and gets flagged, not guessed -
-## merging with duplicate keys as-is would cartesian-explode the join and
-## silently duplicate catch/density values for those species.
-
+#remove juvenile or other multistanza groups to avoid duplicate observations (1sp -- 1 fg)
 JUV_PATTERN <- regex("\\bjuv\\.?\\b|juvenile", ignore_case = TRUE)
 n_juv_dropped <- fg_lookup[str_detect(FG_name, JUV_PATTERN), .N]
 message(n_juv_dropped, " juvenile-labeled FG row(s) dropped, keeping the adult FG",
@@ -66,27 +102,12 @@ fg_lookup_safe <- unique(fg_lookup_no_juv[!ScientificName %in% ambiguous_sci,
                                           .(ScientificName, FG_num, FG_name)])
 
 ## --- 2c. Taxonomic enrichment (family/order/class) via WoRMS -------------
-## Single taxonomy source used everywhere in this pipeline (see also
-## Section 4c) - this matters, not just for tidiness: if fg_lookup_safe's
-## own Genus/Family came from a DIFFERENT authority than the unmatched
-## species' Genus/Family, the exact-string-match fallback in 4c could
-## silently fail on real matches whenever the two sources spell/classify
-## something differently. WoRMS also covers algae/phytoplankton entries
-## (e.g. "Cystoseira spinosa", "Diatomes") that FishBase/SeaLifeBase can't,
-## since those aren't fish or the invertebrate taxa SeaLifeBase covers.
-
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/worms_taxonomy_lookup.R")
+#load taxonomy from worms to fix potential unmatches
+source("./WMed_EwE/scripts/worms_taxonomy_lookup.R")
 fg_taxonomy <- worms_taxonomy_lookup(fg_lookup_safe$ScientificName)
 fg_taxonomy_dt <- as.data.table(fg_taxonomy)[
   , .(ScientificName = original_name, Genus = genus, Family = family,
       Order = order, Class = class, Phylum = phylum)]
-
-## Idempotency guard: if this section already ran once (e.g. re-running
-## after fixing a package issue mid-session), Genus/Family/Order/Class/
-## Phylum already exist on fg_lookup_safe - merging again without dropping
-## them first would cause data.table to auto-suffix into Genus.x/Genus.y
-## instead of cleanly overwriting, silently leaving the fallback logic
-## reading stale/empty columns. Drop them first so this is safe to re-run.
 
 existing_taxa_cols <- intersect(c("Genus", "Family", "Order", "Class", "Phylum"), names(fg_lookup_safe))
 if (length(existing_taxa_cols) > 0) fg_lookup_safe[, (existing_taxa_cols) := NULL]
@@ -98,22 +119,20 @@ message("Rows with no taxonomy match (check spelling, or these may be non-specie
         " entries like 'Detritus'/'Discards' which won't have taxonomy):")
 print(fg_lookup_safe[is.na(Family), .(ScientificName, FG_name)])
 
-## =================================================================
-## DEMERSAL
-## =================================================================
+## DEMERSAL - MEDITS SURVEY #####
 
 ## --- 3. Swept area per haul (TA.csv) ----------------------------------------
+#read haul/sampling stations data
+ta <- read_csv(file.path(in_dir, "Demersal", "TA.csv"), show_col_types = FALSE)
 
-ta <- read_csv(file.path(base_dir, "Demersal", "TA.csv"), show_col_types = FALSE)
-
+#units verification
 ## Swept area = distance towed x net wing opening.
-## UNIT CONFIRMED via cross-check against vertical_opening: that field is
+## vertical_opening: that field is
 ## a constant 20 across hauls for gear "GC73" (the standard MEDITS GOC73
 ## trawl) - 20 decimetres = 2.0m, which matches GOC73's real vertical
 ## opening (~2-4m); 20 METRES would be absurd for a bottom trawl. Wing
 ## opening of 130 decimetres = 13.0m also matches GOC73's known ~12-15m
-## wing spread almost exactly. Both fields point the same direction, so
-## this is a confirmed unit, not just a plausibility guess.
+## wing spread almost exactly. 
 
 WING_OPENING_UNIT <- "decimetres"
 ta_swept <- ta %>%
@@ -143,9 +162,9 @@ if (med_swept > 0.5 || med_swept < 0.001) {
           " against the JRC spec PDF.")
 }
 
-## --- 4. Catch per haul (TB.csv), MEDITS code -> scientific name -> FG ------
-
-tb <- read_csv(file.path(base_dir, "Demersal", "TB.csv"), show_col_types = FALSE)
+## --- 4. Catch per haul (TB.csv)  -------------
+#biomass estimates per haul
+tb <- read_csv(file.path(in_dir, "Demersal", "TB.csv"), show_col_types = FALSE)
 demersal_haul <- tb %>%
   mutate(
     species_code = paste0(genus, species),
@@ -155,11 +174,13 @@ demersal_haul <- tb %>%
   ) %>%
   as.data.table()
 
+#get MEDITS coding to get species scientific name
 tm_list <- as.data.table(readxl::read_excel(tm_list_file, sheet = 1,skip = 2))
 code_col <- grep("MEDITS", names(tm_list), ignore.case = TRUE, value = TRUE)[1]
 name_col <- grep("Scientific", names(tm_list), ignore.case = TRUE, value = TRUE)[1]
 tm_lookup <- unique(tm_list[, .(species_code = get(code_col), ScientificName = get(name_col))])
 
+#merge species with taxonomy and fg data
 demersal_haul <- merge(demersal_haul, tm_lookup, by = "species_code", all.x = TRUE)
 demersal_haul <- merge(demersal_haul, fg_lookup_safe[, .(ScientificName, FG_num, FG_name)],
                        by = "ScientificName", all.x = TRUE)
@@ -167,7 +188,8 @@ demersal_haul <- merge(demersal_haul, fg_lookup_safe[, .(ScientificName, FG_num,
 message("\nDemersal: ", demersal_haul[!is.na(FG_num), .N], " of ", nrow(demersal_haul),
         " rows matched to species AND functional group")
 
-## --- 4b. Manual overrides for codes not in the MEDITS list, identified at
+## --- 4b. Manual overrides for some species without taxonomic data  -------------
+## for codes not in the MEDITS list, identified at
 ## various taxonomic ranks (not all are species-level). Matched against
 ## the appropriate rank column from the taxonomy enrichment (Genus/Family/
 ## Class), with the same ambiguity-safe rule as everywhere else: if a rank
@@ -221,7 +243,8 @@ demersal_haul[, c("FG_num_override", "FG_name_override") := NULL]
 message("\nDemersal after manual overrides: ", demersal_haul[!is.na(FG_num), .N],
         " of ", nrow(demersal_haul), " rows matched")
 
-## --- 4c. Genus -> Family fallback for species with a scientific name but
+## --- 4c. Assign FG to sp with taxonomic data ------ 
+## Genus -> Family fallback for species with a scientific name but
 ## no direct FG match (the exact species isn't in the FG reference, but a
 ## close relative might be, under the assumption that congeners/confamilials
 ## are ecologically similar enough to share a functional group). Same
@@ -243,7 +266,7 @@ unmatched_taxonomy <- as.data.table(unmatched_taxonomy_raw)[
 message(unmatched_taxonomy[!is.na(Genus) | !is.na(Family), .N], " of ",
         nrow(unmatched_taxonomy), " found in WoRMS with usable genus/family.")
 
-## genus-level: keep only genera that map to exactly ONE FG among fg_lookup_safe
+## genus-level: keep only genus that map to exactly ONE FG among fg_lookup_safe
 
 genus_fg_counts <- fg_lookup_safe[!is.na(Genus), .(n_fg = uniqueN(FG_num)), by = Genus]
 genus_fg_safe <- unique(fg_lookup_safe[Genus %in% genus_fg_counts[n_fg == 1, Genus],
@@ -322,7 +345,7 @@ message("\nSaved to ", file.path(out_dir, "/processed/demersal_unmatched_for_man
         " - fill in an FG_num/FG_name column in Excel, then re-import as a",
         " MANUAL_DEMERSAL_OVERRIDES-style table (see Section 4b) to apply them.")
 
-## --- 4e. Data cleaning + taxonomy-based bulk assignment rules --------------
+## --- 4e. Data cleaning  --------------
 ## Remove rows that aren't real taxa at all:
 ##  - "NO ..." prefix (a data artifact from an upstream column concatenation,
 ##    not a real species name prefix)
@@ -335,6 +358,7 @@ still_unmatched_clean <- still_unmatched[
 message("\nRemoved ", n_before - nrow(still_unmatched_clean),
         " non-taxon row(s) (NO-prefixed or egg-capsule entries).")
 
+## --- 4f. Manually taxonomy-based bulk assignment rules FG ----------
 ## Bulk assignment rules: only where the FG name essentially IS the taxon's
 ## name (high confidence, not a judgment call). FG_num is resolved by
 ## matching fg_name_target against your live fg_lookup$FG_name text, not
@@ -476,10 +500,8 @@ demersal_haul[, c("FG_num_assigned", "FG_name_assigned") := NULL]
 message("\nDemersal after taxonomy-based bulk rules: ", demersal_haul[!is.na(FG_num), .N],
         " of ", nrow(demersal_haul), " rows matched")
 
-## =================================================================
-## 5. STRATA-WEIGHTED DENSITY ESTIMATION
+## 5. STRATA-WEIGHTED DENSITY ESTIMATION ----
 ##
-## Replaces a simple unweighted mean-across-hauls with the proper
 ## stratified-survey estimator:
 ##   FG_density(gsa, year) = sum over strata of:
 ##     (summed FG biomass in that stratum / n_hauls in that stratum)
@@ -495,26 +517,24 @@ message("\nDemersal after taxonomy-based bulk rules: ", demersal_haul[!is.na(FG_
 ## statistics practice always applies the explicit area-weighting
 ## rather than trusting realized haul counts to match the design
 ## every single year.
-## =================================================================
 
 ## --- 5a. Standard MEDITS depth strata --------------------------------------
 
 MEDITS_STRATA <- data.table(
   stratum_num = 1:5,
   stratum_letter = LETTERS[1:5],
-  depth_min = c(10, 51, 101, 201, 501),
-  depth_max = c(50.9999, 100.9999, 200.9999, 500.9999, 800)
+  depth_min = c(10, 50, 100, 200, 500),
+  depth_max = c(49.9999, 99.9999, 199.9999, 499.9999, 799.9999)
 )
 
 ## ta$number_of_the_stratum turned out NOT to be a clean 1-5 code -
-## CONFIRMED by inspection: most values are large multi-digit numbers
+## Most values are large multi-digit numbers
 ## (e.g. 11101, 22405, 32105), which look like a GSA/area-prefixed
 ## station or site ID for some countries' data rather than a plain
 ## depth-stratum index, despite the field name. Rather than guess at
 ## a parsing rule for an undocumented encoding, deriving the stratum
 ## directly from depth (shooting_depth/hauling_depth, both already in
-## ta) sidesteps the ambiguity entirely - same approach the older
-## Spanish survey-processing script used, and for the same reason.
+## ta) sidesteps the ambiguity entirely 
 
 ta_dt <- as.data.table(ta)
 ta_dt[, gsa := as.numeric(area)]
@@ -522,28 +542,27 @@ ta_dt[, mean_depth := (shooting_depth + hauling_depth) / 2]
 ta_dt[, stratum_num := MEDITS_STRATA$stratum_num[
   findInterval(mean_depth, MEDITS_STRATA$depth_min, all.inside = TRUE)]]
 ## hauls outside the 10-800m range (if any) don't belong to any of the
-## 5 standard strata - flagged and excluded rather than force-assigned
+## 5 standard strata - flagged and excluded
 ta_dt[mean_depth < min(MEDITS_STRATA$depth_min) | mean_depth > max(MEDITS_STRATA$depth_max),
       stratum_num := NA_integer_]
 
 n_out_of_range <- ta_dt[is.na(stratum_num), .N]
 if (n_out_of_range > 0) {
   message("\n", n_out_of_range, " haul(s) have mean_depth outside the 10-800m",
-          " standard strata range - excluded from the strata-weighted index",
-          " rather than force-assigned to an edge stratum:")
+          " standard strata range - excluded from the strata-weighted index:")
   print(summary(ta_dt[is.na(stratum_num), mean_depth]))
 }
 
 message("\nHauls per depth-derived stratum (sanity check - should roughly match",
-        " the expected sampling intensity per stratum, not be wildly lopsided):")
+        " the expected sampling intensity per stratum:")
 print(ta_dt[!is.na(stratum_num), .N, by = stratum_num][order(stratum_num)])
 
 ## --- 5b. Load official GFCM GSA shapefile (same source/cache logic as the
 ## WMed map script) ----------------------------------------------------------
 
 gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-gsa_zip_file <- "./WMed EwE Model/shapefiles/GFCM_GSA.zip"
-gsa_shp_dir  <- "./WMed EwE Model/shapefiles/GFCM_GSA_shp"
+gsa_zip_file <- paste0(dirname(out_dir),"/GFCM_GSA.zip")
+gsa_shp_dir  <- paste0(dirname(out_dir),"/GFCM_GSA_shp")
 
 if (!dir.exists(gsa_shp_dir)) {
   if (!file.exists(gsa_zip_file)) {
@@ -608,8 +627,8 @@ compute_strata_fact_for_gsa <- function(gsa_num, gsa_sf_all, strata_def, resolut
   props[, .(gsa, stratum_num, prop)]
 }
 
-## --- 5d. Run for every GSA in the study, cache to disk (bathymetry
-## downloads are slow - don't repeat if already computed) -------------------
+## --- 5d. Run for every GSA in the study, cache to disk (bathymetry ) -------------------
+## downloads are slow - don't repeat if already computed
 
 strata_fact_cache_path <- file.path(out_dir, "./processed/strata_fact_by_gsa.csv")
 
@@ -732,7 +751,7 @@ sum_lengthclasses <- function(df) {
 ## same problem as demersal's hauls, and mean() would be more appropriate
 
 check_raw_replication <- function(file) {
-  df <- read_csv(file.path(base_dir, "Acoustic", file), show_col_types = FALSE) %>%
+  df <- read_csv(file.path(in_dir, "Acoustic", file), show_col_types = FALSE) %>%
     mutate(gsa = as.numeric(str_extract(area, "\\d+")))
   if (any(df$sex == "C")) df <- filter(df, sex == "C")
   rep_counts <- df %>% dplyr::count(country, gsa, year, species)
@@ -754,7 +773,7 @@ message("Using ", AGG_FUN, "() for acoustic per-species aggregation",
         " (based on the replication check above)")
 
 load_acoustic <- function(file, value_name, agg_fun = AGG_FUN) {
-  df <- read_csv(file.path(base_dir, "Acoustic", file), show_col_types = FALSE)
+  df <- read_csv(file.path(in_dir, "Acoustic", file), show_col_types = FALSE)
   df$total_value <- sum_lengthclasses(df)
   result <- df %>%
     dplyr::mutate(gsa = as.numeric(str_extract(area, "\\d+"))) %>%
