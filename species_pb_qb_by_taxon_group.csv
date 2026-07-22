@@ -10,7 +10,7 @@ Scorpaena notata,40,0.25,fish,0.546151147577459,0.563802072876551,0.568311880671
 Scorpaena porcus,40,0.05,fish,0.439209719426854,0.563802072876551,0.514566685425748,0.7155,0.374,1.045,,0.439209719426854,0.563802072876551,0.514566685425748,0.7155,0.374,1.045,0.374,Then et al. 2015,4.96617864354074,5.34333842990344,7.15299857293628,1.122,4.96617864354074,Palomares & Pauly 1998 (Z-based),,,,,
 Monachus monachus,6,0.015,mammal,,,,,,,,,,0.310726128326047,,,,0.0838684733240278,Barlow & Boveng 1991 (Siler),,,,0.251605419972083,11.0123718141949,Innes/Trites 1987/1997 (Eq.31),0.0838684733240278,11.0123718141949,,,
 Tursiops truncatus,1,0.08,mammal,,,,,,,,,,0.288775739161416,,,,0.0839595897557875,Barlow & Boveng 1991 (Siler),,,,0.251878769267363,9.99332917614918,Innes/Trites 1987/1997 (Eq.31),0.0839595897557875,9.99332917614918,,,
-Phalacrocorax carbo,8,0.02,seabird,,,,,,,,,,0.30843503067269,,,,0.30843503067269,Gascuel 2008 general (Eq.23) - no dedicated seabird PB method in protocol,,,,0.92530509201807,57.4912647980286,Nilsson & Nilsson 1976 (Eq.30),,,57.4912647980286,,
+Phalacrocorax carbo,8,0.02,seabird,,,,,,,,,,0.30843503067269,,,,0.30843503067269,Gascuel 2008 general (Eq.23) - no dedicated seabird PB method in protocol,,,,,57.4912647980286,Nilsson & Nilsson 1976 (Eq.30),,,57.4912647980286,,
 Octopus vulgaris,60,0.4,invertebrate,,,,,,,,,,,,,,0.344532607772666,Tumbiolo & Downing 1994 (Eq.17),,,,1.033597823318,1.033597823318,Q/P=3 (Christensen et al. 2008),,,,0.344532607772666,
 Paracentrotus lividus,75,0.6,invertebrate,,,,,,,,,,,,,,,,,,,,,,,,,,
 Aristeus antennatus,67,0.35,invertebrate,,,,,,,,,,,,,,,,,,,,,,,,,,
