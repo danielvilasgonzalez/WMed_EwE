@@ -4,7 +4,7 @@
 ## --- 0. Packages -----------------------------------------------------------
 #load libraries
 pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "stringr", "forcats", "data.table",
-          "marmap", "raster", "terra", "sf")
+          "marmap", "raster", "terra", "sf", "openxlsx")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
@@ -718,6 +718,34 @@ demersal_fg_index_regional <- per_stratum_fg[
 message("Region-wide (area-weighted across all GSAs) demersal FG annual index built: ",
         nrow(demersal_fg_index_regional), " rows")
 
+## --- 5h. Species-level regional density (needed for the FG_spp Excel
+## sheet - species within FG, not just the FG total) ------------------------
+## Same strata-weighted, area-weighted logic as demersal_fg_index_regional
+## above, just grouped by ScientificName (and FG_num/FG_name, since a
+## species belongs to exactly one FG) instead of FG alone.
+per_haul_species <- demersal_haul[
+  !is.na(FG_num) & !is.na(ScientificName) & !is.na(density_t_km2),
+  .(species_density_t_km2 = sum(density_t_km2, na.rm = TRUE)),
+  by = .(gsa, year, haul_number, stratum_num, FG_num, FG_name, ScientificName)
+]
+
+per_stratum_species <- per_haul_species[
+  , .(density_sum = sum(species_density_t_km2, na.rm = TRUE)),
+  by = .(gsa, year, stratum_num, FG_num, FG_name, ScientificName)
+]
+per_stratum_species <- merge(per_stratum_species, n_hauls_by_stratum,
+                             by = c("gsa", "year", "stratum_num"), all.x = TRUE)
+per_stratum_species <- merge(per_stratum_species, strata_fact_by_gsa,
+                             by = c("gsa", "stratum_num"), all.x = TRUE)
+per_stratum_species <- per_stratum_species[!is.na(prop) & !is.na(area_km2) & !is.na(n_hauls) & n_hauls > 0]
+
+species_density_regional <- per_stratum_species[
+  , .(mean_density_t_km2 = sum((density_sum / n_hauls) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE)),
+  by = .(year, FG_num, FG_name, ScientificName)
+]
+
+message("Region-wide species-level density built: ", nrow(species_density_regional), " rows")
+
 ## ACOUSTIC - MEDIAS SURVEY #####
 
 ## fxn sum of length classes
@@ -840,6 +868,26 @@ p5 <- plot_timeseries(d_fg_plot_data, "mean_density_t_km2", "FG_name",
                       "Strata-weighted mean density (t/km^2)")
 ggsave(file.path(plot_dir, "/demersal_fg_density_timeseries.png"), p5, width = 14, height = 10, dpi = 150)
 
+## --- Demersal FG-level plot, region-wide (no GSA split) --------------------
+## Uses demersal_fg_index_regional (area-weighted across all GSAs) - one
+## line per FG, not split/coloured by GSA, since there's no GSA dimension
+## left once combined into a single Western Med estimate. Same top-N-by-
+## total-density filter as the other FG plots, just no country/GSA filter
+## since that dimension doesn't exist in the regional index.
+fg_totals <- demersal_fg_index_regional[, .(tot = sum(mean_density_t_km2, na.rm = TRUE)), by = FG_name]
+top_fg_regional <- fg_totals[order(-tot)][seq_len(min(TOP_N_SPECIES, .N)), FG_name]
+d_fg_regional_plot_data <- as_tibble(demersal_fg_index_regional[FG_name %in% top_fg_regional])
+
+p5b <- ggplot(d_fg_regional_plot_data, aes(x = year, y = mean_density_t_km2)) +
+  geom_line(linewidth = 0.6, alpha = 0.8, colour = "steelblue") +
+  scale_x_continuous(breaks = c(1995,2000,2005,2010,2015,2020), minor_breaks = c(1995:2023)) +
+  facet_wrap(vars(FG_name), scales = "free_y") +
+  labs(title = "MEDITS trawl survey by FG, Western Med (all GSAs, area-weighted)",
+       x = "Year", y = "Area-weighted mean density (t/km^2)") +
+  theme_minimal(base_size = 11) +
+  theme(strip.text.y = element_text(angle = 0), axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave(file.path(plot_dir, "demersal_fg_density_timeseries_regional.png"), p5b, width = 14, height = 10, dpi = 150)
+
 ## --- Depth-strata validation plot --------------------------------------------
 ## Sanity check on the strata-weighting logic itself, not the final
 ## area-weighted index: shows each FG's RAW per-haul density (before
@@ -928,3 +976,106 @@ message("- plots/demersal_fg_density_timeseries.png")
 message("- plots/demersal_fg_depth_strata_profile.png (validation: deep-water FGs should peak in D/E)")
 message("- plots/acoustic_fg_biomass_timeseries.png")
 message("- plots/acoustic_fg_abundance_timeseries.png")
+
+## ECOPATH/ECOSIM EXCEL WORKBOOK ####
+##
+## Three sheets:
+##   FG_spp  - species-level breakdown within each FG (base-period
+##             average, 1994-1996, same convention as the Ecopath
+##             sheet's multi-year column - not asked for explicitly,
+##             flagged here since it's an assumption)
+##   Ecopath - FG-level base-year biomass, single year (1995) and
+##             3-year average (1994-1996), the two common Ecopath
+##             "base year" conventions
+##   Ecosim  - time series in Ecosim's own import format, matched
+##             directly against a real exported example: metadata rows
+##             (Name, Type, Usage, Scaling, Weight, Target, 2nd target,
+##             Interval) above year/value rows, one column per FG.
+##             Target = "FG_num: FG_name". Missing years filled with 0,
+##             not blank, matching the real example's convention.
+##             Scaling "relative" is left to Ecosim's own interpretation
+##             - NOT pre-rescaled here, since the real example shows raw
+##             values, not values normalized to a first-year baseline.
+
+
+BASE_YEAR <- 1995
+BASE_PERIOD <- 1994:1996
+
+## --- FG_spp sheet -----------------------------------------------------------
+fg_spp_sheet <- species_density_regional[
+  year %in% BASE_PERIOD,
+  .(Biomass = mean(mean_density_t_km2, na.rm = TRUE)),
+  by = .(FG_num, FG_name, Species = ScientificName)
+]
+setorder(fg_spp_sheet, FG_num, Species)
+
+## --- Ecopath sheet ----------------------------------------------------------
+ecopath_1995 <- demersal_fg_index_regional[
+  year == BASE_YEAR, .(FG_num, FG_name, Biomass_1995 = mean_density_t_km2)]
+ecopath_9496 <- demersal_fg_index_regional[
+  year %in% BASE_PERIOD, .(Biomass_1994_1996 = mean(mean_density_t_km2, na.rm = TRUE)),
+  by = .(FG_num, FG_name)]
+ecopath_sheet <- merge(ecopath_1995, ecopath_9496, by = c("FG_num", "FG_name"), all = TRUE)
+setorder(ecopath_sheet, FG_num)
+
+## --- Ecosim sheet -----------------------------------------------------------
+## The row sequence itself is CONTINUOUS (1995 through the last survey
+## year, no gaps) - matches the real example, which shows an unbroken
+## year sequence even where values are 0. What varies per cell is the
+## VALUE, not whether the year-row exists at all:
+##   - year had survey effort AND this FG has a density value -> that value
+##   - year had survey effort but this FG has NO value           -> real 0
+##     (genuinely not caught that year, not missing data)
+##   - year had NO survey effort at all (no hauls, any GSA)      -> blank
+##     (no basis to say anything about any FG that year - filling this
+##     with 0 would falsely tell Ecosim "surveyed, found nothing" for a
+##     year that was never sampled, and would distort the model fit)
+years_with_effort <- sort(unique(ta_dt[gsa %in% FILTER_AREAS & year >= 1995, year]))
+all_years <- seq(1995, max(years_with_effort), by = 1)
+fg_list <- unique(demersal_fg_index_regional[, .(FG_num, FG_name)])
+setorder(fg_list, FG_num)
+
+build_ts_column <- function(fg_num, fg_name) {
+  vals <- demersal_fg_index_regional[FG_num == fg_num, .(year, mean_density_t_km2)]
+  full_years <- data.table(year = all_years)
+  vals <- merge(full_years, vals, by = "year", all.x = TRUE)
+  vals[year %in% years_with_effort & is.na(mean_density_t_km2), mean_density_t_km2 := 0]
+  ## years NOT in years_with_effort stay NA -> written as a blank cell
+  vals[order(year), mean_density_t_km2]
+}
+
+ecosim_meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+ecosim_sheet <- data.table(` ` = c(ecosim_meta_labels, as.character(all_years)))
+
+for (i in seq_len(nrow(fg_list))) {
+  fg_num  <- fg_list$FG_num[i]
+  fg_name <- fg_list$FG_name[i]
+  ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))   # e.g. "B_Bathydemersalfish"
+  ts_vals <- build_ts_column(fg_num, fg_name)
+  
+  col <- c(
+    ts_name,                          # Name
+    "Biomass (relative)",             # Type - matches the visible part of the real example
+    "reference",                      # Usage
+    "relative",                       # Scaling
+    "1",                              # Weight
+    paste0(fg_num, ": ", fg_name),    # Target
+    "",                                # 2nd target
+    "Annual",                         # Interval
+    as.character(ts_vals)
+  )
+  ecosim_sheet[, (paste0("fg_", fg_num)) := col]
+}
+
+## --- Write workbook ---------------------------------------------------------
+excel_path <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+openxlsx::write.xlsx(
+  list(FG_spp = fg_spp_sheet, Ecopath = ecopath_sheet, Ecosim = ecosim_sheet),
+  file = excel_path,
+  colNames = TRUE
+)
+message("\nSaved: ", excel_path, " (sheets: FG_spp, Ecopath, Ecosim)")
+message("NOTE: the Ecosim sheet's exact structure (Type/Usage/Scaling text) was matched",
+        " against a real Ecosim TS export you shared, but 'Type' was truncated in that",
+        " image (\"Biomass (ref, ...\") - used \"Biomass (relative)\" as the fill-in;",
+        " worth checking against Ecosim's own dropdown options and correcting if different.")
