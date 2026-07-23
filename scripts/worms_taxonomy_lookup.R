@@ -59,7 +59,7 @@ worms_taxonomy_lookup <- function(names_vector) {
       }
     )
   })
-  raw_results <- flatten(raw_results)
+  raw_results <- purrr::list_flatten(raw_results)
   
   taxonomy_lookup <- map2_dfr(raw_results, search_terms, function(res, term) {
     if (is.null(res) || nrow(res) == 0) {
