@@ -28,6 +28,37 @@ library(progress)
 if (!requireNamespace("rfishbase", quietly = TRUE)) install.packages("rfishbase")
 library(rfishbase)
 
+#output folder
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/"
+  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
+  if (!dir.exists(plot_dir)) {
+    dir.create(plot_dir)
+  }
+} else {
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the output directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Output Directory",
+    message = paste(
+      "Please select the directory where output files",
+      "and intermediate results will be saved."
+    )
+  )
+  out_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid output directory selected.")
+  }
+  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
+  if (!dir.exists(plot_dir)) {
+    dir.create(plot_dir)
+  }
+}
+
 ## =================================================================
 ## rfishbase/duckdbfs compatibility check - catches, at the very start,
 ## the exact class of bug that cost a long debugging session: an old
@@ -1307,7 +1338,7 @@ message("\nTop invertebrate species by biomass - worth a manual Brey (2012) cros
         " accurate than the Tumbiolo & Downing/Gascuel fallback used here, but isn't",
         " automatable (no accessible weights or R package):")
 print(brey_candidates[, .(Species, FG, Biomass, PB, PB_method)])
-fwrite(brey_candidates, "invertebrates_for_brey_manual_check.csv")
+fwrite(brey_candidates, paste0(out_dir,"/invertebrates_for_brey_manual_check.csv"))
 
 message("\n=== Species-level PB/QB - which method was CHOSEN for FG weighting ===")
 print(results[, .N, by = PB_method])
@@ -1375,9 +1406,9 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
 ## Export
 ## =================================================================
 
-fwrite(results, "species_pb_qb_by_taxon_group.csv")
-fwrite(fg_weighted, "fg_pb_qb_weighted.csv")
-fwrite(phyto_flagged, "phytoplankton_needs_separate_method.csv")
+fwrite(results, paste0(out_dir,"/species_pb_qb_by_taxon_group.csv"))
+fwrite(fg_weighted, paste0(out_dir,"/fg_pb_qb_weighted.csv"))
+fwrite(phyto_flagged, paste0(out_dir,"/phytoplankton_needs_separate_method.csv"))
 
 message("\nSaved: species_pb_qb_by_taxon_group.csv, fg_pb_qb_weighted.csv,",
         " phytoplankton_needs_separate_method.csv")
@@ -1423,7 +1454,7 @@ p_pb <- ggplot(fish_pb_long, aes(x = method, y = PB)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
   labs(title = "P/B method comparison - fish species", x = NULL, y = expression(P/B~(year^-1)))
 
-ggsave("fish_PB_methods_comparison.png", p_pb, width = 12, height = 9, dpi = 150)
+ggsave(paste0(plot_dir,"/fish_PB_methods_comparison.png"), p_pb, width = 12, height = 9, dpi = 150)
 
 ## --- QB methods ---------------------------------------------------------
 
@@ -1449,7 +1480,7 @@ p_qb <- ggplot(fish_qb_long, aes(x = method, y = QB)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
   labs(title = "Q/B method comparison - fish species", x = NULL, y = expression(Q/B~(year^-1)))
 
-ggsave("fish_QB_methods_comparison.png", p_qb, width = 12, height = 9, dpi = 150)
+ggsave(paste0(plot_dir,"/fish_QB_methods_comparison.png"), p_qb, width = 12, height = 9, dpi = 150)
 
 print(p_pb)
 print(p_qb)
@@ -1469,7 +1500,7 @@ reference_table <- merge(reference_table, species_df[, .(Species, dispatch_group
 setcolorder(reference_table, c("Species", "dispatch_group", "parameter_type", "Locality", "Year", "Reference"))
 setorder(reference_table, Species, parameter_type)
 
-fwrite(reference_table, "species_parameter_references.csv")
+fwrite(reference_table, paste0(out_dir,"/species_parameter_references.csv"))
 message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
         " rows - which study/locality/year backs each species' growth,",
         " length-weight, and maturity parameters)")
@@ -1617,7 +1648,7 @@ p_species_qb <- ggplot() +
   labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
 
 p_species_combined <- p_species_pb + p_species_qb
-ggsave("species_PB_QB_comparison.png", p_species_combined, width = 16, height = max(6, 0.35 * uniqueN(results$Species)), dpi = 150)
+ggsave(paste0(plot_dir,"/species_PB_QB_comparison.png"), p_species_combined, width = 16, height = max(6, 0.35 * uniqueN(results$Species)), dpi = 150)
 print(p_species_combined)
 
 ## --- FG-level: for EACH method, a biomass-weighted average across the
@@ -1706,7 +1737,7 @@ p_fg_qb <- ggplot() +
   labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
 
 p_fg_combined <- p_fg_pb + p_fg_qb
-ggsave("FG_PB_QB_comparison.png", p_fg_combined, width = 16, height = max(6, 0.35 * uniqueN(results$FG)), dpi = 150)
+ggsave(paste0(plot_dir,"/FG_PB_QB_comparison.png"), p_fg_combined, width = 16, height = max(6, 0.35 * uniqueN(results$FG)), dpi = 150)
 print(p_fg_combined)
 
 message("\nSaved: species_PB_QB_comparison.png, FG_PB_QB_comparison.png")
@@ -1795,7 +1826,7 @@ if (n_missing > 0) {
   print(ecopath_ready[is.na(PB_FG) | (is.na(QB_FG) & !is_primary_producer), .(FG_num, FG_name)])
 }
 
-fwrite(ecopath_final, "ecopath_ready_PB_QB.csv", quote = "auto")
+fwrite(ecopath_final, paste0(out_dir,"/ecopath_ready_PB_QB.csv"), quote = "auto")
 message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_final), " FG rows,",
         " FG_num ", min(ecopath_ready$FG_num), "-", max(ecopath_ready$FG_num), ") -",
         " formatted to match Ecopath's real Basic Input structure",
