@@ -1,0 +1,1314 @@
+## =================================================================
+## survey_fg_density_functions.R
+##
+## Generalized, survey-agnostic functions for converting a fishery-
+## independent survey (biomass/abundance by species, haul/station,
+## year, area, stratum) into a Functional-Group-level density index,
+## suitable as Ecopath/Ecosim input.
+##
+## Adapted from the MEDITS/MEDBS pipeline (medbs_pipeline_current.R)
+## built earlier in this project - the STATISTICAL LOGIC (strata-
+## weighting formula, region-wide area-weighting formula) is preserved
+## exactly as validated there, since that's the mathematically-checked
+## part. What's generalized is the DATA SHAPE: instead of assuming
+## MEDITS' specific TA.csv/TB.csv structure and column names, every
+## function here takes a standardized input format (documented below)
+## that any survey's raw data can be mapped into.
+##
+## =================================================================
+## FUNCTION ATTRIBUTES (as specified)
+## =================================================================
+##   strata      - TRUE/FALSE. If TRUE, apply within-area strata
+##                 weighting (Step 6) using bathymetry-derived stratum
+##                 areas. If FALSE, Step 6 is skipped and Step 5's
+##                 per-area densities are used directly in Step 7.
+##   area_shp    - an sf polygon object (or a path to one) defining the
+##                 spatial areas to aggregate over (e.g. GSAs, ICES
+##                 rectangles, EEZs) - MEDITS used the GFCM GSA
+##                 shapefile; any polygon layer with a numeric/character
+##                 ID column works, as long as area_id_col is set to
+##                 match.
+##   year_ecopath - e.g. c(1994:1996). Years averaged for the Ecopath
+##                 base-year biomass output (Step 9).
+##   ts_years    - e.g. first.yr:last.yr. If specified, the full year
+##                 range for the Ecosim time-series sheet (Step 9). If
+##                 NULL, defaults to min(year) in the data through
+##                 max(year).
+##
+## =================================================================
+## STANDARDIZED INPUT FORMAT (Step 2)
+## =================================================================
+##   dataframe1 (survey observations, one row per species x sample):
+##     ScientificName - character
+##     Biomass        - numeric, TONNES (not kg/g - convert before
+##                       calling, same convention as the original
+##                       pipeline's own weight_tonnes)
+##     Year           - integer
+##     Lat, Lon       - numeric, decimal degrees (used for spatial join
+##                       to area_shp if AreaID isn't already provided;
+##                       see match_samples_to_area())
+##     AreaID         - optional. If your survey already assigns a
+##                       station/haul to an area code matching
+##                       area_shp's ID column, supply it directly and
+##                       skip the spatial join. If NULL, derived from
+##                       Lat/Lon.
+##     Stratum        - optional (only needed if strata=TRUE). Either a
+##                       pre-assigned stratum code (if your survey
+##                       already has one, e.g. a depth-derived
+##                       stratum_num), or NULL to derive from Depth
+##                       (see assign_depth_stratum()).
+##     Depth          - optional, needed only if Stratum is NULL and
+##                       strata=TRUE
+##     SampleID       - unique identifier per sample/haul/station -
+##                       needed to count replication per area/stratum.
+##                       MUST BE GLOBALLY UNIQUE if combining multiple
+##                       surveys (see Survey below) - two different
+##                       surveys reusing the same SampleID string (e.g.
+##                       both just using "1", "2", ...) would silently
+##                       miscount samples as if they were the same one.
+##                       validate_survey_data() checks for this.
+##     Effort         - numeric, the denominator for density (e.g. swept
+##                       area in km^2 for trawl, or 1 for
+##                       already-standardized acoustic estimates -
+##                       supply 1 uniformly if the survey's own values
+##                       are already a density/absolute estimate needing
+##                       no further division)
+##     Survey         - optional but recommended when combining data
+##                       from more than one survey/program (e.g. a
+##                       bottom trawl survey and an acoustic survey, or
+##                       the same protocol run by two different
+##                       institutes). Purely a label - not used directly
+##                       by any function's math, but carried through so
+##                       results can be broken down or filtered by
+##                       source later, and so a SampleID collision
+##                       across surveys is easier to spot and fix (e.g.
+##                       by prefixing SampleID with Survey before
+##                       calling these functions, which guarantees
+##                       global uniqueness). To combine multiple
+##                       surveys: build each one's dataframe1
+##                       separately in its own standardized form, then
+##                       rbind() them together before Step 3 onward -
+##                       every function from that point on operates on
+##                       whatever rows are in dt, regardless of how many
+##                       original surveys they came from.
+##
+##   dataframe2 (species -> FG reference):
+##     ScientificName - character, matched against dataframe1
+##     FG_num         - numeric/character FG code
+##     FG_name        - character FG label
+## =================================================================
+
+library(data.table)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(sf)
+
+## =================================================================
+## STEP 1: Configuration
+## =================================================================
+## Deliberately NOT a function - configuration (working directory,
+## file paths, filters) is inherently survey-specific and belongs in
+## the calling script, not this shared library. See the example script
+## for what one survey's config looks like; a different survey's
+## example script would set its own equivalents (input file paths,
+## area filters, etc.) the same way.
+
+## =================================================================
+## STEP 2: Input data validation
+## =================================================================
+## Not a data transformation - just a fail-fast check that the
+## standardized shape above is actually what was passed in, so a
+## missing/misnamed column shows up as a clear error here rather than
+## a cryptic failure three functions later.
+
+validate_survey_data <- function(dataframe1, dataframe2, strata = TRUE) {
+  required_1 <- c("ScientificName", "Biomass", "Year", "SampleID", "Effort")
+  missing_1 <- setdiff(required_1, names(dataframe1))
+  if (length(missing_1) > 0) {
+    stop("dataframe1 is missing required column(s): ", paste(missing_1, collapse = ", "))
+  }
+  if (!all(c("Lat", "Lon") %in% names(dataframe1)) && !"AreaID" %in% names(dataframe1)) {
+    stop("dataframe1 needs either AreaID, or both Lat and Lon (for spatial join to area_shp).")
+  }
+  if (strata && !"Stratum" %in% names(dataframe1) && !"Depth" %in% names(dataframe1)) {
+    stop("strata=TRUE needs either a Stratum column, or Depth (to derive strata via",
+         " assign_depth_stratum()) in dataframe1.")
+  }
+  
+  ## SampleID collision check - a real risk when combining more than
+  ## one survey, since two different surveys' own row-numbering
+  ## conventions could easily produce the same SampleID string by
+  ## coincidence, which would silently merge unrelated samples together
+  ## in every downstream n_samples count. If Survey is present, check
+  ## per-survey; if Survey isn't present at all, just confirm SampleID
+  ## itself is unique (the single-survey case).
+  if ("Survey" %in% names(dataframe1)) {
+    dup_check <- unique(dataframe1[, .(SampleID, Survey)])
+    n_dup <- dup_check[, .N, by = SampleID][N > 1, .N]
+    if (n_dup > 0) {
+      stop(n_dup, " SampleID value(s) appear under more than one Survey - this means",
+           " different surveys are reusing the same SampleID string, which will",
+           " silently miscount samples. Prefix SampleID with Survey (e.g.",
+           " paste(Survey, SampleID)) before calling these functions.")
+    }
+  }
+  
+  required_2 <- c("ScientificName", "FG_num", "FG_name")
+  missing_2 <- setdiff(required_2, names(dataframe2))
+  if (length(missing_2) > 0) {
+    stop("dataframe2 is missing required column(s): ", paste(missing_2, collapse = ", "))
+  }
+  
+  message("Input validation passed: ", nrow(dataframe1), " observations, ",
+          uniqueN(dataframe1$SampleID), " distinct samples",
+          if ("Survey" %in% names(dataframe1)) paste0(" across ", uniqueN(dataframe1$Survey), " survey(s)") else "",
+          ", ", nrow(dataframe2), " species-FG reference rows.")
+  invisible(TRUE)
+}
+
+## =================================================================
+## STEP 3: Scientific name -> FG (direct match) + de-duplication
+## =================================================================
+## Generalized from Section 2b/4 of the MEDITS pipeline.
+##
+## Multistanza detection is STRUCTURAL, not text-based: a species split
+## across multiple FGs is treated as a stanza split (juv/adult or
+## similar) only when EVERY one of those FGs is exclusive to that one
+## species (no other species shares it) - that's the actual shape of a
+## life-stage split, and it doesn't depend on the FG names being in
+## English or using any particular wording ("juv.", "juvenile", etc.),
+## so it holds for any survey/FG scheme, not just this one.
+##
+## If a species maps to multiple FGs and at least one of those FGs
+## also contains OTHER species, that's genuine ambiguity (which real FG
+## does this species belong to?), not a stanza split - still flagged
+## for manual review rather than guessed.
+
+prepare_fg_lookup <- function(dataframe2) {
+  fg_lookup <- as.data.table(dataframe2)
+  fg_lookup <- unique(fg_lookup[, .(ScientificName, FG_num, FG_name)])
+  
+  ## how many distinct species does each FG contain?
+  fg_species_counts <- fg_lookup[, .(n_species_in_fg = uniqueN(ScientificName)), by = FG_num]
+  fg_lookup <- merge(fg_lookup, fg_species_counts, by = "FG_num")
+  
+  ## how many FGs does each species map to?
+  sp_fg_counts <- fg_lookup[, .(n_fg = uniqueN(FG_num)), by = ScientificName]
+  multi_fg_species <- sp_fg_counts[n_fg > 1, ScientificName]
+  
+  ## a species is a stanza split iff EVERY FG it maps to is exclusive
+  ## to that species alone (n_species_in_fg == 1 for all of them)
+  stanza_check <- fg_lookup[ScientificName %in% multi_fg_species,
+                            .(all_exclusive = all(n_species_in_fg == 1)), by = ScientificName]
+  stanza_species <- stanza_check[all_exclusive == TRUE, ScientificName]
+  ambiguous_species <- stanza_check[all_exclusive == FALSE, ScientificName]
+  
+  if (length(stanza_species) > 0) {
+    message(length(stanza_species), " species found in multiple, single-species-exclusive",
+            " FGs (a stanza split - e.g. juvenile/adult) - just one stanza kept per",
+            " species to avoid duplicates:")
+    print(fg_lookup[ScientificName %in% stanza_species][order(ScientificName, FG_num)])
+  }
+  ## keep exactly one row per stanza-split species (first by FG_num - an
+  ## arbitrary but consistent tiebreak, since both rows are otherwise
+  ## equally "one stanza" with nothing to prefer between them)
+  fg_deduped <- rbindlist(list(
+    fg_lookup[!ScientificName %in% c(stanza_species, ambiguous_species)],
+    fg_lookup[ScientificName %in% stanza_species][order(FG_num), .SD[1], by = ScientificName]
+  ), fill = TRUE)
+  
+  if (length(ambiguous_species) > 0) {
+    message(length(ambiguous_species), " species map to multiple FGs where at least one",
+            " FG also contains other species (genuine ambiguity, not a stanza split) -",
+            " excluded from automatic FG assignment, needs manual review:")
+    print(fg_lookup[ScientificName %in% ambiguous_species][order(ScientificName, FG_num)])
+  }
+  
+  unique(fg_deduped[, .(ScientificName, FG_num, FG_name)])
+}
+
+match_species_to_fg <- function(dataframe1, fg_lookup_safe) {
+  dt <- as.data.table(dataframe1)
+  dt <- merge(dt, fg_lookup_safe, by = "ScientificName", all.x = TRUE)
+  message("Direct match: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " of ",
+          dt[, uniqueN(ScientificName)], " distinct species matched directly to an FG.")
+  dt
+}
+
+## Some scientific names are trinomials for the nominate subspecies,
+## where the subspecies epithet repeats the species epithet by taxonomic
+## convention (e.g. "Diplodus sargus sargus" is the nominate subspecies
+## of "Diplodus sargus") - these fail a direct match if fg_lookup_safe
+## only has the binomial form. Detects any name with a repeated word,
+## strips it down to the first two words (Genus + species), and retries
+## the match against fg_lookup_safe. Purely string-based, no taxonomy
+## lookup needed, so this runs cheaply right after the direct match and
+## before the (much more expensive) taxonomy-based fallback.
+match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  still_unmatched <- dt[is.na(FG_num) & !is.na(ScientificName), unique(ScientificName)]
+  if (length(still_unmatched) == 0) {
+    message("No unmatched species - nominate-subspecies check not needed.")
+    return(dt)
+  }
+  
+  has_repeated_word <- sapply(strsplit(still_unmatched, " "),
+                              function(words) any(duplicated(words)))
+  repeated_names <- still_unmatched[has_repeated_word]
+  if (length(repeated_names) == 0) {
+    message("No unmatched species have a repeated-word (nominate subspecies) name pattern.")
+    return(dt)
+  }
+  
+  binomial_form <- sapply(strsplit(repeated_names, " "), function(words) paste(words[1:2], collapse = " "))
+  lookup <- data.table(ScientificName = repeated_names, binomial = binomial_form)
+  lookup <- merge(lookup, fg_lookup_safe, by.x = "binomial", by.y = "ScientificName")
+  
+  if (nrow(lookup) == 0) {
+    message(length(repeated_names), " unmatched species have a repeated-word name pattern",
+            " (e.g. trinomial nominate subspecies), but none of their binomial forms",
+            " matched fg_lookup_safe either:")
+    print(repeated_names)
+    return(dt)
+  }
+  
+  dt <- merge(dt, lookup[, .(ScientificName, FG_num, FG_name)], by = "ScientificName",
+              all.x = TRUE, suffixes = c("", "_ns"))
+  dt[is.na(FG_num) & !is.na(FG_num_ns), `:=`(FG_num = FG_num_ns, FG_name = FG_name_ns)]
+  dt[, c("FG_num_ns", "FG_name_ns") := NULL]
+  
+  message("Resolved via nominate-subspecies binomial match: ", nrow(lookup), " species",
+          " (e.g. '", lookup$ScientificName[1], "' -> matched as '", lookup$binomial[1], "')")
+  dt
+}
+
+## =================================================================
+## STEP 4: Maximize FG assignment via taxonomy fallback
+## (WoRMS and/or FishBase)
+## =================================================================
+## Generalized from Section 4c of the MEDITS pipeline: for species with
+## no direct FG match, try genus then family fallback, under the
+## assumption that congeners/confamilials are ecologically similar
+## enough to share an FG. Same ambiguity-safe rule preserved exactly:
+## a genus/family is only used for fallback if it maps to EXACTLY ONE
+## FG among the reference species - anything spanning multiple FGs is
+## too ecologically diverse to assign safely and is left unresolved.
+##
+## taxonomy_source: "worms" (default, requires worms_taxonomy_lookup()
+## already sourced - the same function used throughout this project),
+## "fishbase" (requires rfishbase, uses species()'s own Genus/Family
+## fields - fish/SeaLifeBase coverage only, won't resolve algae or taxa
+## outside FishBase/SeaLifeBase's scope), or "both" (tries worms first,
+## then fishbase for whatever worms left unresolved - the two sources
+## don't depend on each other, so this is a genuine combined fallback,
+## not just redundancy).
+
+fetch_taxonomy_worms <- function(species_names) {
+  if (!exists("worms_taxonomy_lookup")) {
+    stop("worms_taxonomy_lookup() not found - source() the same",
+         " worms_taxonomy_lookup.R used elsewhere in this project first.")
+  }
+  raw <- worms_taxonomy_lookup(species_names)
+  as.data.table(raw)[, .(ScientificName = original_name, Genus = genus, Family = family,
+                         Order = order, Class = class, Phylum = phylum)]
+}
+
+fetch_taxonomy_fishbase <- function(species_names) {
+  if (!requireNamespace("rfishbase", quietly = TRUE)) {
+    stop("rfishbase not installed - required for taxonomy_source='fishbase' or 'both'.")
+  }
+  results <- rbindlist(lapply(c("fishbase", "sealifebase"), function(server) {
+    tryCatch({
+      sp <- as.data.table(rfishbase::species(species_names, server = server))
+      if (nrow(sp) == 0) return(NULL)
+      sp[, .(ScientificName = Species, Genus = Genus, Family = Family)]
+    }, error = function(e) NULL)
+  }))
+  if (nrow(results) == 0) return(data.table(ScientificName = character(0), Genus = character(0), Family = character(0)))
+  unique(results, by = "ScientificName")
+}
+
+fetch_taxonomy <- function(species_names, taxonomy_source = "worms") {
+  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names))
+  if (taxonomy_source == "fishbase") return(fetch_taxonomy_fishbase(species_names))
+  if (taxonomy_source == "both") {
+    worms_tax <- fetch_taxonomy_worms(species_names)
+    still_missing <- setdiff(species_names, worms_tax[!is.na(Genus) | !is.na(Family), ScientificName])
+    if (length(still_missing) > 0) {
+      fb_tax <- fetch_taxonomy_fishbase(still_missing)
+      worms_tax <- rbindlist(list(worms_tax[!ScientificName %in% still_missing], fb_tax), fill = TRUE)
+    }
+    return(worms_tax)
+  }
+  stop("taxonomy_source must be 'worms', 'fishbase', or 'both' - got '", taxonomy_source, "'")
+}
+
+## rank_levels tried in order, most specific first ("the lowest level
+## possible", per how this was requested) - a species is matched at
+## the first rank where its value maps to EXACTLY ONE FG among
+## fg_lookup_safe's own species (the same "safe" rule used throughout
+## this project: a genus/family/order/class/phylum spanning multiple
+## FGs is too ecologically diverse to assign safely, and is skipped
+## rather than guessed). This is fully data-driven from fg_lookup_safe
+## - no hardcoded "Class Bivalvia -> FG Bivalves"-style rule tables
+## needed anywhere; if the FG scheme changes, these safe mappings are
+## re-derived automatically on the next run rather than needing manual
+## updates to a separate rules table.
+fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "worms",
+                                          rank_levels = c("Genus", "Family", "Order", "Class", "Phylum")) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  unmatched_sci <- unique(dt[!is.na(ScientificName) & is.na(FG_num), ScientificName])
+  if (length(unmatched_sci) == 0) {
+    message("No unmatched species - taxonomy fallback not needed.")
+    return(dt)
+  }
+  message(length(unmatched_sci), " distinct species have no direct FG match -",
+          " attempting taxonomy fallback via ", taxonomy_source,
+          " (", paste(rank_levels, collapse = " -> "), ").")
+  
+  ## taxonomy for the FG reference species themselves too, for whichever
+  ## rank columns aren't already present
+  missing_rank_cols <- setdiff(rank_levels, names(fg_lookup_safe))
+  if (length(missing_rank_cols) > 0) {
+    fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source)
+    fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy[, c("ScientificName", rank_levels), with = FALSE],
+                            by = "ScientificName", all.x = TRUE)
+  }
+  
+  ## attached as an attribute on the return value (see bottom of this
+  ## function, "fetched_taxonomy") so a caller with its own additional
+  ## taxonomy-based logic can reuse this fetch instead of re-querying
+  ## the same species
+  unmatched_taxonomy <- fetch_taxonomy(unmatched_sci, taxonomy_source)
+  message(unmatched_taxonomy[!is.na(Genus) | !is.na(Family), .N], " of ",
+          length(unmatched_sci), " found with usable genus/family.")
+  
+  remaining <- copy(unmatched_taxonomy)
+  matches_by_level <- list()
+  
+  for (rank in rank_levels) {
+    if (nrow(remaining) == 0) break
+    if (!rank %in% names(fg_lookup_safe)) next
+    
+    rank_fg_counts <- fg_lookup_safe[!is.na(get(rank)), .(n_fg = uniqueN(FG_num)), by = rank]
+    safe_values <- rank_fg_counts[n_fg == 1, get(rank)]
+    ambiguous_values <- rank_fg_counts[n_fg > 1, get(rank)]
+    
+    if (length(safe_values) > 0) {
+      rank_safe <- unique(fg_lookup_safe[get(rank) %in% safe_values, c(rank, "FG_num", "FG_name"), with = FALSE])
+      level_matches <- merge(remaining, rank_safe, by = rank)
+      if (nrow(level_matches) > 0) {
+        matches_by_level[[rank]] <- level_matches[, .(ScientificName, FG_num, FG_name)]
+        message("Resolved via ", rank, " fallback: ", nrow(level_matches))
+        remaining <- remaining[!ScientificName %in% level_matches$ScientificName]
+      }
+    }
+    if (length(ambiguous_values) > 0) {
+      message(length(ambiguous_values), " ", rank, "-level value(s) span multiple FGs",
+              " (too ecologically diverse for fallback, not used): ",
+              paste(head(ambiguous_values, 10), collapse = ", "),
+              if (length(ambiguous_values) > 10) ", ..." else "")
+    }
+  }
+  
+  ## rbindlist() on a completely empty list (nothing resolved at ANY
+  ## level - a real, reachable case, not just theoretical) produces a
+  ## zero-column table that breaks the merge below since it has no
+  ## ScientificName column to join on - guard against that explicitly
+  ## rather than letting a genuinely-zero-matches batch crash.
+  fallback_matches <- if (length(matches_by_level) > 0) {
+    rbindlist(matches_by_level, fill = TRUE)
+  } else {
+    data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0))
+  }
+  message("Still unresolved after all taxonomy levels: ", length(unmatched_sci) - nrow(fallback_matches))
+  
+  dt <- merge(dt, fallback_matches, by = "ScientificName", all.x = TRUE, suffixes = c("", "_fb"))
+  dt[is.na(FG_num) & !is.na(FG_num_fb), `:=`(FG_num = FG_num_fb, FG_name = FG_name_fb)]
+  dt[, c("FG_num_fb", "FG_name_fb") := NULL]
+  
+  message("After taxonomy fallback: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " of ",
+          dt[, uniqueN(ScientificName)], " distinct species matched.")
+  
+  ## Two different attributes, deliberately named to avoid the confusion
+  ## of a single "unmatched_taxonomy" name: "fetched_taxonomy" is the
+  ## FULL set this function queried (species unmatched at the START,
+  ## before this fallback ran) - reuse this if you need Order/Class/
+  ## Phylum for your own additional logic. "still_unresolved_taxonomy"
+  ## is the genuinely different, smaller set that remains unmatched
+  ## AFTER every fallback level was tried - a species can legitimately
+  ## appear in the first but not the second, if this function resolved
+  ## it along the way.
+  attr(dt, "fetched_taxonomy") <- unmatched_taxonomy
+  attr(dt, "still_unresolved_taxonomy") <- remaining
+  dt
+}
+
+## =================================================================
+## Seed FG rules - for the genuine remainder fallback_match_fg_
+## by_taxonomy() can't resolve: FGs with NO species already assigned
+## to them in dataframe2 at all (e.g. "Other macro-benthos", a bucket
+## FG with nothing pre-listed against it to learn an exclusive mapping
+## from). This is a real, unavoidable limitation of the data-driven
+## approach, not a bug - if the FG reference never assigns any species
+## to a bucket FG, there is nothing in the data to infer that mapping
+## from, and it has to come from a person who knows the scheme.
+##
+## Kept deliberately small and separate from the main fallback: only
+## for FGs confirmed to have zero reference species (check first -
+## dataframe2[FG_name %in% "X", .N] == 0 - a genuinely empty FG is why
+## this is needed; a nonzero count means the automatic fallback should
+## already handle it, and adding a rule here would just be masking a
+## different problem, like an ambiguous rank elsewhere in the
+## reference, worth investigating instead of overriding).
+##
+## Resolved by FG_name text (not a hardcoded FG_num), so this survives
+## the FG scheme being renumbered - only breaks if a FG_name itself is
+## reworded, at which point the resolution check below will flag it
+## with an NA rather than silently assigning nothing.
+##
+## species_exceptions (optional): data.table with columns ScientificName,
+## fg_name_target - applied BEFORE the rank-based seed_rules, so a named
+## species is never caught by a broader rule that would be wrong for it
+## specifically. This is for the same situation as the Nephrops
+## norvegicus override used elsewhere in this project: a rank-level
+## rule is right for MOST members of that rank but wrong for one named
+## exception (e.g. Squilla mantis is commercially exploited even though
+## the rest of Stomatopoda isn't, so "Order Stomatopoda -> Non-commercial
+## decapods" would misclassify it without this).
+apply_seed_fg_rules <- function(dt, dataframe2, seed_rules, species_exceptions = NULL) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  n_before <- dt[!is.na(FG_num), uniqueN(ScientificName)]
+  
+  ## IMPORTANT: both captured here, before any merge() below - merge()
+  ## strips custom attributes entirely (unlike copy(), which preserves
+  ## them), so grabbing these now and using the local variables
+  ## throughout is what keeps them available within this function, and
+  ## both are re-attached to the returned dt at the end so a caller
+  ## relying on either attribute after this function (e.g. the example
+  ## script's own use of still_unresolved_taxonomy for the manual-review
+  ## export) still finds it there.
+  taxonomy_source_data <- attr(dt, "fetched_taxonomy")
+  still_unresolved_taxonomy_data <- attr(dt, "still_unresolved_taxonomy")
+  if (is.null(taxonomy_source_data)) {
+    stop("apply_seed_fg_rules() needs the 'fetched_taxonomy' attribute from",
+         " fallback_match_fg_by_taxonomy() - run that first.")
+  }
+  
+  if (!is.null(species_exceptions)) {
+    resolved_exceptions <- merge(species_exceptions, unique(dataframe2[, .(FG_num, FG_name)]),
+                                 by.x = "fg_name_target", by.y = "FG_name", all.x = TRUE)
+    message("Species-exception resolution check (FG_num should not be NA):")
+    print(resolved_exceptions)
+    
+    n_unresolved_exc <- resolved_exceptions[is.na(FG_num), .N]
+    if (n_unresolved_exc > 0) {
+      stop(n_unresolved_exc, " species_exceptions entr(y/ies) have a fg_name_target that",
+           " doesn't exactly match a real FG_name in dataframe2 - fix the entries above",
+           " before proceeding, since a silently-unresolved exception would let its",
+           " species fall through to the rank-based rule instead, exactly what this",
+           " exception mechanism exists to prevent.")
+    }
+    
+    dt <- merge(dt, resolved_exceptions[, .(ScientificName, FG_num_exc = FG_num, FG_name_exc = fg_name_target)],
+                by = "ScientificName", all.x = TRUE)
+    dt[is.na(FG_num) & !is.na(FG_num_exc), `:=`(FG_num = FG_num_exc, FG_name = FG_name_exc)]
+    dt[, c("FG_num_exc", "FG_name_exc") := NULL]
+    
+    n_after_exceptions <- dt[!is.na(FG_num), uniqueN(ScientificName)]
+    message("Species exceptions applied: ", n_after_exceptions - n_before, " species assigned/reassigned",
+            " before rank-based rules run (these will NOT be touched by seed_rules below,",
+            " even if they'd also match a rank-level rule).")
+  }
+  
+  ## seed_rules: data.table with columns rank ("Class"/"Order"/
+  ## "Phylum"/"Family"), rank_value (e.g. "Holothuroidea"), fg_name_target
+  resolved <- merge(seed_rules, unique(dataframe2[, .(FG_num, FG_name)]),
+                    by.x = "fg_name_target", by.y = "FG_name", all.x = TRUE)
+  message("Seed rule resolution check (FG_num should not be NA - if it is,",
+          " fg_name_target doesn't exactly match a real FG_name):")
+  print(resolved)
+  
+  exception_species <- if (!is.null(species_exceptions)) species_exceptions$ScientificName else character(0)
+  
+  for (i in seq_len(nrow(resolved))) {
+    rank <- resolved$rank[i]; val <- resolved$rank_value[i]
+    fg_num <- resolved$FG_num[i]; fg_name <- resolved$fg_name_target[i]
+    if (is.na(fg_num)) next
+    if (!rank %in% names(taxonomy_source_data)) next
+    
+    matching_species <- taxonomy_source_data[get(rank) == val, ScientificName]
+    ## exclude anything already handled by species_exceptions above,
+    ## regardless of whether it's currently matched or not - an
+    ## exception's own answer always wins over a rank-level rule
+    matching_species <- setdiff(matching_species, exception_species)
+    dt[ScientificName %in% matching_species & is.na(FG_num),
+       `:=`(FG_num = fg_num, FG_name = fg_name)]
+  }
+  n_after <- dt[!is.na(FG_num), uniqueN(ScientificName)]
+  message("Seed rules + exceptions together resolved ", n_after - n_before, " additional species.")
+  
+  attr(dt, "fetched_taxonomy") <- taxonomy_source_data
+  attr(dt, "still_unresolved_taxonomy") <- still_unresolved_taxonomy_data
+  dt
+}
+
+## =================================================================
+## Summary of species still unmatched after every resolution step -
+## mean biomass and appearance count (how many samples/observations
+## the species shows up in), so whoever does the manual review can
+## prioritize: a species appearing 500 times with substantial biomass
+## matters a lot more than one appearing once with a trace amount.
+## Taxonomy (Genus/Family/Order/Class/Phylum) included for context,
+## e.g. spotting that a batch of unmatched entries are all Chlorophyta
+## (green algae) rather than needing to look each one up individually.
+## =================================================================
+
+summarize_unresolved_species <- function(dt, taxonomy = NULL) {
+  unresolved <- dt[is.na(FG_num) & !is.na(ScientificName)]
+  summary_dt <- unresolved[, .(
+    mean_biomass = mean(Biomass, na.rm = TRUE),
+    n_appearances = .N
+  ), by = ScientificName]
+  setorder(summary_dt, -n_appearances)
+  
+  if (!is.null(taxonomy)) {
+    summary_dt <- merge(summary_dt, taxonomy, by = "ScientificName", all.x = TRUE)
+    setorder(summary_dt, -n_appearances)
+  }
+  
+  message("\n", nrow(summary_dt), " species still unmatched - summary",
+          " (sorted by number of appearances, most first):")
+  print(summary_dt)
+  summary_dt
+}
+
+## =================================================================
+## STEP 5 (part A): assign each sample to an area (spatial join) and
+## a stratum (from depth, if not already provided)
+## =================================================================
+## Generalized from Section 5a/5b of the MEDITS pipeline. MEDITS
+## already had a GSA code directly in the data (AreaID can be supplied
+## directly, skipping this) - for surveys that only have Lat/Lon, this
+## spatially joins each sample against area_shp's polygons.
+
+match_samples_to_area <- function(dt, area_shp, area_id_col) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  if ("AreaID" %in% names(dt) && all(!is.na(dt$AreaID))) {
+    message("AreaID already present in all rows - skipping spatial join.")
+    return(dt)
+  }
+  if (!all(c("Lat", "Lon") %in% names(dt))) {
+    stop("No AreaID and no Lat/Lon to spatially join - can't determine sample area.")
+  }
+  if (is.character(area_shp)) area_shp <- sf::st_read(area_shp, quiet = TRUE)
+  
+  pts <- sf::st_as_sf(dt, coords = c("Lon", "Lat"), crs = sf::st_crs(area_shp), remove = FALSE)
+  joined <- sf::st_join(pts, area_shp[, area_id_col])
+  dt[, AreaID := sf::st_drop_geometry(joined)[[area_id_col]]]
+  
+  n_unmatched <- dt[is.na(AreaID), .N]
+  if (n_unmatched > 0) {
+    message(n_unmatched, " sample(s) fell outside every polygon in area_shp",
+            " (e.g. a coordinate error, or genuinely outside the study area) -",
+            " these will be excluded from area-level aggregation.")
+  }
+  dt
+}
+
+## strata_def: data.table with columns stratum_num, depth_min, depth_max
+## (same structure as MEDITS_STRATA in the original pipeline) - pass
+## your survey's own depth strata definition here, or reuse
+## MEDITS_STRATA-style bounds if genuinely the same design.
+assign_depth_stratum <- function(dt, strata_def) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  if ("Stratum" %in% names(dt) && all(!is.na(dt$Stratum))) {
+    message("Stratum already present in all rows - skipping depth-based assignment.")
+    dt[, Stratum := as.integer(Stratum)]
+    return(dt)
+  }
+  if (!"Depth" %in% names(dt)) {
+    stop("No Stratum and no Depth column - can't derive strata.")
+  }
+  dt[, Stratum := strata_def$stratum_num[
+    findInterval(Depth, strata_def$depth_min, all.inside = TRUE)]]
+  dt[Depth < min(strata_def$depth_min) | Depth > max(strata_def$depth_max), Stratum := NA_integer_]
+  
+  n_out <- dt[is.na(Stratum), .N]
+  if (n_out > 0) {
+    excluded_depths <- dt[is.na(Stratum), Depth]
+    message(n_out, " sample(s) have Depth outside strata_def's range (", min(strata_def$depth_min),
+            "-", max(strata_def$depth_max), "m) - excluded from the strata-weighted index.",
+            " Excluded depths range from ", round(min(excluded_depths, na.rm = TRUE), 1), "m to ",
+            round(max(excluded_depths, na.rm = TRUE), 1), "m - worth checking whether this is",
+            " genuinely out-of-protocol sampling (e.g. deeper hauls than the standard strata cover)",
+            " or a data issue (e.g. a unit mismatch), rather than assuming either.")
+  }
+  dt
+}
+
+## =================================================================
+## STEP 5 (part B): mean/sum densities across species within FG,
+## per sample, then summed within FG/year/stratum/area
+## =================================================================
+## Generalized from Section 5f's per_haul_fg/per_stratum_fg logic.
+## Density = Biomass / Effort per sample; species within the same FG
+## are summed per sample first (an FG's total catch in that sample),
+## then samples are summed within each FG/year/stratum/area group -
+## exactly the MEDITS pipeline's own two-stage sum, just relabeled to
+## the generic Sample/Area/Stratum terms.
+
+compute_sample_densities <- function(dt) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  dt[, Density := Biomass / Effort]
+  dt
+}
+
+## =================================================================
+## Sample-level outlier removal - operates on individual (Sample,
+## Species) observations, BEFORE any aggregation into FG/area sums, so
+## a single anomalous haul doesn't get to inflate that entire year's
+## FG density. Deliberately per-species (not per-FG): an outlier in one
+## species shouldn't implicate other, unrelated species sharing the
+## same FG. Compares each observation only against that SAME species'
+## own history within the SAME area (different areas can have
+## genuinely different typical densities for the same species, so
+## comparing across areas would be misleading).
+##
+## IMPORTANT - log scale: catch data for schooling/aggregating species
+## (e.g. horse mackerel, anchovy, boarfish) is naturally, heavily
+## right-skewed - most hauls catch little to nothing, occasionally a
+## haul hits a school and catches a lot, which is genuine ecology, not
+## an error. On the raw scale this makes median/MAD both tiny, so even
+## a real high catch produces a huge z-score - this was the actual
+## cause of the excessive removal seen in testing (over 1000 "outliers"
+## for common schooling species). Computing the z-score on log1p(Density)
+## instead substantially reduces this, though testing against a
+## realistic synthetic distribution (lognormal base + 2 genuine school
+## events + 1 clear data error) showed even log-scale z-scores for
+## genuine school events can reach ~40-60, while a clear error reached
+## ~290 - there's real separation, just much further out than a naive
+## threshold like 5 would suggest. threshold=70 is calibrated against
+## that test (catches the clear error, doesn't flag either genuine
+## event) - review what your own data's flagged/not-flagged split looks
+## like and adjust from there, since the right value genuinely depends
+## on how patchy your species' real catch distributions are.
+##
+## This can ACTUALLY REMOVE flagged observations (sets Density/Biomass
+## to NA, so they're excluded from every downstream sum via the
+## existing !is.na(Density) filters - not deleting the row, so there's
+## still a record the sample existed) when drop_outliers=TRUE (the
+## default), or just report them without touching the data when
+## drop_outliers=FALSE - detected outliers are always printed either
+## way, so switching this off is for "show me what would be removed
+## without actually changing anything yet", not for silencing the
+## detection.
+## =================================================================
+
+remove_sample_outliers <- function(dt, threshold = 70, min_samples = 5, drop_outliers = TRUE, log_scale = TRUE) {
+  dt <- copy(dt)
+  dt[, obs_id := .I]  # stable row identifier, survives the grouped computation below
+  dt[, eval_value := if (log_scale) log1p(Density) else Density]
+  
+  stats <- dt[!is.na(eval_value) & !is.na(ScientificName),
+              .(group_median = median(eval_value, na.rm = TRUE),
+                group_mad = mad(eval_value, na.rm = TRUE),
+                n_obs_in_group = .N),
+              by = .(AreaID, ScientificName)]
+  
+  dt <- merge(dt, stats, by = c("AreaID", "ScientificName"), all.x = TRUE)
+  dt[, robust_z := ifelse(!is.na(eval_value) & group_mad > 0,
+                          abs(eval_value - group_median) / group_mad, NA_real_)]
+  dt[, is_outlier := !is.na(robust_z) & robust_z > threshold & n_obs_in_group >= min_samples]
+  
+  flagged <- dt[is_outlier == TRUE, .(ScientificName, AreaID, Year, SampleID,
+                                      flagged_density = Density, typical_density = expm1(group_median), robust_z)]
+  setorder(flagged, -robust_z)
+  
+  if (nrow(flagged) > 0) {
+    message("\n", nrow(flagged), " sample-level observation(s) flagged as high-confidence",
+            " outliers (", if (log_scale) "log-scale " else "", "robust z-score > ", threshold,
+            ", within at least ", min_samples, " observations of that species in that area to judge against).",
+            if (drop_outliers) " REMOVED from the data (drop_outliers=TRUE)." else
+              " NOT removed - drop_outliers=FALSE, this is a report only.",
+            " Full detail (most extreme first):")
+    print(flagged)
+    
+    message("\n", if (drop_outliers) "Outliers removed" else "Outliers flagged", ", by species:")
+    print(flagged[, .(n = .N), by = ScientificName][order(-n)])
+    
+    if (drop_outliers) {
+      dt[is_outlier == TRUE, `:=`(Density = NA_real_, Biomass = NA_real_)]
+    }
+  } else {
+    message("\nNo sample-level observations exceeded the outlier threshold",
+            " (robust z-score > ", threshold, ").")
+  }
+  
+  dt[, c("obs_id", "eval_value", "group_median", "group_mad", "n_obs_in_group", "robust_z", "is_outlier") := NULL]
+  dt
+}
+
+compute_fg_densities_by_stratum <- function(dt, strata = TRUE) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  group_cols <- c("AreaID", "Year", if (strata) "Stratum", "FG_num", "FG_name")
+  
+  ## When strata=TRUE, exclude samples with Stratum=NA (depth outside
+  ## strata_def's range, already flagged by assign_depth_stratum()'s
+  ## own message) upfront - these can never match n_samples_by_stratum
+  ## or strata_area_by_area (both only have valid stratum numbers), so
+  ## leaving them in here just produces a second, confusing "no
+  ## area-proportion" warning downstream about the same already-known
+  ## cause rather than a genuinely new problem.
+  base_dt <- if (strata) dt[!is.na(Stratum)] else dt
+  
+  per_sample_fg <- base_dt[
+    !is.na(FG_num) & !is.na(Density),
+    .(fg_density = sum(Density, na.rm = TRUE)),
+    by = c("SampleID", group_cols)
+  ]
+  
+  ## IMPORTANT: deliberately NOT computing n_samples here, even though
+  ## SampleID is right there in per_sample_fg. uniqueN(SampleID) at
+  ## this point would only count samples where THIS SPECIFIC FG had
+  ## non-zero catch - understating the true sampling effort, since
+  ## samples where the FG was genuinely absent still count toward the
+  ## denominator in a proper mean-density estimator (they contribute a
+  ## true zero, not a missing observation). The one correct source of
+  ## sample count is n_samples_by_stratum, computed separately from the
+  ## full dt (all species together, not filtered to one FG) - matches
+  ## the original pipeline exactly, which computed n_hauls from the
+  ## haul metadata table, never from the per-FG catch table.
+  per_group_fg <- per_sample_fg[
+    , .(density_sum = sum(fg_density, na.rm = TRUE)),
+    by = group_cols
+  ]
+  
+  message("Per-", if (strata) "area/stratum" else "area", "/year/FG density table built: ",
+          nrow(per_group_fg), " rows.")
+  per_group_fg
+}
+
+## =================================================================
+## STEP 6: Weight densities per stratum (if stratification design) to
+## get densities over FG, year, and area
+## =================================================================
+## Ported directly from compute_strata_fact_for_gsa() in the MEDITS
+## pipeline - the bathymetry -> reclassify -> mask -> per-cell-area
+## logic is unchanged (it was already generic: takes a strata
+## definition and an area polygon as parameters), just renamed
+## area_num/area_id_col to be explicit this isn't GSA-specific anymore.
+## Uses raster::area() for latitude-corrected cell areas - grid cells
+## are NOT equal-area (they shrink toward the poles), which matters
+## when areas span different latitudes.
+
+compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 1) {
+  if (nrow(area_poly) == 0) return(NULL)
+  bbox <- sf::st_bbox(area_poly)
+  
+  bathy <- tryCatch(
+    marmap::getNOAA.bathy(lon1 = bbox["xmin"], lon2 = bbox["xmax"],
+                          lat1 = bbox["ymin"], lat2 = bbox["ymax"],
+                          resolution = resolution),
+    error = function(e) { message("  Bathymetry download failed: ", conditionMessage(e)); NULL }
+  )
+  if (is.null(bathy)) return(NULL)
+  
+  bathy_r <- marmap::as.raster(bathy)
+  bathy_r <- raster::reclassify(bathy_r, cbind(0, Inf, NA), right = FALSE)
+  bathy_r <- raster::mask(bathy_r, as(area_poly, "Spatial"))
+  area_r <- raster::area(bathy_r)
+  
+  bathy_df <- as.data.frame(bathy_r, xy = TRUE); names(bathy_df)[3] <- "layer"
+  area_df  <- as.data.frame(area_r,  xy = TRUE); names(area_df)[3]  <- "cell_area_km2"
+  bathy_df <- merge(bathy_df, area_df, by = c("x", "y"))
+  bathy_df <- bathy_df[complete.cases(bathy_df[, c("layer", "cell_area_km2")]), ]
+  bathy_df$depth <- bathy_df$layer * -1
+  bathy_df <- bathy_df[bathy_df$depth >= min(strata_def$depth_min) &
+                         bathy_df$depth <= max(strata_def$depth_max), ]
+  if (nrow(bathy_df) == 0) return(NULL)
+  
+  bathy_dt <- as.data.table(bathy_df)
+  bathy_dt[, Stratum := strata_def$stratum_num[
+    findInterval(depth, strata_def$depth_min, all.inside = TRUE)]]
+  
+  strata_areas <- bathy_dt[, .(area_km2 = sum(cell_area_km2, na.rm = TRUE)), by = Stratum]
+  strata_areas[, prop := area_km2 / sum(area_km2)]
+  setorder(strata_areas, Stratum)
+  strata_areas[, .(Stratum, area_km2, prop)]
+}
+
+compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_def,
+                                        cache_path = NULL, resolution = 1) {
+  if (is.character(area_shp)) area_shp <- sf::st_read(area_shp, quiet = TRUE)
+  
+  cache_valid <- !is.null(cache_path) && file.exists(cache_path) &&
+    "area_km2" %in% names(fread(cache_path, nrows = 1))
+  if (cache_valid) {
+    message("Loading cached strata areas from ", cache_path)
+    return(fread(cache_path))
+  }
+  
+  message("Computing strata areas via bathymetry for ", length(area_ids), " area(s)",
+          " (slow - downloads bathymetry once per area)...")
+  results <- lapply(area_ids, function(a) {
+    message(" Processing area ", a, "...")
+    poly <- area_shp[area_shp[[area_id_col]] == a, ]
+    res <- compute_strata_area_for_polygon(poly, strata_def, resolution)
+    if (!is.null(res)) res[, AreaID := a]
+    res
+  })
+  strata_area_by_area <- rbindlist(results, fill = TRUE)
+  
+  if (!is.null(cache_path)) {
+    fwrite(strata_area_by_area, cache_path)
+    message("Saved to ", cache_path, " - delete this file to force recomputation.")
+  }
+  strata_area_by_area
+}
+
+## the actual strata-weighted estimator - unchanged formula from the
+## MEDITS pipeline: FG_density(area, year) = sum over strata of
+## (summed FG density in stratum / n_samples in stratum) * area_proportion
+weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_area) {
+  ## no suffix collision risk here - per_group_fg has only density_sum
+  ## (see compute_fg_densities_by_stratum's own comment on why it
+  ## deliberately doesn't compute its own sample count), so n_samples
+  ## below is unambiguously n_samples_by_stratum's TOTAL sample count.
+  merged <- merge(per_group_fg, n_samples_by_stratum,
+                  by = c("AreaID", "Year", "Stratum"), all.x = TRUE)
+  merged <- merge(merged, strata_area_by_area, by = c("AreaID", "Stratum"), all.x = TRUE)
+  
+  n_missing <- merged[is.na(prop), .N]
+  if (n_missing > 0) {
+    missing_combos <- unique(merged[is.na(prop), .(AreaID, Stratum)])
+    message("WARNING: ", n_missing, " row(s) across ", nrow(missing_combos), " distinct area/stratum",
+            " combination(s) have no computed area-proportion - dropped from the weighted sum",
+            " rather than treated as zero weight. This can be genuinely expected (e.g. a shallow",
+            " area has no seafloor at all within a deep stratum's depth range, so there's nothing",
+            " to compute an area for) or a sign of a real mismatch (e.g. AreaID type/values not",
+            " lining up between your sample data and strata_area_by_area) - worth checking which:")
+    print(missing_combos[order(AreaID, Stratum)])
+  }
+  merged <- merged[!is.na(prop) & !is.na(n_samples) & n_samples > 0]
+  merged[, weighted_density := (density_sum / n_samples) * prop]
+  
+  fg_index <- merged[
+    , .(mean_density = sum(weighted_density, na.rm = TRUE),
+        n_strata_contributing = .N, n_samples_total = sum(n_samples)),
+    by = .(AreaID, Year, FG_num, FG_name)
+  ]
+  attr(fg_index, "per_stratum") <- merged  # kept for the depth-profile validation plot
+  message("Strata-weighted FG index built: ", nrow(fg_index), " rows.")
+  fg_index
+}
+
+## When strata=FALSE, per_group_fg from Step 5 is already at
+## area/year/FG level with no stratum dimension - just divide by
+## n_samples per area/year to get a simple mean density, no weighting
+## needed since there's no stratum structure to correct for.
+## When strata=FALSE, per_group_fg from Step 5 has no stratum
+## dimension - needs its own, separately-computed total sample count
+## per (AreaID, Year), same correctness reasoning as the stratified
+## path: this must come from the FULL dt (all species/FGs together),
+## not from counting within the FG-filtered density table itself,
+## which would only count samples where that specific FG had non-zero
+## catch and understate the true sampling effort.
+simple_area_density <- function(per_group_fg, n_samples_by_area) {
+  merged <- merge(per_group_fg, n_samples_by_area, by = c("AreaID", "Year"), all.x = TRUE)
+  merged <- merged[!is.na(n_samples) & n_samples > 0]
+  merged[, mean_density := density_sum / n_samples]
+  message("Simple (unstratified) per-area FG index built: ", nrow(merged), " rows.")
+  merged[, .(AreaID, Year, FG_num, FG_name, mean_density, n_samples)]
+}
+
+## =================================================================
+## STEP 7: Weight densities per area to get densities over FG and year
+## (region-wide, all areas combined)
+## =================================================================
+## Ported from Section 5g of the MEDITS pipeline - the single-stage,
+## area-weighted estimator: D_region = sum(D_ah * A_ah) / sum(A_ah)
+## across every (area, stratum) cell directly, using each cell's
+## ABSOLUTE area (not its proportion within its own area) - avoids
+## compounding two separate weighting stages (strata-within-area, then
+## area-within-region), which would otherwise double-weight incorrectly.
+##
+## Requires strata=TRUE (the per_stratum attribute from weight_by_strata()
+## carries the area_km2 needed here). For strata=FALSE, region-wide
+## aggregation would need each area's TOTAL surveyable area (not
+## stratum-specific) as the weight instead - a different, simpler
+## calculation not currently implemented here since it depends on what
+## "area" means for a non-stratified survey; flag if you need this path.
+
+weight_by_area <- function(fg_index_stratified) {
+  per_stratum <- attr(fg_index_stratified, "per_stratum")
+  if (is.null(per_stratum)) {
+    stop("weight_by_area() needs the per_stratum attribute from weight_by_strata() -",
+         " region-wide aggregation for strata=FALSE isn't implemented here (see comment above).")
+  }
+  fg_index_regional <- per_stratum[
+    !is.na(area_km2),
+    .(mean_density = sum((density_sum / n_samples) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE),
+      n_areas_contributing = uniqueN(AreaID),
+      n_samples_total = sum(n_samples)),
+    by = .(Year, FG_num, FG_name)
+  ]
+  message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows.")
+  fg_index_regional
+}
+
+## =================================================================
+## Study area / sample coverage map - study area polygons colored by
+## sampling intensity (total distinct samples per area), with
+## individual sample locations overlaid as points if Lat/Lon are
+## available. Useful as a survey-design diagnostic - spotting coverage
+## gaps, checking a new area's samples actually fall inside its own
+## polygon (not a neighboring one), or just getting oriented before
+## digging into the density results themselves.
+##
+## IMPORTANT - CRS handling: BOTH layers (area_shp and the sample
+## points) are EXPLICITLY transformed to a common target CRS
+## (points_crs, default WGS84/EPSG:4326) before plotting, rather than
+## relying on geom_sf()/coord_sf()'s automatic layer-alignment. This
+## is more robust: automatic alignment depends on every layer already
+## having a valid, correctly-read CRS, and a shapefile can have a
+## missing or malformed CRS (e.g. no .prj file, or one geopandas/sf
+## doesn't parse cleanly) without erroring - it just silently plots in
+## its own raw coordinate space, which produces exactly the "polygon
+## appears as a tiny, misplaced shape in the corner while points show
+## the real geography" symptom. This function checks area_shp's CRS
+## explicitly and stops with a clear message if it's missing entirely,
+## rather than producing a silently-broken plot.
+## =================================================================
+
+plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations and coverage by area",
+                            by_year = FALSE, points_crs = 4326) {
+  message("area_shp CRS: ", if (is.na(st_crs(area_shp))) "MISSING/UNDEFINED" else st_crs(area_shp)$input)
+  if (is.na(st_crs(area_shp))) {
+    stop("area_shp has no CRS defined (st_crs(area_shp) is NA) - this is very likely the cause of a",
+         " badly misplaced polygon layer (it gets plotted in raw, unprojected coordinate units",
+         " instead of actual geographic space). Set it explicitly before calling this function,",
+         " e.g. st_crs(area_shp) <- <the CRS the shapefile is actually supposed to be in> if you",
+         " know it (check the shapefile's .prj file or its source documentation), or st_transform()",
+         " it if it has a CRS but the wrong one.")
+  }
+  ## explicit, common target CRS for both layers - not relying on
+  ## automatic alignment between geom_sf() layers
+  area_shp <- st_transform(area_shp, points_crs)
+  
+  group_cols <- if (by_year) c("AreaID", "Year") else "AreaID"
+  intensity <- dt[, .(n_samples = uniqueN(SampleID)), by = group_cols]
+  
+  if (by_year) {
+    ## need every (area, year) combination present, even 0-sample ones,
+    ## so faceted panels don't just silently omit years/areas with no data
+    all_areas <- unique(area_shp[[area_id_col]])
+    all_years <- sort(unique(dt$Year))
+    full_grid <- data.table(expand.grid(AreaID = all_areas, Year = all_years))
+    intensity <- merge(full_grid, intensity, by = c("AreaID", "Year"), all.x = TRUE)
+    intensity[is.na(n_samples), n_samples := 0]
+    
+    area_shp_plot <- do.call(rbind, lapply(all_years, function(yr) {
+      piece <- area_shp
+      piece$Year <- yr
+      piece
+    }))
+    area_shp_plot <- merge(area_shp_plot, intensity, by.x = c(area_id_col, "Year"), by.y = c("AreaID", "Year"), all.x = TRUE)
+  } else {
+    area_shp_plot <- merge(area_shp, intensity, by.x = area_id_col, by.y = "AreaID", all.x = TRUE)
+    area_shp_plot$n_samples[is.na(area_shp_plot$n_samples)] <- 0
+  }
+  
+  p <- ggplot() +
+    geom_sf(data = area_shp_plot, aes(fill = n_samples), color = "grey40", linewidth = 0.3) +
+    scale_fill_gradient(name = "Samples", low = "white", high = "#7f0000", na.value = "grey90") +
+    labs(title = title) +
+    theme_minimal(base_size = 11) +
+    theme(axis.title = element_blank())
+  
+  if (by_year) p <- p + facet_wrap(vars(Year))
+  
+  if (all(c("Lat", "Lon") %in% names(dt))) {
+    sample_pts_dt <- unique(dt[!is.na(Lat) & !is.na(Lon), c("SampleID", "Lat", "Lon", if (by_year) "Year"), with = FALSE])
+    sample_pts_sf <- st_as_sf(sample_pts_dt, coords = c("Lon", "Lat"), crs = points_crs, remove = FALSE)
+    message("Sample points CRS (as constructed): ", st_crs(sample_pts_sf)$input)
+    
+    ## diagnostic: how many points fall genuinely outside every polygon,
+    ## now that both layers are confirmed in the same, explicit CRS -
+    ## distinguishes "was actually a projection problem" (this count
+    ## should be near 0 once fixed) from "some points are genuinely bad
+    ## data" (stays nonzero even with CRS handled correctly)
+    within_any <- lengths(st_intersects(sample_pts_sf, area_shp)) > 0
+    n_outside <- sum(!within_any)
+    if (n_outside > 0) {
+      message(n_outside, " of ", nrow(sample_pts_dt), " sample point(s) fall outside EVERY area polygon",
+              " even with both layers in the same CRS - these are likely genuine data issues",
+              " (bad coordinates, wrong sign, swapped lat/lon), not a projection mismatch:")
+      print(sample_pts_dt[!within_any][, .(SampleID)])
+    } else {
+      message("All ", nrow(sample_pts_dt), " sample points fall within at least one area",
+              " polygon - no evidence of a projection mismatch or bad coordinates.")
+    }
+    
+    p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.4, color = "black")
+    message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
+            if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
+  } else {
+    message("No Lat/Lon columns in dt - showing area-level intensity shading only,",
+            " no individual sample points.")
+  }
+  
+  print(intensity[order(-n_samples)])
+  p
+}
+
+## =================================================================
+## STEP 8: Output plots
+## =================================================================
+## Generalized from the MEDITS pipeline's plotting section - same
+## top-N filtering logic and faceted-timeseries style, just with
+## generic FG_num/FG_name/AreaID/Year/mean_density column names
+## instead of MEDITS-specific ones.
+
+filter_top_n <- function(df, group_col, value_col, area_col = NULL, top_n_areas = NULL, top_n_groups = 40) {
+  if (!is.null(area_col) && !is.null(top_n_areas)) {
+    top_areas <- df %>% group_by(.data[[area_col]]) %>%
+      dplyr::summarise(tot = sum(.data[[value_col]], na.rm = TRUE), .groups = "drop") %>%
+      slice_max(tot, n = top_n_areas) %>% pull(.data[[area_col]])
+    df <- filter(df, .data[[area_col]] %in% top_areas)
+  }
+  top_groups <- df %>% group_by(.data[[group_col]]) %>%
+    dplyr::summarise(tot = sum(.data[[value_col]], na.rm = TRUE), .groups = "drop") %>%
+    slice_max(tot, n = top_n_groups) %>% pull(.data[[group_col]])
+  filter(df, .data[[group_col]] %in% top_groups)
+}
+
+plot_fg_timeseries_by_area <- function(fg_index, title = "FG density by area", y_lab = "Density",
+                                       top_n_areas = 20, top_n_fg = 40) {
+  plot_data <- filter_top_n(as_tibble(fg_index), "FG_name", "mean_density",
+                            area_col = "AreaID", top_n_areas = top_n_areas, top_n_groups = top_n_fg)
+  ggplot(plot_data, aes(x = Year, y = mean_density, color = as.factor(AreaID))) +
+    geom_line(linewidth = 0.6, alpha = 0.7) +
+    facet_wrap(vars(FG_name), scales = "free_y") +
+    labs(title = title, x = "Year", y = y_lab, color = "Area") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ## legend lines shown thicker and fully opaque than the actual plot
+    ## lines (which are thin/semi-transparent to reduce clutter with
+    ## many areas overlapping) - purely a legend-readability fix, the
+    ## plotted data itself is unaffected
+    guides(color = guide_legend(override.aes = list(linewidth = 3, alpha = 1)))
+}
+
+plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, region-wide",
+                                        y_lab = "Area-weighted density", top_n_fg = 40) {
+  fg_totals <- fg_index_regional[, .(tot = sum(mean_density, na.rm = TRUE)), by = FG_name]
+  top_fg <- fg_totals[order(-tot)][seq_len(min(top_n_fg, .N)), FG_name]
+  plot_data <- as_tibble(fg_index_regional[FG_name %in% top_fg])
+  ggplot(plot_data, aes(x = Year, y = mean_density)) +
+    geom_line(linewidth = 0.6, alpha = 0.8, colour = "steelblue") +
+    facet_wrap(vars(FG_name), scales = "free_y") +
+    labs(title = title, x = "Year", y = y_lab) +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+## Depth-strata validation plot: raw per-sample density (before area
+## weighting) across strata, for sanity-checking that known deep-water
+## FGs actually peak in the deep strata and vice versa.
+plot_strata_profile <- function(fg_index_stratified, strata_def, top_n_fg = 40) {
+  per_stratum <- attr(fg_index_stratified, "per_stratum")
+  if (is.null(per_stratum)) stop("plot_strata_profile() needs the per_stratum attribute from weight_by_strata().")
+  per_stratum <- copy(per_stratum)  # avoid data.table shallow-copy warning - this came from an attribute set after a merge() chain inside weight_by_strata()
+  
+  per_stratum[, mean_density_per_sample := density_sum / n_samples]
+  profile <- per_stratum[, .(mean_density_per_sample = mean(mean_density_per_sample, na.rm = TRUE)),
+                         by = .(FG_num, FG_name, Stratum)]
+  profile <- merge(profile, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
+  profile[, stratum_label := paste0(Stratum, " (", depth_min, "-", depth_max, "m)")]
+  profile[, stratum_label := factor(stratum_label, levels = unique(stratum_label[order(Stratum)]))]
+  
+  top_fg <- profile[, .(tot = sum(mean_density_per_sample, na.rm = TRUE)), by = FG_name][
+    order(-tot)][seq_len(min(top_n_fg, .N)), FG_name]
+  
+  ggplot(profile[FG_name %in% top_fg], aes(x = stratum_label, y = mean_density_per_sample, fill = Stratum)) +
+    geom_col() +
+    scale_fill_gradient(low = "lightblue", high = "navy", guide = "none") +
+    facet_wrap(vars(FG_name), scales = "free_y") +
+    labs(title = "Depth-strata density profile by FG", x = "Depth stratum", y = "Mean density per sample") +
+    theme_minimal(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+## =================================================================
+## Species-level regional density (for the FG_spp Excel sheet - species
+## breakdown WITHIN each FG, not just the FG total). Same strata- and
+## area-weighting logic as the FG-level path, just grouped by
+## ScientificName (nested within FG) instead of FG alone. Mirrors
+## Section 5h of the MEDITS pipeline.
+## =================================================================
+
+compute_species_densities_by_stratum <- function(dt, strata = TRUE) {
+  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  group_cols <- c("AreaID", "Year", if (strata) "Stratum", "FG_num", "FG_name", "ScientificName")
+  
+  ## same reasoning as compute_fg_densities_by_stratum(): exclude
+  ## Stratum=NA samples upfront when strata=TRUE, since they can never
+  ## match n_samples_by_stratum/strata_area_by_area anyway
+  base_dt <- if (strata) dt[!is.na(Stratum)] else dt
+  
+  per_sample_sp <- base_dt[
+    !is.na(FG_num) & !is.na(ScientificName) & !is.na(Density),
+    .(sp_density = sum(Density, na.rm = TRUE)),
+    by = c("SampleID", group_cols)
+  ]
+  ## same reasoning as compute_fg_densities_by_stratum(): deliberately
+  ## no n_samples here - a species-specific sample count would only
+  ## count samples where THIS species had non-zero catch, understating
+  ## true sampling effort. The one correct source is n_samples_by_stratum,
+  ## computed from the full dt (this is also what was causing "Object
+  ## 'n_samples' not found. Perhaps you intended [n_samples.x, n_samples.y]"
+  ## in weight_species_by_area() - two different n_samples colliding on
+  ## merge with no suffix specified).
+  per_sample_sp[, .(density_sum = sum(sp_density, na.rm = TRUE)), by = group_cols]
+}
+
+weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_area_by_area) {
+  ## no suffix collision risk - per_group_sp has only density_sum now,
+  ## so n_samples below is unambiguously the total from n_samples_by_stratum
+  merged <- merge(per_group_sp, n_samples_by_stratum, by = c("AreaID", "Year", "Stratum"), all.x = TRUE)
+  merged <- merge(merged, strata_area_by_area, by = c("AreaID", "Stratum"), all.x = TRUE)
+  merged <- merged[!is.na(prop) & !is.na(area_km2) & !is.na(n_samples) & n_samples > 0]
+  
+  merged[, .(mean_density = sum((density_sum / n_samples) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE)),
+         by = .(Year, FG_num, FG_name, ScientificName)]
+}
+
+## =================================================================
+## STEP 9: Output Excel file (Ecopath/Ecosim-ready workbook)
+## =================================================================
+## Generalized from the MEDITS pipeline's 3-sheet workbook (FG_spp,
+## Ecopath, Ecosim). year_ecopath and ts_years are the function
+## attributes specified up top.
+##
+## Ecosim sheet format matched directly against a real exported
+## example in the original MEDITS work - NOT independently re-verified
+## here, carried over as-is. See the original pipeline's own note: if
+## an actual Ecosim-exported CSV becomes available for cross-checking,
+## verify this format against it directly.
+
+export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
+                                        n_samples_by_area_year, year_ecopath = 1994:1996,
+                                        ts_years = NULL, out_path, species_taxonomy = NULL) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
+  
+  ## Validate expected columns upfront, by name, so a mismatch (e.g. a
+  ## lowercase "year" instead of "Year" in whatever the caller built
+  ## n_samples_by_area_year from) fails here with a clear message
+  ## naming the actual argument and column at fault - rather than deep
+  ## inside a data.table [] expression where the only symptom is a
+  ## generic "Object 'Year' not found. Perhaps you intended [year]".
+  required_cols <- list(
+    fg_index_regional = c("Year", "FG_num", "FG_name", "mean_density"),
+    species_density_regional = c("Year", "FG_num", "FG_name", "ScientificName", "mean_density"),
+    n_samples_by_area_year = c("AreaID", "Year", "n_samples")
+  )
+  args_to_check <- list(fg_index_regional = fg_index_regional,
+                        species_density_regional = species_density_regional,
+                        n_samples_by_area_year = n_samples_by_area_year)
+  for (arg_name in names(required_cols)) {
+    missing <- setdiff(required_cols[[arg_name]], names(args_to_check[[arg_name]]))
+    if (length(missing) > 0) {
+      stop("export_ecopath_ecosim_excel(): '", arg_name, "' is missing column(s): ",
+           paste(missing, collapse = ", "), ". Actual columns present: ",
+           paste(names(args_to_check[[arg_name]]), collapse = ", "),
+           ". Check capitalization - this function expects exactly 'Year' (capital Y),",
+           " matching the standardized dataframe1 format, not 'year'.")
+    }
+  }
+  
+  ## --- FG_spp sheet ---------------------------------------------------------
+  fg_spp_sheet <- species_density_regional[
+    Year %in% year_ecopath, .(Biomass = mean(mean_density, na.rm = TRUE)),
+    by = .(FG_num, FG_name, Species = ScientificName)]
+  setorder(fg_spp_sheet, FG_num, Species)
+  
+  ## --- Ecopath sheet ----------------------------------------------------------
+  base_year <- year_ecopath[1]
+  ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, FG_name, Biomass_baseyear = mean_density)]
+  ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
+                                    .(Biomass_avg = mean(mean_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
+  ecopath_sheet <- merge(ecopath_base, ecopath_avg, by = c("FG_num", "FG_name"), all = TRUE)
+  setnames(ecopath_sheet, c("Biomass_baseyear", "Biomass_avg"),
+           c(paste0("Biomass_", base_year), paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath))))
+  setorder(ecopath_sheet, FG_num)
+  
+  ## --- Ecosim sheet -----------------------------------------------------------
+  if (is.null(ts_years)) {
+    ts_years <- min(fg_index_regional$Year, na.rm = TRUE):max(fg_index_regional$Year, na.rm = TRUE)
+  }
+  years_with_effort <- sort(unique(n_samples_by_area_year[Year %in% ts_years, Year]))
+  
+  fg_list <- unique(fg_index_regional[, .(FG_num, FG_name)]); setorder(fg_list, FG_num)
+  build_ts_column <- function(fg_num) {
+    vals <- fg_index_regional[FG_num == fg_num, .(Year, mean_density)]
+    full_years <- data.table(Year = ts_years)
+    vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
+    vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
+    vals[order(Year), mean_density]
+  }
+  
+  meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+  ecosim_sheet <- data.table(` ` = c(meta_labels, as.character(ts_years)))
+  for (i in seq_len(nrow(fg_list))) {
+    fg_num <- fg_list$FG_num[i]; fg_name <- fg_list$FG_name[i]
+    ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))
+    col <- c(ts_name, "Biomass (relative)", "reference", "relative", "1",
+             paste0(fg_num, ": ", fg_name), "", "Annual", as.character(build_ts_column(fg_num)))
+    ecosim_sheet[, (paste0("fg_", fg_num)) := col]
+  }
+  
+  ## --- FG_composition sheet (optional, needs species_taxonomy) -------------
+  ## FG_num, FG_name, Species, Density, prop_sp_fg (this species' share
+  ## of its FG's total density, i.e. how much it dominates - or doesn't
+  ## - the group it's been assigned to) and taxonomy. Useful as direct
+  ## input to FG-level PB/QB calculation: a biomass-weighted PB/QB for
+  ## an FG needs exactly this - which species make it up, in what
+  ## proportion, and enough taxonomy to run a method like Brey's ANN
+  ## model per species before rolling up to the FG.
+  sheets_to_write <- list(FG_spp = fg_spp_sheet, Ecopath = ecopath_sheet, Ecosim = ecosim_sheet)
+  
+  if (!is.null(species_taxonomy)) {
+    fg_composition <- copy(fg_spp_sheet)
+    fg_composition[, fg_total_density := sum(Biomass, na.rm = TRUE), by = FG_num]
+    fg_composition[, prop_sp_fg := ifelse(fg_total_density > 0, Biomass / fg_total_density, NA_real_)]
+    fg_composition[, fg_total_density := NULL]
+    setnames(fg_composition, "Biomass", "Density")
+    
+    n_before_tax <- nrow(fg_composition)
+    fg_composition <- merge(fg_composition, species_taxonomy, by.x = "Species", by.y = "ScientificName", all.x = TRUE)
+    n_missing_tax <- fg_composition[is.na(Genus) & is.na(Family) & is.na(Class), .N]
+    if (n_missing_tax > 0) {
+      message("NOTE: ", n_missing_tax, " of ", n_before_tax, " species in FG_composition have no",
+              " taxonomy match in species_taxonomy - these rows will have blank taxonomy columns.")
+    }
+    setorder(fg_composition, FG_num, -prop_sp_fg)
+    sheets_to_write$FG_composition <- fg_composition
+    
+    ## sanity check - each FG's proportions should sum to ~1
+    prop_check <- fg_composition[, .(total_prop = sum(prop_sp_fg, na.rm = TRUE)), by = FG_num]
+    if (any(abs(prop_check$total_prop - 1) > 0.01)) {
+      message("WARNING: some FG(s) have prop_sp_fg not summing to ~1 - check for NA Density",
+              " values within that FG:")
+      print(prop_check[abs(total_prop - 1) > 0.01])
+    }
+  } else {
+    message("species_taxonomy not provided - skipping FG_composition sheet",
+            " (pass a data.table with ScientificName, Genus, Family, Order, Class, Phylum to include it).")
+  }
+  
+  openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
+  message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
+  invisible(sheets_to_write)
+}
