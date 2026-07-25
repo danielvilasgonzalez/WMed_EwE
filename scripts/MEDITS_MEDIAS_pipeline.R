@@ -63,7 +63,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
-  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
+  plot_dir <- paste0(out_dir,'/plots')
   if (!dir.exists(plot_dir)) {
     dir.create(plot_dir)
   }
@@ -357,32 +357,20 @@ message("\nRemoved ", n_before - nrow(still_unmatched_clean),
 ## every rule found a match; if any show FG_num = NA, the wording here
 ## doesn't exactly match your FG list and needs a small text fix.
 CLASS_RULES <- data.table(
-  Class = c("Bivalvia", "Gastropoda", "Holothuroidea", "Scyphozoa", "Thaliacea",
-            "Ascidiacea", "Asteroidea", "Demospongia", "Echinoidea", "Gymnolaemata",
-            "Hydrozoa", "Ophiuroidea", "Polychaeta", "Hexacorallia", "Octocorallia",
-            "Anthozoa"),
-  fg_name_target = c("Bivalves", "Gastropods", "Sea cucumbers", "Jellyfish",
-                     "Salps and other gelatinous zooplankton",
-                     "Other macro-benthos", "Other macro-benthos", "Other macro-benthos",
-                     "Other macro-benthos", "Other macro-benthos", "Other macro-benthos",
-                     "Other macro-benthos", "Other macro-benthos",
-                     "Other corals and gorgonians", "Other corals and gorgonians",
-                     "Other macro-benthos")
-)
+  Class = c("Holothuroidea", 
+            "Asteroidea",  "Echinoidea",
+             "Ophiuroidea"),
+  fg_name_target = c("Sea cucumbers","Other macro-benthos", "Other macro-benthos",
+                     "Other macro-benthos"))
 ORDER_RULES <- data.table(
-  Order = c("Torpediniformes", "Alcyonacea", "Scleractinia", "Decapoda", "Actiniaria"),
-  fg_name_target = c("Torpedos", "Other corals and gorgonians", "Other corals and gorgonians",
-                     "Non-commercial decapods", "Other macro-benthos")
-)
+  Order = c( "Decapoda"),
+  fg_name_target = c("Non-commercial decapods"))
 PHYLUM_RULES <- data.table(
-  Phylum = c("Annelida", "Bryozoa", "Cnidaria", "Porifera"),
-  fg_name_target = c("Other macro-benthos", "Other macro-benthos",
+  Phylum = c("Bryozoa", "Cnidaria", "Porifera"),
+  fg_name_target = c("Other macro-benthos",
                      "Other macro-benthos", "Other macro-benthos")
 )
-FAMILY_RULES <- data.table(
-  Family = c("Mugilidae"),
-  fg_name_target = c("Mugilidae")
-)
+
 
 resolve_fg_name <- function(rules_dt) {
   merge(rules_dt, unique(fg_lookup[, .(FG_num, FG_name)]),
@@ -390,7 +378,6 @@ resolve_fg_name <- function(rules_dt) {
 }
 CLASS_RULES  <- resolve_fg_name(CLASS_RULES)
 ORDER_RULES  <- resolve_fg_name(ORDER_RULES)
-FAMILY_RULES <- resolve_fg_name(FAMILY_RULES)
 PHYLUM_RULES <- resolve_fg_name(PHYLUM_RULES)
 
 message("\nRule resolution check (FG_num should NOT be NA for any row - if it is,",

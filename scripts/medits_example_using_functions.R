@@ -23,7 +23,7 @@ new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
-source("/Users/andreaobradors/Downloads/survey_fg_density_functions.R")
+source("/Users/andreaobradors/Documents/GitHub/WMed_EwE/scripts/survey_fg_density_functions.R")
 source("/Users/andreaobradors/Documents/GitHub/WMed_EwE/scripts/worms_taxonomy_lookup.R")
 
 ## =================================================================
@@ -392,6 +392,17 @@ dt <- dt[AreaID %in% FILTER_AREAS]
 ## flag for review - only fires with real confidence.
 dt <- remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = DROP_OUTLIERS)
 
+## save right here, before dt moves on to compute_fg_densities_by_stratum()
+## etc. below - those functions weren't designed to know about or
+## preserve the flagged_outliers attribute, so it needs to be pulled
+## off now rather than later.
+flagged_outliers <- attr(dt, "flagged_outliers")
+if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
+  fwrite(flagged_outliers, file.path(out_dir, "survey_outliers_flagged.csv"))
+  message("Saved ", nrow(flagged_outliers), " flagged outlier(s) to survey_outliers_flagged.csv",
+          " (includes a 'was_dropped' column - TRUE if actually removed, FALSE if only reported).")
+}
+
 per_group_fg <- compute_fg_densities_by_stratum(dt, strata = STRATA)
 
 ## total sample count, computed from the FULL dt (every species/FG
@@ -460,23 +471,37 @@ if (STRATA) {
 fwrite(fg_index, file.path(out_dir, "survey_fg_annual_index.csv"))
 fwrite(fg_index_regional, file.path(out_dir, "survey_fg_annual_index_regional.csv"))
 
-## species_taxonomy for the new FG_composition sheet - combines
-## fg_lookup_safe's own taxonomy (already fetched earlier, for the
-## direct-match reference species) with whatever fallback_match_fg_by_
-## taxonomy() fetched for species that needed genus/family/etc.
-## fallback matching. Together these should cover most species that
-## actually appear in species_density_regional; any still missing just
-## get blank taxonomy columns in that sheet (flagged by the function's
-## own message when it runs) rather than blocking the export.
+## species_taxonomy for the FG_spp sheet - starts from fg_lookup_safe's
+## own taxonomy (reference species) plus whatever fallback_match_fg_by_
+## taxonomy() fetched (species needing genus/family/etc. fallback), then
+## explicitly checks for and fetches ANY remaining gap. This matters
+## because manually-overridden species (MANUAL_OVERRIDES, Step 3) never
+## go through fallback_match_fg_by_taxonomy() at all - they're already
+## matched by the time that function runs, so their taxonomy was never
+## fetched via that path, and neither fg_lookup_safe nor
+## fetched_taxonomy would have them. Explicitly closing that gap here
+## rather than leaving it to be silently blank.
 species_taxonomy <- unique(rbindlist(list(
   fg_lookup_safe[, .(ScientificName, Genus, Family, Order, Class, Phylum)],
   attr(dt, "fetched_taxonomy")
 ), fill = TRUE), by = "ScientificName")
 
+species_actually_used <- unique(species_density_regional$ScientificName)
+still_missing_taxonomy <- setdiff(species_actually_used, species_taxonomy$ScientificName)
+if (length(still_missing_taxonomy) > 0) {
+  message("\n", length(still_missing_taxonomy), " species in species_density_regional have no",
+          " taxonomy yet (likely matched via MANUAL_OVERRIDES, which doesn't fetch taxonomy) -",
+          " fetching directly for these:")
+  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "worms")
+  species_taxonomy <- rbindlist(list(species_taxonomy, gap_taxonomy), fill = TRUE)
+  species_taxonomy <- unique(species_taxonomy, by = "ScientificName")
+}
+
 export_ecopath_ecosim_excel(
   fg_index_regional = fg_index_regional,
   species_density_regional = species_density_regional,
   n_samples_by_area_year = n_samples_by_stratum[, .(n_samples = sum(n_samples)), by = .(AreaID, Year)],
+  dataframe2 = dataframe2,
   year_ecopath = YEAR_ECOPATH,
   ts_years = TS_YEARS,
   out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
@@ -484,3 +509,4 @@ export_ecopath_ecosim_excel(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
+

@@ -725,6 +725,7 @@ remove_sample_outliers <- function(dt, threshold = 70, min_samples = 5, drop_out
   flagged <- dt[is_outlier == TRUE, .(ScientificName, AreaID, Year, SampleID,
                                       flagged_density = Density, typical_density = expm1(group_median), robust_z)]
   setorder(flagged, -robust_z)
+  flagged[, was_dropped := drop_outliers]
   
   if (nrow(flagged) > 0) {
     message("\n", nrow(flagged), " sample-level observation(s) flagged as high-confidence",
@@ -747,6 +748,7 @@ remove_sample_outliers <- function(dt, threshold = 70, min_samples = 5, drop_out
   }
   
   dt[, c("obs_id", "eval_value", "group_median", "group_mad", "n_obs_in_group", "robust_z", "is_outlier") := NULL]
+  attr(dt, "flagged_outliers") <- flagged
   dt
 }
 
@@ -1051,7 +1053,7 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
               " polygon - no evidence of a projection mismatch or bad coordinates.")
     }
     
-    p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.4, color = "black")
+    p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.15, color = "black")
     message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
             if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
   } else {
@@ -1199,7 +1201,7 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
 ## verify this format against it directly.
 
 export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
-                                        n_samples_by_area_year, year_ecopath = 1994:1996,
+                                        n_samples_by_area_year, dataframe2, year_ecopath = 1994:1996,
                                         ts_years = NULL, out_path, species_taxonomy = NULL) {
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
   
@@ -1212,11 +1214,13 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   required_cols <- list(
     fg_index_regional = c("Year", "FG_num", "FG_name", "mean_density"),
     species_density_regional = c("Year", "FG_num", "FG_name", "ScientificName", "mean_density"),
-    n_samples_by_area_year = c("AreaID", "Year", "n_samples")
+    n_samples_by_area_year = c("AreaID", "Year", "n_samples"),
+    dataframe2 = c("FG_num", "FG_name")
   )
   args_to_check <- list(fg_index_regional = fg_index_regional,
                         species_density_regional = species_density_regional,
-                        n_samples_by_area_year = n_samples_by_area_year)
+                        n_samples_by_area_year = n_samples_by_area_year,
+                        dataframe2 = dataframe2)
   for (arg_name in names(required_cols)) {
     missing <- setdiff(required_cols[[arg_name]], names(args_to_check[[arg_name]]))
     if (length(missing) > 0) {
@@ -1228,29 +1232,95 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     }
   }
   
-  ## --- FG_spp sheet ---------------------------------------------------------
-  fg_spp_sheet <- species_density_regional[
-    Year %in% year_ecopath, .(Biomass = mean(mean_density, na.rm = TRUE)),
+  full_fg_list <- unique(dataframe2[, .(FG_num, FG_name)]); setorder(full_fg_list, FG_num)
+  
+  ## --- FG_spp sheet -----------------------------------------------------------
+  ## IMPORTANT: built from the FULL species_density_regional (every
+  ## year), NOT filtered to year_ecopath first. A species genuinely
+  ## belongs to its FG regardless of which years it happened to be
+  ## sampled in - filtering to year_ecopath before building the row
+  ## list was silently dropping any species (or, for the Ecopath sheet
+  ## below, entire FGs) with no observations in that specific 3-year
+  ## window, even though they're correctly matched and have real data
+  ## for other years. Species/FGs not sampled in year_ecopath still get
+  ## a row here, just with a blank Density_<base years> value for that
+  ## column specifically - "no data for this period" is different
+  ## information from "doesn't belong to this FG", and collapsing them
+  ## by omitting the row entirely was losing that distinction.
+  all_species_fg <- unique(species_density_regional[, .(FG_num, FG_name, Species = ScientificName)])
+  density_in_base_years <- species_density_regional[
+    Year %in% year_ecopath, .(Density = mean(mean_density, na.rm = TRUE)),
     by = .(FG_num, FG_name, Species = ScientificName)]
-  setorder(fg_spp_sheet, FG_num, Species)
+  fg_spp_sheet <- merge(all_species_fg, density_in_base_years,
+                        by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
+  
+  ## prop_sp_fg: this species' share of its FG's total density among
+  ## species that DO have base-year data (NA Density species can't
+  ## contribute a proportion, and don't affect other species' shares)
+  fg_spp_sheet[, fg_total_density := sum(Density, na.rm = TRUE), by = FG_num]
+  fg_spp_sheet[, prop_sp_fg := ifelse(fg_total_density > 0, Density / fg_total_density, NA_real_)]
+  fg_spp_sheet[, fg_total_density := NULL]
+  
+  if (!is.null(species_taxonomy)) {
+    n_before_tax <- nrow(fg_spp_sheet)
+    fg_spp_sheet <- merge(fg_spp_sheet, species_taxonomy, by.x = "Species", by.y = "ScientificName", all.x = TRUE)
+    n_missing_tax <- fg_spp_sheet[is.na(Genus) & is.na(Family) & is.na(Class), .N]
+    if (n_missing_tax > 0) {
+      message("NOTE: ", n_missing_tax, " of ", n_before_tax, " species in FG_spp have no taxonomy",
+              " match in species_taxonomy - these rows will have blank taxonomy columns:")
+      print(fg_spp_sheet[is.na(Genus) & is.na(Family) & is.na(Class), .(Species)])
+    }
+  } else {
+    message("species_taxonomy not provided - FG_spp will have no taxonomy columns",
+            " (pass a data.table with ScientificName, Genus, Family, Order, Class, Phylum to include them).")
+  }
+  setorder(fg_spp_sheet, FG_num, -prop_sp_fg)
+  
+  ## sanity check - each FG's proportions should sum to ~1 (only checked
+  ## where any species had base-year data at all, otherwise 0/0 is
+  ## expected and not a problem)
+  prop_check <- fg_spp_sheet[, .(total_prop = sum(prop_sp_fg, na.rm = TRUE)), by = FG_num]
+  prop_check <- prop_check[total_prop > 0]
+  if (any(abs(prop_check$total_prop - 1) > 0.01)) {
+    message("WARNING: some FG(s) have prop_sp_fg not summing to ~1 - check for NA Density",
+            " values within that FG:")
+    print(prop_check[abs(total_prop - 1) > 0.01])
+  }
   
   ## --- Ecopath sheet ----------------------------------------------------------
+  ## Built from full_fg_list (every FG in dataframe2), not from
+  ## fg_index_regional directly - an FG with zero observed biomass in
+  ## year_ecopath (e.g. nothing in that FG was caught during the base
+  ## years specifically) still needs a row for Ecopath model-building,
+  ## just with blank biomass rather than being silently absent from the
+  ## whole sheet.
   base_year <- year_ecopath[1]
-  ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, FG_name, Biomass_baseyear = mean_density)]
+  ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
   ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
-                                    .(Biomass_avg = mean(mean_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
-  ecopath_sheet <- merge(ecopath_base, ecopath_avg, by = c("FG_num", "FG_name"), all = TRUE)
+                                    .(Biomass_avg = mean(mean_density, na.rm = TRUE)), by = FG_num]
+  ecopath_sheet <- merge(full_fg_list, ecopath_base, by = "FG_num", all.x = TRUE)
+  ecopath_sheet <- merge(ecopath_sheet, ecopath_avg, by = "FG_num", all.x = TRUE)
   setnames(ecopath_sheet, c("Biomass_baseyear", "Biomass_avg"),
            c(paste0("Biomass_", base_year), paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath))))
   setorder(ecopath_sheet, FG_num)
   
+  n_fg_no_biomass <- ecopath_sheet[is.na(get(paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath)))), .N]
+  if (n_fg_no_biomass > 0) {
+    message(n_fg_no_biomass, " of ", nrow(ecopath_sheet), " FG(s) have no observed biomass in ",
+            min(year_ecopath), "-", max(year_ecopath), " - included with blank biomass, not omitted:")
+    print(ecopath_sheet[is.na(get(paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath)))), .(FG_num, FG_name)])
+  }
+  
   ## --- Ecosim sheet -----------------------------------------------------------
+  ## Also built from full_fg_list for the same reason - every FG gets a
+  ## column, even one with no data at all across the whole time series
+  ## (its column will just be all-blank/all-zero depending on
+  ## years_with_effort, same logic as before).
   if (is.null(ts_years)) {
     ts_years <- min(fg_index_regional$Year, na.rm = TRUE):max(fg_index_regional$Year, na.rm = TRUE)
   }
   years_with_effort <- sort(unique(n_samples_by_area_year[Year %in% ts_years, Year]))
   
-  fg_list <- unique(fg_index_regional[, .(FG_num, FG_name)]); setorder(fg_list, FG_num)
   build_ts_column <- function(fg_num) {
     vals <- fg_index_regional[FG_num == fg_num, .(Year, mean_density)]
     full_years <- data.table(Year = ts_years)
@@ -1261,53 +1331,15 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   ecosim_sheet <- data.table(` ` = c(meta_labels, as.character(ts_years)))
-  for (i in seq_len(nrow(fg_list))) {
-    fg_num <- fg_list$FG_num[i]; fg_name <- fg_list$FG_name[i]
+  for (i in seq_len(nrow(full_fg_list))) {
+    fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
     ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))
     col <- c(ts_name, "Biomass (relative)", "reference", "relative", "1",
              paste0(fg_num, ": ", fg_name), "", "Annual", as.character(build_ts_column(fg_num)))
     ecosim_sheet[, (paste0("fg_", fg_num)) := col]
   }
   
-  ## --- FG_composition sheet (optional, needs species_taxonomy) -------------
-  ## FG_num, FG_name, Species, Density, prop_sp_fg (this species' share
-  ## of its FG's total density, i.e. how much it dominates - or doesn't
-  ## - the group it's been assigned to) and taxonomy. Useful as direct
-  ## input to FG-level PB/QB calculation: a biomass-weighted PB/QB for
-  ## an FG needs exactly this - which species make it up, in what
-  ## proportion, and enough taxonomy to run a method like Brey's ANN
-  ## model per species before rolling up to the FG.
   sheets_to_write <- list(FG_spp = fg_spp_sheet, Ecopath = ecopath_sheet, Ecosim = ecosim_sheet)
-  
-  if (!is.null(species_taxonomy)) {
-    fg_composition <- copy(fg_spp_sheet)
-    fg_composition[, fg_total_density := sum(Biomass, na.rm = TRUE), by = FG_num]
-    fg_composition[, prop_sp_fg := ifelse(fg_total_density > 0, Biomass / fg_total_density, NA_real_)]
-    fg_composition[, fg_total_density := NULL]
-    setnames(fg_composition, "Biomass", "Density")
-    
-    n_before_tax <- nrow(fg_composition)
-    fg_composition <- merge(fg_composition, species_taxonomy, by.x = "Species", by.y = "ScientificName", all.x = TRUE)
-    n_missing_tax <- fg_composition[is.na(Genus) & is.na(Family) & is.na(Class), .N]
-    if (n_missing_tax > 0) {
-      message("NOTE: ", n_missing_tax, " of ", n_before_tax, " species in FG_composition have no",
-              " taxonomy match in species_taxonomy - these rows will have blank taxonomy columns.")
-    }
-    setorder(fg_composition, FG_num, -prop_sp_fg)
-    sheets_to_write$FG_composition <- fg_composition
-    
-    ## sanity check - each FG's proportions should sum to ~1
-    prop_check <- fg_composition[, .(total_prop = sum(prop_sp_fg, na.rm = TRUE)), by = FG_num]
-    if (any(abs(prop_check$total_prop - 1) > 0.01)) {
-      message("WARNING: some FG(s) have prop_sp_fg not summing to ~1 - check for NA Density",
-              " values within that FG:")
-      print(prop_check[abs(total_prop - 1) > 0.01])
-    }
-  } else {
-    message("species_taxonomy not provided - skipping FG_composition sheet",
-            " (pass a data.table with ScientificName, Genus, Family, Order, Class, Phylum to include it).")
-  }
-  
   openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
   message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
   invisible(sheets_to_write)
