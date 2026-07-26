@@ -147,10 +147,11 @@ The pipeline covers several conceptually distinct problems in sequence:
 ```{mermaid}
 %%| label: fig-flow-overview
 %%| fig-cap: "Pipeline overview - FG matching and density/weighting each expand into their own sub-flow below."
+%%| eval: true
 flowchart LR
-    A[Input data<br/><small>dataframe1 + FG ref</small>] --> B[FG matching<br/><small>see detail below</small>]
-    B --> C[Density &amp; weighting<br/><small>see detail below</small>]
-    C --> D[Outputs<br/><small>Excel, plots, CSV</small>]
+    A["Input data (dataframe1 + FG ref)"] --> B["FG matching (see detail below)"]
+    B --> C["Density and weighting (see detail below)"]
+    C --> D["Outputs (Excel, plots, CSV)"]
 
     classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
     classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
@@ -165,11 +166,12 @@ flowchart LR
 ```{mermaid}
 %%| label: fig-flow-fg-matching
 %%| fig-cap: "FG matching detail (@sec-fg-matching) - each stage only attempts species the previous one left unmatched; species still unmatched after seed rules go to manual review."
+%%| eval: true
 flowchart LR
-    A1[Direct match<br/><small>ScientificName lookup</small>] --> A2[Nominate subspp.<br/><small>Repeated-word names</small>]
-    A2 --> A3[Taxonomy fallback<br/><small>Genus to phylum</small>]
-    A3 --> A4[Seed rules<br/><small>Rank to FG, no data</small>]
-    A4 --> A5[Manual review]
+    A1["Direct match (ScientificName lookup)"] --> A2["Nominate subspp. (repeated-word names)"]
+    A2 --> A3["Taxonomy fallback (genus to phylum)"]
+    A3 --> A4["Seed rules (rank to FG, no data)"]
+    A4 --> A5["Manual review"]
 
     classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
     classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
@@ -180,11 +182,12 @@ flowchart LR
 ```{mermaid}
 %%| label: fig-flow-density-weighting
 %%| fig-cap: "Density and weighting detail (@sec-density, @sec-strata-weighted, @sec-regional) - dashed boxes are conditional steps, skipped if their condition isn't met."
+%%| eval: true
 flowchart LR
-    B1[Sample density<br/><small>Biomass / effort</small>] --> B2([Catchability<br/><small>if q table given</small>])
-    B2 --> B3[Outlier removal<br/><small>Per species, per area</small>]
-    B3 --> B4([Strata weighting<br/><small>if strata = true</small>])
-    B4 --> B5([Area weighting<br/><small>if more than one area</small>])
+    B1["Sample density (biomass / effort)"] --> B2(["Catchability (if q table given)"])
+    B2 --> B3["Outlier removal (per species, per area)"]
+    B3 --> B4(["Strata weighting (if strata = true)"])
+    B4 --> B5(["Area weighting (if more than one area)"])
 
     classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
     class B1,B3 teal
