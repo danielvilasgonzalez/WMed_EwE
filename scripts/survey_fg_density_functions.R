@@ -621,19 +621,35 @@ match_samples_to_area <- function(dt, area_shp, area_id_col) {
 ## (same structure as MEDITS_STRATA in the original pipeline) - pass
 ## your survey's own depth strata definition here, or reuse
 ## MEDITS_STRATA-style bounds if genuinely the same design.
+##
+## Supports fully pre-assigned strata (every row already has Stratum -
+## skips depth-derivation entirely), PARTIALLY pre-assigned strata
+## (some rows have it, some don't - existing values are preserved,
+## only the missing ones are derived from Depth), or no Stratum column
+## at all (fully derived from Depth).
 assign_depth_stratum <- function(dt, strata_def) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
   if ("Stratum" %in% names(dt) && all(!is.na(dt$Stratum))) {
-    message("Stratum already present in all rows - skipping depth-based assignment.")
+    message("Stratum already present in all rows - skipping depth-based assignment entirely.")
     dt[, Stratum := as.integer(Stratum)]
     return(dt)
   }
   if (!"Depth" %in% names(dt)) {
     stop("No Stratum and no Depth column - can't derive strata.")
   }
-  dt[, Stratum := strata_def$stratum_num[
-    findInterval(Depth, strata_def$depth_min, all.inside = TRUE)]]
-  dt[Depth < min(strata_def$depth_min) | Depth > max(strata_def$depth_max), Stratum := NA_integer_]
+  
+  if (!"Stratum" %in% names(dt)) dt[, Stratum := NA_integer_]
+  dt[, Stratum := as.integer(Stratum)]
+  n_preassigned <- dt[!is.na(Stratum), .N]
+  if (n_preassigned > 0) {
+    message(n_preassigned, " row(s) already have a Stratum value - kept as-is.",
+            " Deriving from Depth only for the remaining rows that don't.")
+  }
+  
+  dt[, derived_stratum := strata_def$stratum_num[findInterval(Depth, strata_def$depth_min, all.inside = TRUE)]]
+  dt[Depth < min(strata_def$depth_min) | Depth > max(strata_def$depth_max), derived_stratum := NA_integer_]
+  dt[is.na(Stratum), Stratum := derived_stratum]
+  dt[, derived_stratum := NULL]
   
   n_out <- dt[is.na(Stratum), .N]
   if (n_out > 0) {
@@ -646,6 +662,66 @@ assign_depth_stratum <- function(dt, strata_def) {
             " or a data issue (e.g. a unit mismatch), rather than assuming either.")
   }
   dt
+}
+
+## =================================================================
+## Custom sub-region filtering - lets you extract survey data for a
+## DIFFERENT model boundary than the GSA polygons used elsewhere in
+## this pipeline. Useful when the same underlying survey data needs to
+## support multiple EwE models covering different, possibly smaller or
+## differently-shaped areas within the broader survey region (e.g. a
+## specific bay, a sub-area spanning parts of several GSAs, or any
+## other custom boundary that doesn't line up with GSA lines at all).
+##
+## filter_type = "shapefile": area_filter is an sf polygon object (or a
+## path to one) - only samples whose Lat/Lon fall within it are kept.
+## filter_type = "bbox": area_filter is a named vector/list with xmin,
+## xmax, ymin, ymax (decimal degrees) - a simple rectangular filter,
+## no shapefile needed.
+##
+## This is independent of AreaID/GSA - a sample can be kept or dropped
+## by this filter regardless of which GSA it's assigned to, since the
+## custom boundary may not respect GSA lines at all. Apply this BEFORE
+## match_samples_to_area()/assign_depth_stratum() if you want strata
+## area calculations etc. to only reflect the custom sub-region, not
+## the full GSA.
+## =================================================================
+
+filter_samples_by_area <- function(dt, area_filter, filter_type = c("shapefile", "bbox"), points_crs = 4326) {
+  filter_type <- match.arg(filter_type)
+  if (!all(c("Lat", "Lon") %in% names(dt))) {
+    stop("filter_samples_by_area() needs Lat/Lon columns in dt to determine which",
+         " samples fall within the custom area.")
+  }
+  dt <- copy(dt)
+  
+  sample_pts_dt <- unique(dt[!is.na(Lat) & !is.na(Lon), .(SampleID, Lat, Lon)])
+  sample_pts_sf <- st_as_sf(sample_pts_dt, coords = c("Lon", "Lat"), crs = points_crs, remove = FALSE)
+  
+  if (filter_type == "shapefile") {
+    if (is.character(area_filter)) area_filter <- st_read(area_filter, quiet = TRUE)
+    if (is.na(st_crs(area_filter))) {
+      stop("area_filter has no CRS defined - set it explicitly (st_crs(area_filter) <- ...) or",
+           " st_transform() it to a known CRS before calling this.")
+    }
+    area_filter <- st_transform(area_filter, points_crs)
+    within_area <- lengths(st_intersects(sample_pts_sf, st_union(area_filter))) > 0
+  } else {
+    required <- c("xmin", "xmax", "ymin", "ymax")
+    missing <- setdiff(required, names(area_filter))
+    if (length(missing) > 0) {
+      stop("filter_type='bbox' needs area_filter to have: ", paste(required, collapse = ", "),
+           " - missing: ", paste(missing, collapse = ", "))
+    }
+    within_area <- sample_pts_dt$Lon >= area_filter["xmin"] & sample_pts_dt$Lon <= area_filter["xmax"] &
+      sample_pts_dt$Lat >= area_filter["ymin"] & sample_pts_dt$Lat <= area_filter["ymax"]
+  }
+  
+  keep_ids <- sample_pts_dt$SampleID[within_area]
+  message(length(keep_ids), " of ", nrow(sample_pts_dt), " sample(s) fall within the custom",
+          " area filter (", filter_type, ") and are kept; ", nrow(sample_pts_dt) - length(keep_ids),
+          " fall outside and are dropped.")
+  dt[SampleID %in% keep_ids]
 }
 
 ## =================================================================
@@ -662,6 +738,225 @@ assign_depth_stratum <- function(dt, strata_def) {
 compute_sample_densities <- function(dt) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
   dt[, Density := Biomass / Effort]
+  dt
+}
+
+## =================================================================
+## Catchability correction - trawl surveys don't catch 100% of what's
+## actually in the swept area (some individuals escape under/over/
+## around the net, avoid it entirely, etc.), so the raw survey density
+## (Biomass/Effort) is a systematic UNDERESTIMATE of true density for
+## most species, by an amount that varies by species (behavior, size,
+## how well it's caught by this particular gear). Catchability (q,
+## typically 0 < q <= 1) corrects this: true_density = raw_density / q.
+##
+## Dividing Biomass by q before Density is computed, or dividing
+## Density by q after, are mathematically equivalent (Density =
+## Biomass/Effort, and Effort doesn't change) - this divides Density
+## directly since that's the quantity every downstream function
+## actually uses.
+##
+## catchability_table: data.table with ScientificName and q columns -
+## rename/reshape your source to exactly these two column names before
+## calling this (drop anything else, e.g. an FG/FG_name column if your
+## source has one - not needed here).
+##
+## Matching proceeds through several levels, most specific first, each
+## one only filling in species still unresolved by the level(s) before it:
+##   1. Direct species match (table has an entry for this exact species)
+##   2. Genus-level "spp" entries (e.g. "Cirolana spp" matches any
+##      species in genus Cirolana)
+##   3. Explicit broader-rank entries (e.g. the table has a row literally
+##      named "Isopoda"/"Hydrozoa"/"Cnidaria" - tried as Order, then
+##      Class, then Phylum)
+##   4. Taxonomic-proximity fallback: for species still unmatched, look
+##      for OTHER species already in the table (from step 1) that share
+##      the same Genus, then Family, then Order, and borrow the average
+##      of their q values - different from step 3, which only fires if
+##      the table has an entry EXPLICITLY named after the rank itself;
+##      this instead finds relatives among the table's own species rows
+##      even when no such explicit broader entry exists.
+##   5. default_q for anything still unresolved after all of the above.
+## Needs species_taxonomy (ScientificName, Genus, Family, Order, Class,
+## Phylum) for steps 2-4 - species-level-only matching (step 1) still
+## works without it.
+##
+## exempt_fg_names / exempt_species: force q=1 (no correction) for
+## specific FGs or species, REGARDLESS of what steps 1-5 would
+## otherwise resolve - applied last, so it always wins. Intended for
+## groups a bottom trawl survey isn't designed to sample
+## representatively at all (pelagic/planktonic taxa, seagrass/algae) -
+## for these, "catchability" as a concept doesn't really apply the same
+## way, so no correction is more appropriate than any resolved q.
+## =================================================================
+
+apply_catchability_correction <- function(dt, catchability_table, default_q = 1, species_taxonomy = NULL,
+                                          exempt_fg_names = NULL, exempt_species = NULL) {
+  dt <- copy(dt)
+  required <- c("ScientificName", "q")
+  missing <- setdiff(required, names(catchability_table))
+  if (length(missing) > 0) {
+    stop("apply_catchability_correction(): catchability_table is missing column(s): ",
+         paste(missing, collapse = ", "), ". Expected columns: ScientificName, q",
+         " (q = catchability coefficient, 0 < q <= 1, one row per species/group).")
+  }
+  bad_q <- catchability_table[!is.na(q) & (q <= 0 | q > 1)]
+  if (nrow(bad_q) > 0) {
+    message("WARNING: ", nrow(bad_q), " catchability_table entries have q outside the",
+            " expected (0, 1] range - check these aren't a units/scale mistake",
+            " (e.g. entered as a percentage, 0-100, instead of a fraction, 0-1):")
+    print(bad_q)
+  }
+  
+  ## classify each entry by apparent taxonomic level, purely from its
+  ## text shape - "Genus species" (two words) -> species level;
+  ## "Genus spp" / "Genus spp." (second word is "spp"/"spp.") ->
+  ## genus level; anything else (one word) -> broader rank, tried
+  ## against Order/Class/Phylum
+  ct <- copy(catchability_table)
+  ct[, n_words := lengths(strsplit(trimws(ScientificName), "\\s+"))]
+  ct[, second_word := sapply(strsplit(trimws(ScientificName), "\\s+"), function(w) if (length(w) >= 2) w[2] else NA_character_)]
+  ct[, level := fcase(
+    n_words >= 2 & !second_word %in% c("spp", "spp."), "species",
+    n_words >= 2 & second_word %in% c("spp", "spp."), "genus",
+    default = "broad_rank"
+  )]
+  ## match_value is initialized as character FIRST, before any
+  ## level-specific := assignment below - this matters because of a
+  ## real data.table gotcha: if a level (e.g. "genus") happens to match
+  ## zero rows in ct, `ct[level=="genus", match_value := sapply(...)]`
+  ## still creates the new column from that zero-row assignment's
+  ## result type, and sapply() over empty input returns list() rather
+  ## than character(0) - so match_value would get created as type
+  ## list, silently corrupting every later assignment to that same
+  ## column (including the real, non-empty species-level one) into
+  ## list-wrapped values instead of plain strings, which then breaks
+  ## the merge() below with "x.ScientificName is type list which is
+  ## not supported by data.table join". Explicitly setting the type
+  ## here first avoids this regardless of which levels are present.
+  ct[, match_value := NA_character_]
+  ct[level == "genus", match_value := sapply(strsplit(trimws(ScientificName), "\\s+"), `[`, 1)]
+  ct[level %in% c("species", "broad_rank"), match_value := trimws(ScientificName)]
+  
+  message("catchability_table entries classified by level: ",
+          paste(names(table(ct$level)), table(ct$level), sep = "=", collapse = ", "))
+  
+  species_q <- ct[level == "species", .(ScientificName = match_value, q)]
+  genus_q   <- ct[level == "genus",   .(Genus = match_value, q)]
+  broad_q   <- ct[level == "broad_rank", .(match_value, q)]
+  
+  dt[, q_resolved := NA_real_]
+  dt[, match_level := NA_character_]
+  
+  ## 1. direct species match (most specific, applied first so nothing
+  ## below overwrites it)
+  dt <- merge(dt, species_q, by = "ScientificName", all.x = TRUE, suffixes = c("", "_sp"))
+  dt[is.na(q_resolved) & !is.na(q), `:=`(q_resolved = q, match_level = "species")]
+  dt[, q := NULL]
+  
+  if (!is.null(species_taxonomy)) {
+    dt <- merge(dt, species_taxonomy[, .(ScientificName, Genus, Family, Order, Class, Phylum)],
+                by = "ScientificName", all.x = TRUE)
+    
+    ## species_q's OWN taxonomy - needed for the proximity fallback at
+    ## each rank tier below (relatives are found among catchability_
+    ## table's own species-level rows, not dt's species)
+    species_q_tax <- merge(species_q, species_taxonomy, by = "ScientificName")
+    
+    ## helper: apply proximity fallback at a single rank - borrows the
+    ## average q of species_q's own rows sharing that rank value
+    apply_proximity_at_rank <- function(dt, rank_col) {
+      proximity_q <- species_q_tax[!is.na(get(rank_col)), .(q_prox = mean(q, na.rm = TRUE)), by = rank_col]
+      if (nrow(proximity_q) == 0) return(dt)
+      dt <- merge(dt, proximity_q, by = rank_col, all.x = TRUE)
+      newly_resolved <- dt[is.na(q_resolved) & !is.na(q_prox), .N]
+      if (newly_resolved > 0) {
+        message(newly_resolved, " row(s) resolved via ", rank_col, "-level taxonomic proximity",
+                " (borrowed from related species already in catchability_table).")
+      }
+      dt[is.na(q_resolved) & !is.na(q_prox), `:=`(q_resolved = q_prox, match_level = paste0(rank_col, " (proximity, borrowed)"))]
+      dt[, q_prox := NULL]
+      dt
+    }
+    
+    ## helper: apply an explicit broad-rank entry (e.g. table has a row
+    ## literally named "Isopoda") at a single rank
+    apply_explicit_at_rank <- function(dt, rank_col) {
+      rank_q <- broad_q[match_value %in% unique(dt[[rank_col]])]
+      if (nrow(rank_q) == 0) return(dt)
+      setnames(rank_q, "match_value", rank_col)
+      dt <- merge(dt, rank_q, by = rank_col, all.x = TRUE, suffixes = c("", paste0("_", tolower(rank_col))))
+      dt[is.na(q_resolved) & !is.na(q), `:=`(q_resolved = q, match_level = paste0(rank_col, " (explicit entry)"))]
+      dt[, q := NULL]
+      dt
+    }
+    
+    ## IMPORTANT ordering: processed rank-by-rank, most to least
+    ## specific (Genus -> Family -> Order -> Class -> Phylum) - at each
+    ## rank, BOTH the explicit entry (where that rank supports one) and
+    ## the proximity fallback are tried before moving to a broader
+    ## rank. This is what makes a genus-level proximity match correctly
+    ## beat a broader but explicit order-level entry - rank specificity
+    ## takes priority over whether the match was explicit vs inferred,
+    ## matching "closest related by genus, family, order" as requested.
+    ## 2. genus-level: explicit "Genus spp" entries, then proximity
+    dt <- merge(dt, genus_q, by = "Genus", all.x = TRUE, suffixes = c("", "_gen"))
+    dt[is.na(q_resolved) & !is.na(q), `:=`(q_resolved = q, match_level = "genus (spp entry)")]
+    dt[, q := NULL]
+    dt <- apply_proximity_at_rank(dt, "Genus")
+    
+    ## 3. family-level: proximity only (no "Family spp"-style notation)
+    dt <- apply_proximity_at_rank(dt, "Family")
+    
+    ## 4. order-level: explicit entry, then proximity
+    dt <- apply_explicit_at_rank(dt, "Order")
+    dt <- apply_proximity_at_rank(dt, "Order")
+    
+    ## 5. class-level: explicit entry only
+    dt <- apply_explicit_at_rank(dt, "Class")
+    
+    ## 6. phylum-level: explicit entry only
+    dt <- apply_explicit_at_rank(dt, "Phylum")
+    
+    dt[, c("Genus", "Family", "Order", "Class", "Phylum") := NULL]
+  } else if (nrow(genus_q) > 0 || nrow(broad_q) > 0) {
+    message("WARNING: catchability_table has ", nrow(genus_q) + nrow(broad_q), " genus/order/class/phylum-level",
+            " entries, but species_taxonomy wasn't provided - these, and the taxonomic-proximity fallback,",
+            " can't be resolved and will fall back to default_q. Pass species_taxonomy to enable them.")
+  }
+  
+  ## 7. exemptions - override everything above, always q=1
+  n_exempt <- 0
+  if (!is.null(exempt_fg_names) && "FG_name" %in% names(dt)) {
+    n_exempt <- n_exempt + dt[FG_name %in% exempt_fg_names & (is.na(q_resolved) | q_resolved != 1), uniqueN(ScientificName)]
+    dt[FG_name %in% exempt_fg_names, `:=`(q_resolved = 1, match_level = "exempt (FG)")]
+  }
+  if (!is.null(exempt_species)) {
+    n_exempt <- n_exempt + dt[ScientificName %in% exempt_species & (is.na(q_resolved) | q_resolved != 1), uniqueN(ScientificName)]
+    dt[ScientificName %in% exempt_species, `:=`(q_resolved = 1, match_level = "exempt (species)")]
+  }
+  if (n_exempt > 0) {
+    message(n_exempt, " species forced to q=1 via exempt_fg_names/exempt_species",
+            " (overrides any other match - e.g. pelagic/planktonic/algae groups a bottom trawl",
+            " isn't designed to sample representatively).")
+  }
+  
+  n_default <- dt[is.na(q_resolved) & !is.na(ScientificName), uniqueN(ScientificName)]
+  if (n_default > 0) {
+    message(n_default, " species have no matching entry in catchability_table at any level",
+            " (including taxonomic proximity) - using default_q = ", default_q, " for these:")
+    print(unique(dt[is.na(q_resolved) & !is.na(ScientificName), .(ScientificName)]))
+  }
+  dt[is.na(q_resolved), `:=`(q_resolved = default_q, match_level = "default_q")]
+  
+  message("\nCatchability match level breakdown (distinct species):")
+  print(unique(dt[, .(ScientificName, match_level)])[, .N, by = match_level][order(-N)])
+  
+  dt[, Density := Density / q_resolved]
+  dt[, Biomass := Biomass / q_resolved]
+  dt[, c("q_resolved", "match_level") := NULL]
+  message("\nCatchability correction applied - Density and Biomass divided by q",
+          " (species-specific where available, default_q = ", default_q, " otherwise).")
   dt
 }
 
@@ -985,7 +1280,8 @@ weight_by_area <- function(fg_index_stratified) {
 ## =================================================================
 
 plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations and coverage by area",
-                            by_year = FALSE, points_crs = 4326) {
+                            by_year = FALSE, points_crs = 4326, selected_areas = NULL, show_land = TRUE,
+                            land_on_top = FALSE) {
   message("area_shp CRS: ", if (is.na(st_crs(area_shp))) "MISSING/UNDEFINED" else st_crs(area_shp)$input)
   if (is.na(st_crs(area_shp))) {
     stop("area_shp has no CRS defined (st_crs(area_shp) is NA) - this is very likely the cause of a",
@@ -998,6 +1294,29 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
   ## explicit, common target CRS for both layers - not relying on
   ## automatic alignment between geom_sf() layers
   area_shp <- st_transform(area_shp, points_crs)
+  
+  ## Display extent = union of area_shp's own bbox AND the sample
+  ## points' own Lat/Lon distribution - NOT area_shp's bbox alone. A
+  ## small custom region (a bounding box for one specific model,
+  ## covering a fraction of the Mediterranean) would otherwise force
+  ## the whole map to zoom tightly into just that box, losing the
+  ## surrounding geographic context entirely - if dt itself carries the
+  ## full, unfiltered survey distribution (not pre-filtered to the
+  ## custom area), the map now shows that full context, with the
+  ## smaller region's contour highlighted within it via selected_areas.
+  area_bbox <- st_bbox(area_shp)
+  if (all(c("Lat", "Lon") %in% names(dt)) && dt[!is.na(Lat) & !is.na(Lon), .N] > 0) {
+    pts_bbox <- c(xmin = min(dt$Lon, na.rm = TRUE), xmax = max(dt$Lon, na.rm = TRUE),
+                  ymin = min(dt$Lat, na.rm = TRUE), ymax = max(dt$Lat, na.rm = TRUE))
+    display_bbox <- c(
+      xmin = min(unname(area_bbox["xmin"]), pts_bbox["xmin"]),
+      xmax = max(unname(area_bbox["xmax"]), pts_bbox["xmax"]),
+      ymin = min(unname(area_bbox["ymin"]), pts_bbox["ymin"]),
+      ymax = max(unname(area_bbox["ymax"]), pts_bbox["ymax"])
+    )
+  } else {
+    display_bbox <- area_bbox
+  }
   
   group_cols <- if (by_year) c("AreaID", "Year") else "AreaID"
   intensity <- dt[, .(n_samples = uniqueN(SampleID)), by = group_cols]
@@ -1022,12 +1341,176 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
     area_shp_plot$n_samples[is.na(area_shp_plot$n_samples)] <- 0
   }
   
-  p <- ggplot() +
+  p <- ggplot()
+  
+  ## Land basemap. Clipped to display_bbox (plus padding) - the FULL
+  ## extent computed above, not just area_shp's own bbox - so the whole
+  ## world isn't downloaded/rendered, just the region actually shown on
+  ## the map, while still covering the full sample distribution.
+  ##
+  ## land_on_top: when area_shp is a simple rectangle (a bounding-box
+  ## custom region, not a real coastline-aware shapefile like the GFCM
+  ## GSA polygons), the rectangle can genuinely overlap land - GSAs are
+  ## official marine-zone boundaries that don't, so land drawn first
+  ## (underneath, the default) is normally correct there. For a bbox,
+  ## draw land AFTER (on top of) the intensity fill instead, so any
+  ## part of the rectangle that's actually land is visibly masked -
+  ## only marine area should read as part of the study region, and a
+  ## plain rectangle can't know the coastline to exclude it itself.
+  build_land_layer <- function() {
+    tryCatch({
+      pad <- 0.5
+      xlim <- c(unname(display_bbox["xmin"]) - pad, unname(display_bbox["xmax"]) + pad)
+      ylim <- c(unname(display_bbox["ymin"]) - pad, unname(display_bbox["ymax"]) + pad)
+      
+      ## Temporarily disable S2 spherical geometry for the crop
+      ## specifically - S2 (sf's default) treats polygon edges as
+      ## great-circle arcs on the sphere, which can introduce visible
+      ## curvature in a rendered edge, particularly right where a crop
+      ## boundary cuts through a coastline and for lower-resolution
+      ## coastline data (this fallback's rnaturalearth scale=50, or the
+      ## maps package fallback, are both simplified/lower-detail than a
+      ## full-resolution coastline, where the difference between a
+      ## great-circle arc and a straight line becomes more visually
+      ## apparent over a longer, under-resolved edge segment). GEOS/
+      ## planar geometry (S2 off) crops with straight-line edges
+      ## instead. Restored via on.exit() regardless of how this
+      ## function exits, so it doesn't affect anything else in the
+      ## library that may depend on S2 being on (e.g. accurate area
+      ## calculations elsewhere).
+      old_s2 <- sf::sf_use_s2()
+      sf::sf_use_s2(FALSE)
+      on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+      
+      if (requireNamespace("rnaturalearth", quietly = TRUE)) {
+        countries <- rnaturalearth::ne_countries(scale = 50, returnclass = "sf")
+        countries <- st_transform(countries, points_crs)
+        suppressWarnings(st_crop(countries, c(xmin = xlim[1], xmax = xlim[2], ymin = ylim[1], ymax = ylim[2])))
+      } else if (requireNamespace("maps", quietly = TRUE)) {
+        ## fallback - lower-resolution coastline, but doesn't need
+        ## rnaturalearth/rnaturalearthdata installed. maps' own "world"
+        ## database commonly has invalid/self-intersecting geometries
+        ## once converted to sf (a known issue with this data source),
+        ## so st_make_valid() is required before cropping - without it
+        ## st_crop() throws a geometry error and the land layer would
+        ## silently fail to render, right back to the "transparent
+        ## land" symptom this is meant to fix.
+        message("rnaturalearth not installed - using maps package as a lower-resolution",
+                " fallback for the land basemap (install.packages('rnaturalearth') for better detail).")
+        world_map <- maps::map("world", plot = FALSE, fill = TRUE)
+        world_sf <- sf::st_as_sf(world_map)
+        st_crs(world_sf) <- 4326
+        world_sf <- st_make_valid(world_sf)
+        world_sf <- st_transform(world_sf, points_crs)
+        suppressWarnings(st_crop(world_sf, c(xmin = xlim[1], xmax = xlim[2], ymin = ylim[1], ymax = ylim[2])))
+      } else {
+        message("Neither rnaturalearth nor maps is installed - skipping land basemap layer",
+                " (install either package to enable, or set show_land=FALSE to silence this).")
+        NULL
+      }
+    }, error = function(e) {
+      message("Land basemap failed to load (", conditionMessage(e), ") - continuing without it.")
+      NULL
+    })
+  }
+  
+  land <- if (show_land) build_land_layer() else NULL
+  if (!is.null(land) && !land_on_top) {
+    p <- p + geom_sf(data = land, fill = "grey85", color = "grey60", linewidth = 0.2)
+  }
+  
+  p <- p +
     geom_sf(data = area_shp_plot, aes(fill = n_samples), color = "grey40", linewidth = 0.3) +
-    scale_fill_gradient(name = "Samples", low = "white", high = "#7f0000", na.value = "grey90") +
+    scale_fill_gradient(name = "Samples", low = "white", high = "#54278f", na.value = "grey90") +
+    ## default_crs makes the coordinate handling explicit (matching
+    ## points_crs) rather than relying on coord_sf()'s own default
+    ## logic for an unprojected/geographic CRS, which can otherwise
+    ## interpolate long polygon edges as curved great-circle arcs
+    ## rather than straight lines in the displayed projection.
+    coord_sf(xlim = c(unname(display_bbox["xmin"]) - 0.3, unname(display_bbox["xmax"]) + 0.3),
+             ylim = c(unname(display_bbox["ymin"]) - 0.3, unname(display_bbox["ymax"]) + 0.3),
+             default_crs = sf::st_crs(points_crs)) +
     labs(title = title) +
     theme_minimal(base_size = 11) +
-    theme(axis.title = element_blank())
+    theme(
+      axis.title = element_blank(),
+      ## graticule (lat/lon reference lines) drawn ON TOP of the land
+      ## and GSA fill layers via panel.ontop - otherwise ggplot's
+      ## default draws grid lines BEHIND the data, where they're
+      ## completely covered/invisible under any opaque fill.
+      ## panel.background needs fill=NA so the layers underneath still
+      ## show through once the grid panel is brought to the front.
+      panel.ontop = TRUE,
+      panel.background = element_rect(fill = NA),
+      panel.grid.major = element_line(color = scales::alpha("black", 0.4), linetype = "dashed", linewidth = 0.3),
+      panel.grid.minor = element_line(color = scales::alpha("black", 0.25), linetype = "dashed", linewidth = 0.2),
+      ## axis text (lat/lon tick labels) sits in the plot margin,
+      ## OUTSIDE the transparent panel above - but with panel.ontop
+      ## drawing the map content right up to that boundary, dark text
+      ## in the default theme_minimal() grey can get lost against a
+      ## busy map edge. Solid white plot.background plus black,
+      ## slightly bolder axis text keeps these readable regardless of
+      ## what's rendered directly under the panel.
+      plot.background = element_rect(fill = "white", color = NA),
+      axis.text = element_text(color = "black", face = "plain")
+    )
+  
+  ## land_on_top handling moved to AFTER the selected-area contour
+  ## block below - land needs to sit on top of the contour too, not
+  ## just the intensity fill, so it's drawn last (right before the
+  ## sample points, which always stay on top of everything).
+  
+  ## Highlight the areas actually being analyzed (e.g. FILTER_AREAS) -
+  ## outer contour only, not the internal lines where individual
+  ## selected GSAs border each other.
+  ##
+  ## IMPORTANT: plain st_union() can still leave visible artifacts at
+  ## the seams between adjacent polygons in a REAL shapefile, even
+  ## though it works cleanly on hand-built, perfectly-aligned test
+  ## polygons - real GIS data is rarely perfectly topologically snapped
+  ## (there can be tiny gaps/overlaps of a few map units at a shared
+  ## boundary from how the shapefile was originally digitized), and
+  ## st_union() preserves that imprecision rather than resolving it.
+  ## Rasterizing the unioned shape to a grid, then re-polygonizing with
+  ## dissolve=TRUE, sidesteps this: grid cells are simply inside or
+  ## outside the shape regardless of sub-cell vector imprecision, which
+  ## smooths over exactly the kind of seam artifact st_union() alone
+  ## can leave behind.
+  selected_shp <- NULL
+  if (!is.null(selected_areas)) {
+    selected_shp <- area_shp[area_shp[[area_id_col]] %in% selected_areas, ]
+    if (nrow(selected_shp) == 0) {
+      message("WARNING: none of selected_areas matched any value in area_shp[[area_id_col]] -",
+              " check selected_areas uses the same type/values as ", area_id_col, ".")
+      selected_shp <- NULL
+    } else {
+      unioned <- st_union(selected_shp)
+      selected_outline <- tryCatch({
+        v <- terra::vect(unioned)
+        r <- terra::rast(terra::ext(v), resolution = 0.01, crs = terra::crs(v))
+        r <- terra::rasterize(v, r, field = 1)
+        v_poly <- terra::as.polygons(r, dissolve = TRUE)
+        clean_shp <- sf::st_as_sf(v_poly)
+        clean_shp <- clean_shp[which.max(sf::st_area(clean_shp)), ]  # keep only the largest piece, drop tiny slivers
+        sf::st_boundary(clean_shp)
+      }, error = function(e) {
+        message("Rasterize-based contour cleanup failed (", conditionMessage(e), ") - falling back",
+                " to plain st_union(), which may still show minor seam artifacts.")
+        unioned
+      })
+      p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 1.3)
+    }
+  }
+  
+  ## land_on_top: draw land LAST here (after both the intensity fill
+  ## AND the selected-area contour above), so it visibly masks any part
+  ## of a simple bounding-box "study area" - contour included - that's
+  ## actually land. Only marine area should read as part of the study
+  ## region, and a plain rectangle (unlike the GFCM GSA polygons) has
+  ## no way to exclude land on its own.
+  if (!is.null(land) && land_on_top) {
+    p <- p + geom_sf(data = land, fill = "grey85", color = "grey60", linewidth = 0.2)
+  }
   
   if (by_year) p <- p + facet_wrap(vars(Year))
   
@@ -1053,7 +1536,31 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
               " polygon - no evidence of a projection mismatch or bad coordinates.")
     }
     
-    p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.15, color = "black")
+    if (!is.null(selected_shp)) {
+      ## a DIFFERENT distinction from within_any above - a point can be
+      ## inside some non-selected GSA (within_any=TRUE) while still
+      ## being outside the actual study area (selected_areas). This is
+      ## the one that matters for "am I actually looking at my study
+      ## area's own coverage" rather than just "is this a valid
+      ## coordinate at all".
+      within_selected <- lengths(st_intersects(sample_pts_sf, st_union(selected_shp))) > 0
+      sample_pts_sf$in_study_area <- ifelse(within_selected, "Inside study area", "Outside study area")
+      n_out_of_study <- sum(!within_selected)
+      message(n_out_of_study, " of ", nrow(sample_pts_dt), " sample point(s) fall outside the",
+              " SELECTED study area (selected_areas) specifically, shown in a different color",
+              " below - separate from the projection/bad-data diagnostic above, since a point can be",
+              " a perfectly valid coordinate in a real, neighboring GSA and still be outside this",
+              " particular analysis's scope.")
+      p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area), size = 0.6, alpha = 0.3) +
+        scale_color_manual(name = NULL, values = c("Inside study area" = "black", "Outside study area" = "red3")) +
+        ## legend symbols shown larger and fully opaque than the actual
+        ## map points (which stay small/semi-transparent to reduce
+        ## overplotting clutter with many samples) - purely a legend-
+        ## readability fix, the plotted points themselves are unaffected
+        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+    } else {
+      p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.15, color = "black")
+    }
     message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
             if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
   } else {
@@ -1339,7 +1846,26 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     ecosim_sheet[, (paste0("fg_", fg_num)) := col]
   }
   
-  sheets_to_write <- list(FG_spp = fg_spp_sheet, Ecopath = ecopath_sheet, Ecosim = ecosim_sheet)
+  ## --- FG_spp_Ecosim sheet -----------------------------------------------------
+  ## Species-level (not FG-level) mean density across the FULL ts_years
+  ## range - one row per species, no Year column, since this is the
+  ## species' overall average over the whole time series, not a
+  ## per-year breakdown. The key difference from FG_spp_Ecopath is the
+  ## time window averaged over: FG_spp_Ecopath uses just year_ecopath
+  ## (the base-year snapshot for Ecopath initialization), this uses the
+  ## full ts_years range (the long-term average across the whole survey
+  ## period). Same "always a row, blank if no data at all" principle as
+  ## FG_spp_Ecopath - a species with genuinely zero observations across
+  ## the whole ts_years range still gets a row, just with blank density.
+  species_mean_ts <- species_density_regional[Year %in% ts_years,
+                                              .(Density = mean(mean_density, na.rm = TRUE)),
+                                              by = .(FG_num, FG_name, Species = ScientificName)]
+  fg_spp_ecosim_sheet <- merge(all_species_fg, species_mean_ts,
+                               by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
+  setorder(fg_spp_ecosim_sheet, FG_num, Species)
+  
+  sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
+                          Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
   openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
   message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
   invisible(sheets_to_write)
