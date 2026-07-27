@@ -24,57 +24,16 @@ execute:
 
 ## This .qmd lives in /Users/daniel/Documents/Github/WMed_EwE/scripts/, but
 ## the actual pipeline outputs (plots, data) live in a completely separate
-## directory tree, wherever each script's own out_dir points.
-##
-## Figures are COPIED into a local "figures/" folder next to this .qmd,
-## not referenced directly at out_dir/plots. This matters for more than
-## local convenience: out_dir points to an ABSOLUTE path on this
-## machine (e.g. /Users/daniel/Work/iMARES/...), which only exists
-## here. Once this .qmd is rendered and the resulting .html is pushed
-## to GitHub (e.g. served via GitHub Pages), that absolute path doesn't
-## exist on the server at all - every image reference would 404,
-## rendering as a broken-image icon regardless of how correct the path
-## was locally. Copying the actual image files into a folder alongside
-## the .qmd means that folder gets committed to the repo and deployed
-## together with the rendered HTML, so the (now relative) references
-## resolve correctly wherever the site is actually hosted.
-##
-## An earlier version of this pipeline referenced out_dir/plots
-## directly instead, specifically to avoid a DIFFERENT failure mode -
-## a stale, previously-copied file lingering in "figures/" after the
-## real upstream plot had already changed. That's a real risk, but the
-## fix here is to make the copy unconditional and always-overwrite
-## (below), not to skip copying entirely - skipping copying is only
-## safe for local rendering, and breaks entirely once deployed.
-extract_out_dir <- function(script_path) {
-  if (!file.exists(script_path)) {
-    warning("Script not found at ", script_path, " - can't auto-detect its out_dir.")
-    return(NA_character_)
-  }
-  lines <- readLines(script_path, warn = FALSE)
-  ## first out_dir <- "..." assignment in the file - in both example
-  ## scripts this is the hardcoded, daniel-branch value
-  match_line <- grep('out_dir\\s*<-\\s*"', lines, value = TRUE)[1]
-  if (is.na(match_line)) {
-    warning("No out_dir assignment found in ", script_path)
-    return(NA_character_)
-  }
-  gsub('.*out_dir\\s*<-\\s*"([^"]+)".*', '\\1', match_line)
-}
+## directory tree: /Users/daniel/Work/iMARES/WMed EwE Model/output/ (GSA
+## example) and /output_custom_region/ (custom-region example). Quarto's
+## preview server generally won't serve files from outside its own project
+## root - so rather than trying to reach across to the original location,
+## copy the needed plots into a local "figures/" folder next to this .qmd,
+## and reference THAT copy. Re-run this chunk (or just re-render) after
+## re-running either pipeline script to pick up updated plots.
 
-gsa_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_westmed.R"
-custom_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_custom.R"
-
-gsa_out_dir <- extract_out_dir(gsa_script_path)
-custom_out_dir <- extract_out_dir(custom_script_path)
-gsa_plots_dir <- if (!is.na(gsa_out_dir)) file.path(gsa_out_dir, "plots") else NA_character_
-custom_plots_dir <- if (!is.na(custom_out_dir)) file.path(custom_out_dir, "plots") else NA_character_
-message("GSA plots directory (resolved): ", gsa_plots_dir)
-message("Custom-region plots directory (resolved): ", custom_plots_dir)
-
-## local_figures_dir is relative to this .qmd's own location, so it
-## lives inside the git repo and gets committed/pushed alongside it -
-## unlike out_dir, which is an absolute, machine-local path.
+gsa_plots_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/plots"
+custom_plots_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output_custom_region/plots"
 local_figures_dir <- "figures"
 if (!dir.exists(local_figures_dir)) dir.create(local_figures_dir)
 
@@ -92,32 +51,12 @@ for (i in seq_along(plots_needed)) {
   src_dir_name <- names(plots_needed)[i]
   fname <- plots_needed[i]
   dst_name <- if (src_dir_name == "custom_plots_dir") paste0("custom_", fname) else fname
-  src_dir <- src_dirs[[src_dir_name]]
-  if (is.na(src_dir)) next   # out_dir couldn't be auto-detected - already warned above
-  src <- file.path(src_dir, fname)
+  src <- file.path(src_dirs[[src_dir_name]], fname)
   dst <- file.path(local_figures_dir, dst_name)
   if (file.exists(src)) {
-    file.copy(src, dst, overwrite = TRUE)   # ALWAYS overwrite - this is what prevents the stale-copy failure mode
+    file.copy(src, dst, overwrite = TRUE)
   } else {
     warning("Plot not found at ", src, " - run the relevant example script first.")
-  }
-}
-
-## Wraps knitr::include_graphics() with an existence check - a figure
-## whose source script hasn't been run yet (e.g. the custom-region
-## example, if only the GSA one has been run so far) genuinely doesn't
-## exist on disk, and include_graphics() hard-fails the ENTIRE render
-## on a missing file rather than skipping just that one figure. This
-## shows a clear, in-document placeholder message instead, so the rest
-## of the document still renders.
-safe_include_graphics <- function(path, script_hint) {
-  if (file.exists(path)) {
-    knitr::include_graphics(path)
-  } else {
-    knitr::asis_output(paste0(
-      "> **Figure not yet available** - `", path, "` doesn't exist yet. Run `",
-      script_hint, "` first, then re-render this document.\n"
-    ))
   }
 }
 ```
@@ -130,10 +69,10 @@ Unlike the original, MEDITS-specific `medbs_full_pipeline_with_fg.R` script this
 
 1. **A shared, survey-agnostic function library** (`survey_fg_density_functions.R`) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.
 2. **Survey-specific example scripts** that read a particular survey's raw files, reshape them into the library's standardized input format, and call the shared functions. Two examples are covered here:
-   - `medits_example_westmed.R` - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.
-   - `medits_example_custom.R` - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.
+   - `medits_example_using_functions.R` - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.
+   - `medits_example_custom_region.R` - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.
 
-Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren't available at render time. To reproduce the actual numbers, run the source `.R` scripts directly. (The exceptions are the figure-copying setup chunk above and the `safe_include_graphics()` calls below, which only need the plot files to already exist on disk - and degrade to a clear placeholder message, rather than failing the whole render, if a given example script hasn't been run yet.)
+Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren't available at render time. To reproduce the actual numbers, run the source `.R` scripts directly. (The exceptions are the figure-copying setup chunk above and the `knitr::include_graphics()` calls below, which only need the plot files to already exist on disk.)
 
 The pipeline covers several conceptually distinct problems in sequence:
 
@@ -141,60 +80,6 @@ The pipeline covers several conceptually distinct problems in sequence:
 2. **What study area am I actually working with?** (@sec-area-definition)
 3. **Given catch and effort, what's the correctly-standardized density for each haul?** (@sec-density, including catchability correction and outlier removal)
 4. **Given that, what's the correctly-weighted density estimate for each FG?** (@sec-strata-weighted, @sec-regional)
-
-### Pipeline flow
-
-```{mermaid}
-%%| label: fig-flow-overview
-%%| fig-cap: "Pipeline overview - FG matching and density/weighting each expand into their own sub-flow below."
-%%| eval: true
-flowchart LR
-    A["Input data (dataframe1 + FG ref)"] --> B["FG matching (see detail below)"]
-    B --> C["Density and weighting (see detail below)"]
-    C --> D["Outputs (Excel, plots, CSV)"]
-
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-    classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-    class A gray
-    class B purple
-    class C teal
-    class D coral
-```
-
-```{mermaid}
-%%| label: fig-flow-fg-matching
-%%| fig-cap: "FG matching detail (@sec-fg-matching) - each stage only attempts species the previous one left unmatched; species still unmatched after seed rules go to manual review."
-%%| eval: true
-flowchart LR
-    A1["Direct match (ScientificName lookup)"] --> A2["Nominate subspp. (repeated-word names)"]
-    A2 --> A3["Taxonomy fallback (genus to phylum)"]
-    A3 --> A4["Seed rules (rank to FG, no data)"]
-    A4 --> A5["Manual review"]
-
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    class A1,A2,A3,A4 purple
-    class A5 gray
-```
-
-```{mermaid}
-%%| label: fig-flow-density-weighting
-%%| fig-cap: "Density and weighting detail (@sec-density, @sec-strata-weighted, @sec-regional) - dashed boxes are conditional steps, skipped if their condition isn't met."
-%%| eval: true
-flowchart LR
-    B1["Sample density (biomass / effort)"] --> B2(["Catchability (if q table given)"])
-    B2 --> B3["Outlier removal (per species, per area)"]
-    B3 --> B4(["Strata weighting (if strata = true)"])
-    B4 --> B5(["Area weighting (if more than one area)"])
-
-    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-    class B1,B3 teal
-    class B2,B4,B5 teal
-```
-
-Dashed/rounded boxes above are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if `strata = TRUE` (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).
 
 Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.
 
@@ -299,8 +184,7 @@ FILTER_AREAS <- 1:11
 #| eval: true
 #| echo: false
 #| fig-cap: "Sample coverage by GSA. selected_areas highlights the GSAs actually in scope (FILTER_AREAS) with a bold black outline - the outer contour of their union, not the internal lines between them."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_sample_coverage_map.png"))
 ```
 
 ### Approach B - a custom boundary (bounding box or arbitrary shapefile)
@@ -328,20 +212,12 @@ dataframe1[, AreaID := 1]
 
 `filter_samples_by_area(filter_type = "shapefile")` works the same way, but takes an `sf` polygon (or a path to one) instead of a bounding box - for a real, non-rectangular model boundary.
 
-::: {.callout-note}
-### The sample coverage map shows the full survey context, not just the custom box
-`plot_sample_map()` computes its display extent from the **union** of `area_shp`'s own bounding box and the sample points' own Lat/Lon distribution - not `area_shp`'s bbox alone. Passing it the full, unfiltered survey data (before `filter_samples_by_area()` runs) means the map zooms out to show the complete MEDITS distribution across the whole survey region, with the custom area's contour highlighted within that context via `selected_areas` - not a tight, context-free zoom into just the small box itself. Points inside vs. outside the selected area are shown in different colors either way.
-
-A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it can genuinely overlap land. `land_on_top = TRUE` draws the land basemap *after* the intensity fill rather than before, so any part of the box that's actually land is visibly masked - only marine area should read as part of the study region, and a rectangle has no way to exclude land on its own.
-:::
-
 ```{r}
 #| label: fig-custom-coverage
 #| eval: true
 #| echo: false
 #| fig-cap: "Sample coverage within a custom bounding-box region, independent of GSA lines entirely."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "custom_survey_sample_coverage_map.png"), "medits_example_custom.R")
+knitr::include_graphics(file.path("figures", "custom_survey_sample_coverage_map.png"))
 ```
 
 With only one custom area, `AreaID` is set to `1` for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever `AreaID`/`area_shp` combination they're given, never assuming GSA-specific structure.
@@ -452,8 +328,7 @@ fg_index <- weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_
 #| eval: true
 #| echo: false
 #| fig-cap: "Density index by Functional Group and area, strata-weighted (per-area version - see @sec-regional for the region-wide aggregate used in Ecopath/Ecosim inputs)."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_density_timeseries.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_fg_density_timeseries.png"))
 ```
 
 ## Region-wide aggregation (across areas) {#sec-regional}
@@ -476,8 +351,7 @@ This is the version used for Ecopath/Ecosim-facing outputs - the per-area index 
 #| eval: true
 #| echo: false
 #| fig-cap: "Region-wide, area-weighted density index by Functional Group."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_density_timeseries_regional.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_fg_density_timeseries_regional.png"))
 ```
 
 For the custom-region example (@sec-area-definition, Approach B), this step is mathematically a formality with only one area in scope - `weight_by_area()` still runs the same formula, it just sums over one area's worth of cells, so the result is identical to the per-area index above. It's kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.
@@ -500,8 +374,7 @@ If the pipeline is working correctly, FGs known to live in deep water should sho
 #| eval: true
 #| echo: false
 #| fig-cap: "Depth-strata density profile by Functional Group."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_depth_strata_profile.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_fg_depth_strata_profile.png"))
 ```
 
 ## Sample coverage map
@@ -526,8 +399,7 @@ This does more than plot points - it performs concrete geometric checks and repo
 #| eval: true
 #| echo: false
 #| fig-cap: "Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area."
-#| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_sample_coverage_map.png"))
 ```
 
 `by_year = TRUE` produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year's samples overlaid on top of it can make a real gap look fine.
@@ -537,9 +409,7 @@ safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "m
 #| eval: true
 #| echo: false
 #| fig-cap: "Sample coverage faceted by year."
-#| out-width: "100%"
-#| fig-width: 16
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map_by_year.png"), "medits_example_westmed.R")
+knitr::include_graphics(file.path("figures", "survey_sample_coverage_map_by_year.png"))
 ```
 
 ---

@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.3.353">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Daniel Vilas">
+<meta name="dcterms.date" content="2026-07-26">
+
+<title>Survey-to-FG Density Pipeline: Methodology</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="medbs_pipeline_methodology_files/libs/clipboard/clipboard.min.js"></script>
+<script src="medbs_pipeline_methodology_files/libs/quarto-html/quarto.js"></script>
+<script src="medbs_pipeline_methodology_files/libs/quarto-html/popper.min.js"></script>
+<script src="medbs_pipeline_methodology_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="medbs_pipeline_methodology_files/libs/quarto-html/anchor.min.js"></script>
+<link href="medbs_pipeline_methodology_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="medbs_pipeline_methodology_files/libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="medbs_pipeline_methodology_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="medbs_pipeline_methodology_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="medbs_pipeline_methodology_files/libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script src="medbs_pipeline_methodology_files/libs/quarto-diagram/mermaid.min.js"></script>
+<script src="medbs_pipeline_methodology_files/libs/quarto-diagram/mermaid-init.js"></script>
+<link href="medbs_pipeline_methodology_files/libs/quarto-diagram/mermaid.css" rel="stylesheet">
+
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+</head>
+
+<body>
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+<div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+  <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#overview" id="toc-overview" class="nav-link active" data-scroll-target="#overview"><span class="header-section-number">1</span> Overview</a>
+  <ul class="collapse">
+  <li><a href="#pipeline-flow" id="toc-pipeline-flow" class="nav-link" data-scroll-target="#pipeline-flow"><span class="header-section-number">1.1</span> Pipeline flow</a></li>
+  </ul></li>
+  <li><a href="#sec-fg-matching" id="toc-sec-fg-matching" class="nav-link" data-scroll-target="#sec-fg-matching"><span class="header-section-number">2</span> Functional Group matching</a>
+  <ul class="collapse">
+  <li><a href="#stage-1---direct-species-level-match" id="toc-stage-1---direct-species-level-match" class="nav-link" data-scroll-target="#stage-1---direct-species-level-match"><span class="header-section-number">2.1</span> Stage 1 - Direct species-level match</a></li>
+  <li><a href="#stage-1b---nominate-subspecies" id="toc-stage-1b---nominate-subspecies" class="nav-link" data-scroll-target="#stage-1b---nominate-subspecies"><span class="header-section-number">2.2</span> Stage 1b - Nominate subspecies</a></li>
+  <li><a href="#stage-2---manual-overrides" id="toc-stage-2---manual-overrides" class="nav-link" data-scroll-target="#stage-2---manual-overrides"><span class="header-section-number">2.3</span> Stage 2 - Manual overrides</a></li>
+  <li><a href="#stage-3---taxonomy-fallback-genus-through-phylum" id="toc-stage-3---taxonomy-fallback-genus-through-phylum" class="nav-link" data-scroll-target="#stage-3---taxonomy-fallback-genus-through-phylum"><span class="header-section-number">2.4</span> Stage 3 - Taxonomy fallback (genus through phylum)</a></li>
+  <li><a href="#stage-4---seed-rules-for-catch-all-fgs" id="toc-stage-4---seed-rules-for-catch-all-fgs" class="nav-link" data-scroll-target="#stage-4---seed-rules-for-catch-all-fgs"><span class="header-section-number">2.5</span> Stage 4 - Seed rules for catch-all FGs</a></li>
+  <li><a href="#match-rate-reporting" id="toc-match-rate-reporting" class="nav-link" data-scroll-target="#match-rate-reporting"><span class="header-section-number">2.6</span> Match-rate reporting</a></li>
+  </ul></li>
+  <li><a href="#sec-area-definition" id="toc-sec-area-definition" class="nav-link" data-scroll-target="#sec-area-definition"><span class="header-section-number">3</span> Study area definition</a>
+  <ul class="collapse">
+  <li><a href="#approach-a---gfcm-gsa-polygons" id="toc-approach-a---gfcm-gsa-polygons" class="nav-link" data-scroll-target="#approach-a---gfcm-gsa-polygons"><span class="header-section-number">3.1</span> Approach A - GFCM GSA polygons</a></li>
+  <li><a href="#approach-b---a-custom-boundary-bounding-box-or-arbitrary-shapefile" id="toc-approach-b---a-custom-boundary-bounding-box-or-arbitrary-shapefile" class="nav-link" data-scroll-target="#approach-b---a-custom-boundary-bounding-box-or-arbitrary-shapefile"><span class="header-section-number">3.2</span> Approach B - a custom boundary (bounding box or arbitrary shapefile)</a></li>
+  </ul></li>
+  <li><a href="#sec-density" id="toc-sec-density" class="nav-link" data-scroll-target="#sec-density"><span class="header-section-number">4</span> Per-haul density and corrections</a>
+  <ul class="collapse">
+  <li><a href="#swept-area" id="toc-swept-area" class="nav-link" data-scroll-target="#swept-area"><span class="header-section-number">4.1</span> Swept area</a></li>
+  <li><a href="#depth-stratum-assignment" id="toc-depth-stratum-assignment" class="nav-link" data-scroll-target="#depth-stratum-assignment"><span class="header-section-number">4.2</span> Depth-stratum assignment</a></li>
+  <li><a href="#catchability-correction" id="toc-catchability-correction" class="nav-link" data-scroll-target="#catchability-correction"><span class="header-section-number">4.3</span> Catchability correction</a></li>
+  <li><a href="#sample-level-outlier-detection" id="toc-sample-level-outlier-detection" class="nav-link" data-scroll-target="#sample-level-outlier-detection"><span class="header-section-number">4.4</span> Sample-level outlier detection</a></li>
+  </ul></li>
+  <li><a href="#sec-strata-weighted" id="toc-sec-strata-weighted" class="nav-link" data-scroll-target="#sec-strata-weighted"><span class="header-section-number">5</span> Strata-weighted density (within an area)</a></li>
+  <li><a href="#sec-regional" id="toc-sec-regional" class="nav-link" data-scroll-target="#sec-regional"><span class="header-section-number">6</span> Region-wide aggregation (across areas)</a></li>
+  <li><a href="#validation-depth-strata-density-profile" id="toc-validation-depth-strata-density-profile" class="nav-link" data-scroll-target="#validation-depth-strata-density-profile"><span class="header-section-number">7</span> Validation: depth-strata density profile</a></li>
+  <li><a href="#sample-coverage-map" id="toc-sample-coverage-map" class="nav-link" data-scroll-target="#sample-coverage-map"><span class="header-section-number">8</span> Sample coverage map</a></li>
+  <li><a href="#outputs" id="toc-outputs" class="nav-link" data-scroll-target="#outputs"><span class="header-section-number">9</span> Outputs</a>
+  <ul class="collapse">
+  <li><a href="#ecopath_ecosim_inputs.xlsx-sheets" id="toc-ecopath_ecosim_inputs.xlsx-sheets" class="nav-link" data-scroll-target="#ecopath_ecosim_inputs.xlsx-sheets"><span class="header-section-number">9.1</span> <code>ecopath_ecosim_inputs.xlsx</code> sheets</a></li>
+  </ul></li>
+  </ul>
+</nav>
+</div>
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title">Survey-to-FG Density Pipeline: Methodology</h1><button type="button" class="btn code-tools-button dropdown-toggle" id="quarto-code-tools-menu" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi"></i> Code</button><ul class="dropdown-menu dropdown-menu-end" aria-labelelledby="quarto-code-tools-menu"><li><a id="quarto-show-all-code" class="dropdown-item" href="javascript:void(0)" role="button">Show All Code</a></li><li><a id="quarto-hide-all-code" class="dropdown-item" href="javascript:void(0)" role="button">Hide All Code</a></li><li><hr class="dropdown-divider"></li><li><a id="quarto-view-source" class="dropdown-item" href="javascript:void(0)" role="button">View Source</a></li></ul></div></div>
+<p class="subtitle lead">Generalized functions applied to MEDITS (Western Mediterranean), with both GSA-based and custom-region examples</p>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>Daniel Vilas </p>
+          </div>
+  </div>
+    
+    <div>
+    <div class="quarto-title-meta-heading">Published</div>
+    <div class="quarto-title-meta-contents">
+      <p class="date">July 26, 2026</p>
+    </div>
+  </div>
+  
+    
+  </div>
+  
+
+</header>
+
+<section id="overview" class="level2" data-number="1">
+<h2 data-number="1" class="anchored" data-anchor-id="overview"><span class="header-section-number">1</span> Overview</h2>
+<p>This document explains the methodology behind <code>survey_fg_density_functions.R</code>, a generalized function library for converting fishery-independent survey data (biomass/density by species, haul, year, area, stratum) into a Functional Group (FG) density index suitable as Ecopath/Ecosim input.</p>
+<p>Unlike the original, MEDITS-specific <code>medbs_full_pipeline_with_fg.R</code> script this document previously covered, the pipeline is now split into two layers:</p>
+<ol type="1">
+<li><strong>A shared, survey-agnostic function library</strong> (<code>survey_fg_density_functions.R</code>) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn’t depend on which survey or which study area boundary is being used.</li>
+<li><strong>Survey-specific example scripts</strong> that read a particular survey’s raw files, reshape them into the library’s standardized input format, and call the shared functions. Two examples are covered here:
+<ul>
+<li><code>medits_example_westmed.R</code> - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.</li>
+<li><code>medits_example_custom.R</code> - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.</li>
+</ul></li>
+</ol>
+<p>Code chunks throughout are <strong>not executed</strong> when this document renders (<code>eval: false</code>) - they’re shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren’t available at render time. To reproduce the actual numbers, run the source <code>.R</code> scripts directly. (The exceptions are the figure-copying setup chunk above and the <code>safe_include_graphics()</code> calls below, which only need the plot files to already exist on disk - and degrade to a clear placeholder message, rather than failing the whole render, if a given example script hasn’t been run yet.)</p>
+<p>The pipeline covers several conceptually distinct problems in sequence:</p>
+<ol type="1">
+<li><strong>Which Functional Group does each species belong to?</strong> (<a href="#sec-fg-matching">Section&nbsp;2</a>)</li>
+<li><strong>What study area am I actually working with?</strong> (<a href="#sec-area-definition">Section&nbsp;3</a>)</li>
+<li><strong>Given catch and effort, what’s the correctly-standardized density for each haul?</strong> (<a href="#sec-density">Section&nbsp;4</a>, including catchability correction and outlier removal)</li>
+<li><strong>Given that, what’s the correctly-weighted density estimate for each FG?</strong> (<a href="#sec-strata-weighted">Section&nbsp;5</a>, <a href="#sec-regional">Section&nbsp;6</a>)</li>
+</ol>
+<section id="pipeline-flow" class="level3" data-number="1.1">
+<h3 data-number="1.1" class="anchored" data-anchor-id="pipeline-flow"><span class="header-section-number">1.1</span> Pipeline flow</h3>
+<div class="cell" data-eval="true">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode default code-with-copy"><code class="sourceCode default"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    A["Input data (dataframe1 + FG ref)"] --&gt; B["FG matching (see detail below)"]</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    B --&gt; C["Density and weighting (see detail below)"]</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    C --&gt; D["Outputs (Excel, plots, CSV)"]</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    class A gray</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    class B purple</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    class C teal</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    class D coral</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+<div class="cell-output-display">
+<div id="fig-flow-overview" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<div>
+<pre class="mermaid mermaid-js" data-label="fig-flow-overview">flowchart LR
+    A["Input data (dataframe1 + FG ref)"] --&gt; B["FG matching (see detail below)"]
+    B --&gt; C["Density and weighting (see detail below)"]
+    C --&gt; D["Outputs (Excel, plots, CSV)"]
+
+    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
+    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+    classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+    class A gray
+    class B purple
+    class C teal
+    class D coral
+</pre>
+</div>
+<figcaption class="figure-caption">Figure&nbsp;1: Pipeline overview - FG matching and density/weighting each expand into their own sub-flow below.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell" data-eval="true">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode default code-with-copy"><code class="sourceCode default"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    A1["Direct match (ScientificName lookup)"] --&gt; A2["Nominate subspp. (repeated-word names)"]</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    A2 --&gt; A3["Taxonomy fallback (genus to phylum)"]</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    A3 --&gt; A4["Seed rules (rank to FG, no data)"]</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    A4 --&gt; A5["Manual review"]</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    class A1,A2,A3,A4 purple</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    class A5 gray</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+<div class="cell-output-display">
+<div id="fig-flow-fg-matching" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<div>
+<pre class="mermaid mermaid-js" data-label="fig-flow-fg-matching">flowchart LR
+    A1["Direct match (ScientificName lookup)"] --&gt; A2["Nominate subspp. (repeated-word names)"]
+    A2 --&gt; A3["Taxonomy fallback (genus to phylum)"]
+    A3 --&gt; A4["Seed rules (rank to FG, no data)"]
+    A4 --&gt; A5["Manual review"]
+
+    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
+    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+    class A1,A2,A3,A4 purple
+    class A5 gray
+</pre>
+</div>
+<figcaption class="figure-caption">Figure&nbsp;2: FG matching detail (<a href="#sec-fg-matching">Section&nbsp;2</a>) - each stage only attempts species the previous one left unmatched; species still unmatched after seed rules go to manual review.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell" data-eval="true">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode default code-with-copy"><code class="sourceCode default"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    B1["Sample density (biomass / effort)"] --&gt; B2(["Catchability (if q table given)"])</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    B2 --&gt; B3["Outlier removal (per species, per area)"]</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    B3 --&gt; B4(["Strata weighting (if strata = true)"])</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    B4 --&gt; B5(["Area weighting (if more than one area)"])</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    class B1,B3 teal</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    class B2,B4,B5 teal</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+<div class="cell-output-display">
+<div id="fig-flow-density-weighting" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<div>
+
+<pre class="mermaid mermaid-js" data-label="fig-flow-density-weighting">flowchart LR
+    B1["Sample density (biomass / effort)"] --&gt; B2(["Catchability (if q table given)"])
+    B2 --&gt; B3["Outlier removal (per species, per area)"]
+    B3 --&gt; B4(["Strata weighting (if strata = true)"])
+    B4 --&gt; B5(["Area weighting (if more than one area)"])
+
+    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+    class B1,B3 teal
+    class B2,B4,B5 teal
+</pre>
+</div>
+<figcaption class="figure-caption">Figure&nbsp;3: Density and weighting detail (<a href="#sec-density">Section&nbsp;4</a>, <a href="#sec-strata-weighted">Section&nbsp;5</a>, <a href="#sec-regional">Section&nbsp;6</a>) - dashed boxes are conditional steps, skipped if their condition isn’t met.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p>Dashed/rounded boxes above are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if <code>strata = TRUE</code> (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see <a href="#sec-regional">Section&nbsp;6</a>).</p>
+<p>Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.</p>
+<hr>
+</section>
+</section>
+<section id="sec-fg-matching" class="level2" data-number="2">
+<h2 data-number="2" class="anchored" data-anchor-id="sec-fg-matching"><span class="header-section-number">2</span> Functional Group matching</h2>
+<p>Every species caught in a haul needs to be assigned to one of the model’s Functional Groups before its biomass can contribute to an FG-level index. This happens in stages, each one only attempting species the previous stage couldn’t resolve - and at every stage, an <strong>ambiguous</strong> match (a species or taxonomic rank that could plausibly belong to more than one FG) is flagged for manual review rather than guessed.</p>
+<section id="stage-1---direct-species-level-match" class="level3" data-number="2.1">
+<h3 data-number="2.1" class="anchored" data-anchor-id="stage-1---direct-species-level-match"><span class="header-section-number">2.1</span> Stage 1 - Direct species-level match</h3>
+<p>The MEDITS species code is translated to a scientific name via the MEDITS taxonomic list (<code>TM_list</code>), then matched directly against the FG reference table.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>fg_lookup_safe <span class="ot">&lt;-</span> <span class="fu">prepare_fg_lookup</span>(dataframe2)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">match_species_to_fg</span>(dataframe1, fg_lookup_safe)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p><code>prepare_fg_lookup()</code> also resolves <strong>stanza splits</strong> here - a species appearing in more than one FG, where every one of those FGs is exclusive to that single species (a life-stage split, e.g.&nbsp;juvenile/adult), is reduced to one FG automatically. This is a structural rule (detected from the FG table’s own shape), not a text-pattern match on words like “juv.” - so it works regardless of the wording convention any given FG scheme happens to use. A species spanning multiple FGs where at least one of those FGs also contains <em>other</em> species is a genuinely different, ambiguous case and is excluded from automatic matching entirely.</p>
+</section>
+<section id="stage-1b---nominate-subspecies" class="level3" data-number="2.2">
+<h3 data-number="2.2" class="anchored" data-anchor-id="stage-1b---nominate-subspecies"><span class="header-section-number">2.2</span> Stage 1b - Nominate subspecies</h3>
+<p>Some scientific names are trinomials for the nominate subspecies, where the subspecies epithet repeats the species epithet by taxonomic convention (e.g.&nbsp;“Diplodus sargus sargus” is the nominate subspecies of “Diplodus sargus”). These fail a direct match if the FG reference only has the binomial form.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">match_nominate_subspecies_fg</span>(dt, fg_lookup_safe)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+</section>
+<section id="stage-2---manual-overrides" class="level3" data-number="2.3">
+<h3 data-number="2.3" class="anchored" data-anchor-id="stage-2---manual-overrides"><span class="header-section-number">2.3</span> Stage 2 - Manual overrides</h3>
+<p>A short table of species codes not present in the MEDITS taxonomic list at all, resolved by hand at whichever taxonomic rank is appropriate (species, genus, family, or class). Merged on <code>species_code</code>, not <code>ScientificName</code> - the latter is exactly the column that’s <code>NA</code> for override-needed rows (that’s <em>why</em> they need an override), so using it as a join key would match every <code>NA</code> row against every other <code>NA</code> row and produce a cartesian-product explosion.</p>
+</section>
+<section id="stage-3---taxonomy-fallback-genus-through-phylum" class="level3" data-number="2.4">
+<h3 data-number="2.4" class="anchored" data-anchor-id="stage-3---taxonomy-fallback-genus-through-phylum"><span class="header-section-number">2.4</span> Stage 3 - Taxonomy fallback (genus through phylum)</h3>
+<p>For species with a resolved scientific name but no FG match, WoRMS taxonomy is used to check progressively broader ranks - genus, family, order, class, phylum, most specific first.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">fallback_match_fg_by_taxonomy</span>(dt, fg_lookup_safe, <span class="at">taxonomy_source =</span> <span class="st">"worms"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p><strong>Safety rule</strong>, applied at every rank: a taxonomic value is only used for fallback matching if it maps to <strong>exactly one</strong> FG among all species already in the reference table.</p>
+<p><span class="math display">\[\text{rank value is safe to use} \iff \left| \{\, FG_i : \text{species}_i \text{ shares this rank value} \,\} \right| = 1\]</span></p>
+<p>A genus spanning multiple FGs (e.g.&nbsp;containing both a small pelagic species and a large predatory one) is too ecologically diverse to assign safely, and is excluded rather than assigned to whichever FG happens to come up first. Ranks are tried in order of specificity - a genus-level match always wins over a broader but explicit order-level rule for the same species, since rank specificity takes priority over whether a mapping happened to be data-driven or explicitly stated.</p>
+</section>
+<section id="stage-4---seed-rules-for-catch-all-fgs" class="level3" data-number="2.5">
+<h3 data-number="2.5" class="anchored" data-anchor-id="stage-4---seed-rules-for-catch-all-fgs"><span class="header-section-number">2.5</span> Stage 4 - Seed rules for catch-all FGs</h3>
+<p>Some FGs (e.g.&nbsp;“Other macro-benthos”) have <strong>zero species pre-listed</strong> against them in the FG reference table - they’re buckets meant to catch “anything else” of a general taxonomic type. The data-driven fallback above can’t discover a mapping for these, since it can only learn from species already assigned to an FG. A small, explicit seed table covers this genuine gap:</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>SEED_RULES <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">rank =</span> <span class="fu">c</span>(<span class="st">"Class"</span>, <span class="st">"Order"</span>, <span class="st">"Phylum"</span>),</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">rank_value =</span> <span class="fu">c</span>(<span class="st">"Holothuroidea"</span>, <span class="st">"Decapoda"</span>, <span class="st">"Cnidaria"</span>),</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">fg_name_target =</span> <span class="fu">c</span>(<span class="st">"Sea cucumbers"</span>, <span class="st">"Non-commercial decapods"</span>, <span class="st">"Other macro-benthos"</span>)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>SPECIES_EXCEPTIONS <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">ScientificName =</span> <span class="st">"Squilla mantis"</span>,</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">fg_name_target =</span> <span class="st">"Other commercial decapods"</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">apply_seed_fg_rules</span>(dt, dataframe2, SEED_RULES, <span class="at">species_exceptions =</span> SPECIES_EXCEPTIONS)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p><code>species_exceptions</code> is applied <em>before</em> the rank-based rules, so a named species is never caught by a broader rule that’s wrong for it specifically - e.g.&nbsp;Squilla mantis is commercially exploited even though the rest of its order (Stomatopoda) isn’t, so the generic “Decapoda-adjacent → non-commercial” rule would misclassify it without this override.</p>
+</section>
+<section id="match-rate-reporting" class="level3" data-number="2.6">
+<h3 data-number="2.6" class="anchored" data-anchor-id="match-rate-reporting"><span class="header-section-number">2.6</span> Match-rate reporting</h3>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>taxonomy_context <span class="ot">&lt;-</span> <span class="fu">attr</span>(dt, <span class="st">"still_unresolved_taxonomy"</span>)</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>still_unmatched <span class="ot">&lt;-</span> <span class="fu">summarize_unresolved_species</span>(dt, <span class="at">taxonomy =</span> taxonomy_context)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p><code>summarize_unresolved_species()</code> reports mean biomass and appearance count alongside taxonomy for whatever remains genuinely unmatched, so manual review can be prioritized - a species appearing in hundreds of samples with real biomass matters more than a one-off trace appearance.</p>
+<hr>
+</section>
+</section>
+<section id="sec-area-definition" class="level2" data-number="3">
+<h2 data-number="3" class="anchored" data-anchor-id="sec-area-definition"><span class="header-section-number">3</span> Study area definition</h2>
+<p>Every function downstream of FG matching needs to know which “area” each sample belongs to, and needs a polygon layer to compute stratum areas from bathymetry. The shared library doesn’t assume this has to be a set of official GSA polygons - it just needs <em>some</em> polygon layer with an ID column. Two approaches are covered here.</p>
+<section id="approach-a---gfcm-gsa-polygons" class="level3" data-number="3.1">
+<h3 data-number="3.1" class="anchored" data-anchor-id="approach-a---gfcm-gsa-polygons"><span class="header-section-number">3.1</span> Approach A - GFCM GSA polygons</h3>
+<p>The official GFCM GSA shapefile is downloaded once and cached. MEDITS’ own <code>area</code> field already gives each haul’s GSA directly, so no spatial join is needed.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>gsa_shp_path <span class="ot">&lt;-</span> <span class="fu">list.files</span>(gsa_shp_dir, <span class="at">pattern =</span> <span class="st">"</span><span class="sc">\\</span><span class="st">.shp$"</span>, <span class="at">full.names =</span> <span class="cn">TRUE</span>, <span class="at">recursive =</span> <span class="cn">TRUE</span>)[<span class="dv">1</span>]</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>area_shp <span class="ot">&lt;-</span> <span class="fu">st_read</span>(gsa_shp_path, <span class="at">quiet =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>area_shp<span class="sc">$</span>gsa_num <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(area_shp<span class="sc">$</span>SMU_CODE)</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>area_shp<span class="sc">$</span>gsa_num[area_shp<span class="sc">$</span>gsa_num <span class="sc">%in%</span> <span class="fu">c</span>(<span class="dv">111</span>, <span class="dv">112</span>)] <span class="ot">&lt;-</span> <span class="dv">11</span>   <span class="co"># Western/Eastern Sardinia -&gt; single GSA 11</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>AREA_ID_COL <span class="ot">&lt;-</span> <span class="st">"gsa_num"</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>FILTER_AREAS <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">11</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-gsa-coverage" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_sample_coverage_map.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;4: Sample coverage by GSA. selected_areas highlights the GSAs actually in scope (FILTER_AREAS) with a bold black outline - the outer contour of their union, not the internal lines between them.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+</section>
+<section id="approach-b---a-custom-boundary-bounding-box-or-arbitrary-shapefile" class="level3" data-number="3.2">
+<h3 data-number="3.2" class="anchored" data-anchor-id="approach-b---a-custom-boundary-bounding-box-or-arbitrary-shapefile"><span class="header-section-number">3.2</span> Approach B - a custom boundary (bounding box or arbitrary shapefile)</h3>
+<p>The same MEDITS raw data can instead be restricted to a custom footprint that doesn’t correspond to any GSA code - a simple bounding box, or a shapefile for a different EwE model’s own boundary.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>CUSTOM_BBOX <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">xmin =</span> <span class="dv">2</span>, <span class="at">xmax =</span> <span class="dv">8</span>, <span class="at">ymin =</span> <span class="dv">38</span>, <span class="at">ymax =</span> <span class="dv">42</span>)</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>custom_poly <span class="ot">&lt;-</span> <span class="fu">st_as_sfc</span>(<span class="fu">st_bbox</span>(<span class="fu">c</span>(</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">xmin =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"xmin"</span>]), <span class="at">ymin =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"ymin"</span>]),</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">xmax =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"xmax"</span>]), <span class="at">ymax =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"ymax"</span>])</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>), <span class="at">crs =</span> <span class="dv">4326</span>))</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>area_shp <span class="ot">&lt;-</span> <span class="fu">st_sf</span>(<span class="at">area_id =</span> <span class="dv">1</span>, <span class="at">geometry =</span> custom_poly)</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>AREA_ID_COL <span class="ot">&lt;-</span> <span class="st">"area_id"</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>dataframe1 <span class="ot">&lt;-</span> <span class="fu">filter_samples_by_area</span>(dataframe1, <span class="at">area_filter =</span> CUSTOM_BBOX, <span class="at">filter_type =</span> <span class="st">"bbox"</span>)</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>dataframe1[, AreaID <span class="sc">:</span><span class="er">=</span> <span class="dv">1</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<code>unname()</code> matters here
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>CUSTOM_BBOX["xmin"]</code> carries the name <code>"xmin"</code> with it (it’s already a named vector element) - <code>c(xmin = CUSTOM_BBOX["xmin"], ...)</code> without <code>unname()</code> concatenates into <code>"xmin.xmin"</code> instead of <code>"xmin"</code>, which <code>st_bbox()</code> can’t parse. This is the same bug class that shows up anywhere a named-vector element gets re-wrapped in another named vector - it also affected an earlier version of the land-basemap layer in <code>plot_sample_map()</code>, for the same reason.</p>
+</div>
+</div>
+<p><code>filter_samples_by_area(filter_type = "shapefile")</code> works the same way, but takes an <code>sf</code> polygon (or a path to one) instead of a bounding box - for a real, non-rectangular model boundary.</p>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+The sample coverage map shows the full survey context, not just the custom box
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>plot_sample_map()</code> computes its display extent from the <strong>union</strong> of <code>area_shp</code>‘s own bounding box and the sample points’ own Lat/Lon distribution - not <code>area_shp</code>’s bbox alone. Passing it the full, unfiltered survey data (before <code>filter_samples_by_area()</code> runs) means the map zooms out to show the complete MEDITS distribution across the whole survey region, with the custom area’s contour highlighted within that context via <code>selected_areas</code> - not a tight, context-free zoom into just the small box itself. Points inside vs.&nbsp;outside the selected area are shown in different colors either way.</p>
+<p>A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it can genuinely overlap land. <code>land_on_top = TRUE</code> draws the land basemap <em>after</em> the intensity fill rather than before, so any part of the box that’s actually land is visibly masked - only marine area should read as part of the study region, and a rectangle has no way to exclude land on its own.</p>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-custom-coverage" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/custom_survey_sample_coverage_map.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;5: Sample coverage within a custom bounding-box region, independent of GSA lines entirely.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p>With only one custom area, <code>AreaID</code> is set to <code>1</code> for every retained sample - there’s no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever <code>AreaID</code>/<code>area_shp</code> combination they’re given, never assuming GSA-specific structure.</p>
+<hr>
+</section>
+</section>
+<section id="sec-density" class="level2" data-number="4">
+<h2 data-number="4" class="anchored" data-anchor-id="sec-density"><span class="header-section-number">4</span> Per-haul density and corrections</h2>
+<section id="swept-area" class="level3" data-number="4.1">
+<h3 data-number="4.1" class="anchored" data-anchor-id="swept-area"><span class="header-section-number">4.1</span> Swept area</h3>
+<p>Trawl catch weight on its own isn’t comparable between hauls - a haul that swept more seafloor will naturally catch more, independent of true fish density. Standardizing to a <strong>density</strong> (weight per unit area swept) is what makes hauls comparable at all.</p>
+<p><span class="math display">\[A_{\text{swept}} = \text{distance towed} \times \text{net wing opening}\]</span></p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>WING_OPENING_UNIT <span class="ot">&lt;-</span> <span class="st">"decimetres"</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>ta_swept <span class="ot">&lt;-</span> ta <span class="sc">%&gt;%</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">wing_opening_m =</span> <span class="cf">if</span> (WING_OPENING_UNIT <span class="sc">==</span> <span class="st">"decimetres"</span>) wing_opening <span class="sc">/</span> <span class="dv">10</span> <span class="cf">else</span> wing_opening,</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">swept_area_km2 =</span> (distance <span class="sc">*</span> wing_opening_m) <span class="sc">/</span> <span class="fl">1e6</span>,</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">mean_depth =</span> (shooting_depth <span class="sc">+</span> hauling_depth) <span class="sc">/</span> <span class="dv">2</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">compute_sample_densities</span>(dt)   <span class="co"># Density := Biomass / Effort</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>The unit for <code>wing_opening</code> (decimetres, not metres) isn’t documented directly in the raw data - confirmed by cross-checking against <code>vertical_opening</code>, a constant 20 across hauls using the standard MEDITS GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73’s real vertical opening; 20 <em>metres</em> would be absurd for a bottom trawl.</p>
+</section>
+<section id="depth-stratum-assignment" class="level3" data-number="4.2">
+<h3 data-number="4.2" class="anchored" data-anchor-id="depth-stratum-assignment"><span class="header-section-number">4.2</span> Depth-stratum assignment</h3>
+<p>MEDITS is a stratified-random survey design: the sampling area within each GSA (or custom region) is divided into 5 standard bathymetric strata.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>MEDITS_STRATA <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">stratum_num =</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">5</span>,</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">depth_min =</span> <span class="fu">c</span>(<span class="dv">10</span>, <span class="dv">50</span>, <span class="dv">100</span>, <span class="dv">200</span>, <span class="dv">500</span>),</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">depth_max =</span> <span class="fu">c</span>(<span class="fl">49.9999</span>, <span class="fl">99.9999</span>, <span class="fl">199.9999</span>, <span class="fl">499.9999</span>, <span class="fl">799.9999</span>)</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">assign_depth_stratum</span>(dt, MEDITS_STRATA)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p><code>assign_depth_stratum()</code> supports three input shapes: no <code>Stratum</code> column at all (fully derived from depth), a <code>Stratum</code> column already fully populated (used as-is, no derivation attempted), or a <em>partially</em> populated one - existing values are kept, only the missing ones are derived from depth. Hauls with a mean depth outside 10-800m don’t belong to any of the 5 standard strata and are excluded from the strata-weighted index, rather than force-assigned to whichever edge stratum happens to be closest.</p>
+</section>
+<section id="catchability-correction" class="level3" data-number="4.3">
+<h3 data-number="4.3" class="anchored" data-anchor-id="catchability-correction"><span class="header-section-number">4.3</span> Catchability correction</h3>
+<p>Trawl surveys don’t catch 100% of what’s actually in the swept area - some individuals escape under, over, or around the net. The raw survey density is a systematic <em>underestimate</em> of true density by an amount that varies by species. Catchability (<span class="math inline">\(q\)</span>, typically <span class="math inline">\(0 &lt; q \le 1\)</span>) corrects this:</p>
+<p><span class="math display">\[D_{\text{true}} = \frac{D_{\text{raw}}}{q}\]</span></p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>catchability_raw <span class="ot">&lt;-</span> <span class="fu">fread</span>(CATCHABILITY_CSV_PATH)</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>CATCHABILITY_TABLE <span class="ot">&lt;-</span> catchability_raw[, .(<span class="at">ScientificName =</span> species, <span class="at">q =</span> q_FACTOR)]</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">apply_catchability_correction</span>(</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>  dt, CATCHABILITY_TABLE, <span class="at">default_q =</span> <span class="dv">1</span>,</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">species_taxonomy =</span> species_taxonomy, <span class="at">exempt_fg_names =</span> EXEMPT_FG_NAMES</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>Real catchability tables mix true species binomials with broader taxonomic-group entries (e.g.&nbsp;“Isopoda”, “Hydrozoa” - order/class names) and genus-level “spp” entries (“Cirolana spp”, meaning any species in that genus). <code>apply_catchability_correction()</code> classifies each table entry by its apparent level from its text shape and resolves species against it in order of specificity - genus before order, order before phylum - so a genus-level match always wins over a broader but explicit rule for the same species. For species matching nothing in the table at any level, a <strong>taxonomic-proximity fallback</strong> looks for other species already in the table sharing genus, then family, then order, and borrows the average of their <span class="math inline">\(q\)</span> rather than falling straight to a generic default.</p>
+<p><code>exempt_fg_names</code>/<code>exempt_species</code> force <span class="math inline">\(q=1\)</span> (no correction) regardless of anything else resolved - for groups a bottom trawl isn’t designed to sample representatively at all (pelagic, planktonic, seagrass/algae FGs), where “catchability” as a concept doesn’t apply the same way.</p>
+</section>
+<section id="sample-level-outlier-detection" class="level3" data-number="4.4">
+<h3 data-number="4.4" class="anchored" data-anchor-id="sample-level-outlier-detection"><span class="header-section-number">4.4</span> Sample-level outlier detection</h3>
+<p>A single anomalous haul (a genuine data error, misidentification, or unit mismatch) can distort an entire year’s FG-level density if left uncorrected. <code>remove_sample_outliers()</code> runs <em>before</em> any aggregation, so only that one species’ one observation is affected - not the whole FG or the whole year for other species sharing it.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">remove_sample_outliers</span>(dt, <span class="at">threshold =</span> <span class="dv">70</span>, <span class="at">min_samples =</span> <span class="dv">5</span>, <span class="at">drop_outliers =</span> DROP_OUTLIERS)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>Detection compares each observation only against that <em>same species’</em> own history within the <em>same area</em> - a robust (median/MAD-based) z-score, computed on <code>log1p(Density)</code> rather than the raw scale. This matters for schooling/aggregating species (anchovy, horse mackerel, boarfish): their catch data is naturally, heavily right-skewed - most hauls catch little to nothing, occasionally a haul hits a school and catches a lot, which is genuine ecology, not an error. On the raw scale this makes the reference statistics tiny, so even a real high catch produces a huge z-score; <code>threshold=70</code> on the log scale was calibrated against a synthetic test distribution to separate genuine school events from a clear data error, and is a starting point to tune against your own data’s actual flagged/not-flagged split, not a universal constant.</p>
+<p><code>drop_outliers=FALSE</code> reports flagged observations without changing the data - useful for reviewing what <em>would</em> be removed before committing to it. Flagged observations (species, area, year, sample, flagged value, typical value, z-score, and whether each was actually dropped) are saved to <code>survey_outliers_flagged.csv</code>.</p>
+<hr>
+</section>
+</section>
+<section id="sec-strata-weighted" class="level2" data-number="5">
+<h2 data-number="5" class="anchored" data-anchor-id="sec-strata-weighted"><span class="header-section-number">5</span> Strata-weighted density (within an area)</h2>
+<p>This is the central statistical correction in the pipeline. A <strong>simple mean density across all hauls in an area</strong> implicitly assumes every haul represents an equal share of that area’s seafloor - but different strata are sampled with different numbers of hauls <em>and</em> cover different fractions of the total area, so an unweighted mean would be biased toward whichever stratum happened to get more hauls that year, independent of how much of the area it actually represents.</p>
+<p>The standard stratified-survey estimator instead computes a per-stratum mean, then weights each stratum’s contribution by its <strong>true share of the area’s total surveyable area</strong> (not its share of hauls):</p>
+<p><span class="math display">\[D_{\text{area}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{area}}}, \qquad \bar{D}_h = \frac{\sum \text{density in stratum } h}{n_{\text{samples},\,h}}\]</span></p>
+<p>The stratum area shares are computed from <strong>bathymetry</strong>, not from sample counts - a NOAA bathymetry raster is downloaded, clipped to the area’s own polygon (a GSA boundary, or the custom region from <a href="#sec-area-definition">Section&nbsp;3</a> - <code>compute_strata_area_by_area()</code> doesn’t need to know which), and each cell’s real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>strata_area_by_area <span class="ot">&lt;-</span> <span class="fu">compute_strata_area_by_area</span>(</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">area_ids =</span> FILTER_AREAS, <span class="at">area_shp =</span> area_shp, <span class="at">area_id_col =</span> AREA_ID_COL,</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">strata_def =</span> MEDITS_STRATA, <span class="at">cache_path =</span> <span class="fu">file.path</span>(out_dir, <span class="st">"strata_area_by_area.csv"</span>)</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>n_samples_by_stratum <span class="ot">&lt;-</span> dt[<span class="sc">!</span><span class="fu">is.na</span>(Stratum), .(<span class="at">n_samples =</span> <span class="fu">uniqueN</span>(SampleID)), by <span class="ot">=</span> .(AreaID, Year, Stratum)]</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>per_group_fg <span class="ot">&lt;-</span> <span class="fu">compute_fg_densities_by_stratum</span>(dt, <span class="at">strata =</span> STRATA)</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>fg_index <span class="ot">&lt;-</span> <span class="fu">weight_by_strata</span>(per_group_fg, n_samples_by_stratum, strata_area_by_area)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<code>n_samples</code> must come from the full dataset, never a species/FG-filtered subset
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>per_group_fg</code> deliberately does <strong>not</strong> compute its own sample count - a species/FG-specific count would only include samples where that group had non-zero catch, understating true sampling effort (a sample where a species was genuinely absent still counts toward the denominator in a proper mean-density estimator, contributing a true zero). The one correct source of <code>n_samples</code> is <code>n_samples_by_stratum</code>, computed from the <em>full</em> <code>dt</code> (every species/FG together). Using the wrong source here was confirmed, via a hand-calculated test, to produce up to a 4x overestimate for a species caught in only 1 of 4 hauls at a stratum.</p>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-strata-timeseries" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_fg_density_timeseries.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;6: Density index by Functional Group and area, strata-weighted (per-area version - see <a href="#sec-regional">Section&nbsp;6</a> for the region-wide aggregate used in Ecopath/Ecosim inputs).</figcaption>
+</figure>
+</div>
+</div>
+</div>
+</section>
+<section id="sec-regional" class="level2" data-number="6">
+<h2 data-number="6" class="anchored" data-anchor-id="sec-regional"><span class="header-section-number">6</span> Region-wide aggregation (across areas)</h2>
+<p><a href="#sec-strata-weighted">Section&nbsp;5</a> gives a correctly-weighted density <strong>per area</strong>. Combining multiple areas into a single region-wide estimate has exactly the same weighting problem one level up: areas differ substantially in total surveyable area, so a simple mean of per-area densities would implicitly treat a small area as equally representative of the region as a large one.</p>
+<p>A single-stage estimator combining every (area, stratum) cell directly - using each cell’s <strong>absolute</strong> area, not its proportion within its own area - avoids any double-weighting error from compounding two separate weighting stages:</p>
+<p><span class="math display">\[D_{\text{region}} = \frac{\sum_{a,h} \bar{D}_{a,h} \, A_{a,h}}{\sum_{a,h} A_{a,h}}\]</span></p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>fg_index_regional <span class="ot">&lt;-</span> <span class="fu">weight_by_area</span>(fg_index)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>This is the version used for Ecopath/Ecosim-facing outputs - the per-area index (<a href="#sec-strata-weighted">Section&nbsp;5</a>) is retained separately for area-level plots and comparisons, where seeing individual areas is the point.</p>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-regional-timeseries" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_fg_density_timeseries_regional.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;7: Region-wide, area-weighted density index by Functional Group.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p>For the custom-region example (<a href="#sec-area-definition">Section&nbsp;3</a>, Approach B), this step is mathematically a formality with only one area in scope - <code>weight_by_area()</code> still runs the same formula, it just sums over one area’s worth of cells, so the result is identical to the per-area index above. It’s kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.</p>
+<hr>
+</section>
+<section id="validation-depth-strata-density-profile" class="level2" data-number="7">
+<h2 data-number="7" class="anchored" data-anchor-id="validation-depth-strata-density-profile"><span class="header-section-number">7</span> Validation: depth-strata density profile</h2>
+<p>A direct ecological sanity check on the strata-weighting logic itself: for each FG, plot its <strong>raw per-sample density</strong> (deliberately <em>before</em> area-weighting, since area-weighting is about scaling to a population estimate, not about revealing where a species actually lives) across the 5 depth strata.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>p_profile <span class="ot">&lt;-</span> <span class="fu">plot_strata_profile</span>(fg_index, MEDITS_STRATA)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>If the pipeline is working correctly, FGs known to live in deep water should show density concentrated toward the deeper strata, and coastal/shallow FGs should concentrate toward the shallow ones. A flat profile, or an unexpected peak for a well-documented species, is worth investigating directly - it could point at a stratum-coding issue, a swept-area problem, or a species-matching error further upstream, rather than being dismissed as noise.</p>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-depth-profile" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_fg_depth_strata_profile.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;8: Depth-strata density profile by Functional Group.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+</section>
+<section id="sample-coverage-map" class="level2" data-number="8">
+<h2 data-number="8" class="anchored" data-anchor-id="sample-coverage-map"><span class="header-section-number">8</span> Sample coverage map</h2>
+<p>Before (or alongside) the density calculations, <code>plot_sample_map()</code> gives a direct visual and geometric check on the input data itself - independent of anything FG- or density-related.</p>
+<div class="cell">
+<details>
+<summary>Code</summary>
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>p_sample_map <span class="ot">&lt;-</span> <span class="fu">plot_sample_map</span>(dataframe1, area_shp, <span class="at">area_id_col =</span> AREA_ID_COL,</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>                                  <span class="at">title =</span> <span class="st">"Sample coverage"</span>, <span class="at">selected_areas =</span> FILTER_AREAS)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</details>
+</div>
+<p>This does more than plot points - it performs concrete geometric checks and reports them directly:</p>
+<ul>
+<li><strong>CRS is validated explicitly</strong>, not assumed: <code>area_shp</code> and the sample points are both transformed to a common, known CRS before plotting rather than relying on automatic layer alignment, and the function errors clearly if <code>area_shp</code> has no CRS defined at all (rather than silently producing a badly misplaced polygon layer).</li>
+<li><strong>Points genuinely outside every polygon</strong> (even after correct CRS alignment) are counted and listed - this distinguishes a real projection problem (should resolve to ~0 once fixed) from genuine bad coordinate data (stays nonzero regardless).</li>
+<li><strong>Points inside vs.&nbsp;outside the selected study area specifically</strong> are shown in different colors - a point can be a perfectly valid coordinate in a real, neighboring GSA and still be outside this particular analysis’s scope, which is a different question from “is this a valid coordinate at all”.</li>
+<li><strong>The selected study area’s outer contour</strong> is drawn in bold, using a rasterize-then-repolygonize technique rather than a plain <code>st_union()</code> - real shapefiles are rarely perfectly topologically snapped at shared boundaries, and a plain union can leave a visible seam artifact at the join between adjacent polygons that a coarser raster grid smooths over.</li>
+</ul>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-sample-map" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_sample_coverage_map.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;9: Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p><code>by_year = TRUE</code> produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year’s samples overlaid on top of it can make a real gap look fine.</p>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-sample-map-byyear" class="quarto-figure quarto-figure-center anchored">
+<figure class="figure">
+<p><img src="figures/survey_sample_coverage_map_by_year.png" class="img-fluid figure-img" style="width:100.0%"></p>
+<figcaption class="figure-caption">Figure&nbsp;10: Sample coverage faceted by year.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<hr>
+</section>
+<section id="outputs" class="level2" data-number="9">
+<h2 data-number="9" class="anchored" data-anchor-id="outputs"><span class="header-section-number">9</span> Outputs</h2>
+<table class="table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>File</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>survey_fg_annual_index.csv</code></td>
+<td>Per-area, strata-weighted density by year and FG</td>
+</tr>
+<tr class="even">
+<td><code>survey_fg_annual_index_regional.csv</code></td>
+<td>All areas combined, area-weighted - the Ecopath/Ecosim-facing version</td>
+</tr>
+<tr class="odd">
+<td><code>survey_unmatched_for_manual_review.csv</code></td>
+<td>Species still unmatched after every FG-matching stage, with mean biomass, appearance count, and taxonomy</td>
+</tr>
+<tr class="even">
+<td><code>survey_outliers_flagged.csv</code></td>
+<td>Sample-level observations flagged as statistical outliers, with a <code>was_dropped</code> column</td>
+</tr>
+<tr class="odd">
+<td><code>strata_area_by_area.csv</code></td>
+<td>Cached bathymetry-derived stratum area proportions per area</td>
+</tr>
+<tr class="even">
+<td><code>ecopath_ecosim_inputs.xlsx</code></td>
+<td>Four-sheet Ecopath/Ecosim input workbook (below)</td>
+</tr>
+</tbody>
+</table>
+<section id="ecopath_ecosim_inputs.xlsx-sheets" class="level3" data-number="9.1">
+<h3 data-number="9.1" class="anchored" data-anchor-id="ecopath_ecosim_inputs.xlsx-sheets"><span class="header-section-number">9.1</span> <code>ecopath_ecosim_inputs.xlsx</code> sheets</h3>
+<table class="table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Sheet</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>FG_spp_Ecopath</code></td>
+<td>Species-level density, <code>prop_sp_fg</code> (each species’ share of its FG’s total density), and taxonomy, averaged over <code>year_ecopath</code> - the base-year snapshot for Ecopath initialization and for computing a biomass-weighted PB/QB across an FG’s constituent species</td>
+</tr>
+<tr class="even">
+<td><code>Ecopath</code></td>
+<td>FG-level biomass for the base year and the <code>year_ecopath</code> average - <strong>every FG in the reference table gets a row</strong>, even one with zero observed biomass in the base years specifically (blank, not simply absent)</td>
+</tr>
+<tr class="odd">
+<td><code>Ecosim</code></td>
+<td>FG-level relative biomass time series across the full <code>ts_years</code> range, in Ecosim’s wide import format</td>
+</tr>
+<tr class="even">
+<td><code>FG_spp_Ecosim</code></td>
+<td>Species-level density, averaged across the <em>full</em> <code>ts_years</code> range (not just the base years) - no <code>Year</code> column, since this is each species’ overall long-term average rather than a per-year breakdown. The difference from <code>FG_spp_Ecopath</code> is purely the time window averaged over</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Every FG and every matched species gets a row, even with no data
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Earlier versions of the FG_spp/Ecopath sheets were built by filtering to <code>year_ecopath</code> <em>before</em> constructing the row list, which silently dropped any species (or, for the Ecopath sheet, any entire FG) with no observations in that specific base-year window - even when they were correctly matched and had real data for other years. The sheets are now built from the full reference lists (every matched species, every FG in <code>dataframe2</code>) with the relevant density left-joined in, so “no data for this period” and “doesn’t belong to this FG” are no longer collapsed into the same “row is absent” symptom.</p>
+</div>
+</div>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+On the Ecosim time-series format
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Unlike the Ecopath sheet format (checked directly against a real exported file from this project at an earlier stage), the Ecosim time-series sheet format is built from Ecosim’s documented structure, not confirmed against a real exported example. If an actual exported file from Ecosim’s own time-series import tool becomes available, this should be checked against it directly.</p>
+</div>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+On PB/QB
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>This pipeline produces <strong>density/biomass</strong> only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density. <code>FG_spp_Ecopath</code>’s <code>prop_sp_fg</code> column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.</p>
+</div>
+</div>
+<!-- -->
+
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button', {
+    text: function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+  });
+  clipboard.on('success', function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  });
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+  function tippyHover(el, contentFn) {
+    const config = {
+      allowHTML: true,
+      content: contentFn,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start'
+    };
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      return note.innerHTML;
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb19" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Survey-to-FG Density Pipeline: Methodology"</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="an">subtitle:</span><span class="co"> "Generalized functions applied to MEDITS (Western Mediterranean), with both GSA-based and custom-region examples"</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="an">author:</span><span class="co"> "Daniel Vilas"</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="an">date:</span><span class="co"> today</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="an">format:</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="co">  html:</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="co">    toc: true</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co">    toc-depth: 3</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="co">    number-sections: true</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="co">    code-fold: true</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="co">    code-tools: true</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a><span class="co">    theme: cosmo</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a><span class="an">execute:</span></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a><span class="co">  eval: false</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a><span class="co">  echo: true</span></span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: setup-copy-figures</span></span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a><span class="co">#| include: false</span></span>
+<span id="cb19-26"><a href="#cb19-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-27"><a href="#cb19-27" aria-hidden="true" tabindex="-1"></a><span class="do">## This .qmd lives in /Users/daniel/Documents/Github/WMed_EwE/scripts/, but</span></span>
+<span id="cb19-28"><a href="#cb19-28" aria-hidden="true" tabindex="-1"></a><span class="do">## the actual pipeline outputs (plots, data) live in a completely separate</span></span>
+<span id="cb19-29"><a href="#cb19-29" aria-hidden="true" tabindex="-1"></a><span class="do">## directory tree, wherever each script's own out_dir points.</span></span>
+<span id="cb19-30"><a href="#cb19-30" aria-hidden="true" tabindex="-1"></a><span class="do">##</span></span>
+<span id="cb19-31"><a href="#cb19-31" aria-hidden="true" tabindex="-1"></a><span class="do">## Figures are COPIED into a local "figures/" folder next to this .qmd,</span></span>
+<span id="cb19-32"><a href="#cb19-32" aria-hidden="true" tabindex="-1"></a><span class="do">## not referenced directly at out_dir/plots. This matters for more than</span></span>
+<span id="cb19-33"><a href="#cb19-33" aria-hidden="true" tabindex="-1"></a><span class="do">## local convenience: out_dir points to an ABSOLUTE path on this</span></span>
+<span id="cb19-34"><a href="#cb19-34" aria-hidden="true" tabindex="-1"></a><span class="do">## machine (e.g. /Users/daniel/Work/iMARES/...), which only exists</span></span>
+<span id="cb19-35"><a href="#cb19-35" aria-hidden="true" tabindex="-1"></a><span class="do">## here. Once this .qmd is rendered and the resulting .html is pushed</span></span>
+<span id="cb19-36"><a href="#cb19-36" aria-hidden="true" tabindex="-1"></a><span class="do">## to GitHub (e.g. served via GitHub Pages), that absolute path doesn't</span></span>
+<span id="cb19-37"><a href="#cb19-37" aria-hidden="true" tabindex="-1"></a><span class="do">## exist on the server at all - every image reference would 404,</span></span>
+<span id="cb19-38"><a href="#cb19-38" aria-hidden="true" tabindex="-1"></a><span class="do">## rendering as a broken-image icon regardless of how correct the path</span></span>
+<span id="cb19-39"><a href="#cb19-39" aria-hidden="true" tabindex="-1"></a><span class="do">## was locally. Copying the actual image files into a folder alongside</span></span>
+<span id="cb19-40"><a href="#cb19-40" aria-hidden="true" tabindex="-1"></a><span class="do">## the .qmd means that folder gets committed to the repo and deployed</span></span>
+<span id="cb19-41"><a href="#cb19-41" aria-hidden="true" tabindex="-1"></a><span class="do">## together with the rendered HTML, so the (now relative) references</span></span>
+<span id="cb19-42"><a href="#cb19-42" aria-hidden="true" tabindex="-1"></a><span class="do">## resolve correctly wherever the site is actually hosted.</span></span>
+<span id="cb19-43"><a href="#cb19-43" aria-hidden="true" tabindex="-1"></a><span class="do">##</span></span>
+<span id="cb19-44"><a href="#cb19-44" aria-hidden="true" tabindex="-1"></a><span class="do">## An earlier version of this pipeline referenced out_dir/plots</span></span>
+<span id="cb19-45"><a href="#cb19-45" aria-hidden="true" tabindex="-1"></a><span class="do">## directly instead, specifically to avoid a DIFFERENT failure mode -</span></span>
+<span id="cb19-46"><a href="#cb19-46" aria-hidden="true" tabindex="-1"></a><span class="do">## a stale, previously-copied file lingering in "figures/" after the</span></span>
+<span id="cb19-47"><a href="#cb19-47" aria-hidden="true" tabindex="-1"></a><span class="do">## real upstream plot had already changed. That's a real risk, but the</span></span>
+<span id="cb19-48"><a href="#cb19-48" aria-hidden="true" tabindex="-1"></a><span class="do">## fix here is to make the copy unconditional and always-overwrite</span></span>
+<span id="cb19-49"><a href="#cb19-49" aria-hidden="true" tabindex="-1"></a><span class="do">## (below), not to skip copying entirely - skipping copying is only</span></span>
+<span id="cb19-50"><a href="#cb19-50" aria-hidden="true" tabindex="-1"></a><span class="do">## safe for local rendering, and breaks entirely once deployed.</span></span>
+<span id="cb19-51"><a href="#cb19-51" aria-hidden="true" tabindex="-1"></a>extract_out_dir <span class="ot">&lt;-</span> <span class="cf">function</span>(script_path) {</span>
+<span id="cb19-52"><a href="#cb19-52" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="sc">!</span><span class="fu">file.exists</span>(script_path)) {</span>
+<span id="cb19-53"><a href="#cb19-53" aria-hidden="true" tabindex="-1"></a>    <span class="fu">warning</span>(<span class="st">"Script not found at "</span>, script_path, <span class="st">" - can't auto-detect its out_dir."</span>)</span>
+<span id="cb19-54"><a href="#cb19-54" aria-hidden="true" tabindex="-1"></a>    <span class="fu">return</span>(<span class="cn">NA_character_</span>)</span>
+<span id="cb19-55"><a href="#cb19-55" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb19-56"><a href="#cb19-56" aria-hidden="true" tabindex="-1"></a>  lines <span class="ot">&lt;-</span> <span class="fu">readLines</span>(script_path, <span class="at">warn =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb19-57"><a href="#cb19-57" aria-hidden="true" tabindex="-1"></a>  <span class="do">## first out_dir &lt;- "..." assignment in the file - in both example</span></span>
+<span id="cb19-58"><a href="#cb19-58" aria-hidden="true" tabindex="-1"></a>  <span class="do">## scripts this is the hardcoded, daniel-branch value</span></span>
+<span id="cb19-59"><a href="#cb19-59" aria-hidden="true" tabindex="-1"></a>  match_line <span class="ot">&lt;-</span> <span class="fu">grep</span>(<span class="st">'out_dir</span><span class="sc">\\</span><span class="st">s*&lt;-</span><span class="sc">\\</span><span class="st">s*"'</span>, lines, <span class="at">value =</span> <span class="cn">TRUE</span>)[<span class="dv">1</span>]</span>
+<span id="cb19-60"><a href="#cb19-60" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">is.na</span>(match_line)) {</span>
+<span id="cb19-61"><a href="#cb19-61" aria-hidden="true" tabindex="-1"></a>    <span class="fu">warning</span>(<span class="st">"No out_dir assignment found in "</span>, script_path)</span>
+<span id="cb19-62"><a href="#cb19-62" aria-hidden="true" tabindex="-1"></a>    <span class="fu">return</span>(<span class="cn">NA_character_</span>)</span>
+<span id="cb19-63"><a href="#cb19-63" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb19-64"><a href="#cb19-64" aria-hidden="true" tabindex="-1"></a>  <span class="fu">gsub</span>(<span class="st">'.*out_dir</span><span class="sc">\\</span><span class="st">s*&lt;-</span><span class="sc">\\</span><span class="st">s*"([^"]+)".*'</span>, <span class="st">'</span><span class="sc">\\</span><span class="st">1'</span>, match_line)</span>
+<span id="cb19-65"><a href="#cb19-65" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb19-66"><a href="#cb19-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-67"><a href="#cb19-67" aria-hidden="true" tabindex="-1"></a>gsa_script_path <span class="ot">&lt;-</span> <span class="st">"/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_westmed.R"</span></span>
+<span id="cb19-68"><a href="#cb19-68" aria-hidden="true" tabindex="-1"></a>custom_script_path <span class="ot">&lt;-</span> <span class="st">"/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_custom.R"</span></span>
+<span id="cb19-69"><a href="#cb19-69" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-70"><a href="#cb19-70" aria-hidden="true" tabindex="-1"></a>gsa_out_dir <span class="ot">&lt;-</span> <span class="fu">extract_out_dir</span>(gsa_script_path)</span>
+<span id="cb19-71"><a href="#cb19-71" aria-hidden="true" tabindex="-1"></a>custom_out_dir <span class="ot">&lt;-</span> <span class="fu">extract_out_dir</span>(custom_script_path)</span>
+<span id="cb19-72"><a href="#cb19-72" aria-hidden="true" tabindex="-1"></a>gsa_plots_dir <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.na</span>(gsa_out_dir)) <span class="fu">file.path</span>(gsa_out_dir, <span class="st">"plots"</span>) <span class="cf">else</span> <span class="cn">NA_character_</span></span>
+<span id="cb19-73"><a href="#cb19-73" aria-hidden="true" tabindex="-1"></a>custom_plots_dir <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.na</span>(custom_out_dir)) <span class="fu">file.path</span>(custom_out_dir, <span class="st">"plots"</span>) <span class="cf">else</span> <span class="cn">NA_character_</span></span>
+<span id="cb19-74"><a href="#cb19-74" aria-hidden="true" tabindex="-1"></a><span class="fu">message</span>(<span class="st">"GSA plots directory (resolved): "</span>, gsa_plots_dir)</span>
+<span id="cb19-75"><a href="#cb19-75" aria-hidden="true" tabindex="-1"></a><span class="fu">message</span>(<span class="st">"Custom-region plots directory (resolved): "</span>, custom_plots_dir)</span>
+<span id="cb19-76"><a href="#cb19-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-77"><a href="#cb19-77" aria-hidden="true" tabindex="-1"></a><span class="do">## local_figures_dir is relative to this .qmd's own location, so it</span></span>
+<span id="cb19-78"><a href="#cb19-78" aria-hidden="true" tabindex="-1"></a><span class="do">## lives inside the git repo and gets committed/pushed alongside it -</span></span>
+<span id="cb19-79"><a href="#cb19-79" aria-hidden="true" tabindex="-1"></a><span class="do">## unlike out_dir, which is an absolute, machine-local path.</span></span>
+<span id="cb19-80"><a href="#cb19-80" aria-hidden="true" tabindex="-1"></a>local_figures_dir <span class="ot">&lt;-</span> <span class="st">"figures"</span></span>
+<span id="cb19-81"><a href="#cb19-81" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">dir.exists</span>(local_figures_dir)) <span class="fu">dir.create</span>(local_figures_dir)</span>
+<span id="cb19-82"><a href="#cb19-82" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-83"><a href="#cb19-83" aria-hidden="true" tabindex="-1"></a>plots_needed <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb19-84"><a href="#cb19-84" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsa_plots_dir    =</span> <span class="st">"survey_sample_coverage_map.png"</span>,</span>
+<span id="cb19-85"><a href="#cb19-85" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsa_plots_dir    =</span> <span class="st">"survey_sample_coverage_map_by_year.png"</span>,</span>
+<span id="cb19-86"><a href="#cb19-86" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsa_plots_dir    =</span> <span class="st">"survey_fg_density_timeseries.png"</span>,</span>
+<span id="cb19-87"><a href="#cb19-87" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsa_plots_dir    =</span> <span class="st">"survey_fg_density_timeseries_regional.png"</span>,</span>
+<span id="cb19-88"><a href="#cb19-88" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsa_plots_dir    =</span> <span class="st">"survey_fg_depth_strata_profile.png"</span>,</span>
+<span id="cb19-89"><a href="#cb19-89" aria-hidden="true" tabindex="-1"></a>  <span class="at">custom_plots_dir =</span> <span class="st">"survey_sample_coverage_map.png"</span>,</span>
+<span id="cb19-90"><a href="#cb19-90" aria-hidden="true" tabindex="-1"></a>  <span class="at">custom_plots_dir =</span> <span class="st">"survey_fg_density_timeseries.png"</span></span>
+<span id="cb19-91"><a href="#cb19-91" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-92"><a href="#cb19-92" aria-hidden="true" tabindex="-1"></a>src_dirs <span class="ot">&lt;-</span> <span class="fu">list</span>(<span class="at">gsa_plots_dir =</span> gsa_plots_dir, <span class="at">custom_plots_dir =</span> custom_plots_dir)</span>
+<span id="cb19-93"><a href="#cb19-93" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> (i <span class="cf">in</span> <span class="fu">seq_along</span>(plots_needed)) {</span>
+<span id="cb19-94"><a href="#cb19-94" aria-hidden="true" tabindex="-1"></a>  src_dir_name <span class="ot">&lt;-</span> <span class="fu">names</span>(plots_needed)[i]</span>
+<span id="cb19-95"><a href="#cb19-95" aria-hidden="true" tabindex="-1"></a>  fname <span class="ot">&lt;-</span> plots_needed[i]</span>
+<span id="cb19-96"><a href="#cb19-96" aria-hidden="true" tabindex="-1"></a>  dst_name <span class="ot">&lt;-</span> <span class="cf">if</span> (src_dir_name <span class="sc">==</span> <span class="st">"custom_plots_dir"</span>) <span class="fu">paste0</span>(<span class="st">"custom_"</span>, fname) <span class="cf">else</span> fname</span>
+<span id="cb19-97"><a href="#cb19-97" aria-hidden="true" tabindex="-1"></a>  src_dir <span class="ot">&lt;-</span> src_dirs[[src_dir_name]]</span>
+<span id="cb19-98"><a href="#cb19-98" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">is.na</span>(src_dir)) <span class="cf">next</span>   <span class="co"># out_dir couldn't be auto-detected - already warned above</span></span>
+<span id="cb19-99"><a href="#cb19-99" aria-hidden="true" tabindex="-1"></a>  src <span class="ot">&lt;-</span> <span class="fu">file.path</span>(src_dir, fname)</span>
+<span id="cb19-100"><a href="#cb19-100" aria-hidden="true" tabindex="-1"></a>  dst <span class="ot">&lt;-</span> <span class="fu">file.path</span>(local_figures_dir, dst_name)</span>
+<span id="cb19-101"><a href="#cb19-101" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">file.exists</span>(src)) {</span>
+<span id="cb19-102"><a href="#cb19-102" aria-hidden="true" tabindex="-1"></a>    <span class="fu">file.copy</span>(src, dst, <span class="at">overwrite =</span> <span class="cn">TRUE</span>)   <span class="co"># ALWAYS overwrite - this is what prevents the stale-copy failure mode</span></span>
+<span id="cb19-103"><a href="#cb19-103" aria-hidden="true" tabindex="-1"></a>  } <span class="cf">else</span> {</span>
+<span id="cb19-104"><a href="#cb19-104" aria-hidden="true" tabindex="-1"></a>    <span class="fu">warning</span>(<span class="st">"Plot not found at "</span>, src, <span class="st">" - run the relevant example script first."</span>)</span>
+<span id="cb19-105"><a href="#cb19-105" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb19-106"><a href="#cb19-106" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb19-107"><a href="#cb19-107" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-108"><a href="#cb19-108" aria-hidden="true" tabindex="-1"></a><span class="do">## Wraps knitr::include_graphics() with an existence check - a figure</span></span>
+<span id="cb19-109"><a href="#cb19-109" aria-hidden="true" tabindex="-1"></a><span class="do">## whose source script hasn't been run yet (e.g. the custom-region</span></span>
+<span id="cb19-110"><a href="#cb19-110" aria-hidden="true" tabindex="-1"></a><span class="do">## example, if only the GSA one has been run so far) genuinely doesn't</span></span>
+<span id="cb19-111"><a href="#cb19-111" aria-hidden="true" tabindex="-1"></a><span class="do">## exist on disk, and include_graphics() hard-fails the ENTIRE render</span></span>
+<span id="cb19-112"><a href="#cb19-112" aria-hidden="true" tabindex="-1"></a><span class="do">## on a missing file rather than skipping just that one figure. This</span></span>
+<span id="cb19-113"><a href="#cb19-113" aria-hidden="true" tabindex="-1"></a><span class="do">## shows a clear, in-document placeholder message instead, so the rest</span></span>
+<span id="cb19-114"><a href="#cb19-114" aria-hidden="true" tabindex="-1"></a><span class="do">## of the document still renders.</span></span>
+<span id="cb19-115"><a href="#cb19-115" aria-hidden="true" tabindex="-1"></a>safe_include_graphics <span class="ot">&lt;-</span> <span class="cf">function</span>(path, script_hint) {</span>
+<span id="cb19-116"><a href="#cb19-116" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">file.exists</span>(path)) {</span>
+<span id="cb19-117"><a href="#cb19-117" aria-hidden="true" tabindex="-1"></a>    knitr<span class="sc">::</span><span class="fu">include_graphics</span>(path)</span>
+<span id="cb19-118"><a href="#cb19-118" aria-hidden="true" tabindex="-1"></a>  } <span class="cf">else</span> {</span>
+<span id="cb19-119"><a href="#cb19-119" aria-hidden="true" tabindex="-1"></a>    knitr<span class="sc">::</span><span class="fu">asis_output</span>(<span class="fu">paste0</span>(</span>
+<span id="cb19-120"><a href="#cb19-120" aria-hidden="true" tabindex="-1"></a>      <span class="st">"&gt; **Figure not yet available** - `"</span>, path, <span class="st">"` doesn't exist yet. Run `"</span>,</span>
+<span id="cb19-121"><a href="#cb19-121" aria-hidden="true" tabindex="-1"></a>      script_hint, <span class="st">"` first, then re-render this document.</span><span class="sc">\n</span><span class="st">"</span></span>
+<span id="cb19-122"><a href="#cb19-122" aria-hidden="true" tabindex="-1"></a>    ))</span>
+<span id="cb19-123"><a href="#cb19-123" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb19-124"><a href="#cb19-124" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb19-125"><a href="#cb19-125" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-126"><a href="#cb19-126" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-127"><a href="#cb19-127" aria-hidden="true" tabindex="-1"></a><span class="fu">## Overview</span></span>
+<span id="cb19-128"><a href="#cb19-128" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-129"><a href="#cb19-129" aria-hidden="true" tabindex="-1"></a>This document explains the methodology behind <span class="in">`survey_fg_density_functions.R`</span>, a generalized function library for converting fishery-independent survey data (biomass/density by species, haul, year, area, stratum) into a Functional Group (FG) density index suitable as Ecopath/Ecosim input.</span>
+<span id="cb19-130"><a href="#cb19-130" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-131"><a href="#cb19-131" aria-hidden="true" tabindex="-1"></a>Unlike the original, MEDITS-specific <span class="in">`medbs_full_pipeline_with_fg.R`</span> script this document previously covered, the pipeline is now split into two layers:</span>
+<span id="cb19-132"><a href="#cb19-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-133"><a href="#cb19-133" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**A shared, survey-agnostic function library** (<span class="in">`survey_fg_density_functions.R`</span>) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.</span>
+<span id="cb19-134"><a href="#cb19-134" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Survey-specific example scripts** that read a particular survey's raw files, reshape them into the library's standardized input format, and call the shared functions. Two examples are covered here:</span>
+<span id="cb19-135"><a href="#cb19-135" aria-hidden="true" tabindex="-1"></a><span class="ss">   - </span><span class="in">`medits_example_westmed.R`</span> - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.</span>
+<span id="cb19-136"><a href="#cb19-136" aria-hidden="true" tabindex="-1"></a><span class="ss">   - </span><span class="in">`medits_example_custom.R`</span> - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.</span>
+<span id="cb19-137"><a href="#cb19-137" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-138"><a href="#cb19-138" aria-hidden="true" tabindex="-1"></a>Code chunks throughout are **not executed** when this document renders (<span class="in">`eval: false`</span>) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren't available at render time. To reproduce the actual numbers, run the source <span class="in">`.R`</span> scripts directly. (The exceptions are the figure-copying setup chunk above and the <span class="in">`safe_include_graphics()`</span> calls below, which only need the plot files to already exist on disk - and degrade to a clear placeholder message, rather than failing the whole render, if a given example script hasn't been run yet.)</span>
+<span id="cb19-139"><a href="#cb19-139" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-140"><a href="#cb19-140" aria-hidden="true" tabindex="-1"></a>The pipeline covers several conceptually distinct problems in sequence:</span>
+<span id="cb19-141"><a href="#cb19-141" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-142"><a href="#cb19-142" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Which Functional Group does each species belong to?** (@sec-fg-matching)</span>
+<span id="cb19-143"><a href="#cb19-143" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**What study area am I actually working with?** (@sec-area-definition)</span>
+<span id="cb19-144"><a href="#cb19-144" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Given catch and effort, what's the correctly-standardized density for each haul?** (@sec-density, including catchability correction and outlier removal)</span>
+<span id="cb19-145"><a href="#cb19-145" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Given that, what's the correctly-weighted density estimate for each FG?** (@sec-strata-weighted, @sec-regional)</span>
+<span id="cb19-146"><a href="#cb19-146" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-147"><a href="#cb19-147" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pipeline flow</span></span>
+<span id="cb19-148"><a href="#cb19-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-151"><a href="#cb19-151" aria-hidden="true" tabindex="-1"></a><span class="in">```{mermaid}</span></span>
+<span id="cb19-152"><a href="#cb19-152" aria-hidden="true" tabindex="-1"></a>%%| label: fig<span class="ot">-f</span>low<span class="ot">-o</span>verview</span>
+<span id="cb19-153"><a href="#cb19-153" aria-hidden="true" tabindex="-1"></a>%%| fig<span class="ot">-c</span>ap: <span class="ot">"</span><span class="st">Pipeline overview - FG matching and density/weighting each expand into their own sub-flow below.</span><span class="ot">"</span></span>
+<span id="cb19-154"><a href="#cb19-154" aria-hidden="true" tabindex="-1"></a>%%| <span class="fu">eval</span>: true</span>
+<span id="cb19-155"><a href="#cb19-155" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb19-156"><a href="#cb19-156" aria-hidden="true" tabindex="-1"></a>    A[<span class="ot">"</span><span class="st">Input data (dataframe1 + FG ref)</span><span class="ot">"</span>] --&gt; B[<span class="ot">"</span><span class="st">FG matching (see detail below)</span><span class="ot">"</span>]</span>
+<span id="cb19-157"><a href="#cb19-157" aria-hidden="true" tabindex="-1"></a>    B --&gt; C[<span class="ot">"</span><span class="st">Density and weighting (see detail below)</span><span class="ot">"</span>]</span>
+<span id="cb19-158"><a href="#cb19-158" aria-hidden="true" tabindex="-1"></a>    C --&gt; D[<span class="ot">"</span><span class="st">Outputs (Excel, plots, CSV)</span><span class="ot">"</span>]</span>
+<span id="cb19-159"><a href="#cb19-159" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-160"><a href="#cb19-160" aria-hidden="true" tabindex="-1"></a>    classDef gray fill:<span class="co">#F1EFE8,stroke:#5F5E5A,color:#2C2C2A</span></span>
+<span id="cb19-161"><a href="#cb19-161" aria-hidden="true" tabindex="-1"></a>    classDef purple fill:<span class="co">#EEEDFE,stroke:#534AB7,color:#26215C</span></span>
+<span id="cb19-162"><a href="#cb19-162" aria-hidden="true" tabindex="-1"></a>    classDef teal fill:<span class="co">#E1F5EE,stroke:#0F6E56,color:#04342C</span></span>
+<span id="cb19-163"><a href="#cb19-163" aria-hidden="true" tabindex="-1"></a>    classDef coral fill:<span class="co">#FAECE7,stroke:#993C1D,color:#4A1B0C</span></span>
+<span id="cb19-164"><a href="#cb19-164" aria-hidden="true" tabindex="-1"></a>    class A gray</span>
+<span id="cb19-165"><a href="#cb19-165" aria-hidden="true" tabindex="-1"></a>    class B purple</span>
+<span id="cb19-166"><a href="#cb19-166" aria-hidden="true" tabindex="-1"></a>    class C teal</span>
+<span id="cb19-167"><a href="#cb19-167" aria-hidden="true" tabindex="-1"></a>    class D coral</span>
+<span id="cb19-168"><a href="#cb19-168" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-169"><a href="#cb19-169" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-172"><a href="#cb19-172" aria-hidden="true" tabindex="-1"></a><span class="in">```{mermaid}</span></span>
+<span id="cb19-173"><a href="#cb19-173" aria-hidden="true" tabindex="-1"></a>%%| label: fig<span class="ot">-f</span>low<span class="ot">-f</span>g-matching</span>
+<span id="cb19-174"><a href="#cb19-174" aria-hidden="true" tabindex="-1"></a>%%| fig<span class="ot">-c</span>ap: <span class="ot">"</span><span class="st">FG matching detail (</span><span class="dt">@sec</span><span class="st">-fg-matching) - each stage only attempts species the previous one left unmatched; species still unmatched after seed rules go to manual review.</span><span class="ot">"</span></span>
+<span id="cb19-175"><a href="#cb19-175" aria-hidden="true" tabindex="-1"></a>%%| <span class="fu">eval</span>: true</span>
+<span id="cb19-176"><a href="#cb19-176" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb19-177"><a href="#cb19-177" aria-hidden="true" tabindex="-1"></a>    A1[<span class="ot">"</span><span class="st">Direct match (ScientificName lookup)</span><span class="ot">"</span>] --&gt; A2[<span class="ot">"</span><span class="st">Nominate subspp. (repeated-word names)</span><span class="ot">"</span>]</span>
+<span id="cb19-178"><a href="#cb19-178" aria-hidden="true" tabindex="-1"></a>    A2 --&gt; A3[<span class="ot">"</span><span class="st">Taxonomy fallback (genus to phylum)</span><span class="ot">"</span>]</span>
+<span id="cb19-179"><a href="#cb19-179" aria-hidden="true" tabindex="-1"></a>    A3 --&gt; A4[<span class="ot">"</span><span class="st">Seed rules (rank to FG, no data)</span><span class="ot">"</span>]</span>
+<span id="cb19-180"><a href="#cb19-180" aria-hidden="true" tabindex="-1"></a>    A4 --&gt; A5[<span class="ot">"</span><span class="st">Manual review</span><span class="ot">"</span>]</span>
+<span id="cb19-181"><a href="#cb19-181" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-182"><a href="#cb19-182" aria-hidden="true" tabindex="-1"></a>    classDef purple fill:<span class="co">#EEEDFE,stroke:#534AB7,color:#26215C</span></span>
+<span id="cb19-183"><a href="#cb19-183" aria-hidden="true" tabindex="-1"></a>    classDef gray fill:<span class="co">#F1EFE8,stroke:#5F5E5A,color:#2C2C2A</span></span>
+<span id="cb19-184"><a href="#cb19-184" aria-hidden="true" tabindex="-1"></a>    class A1,A2,A3,A4 purple</span>
+<span id="cb19-185"><a href="#cb19-185" aria-hidden="true" tabindex="-1"></a>    class A5 gray</span>
+<span id="cb19-186"><a href="#cb19-186" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-187"><a href="#cb19-187" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-190"><a href="#cb19-190" aria-hidden="true" tabindex="-1"></a><span class="in">```{mermaid}</span></span>
+<span id="cb19-191"><a href="#cb19-191" aria-hidden="true" tabindex="-1"></a>%%| label: fig<span class="ot">-f</span>low<span class="ot">-d</span>ensity<span class="ot">-w</span>eighting</span>
+<span id="cb19-192"><a href="#cb19-192" aria-hidden="true" tabindex="-1"></a>%%| fig<span class="ot">-c</span>ap: <span class="ot">"</span><span class="st">Density and weighting detail (</span><span class="dt">@sec</span><span class="st">-density, </span><span class="dt">@sec</span><span class="st">-strata-weighted, </span><span class="dt">@sec</span><span class="st">-regional) - dashed boxes are conditional steps, skipped if their condition isn't met.</span><span class="ot">"</span></span>
+<span id="cb19-193"><a href="#cb19-193" aria-hidden="true" tabindex="-1"></a>%%| <span class="fu">eval</span>: true</span>
+<span id="cb19-194"><a href="#cb19-194" aria-hidden="true" tabindex="-1"></a>flowchart LR</span>
+<span id="cb19-195"><a href="#cb19-195" aria-hidden="true" tabindex="-1"></a>    B1[<span class="ot">"</span><span class="st">Sample density (biomass / effort)</span><span class="ot">"</span>] --&gt; B2([<span class="ot">"</span><span class="st">Catchability (if q table given)</span><span class="ot">"</span>])</span>
+<span id="cb19-196"><a href="#cb19-196" aria-hidden="true" tabindex="-1"></a>    B2 --&gt; B3[<span class="ot">"</span><span class="st">Outlier removal (per species, per area)</span><span class="ot">"</span>]</span>
+<span id="cb19-197"><a href="#cb19-197" aria-hidden="true" tabindex="-1"></a>    B3 --&gt; B4([<span class="ot">"</span><span class="st">Strata weighting (if strata = true)</span><span class="ot">"</span>])</span>
+<span id="cb19-198"><a href="#cb19-198" aria-hidden="true" tabindex="-1"></a>    B4 --&gt; B5([<span class="ot">"</span><span class="st">Area weighting (if more than one area)</span><span class="ot">"</span>])</span>
+<span id="cb19-199"><a href="#cb19-199" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-200"><a href="#cb19-200" aria-hidden="true" tabindex="-1"></a>    classDef teal fill:<span class="co">#E1F5EE,stroke:#0F6E56,color:#04342C</span></span>
+<span id="cb19-201"><a href="#cb19-201" aria-hidden="true" tabindex="-1"></a>    class B1,B3 teal</span>
+<span id="cb19-202"><a href="#cb19-202" aria-hidden="true" tabindex="-1"></a>    class B2,B4,B5 teal</span>
+<span id="cb19-203"><a href="#cb19-203" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-204"><a href="#cb19-204" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-205"><a href="#cb19-205" aria-hidden="true" tabindex="-1"></a>Dashed/rounded boxes above are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if <span class="in">`strata = TRUE`</span> (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).</span>
+<span id="cb19-206"><a href="#cb19-206" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-207"><a href="#cb19-207" aria-hidden="true" tabindex="-1"></a>Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.</span>
+<span id="cb19-208"><a href="#cb19-208" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-209"><a href="#cb19-209" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-210"><a href="#cb19-210" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-211"><a href="#cb19-211" aria-hidden="true" tabindex="-1"></a><span class="fu">## Functional Group matching {#sec-fg-matching}</span></span>
+<span id="cb19-212"><a href="#cb19-212" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-213"><a href="#cb19-213" aria-hidden="true" tabindex="-1"></a>Every species caught in a haul needs to be assigned to one of the model's Functional Groups before its biomass can contribute to an FG-level index. This happens in stages, each one only attempting species the previous stage couldn't resolve - and at every stage, an **ambiguous** match (a species or taxonomic rank that could plausibly belong to more than one FG) is flagged for manual review rather than guessed.</span>
+<span id="cb19-214"><a href="#cb19-214" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-215"><a href="#cb19-215" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stage 1 - Direct species-level match</span></span>
+<span id="cb19-216"><a href="#cb19-216" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-217"><a href="#cb19-217" aria-hidden="true" tabindex="-1"></a>The MEDITS species code is translated to a scientific name via the MEDITS taxonomic list (<span class="in">`TM_list`</span>), then matched directly against the FG reference table.</span>
+<span id="cb19-218"><a href="#cb19-218" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-221"><a href="#cb19-221" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-222"><a href="#cb19-222" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: direct-match</span></span>
+<span id="cb19-223"><a href="#cb19-223" aria-hidden="true" tabindex="-1"></a>fg_lookup_safe <span class="ot">&lt;-</span> <span class="fu">prepare_fg_lookup</span>(dataframe2)</span>
+<span id="cb19-224"><a href="#cb19-224" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">match_species_to_fg</span>(dataframe1, fg_lookup_safe)</span>
+<span id="cb19-225"><a href="#cb19-225" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-226"><a href="#cb19-226" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-227"><a href="#cb19-227" aria-hidden="true" tabindex="-1"></a><span class="in">`prepare_fg_lookup()`</span> also resolves **stanza splits** here - a species appearing in more than one FG, where every one of those FGs is exclusive to that single species (a life-stage split, e.g. juvenile/adult), is reduced to one FG automatically. This is a structural rule (detected from the FG table's own shape), not a text-pattern match on words like "juv." - so it works regardless of the wording convention any given FG scheme happens to use. A species spanning multiple FGs where at least one of those FGs also contains *other* species is a genuinely different, ambiguous case and is excluded from automatic matching entirely.</span>
+<span id="cb19-228"><a href="#cb19-228" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-229"><a href="#cb19-229" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stage 1b - Nominate subspecies</span></span>
+<span id="cb19-230"><a href="#cb19-230" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-231"><a href="#cb19-231" aria-hidden="true" tabindex="-1"></a>Some scientific names are trinomials for the nominate subspecies, where the subspecies epithet repeats the species epithet by taxonomic convention (e.g. "Diplodus sargus sargus" is the nominate subspecies of "Diplodus sargus"). These fail a direct match if the FG reference only has the binomial form.</span>
+<span id="cb19-232"><a href="#cb19-232" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-235"><a href="#cb19-235" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-236"><a href="#cb19-236" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: nominate-subspecies</span></span>
+<span id="cb19-237"><a href="#cb19-237" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">match_nominate_subspecies_fg</span>(dt, fg_lookup_safe)</span>
+<span id="cb19-238"><a href="#cb19-238" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-239"><a href="#cb19-239" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-240"><a href="#cb19-240" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stage 2 - Manual overrides</span></span>
+<span id="cb19-241"><a href="#cb19-241" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-242"><a href="#cb19-242" aria-hidden="true" tabindex="-1"></a>A short table of species codes not present in the MEDITS taxonomic list at all, resolved by hand at whichever taxonomic rank is appropriate (species, genus, family, or class). Merged on <span class="in">`species_code`</span>, not <span class="in">`ScientificName`</span> - the latter is exactly the column that's <span class="in">`NA`</span> for override-needed rows (that's *why* they need an override), so using it as a join key would match every <span class="in">`NA`</span> row against every other <span class="in">`NA`</span> row and produce a cartesian-product explosion.</span>
+<span id="cb19-243"><a href="#cb19-243" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-244"><a href="#cb19-244" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stage 3 - Taxonomy fallback (genus through phylum)</span></span>
+<span id="cb19-245"><a href="#cb19-245" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-246"><a href="#cb19-246" aria-hidden="true" tabindex="-1"></a>For species with a resolved scientific name but no FG match, WoRMS taxonomy is used to check progressively broader ranks - genus, family, order, class, phylum, most specific first.</span>
+<span id="cb19-247"><a href="#cb19-247" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-250"><a href="#cb19-250" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-251"><a href="#cb19-251" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: taxonomy-fallback</span></span>
+<span id="cb19-252"><a href="#cb19-252" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">fallback_match_fg_by_taxonomy</span>(dt, fg_lookup_safe, <span class="at">taxonomy_source =</span> <span class="st">"worms"</span>)</span>
+<span id="cb19-253"><a href="#cb19-253" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-254"><a href="#cb19-254" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-255"><a href="#cb19-255" aria-hidden="true" tabindex="-1"></a>**Safety rule**, applied at every rank: a taxonomic value is only used for fallback matching if it maps to **exactly one** FG among all species already in the reference table.</span>
+<span id="cb19-256"><a href="#cb19-256" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-257"><a href="#cb19-257" aria-hidden="true" tabindex="-1"></a>$$\text{rank value is safe to use} \iff \left| <span class="sc">\{</span>\, FG_i : \text{species}_i \text{ shares this rank value} \,<span class="sc">\}</span> \right| = 1$$</span>
+<span id="cb19-258"><a href="#cb19-258" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-259"><a href="#cb19-259" aria-hidden="true" tabindex="-1"></a>A genus spanning multiple FGs (e.g. containing both a small pelagic species and a large predatory one) is too ecologically diverse to assign safely, and is excluded rather than assigned to whichever FG happens to come up first. Ranks are tried in order of specificity - a genus-level match always wins over a broader but explicit order-level rule for the same species, since rank specificity takes priority over whether a mapping happened to be data-driven or explicitly stated.</span>
+<span id="cb19-260"><a href="#cb19-260" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-261"><a href="#cb19-261" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stage 4 - Seed rules for catch-all FGs</span></span>
+<span id="cb19-262"><a href="#cb19-262" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-263"><a href="#cb19-263" aria-hidden="true" tabindex="-1"></a>Some FGs (e.g. "Other macro-benthos") have **zero species pre-listed** against them in the FG reference table - they're buckets meant to catch "anything else" of a general taxonomic type. The data-driven fallback above can't discover a mapping for these, since it can only learn from species already assigned to an FG. A small, explicit seed table covers this genuine gap:</span>
+<span id="cb19-264"><a href="#cb19-264" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-267"><a href="#cb19-267" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-268"><a href="#cb19-268" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: seed-rules</span></span>
+<span id="cb19-269"><a href="#cb19-269" aria-hidden="true" tabindex="-1"></a>SEED_RULES <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb19-270"><a href="#cb19-270" aria-hidden="true" tabindex="-1"></a>  <span class="at">rank =</span> <span class="fu">c</span>(<span class="st">"Class"</span>, <span class="st">"Order"</span>, <span class="st">"Phylum"</span>),</span>
+<span id="cb19-271"><a href="#cb19-271" aria-hidden="true" tabindex="-1"></a>  <span class="at">rank_value =</span> <span class="fu">c</span>(<span class="st">"Holothuroidea"</span>, <span class="st">"Decapoda"</span>, <span class="st">"Cnidaria"</span>),</span>
+<span id="cb19-272"><a href="#cb19-272" aria-hidden="true" tabindex="-1"></a>  <span class="at">fg_name_target =</span> <span class="fu">c</span>(<span class="st">"Sea cucumbers"</span>, <span class="st">"Non-commercial decapods"</span>, <span class="st">"Other macro-benthos"</span>)</span>
+<span id="cb19-273"><a href="#cb19-273" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-274"><a href="#cb19-274" aria-hidden="true" tabindex="-1"></a>SPECIES_EXCEPTIONS <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb19-275"><a href="#cb19-275" aria-hidden="true" tabindex="-1"></a>  <span class="at">ScientificName =</span> <span class="st">"Squilla mantis"</span>,</span>
+<span id="cb19-276"><a href="#cb19-276" aria-hidden="true" tabindex="-1"></a>  <span class="at">fg_name_target =</span> <span class="st">"Other commercial decapods"</span></span>
+<span id="cb19-277"><a href="#cb19-277" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-278"><a href="#cb19-278" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">apply_seed_fg_rules</span>(dt, dataframe2, SEED_RULES, <span class="at">species_exceptions =</span> SPECIES_EXCEPTIONS)</span>
+<span id="cb19-279"><a href="#cb19-279" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-280"><a href="#cb19-280" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-281"><a href="#cb19-281" aria-hidden="true" tabindex="-1"></a><span class="in">`species_exceptions`</span> is applied *before* the rank-based rules, so a named species is never caught by a broader rule that's wrong for it specifically - e.g. Squilla mantis is commercially exploited even though the rest of its order (Stomatopoda) isn't, so the generic "Decapoda-adjacent → non-commercial" rule would misclassify it without this override.</span>
+<span id="cb19-282"><a href="#cb19-282" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-283"><a href="#cb19-283" aria-hidden="true" tabindex="-1"></a><span class="fu">### Match-rate reporting</span></span>
+<span id="cb19-284"><a href="#cb19-284" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-287"><a href="#cb19-287" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-288"><a href="#cb19-288" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: match-rate-reporting</span></span>
+<span id="cb19-289"><a href="#cb19-289" aria-hidden="true" tabindex="-1"></a>taxonomy_context <span class="ot">&lt;-</span> <span class="fu">attr</span>(dt, <span class="st">"still_unresolved_taxonomy"</span>)</span>
+<span id="cb19-290"><a href="#cb19-290" aria-hidden="true" tabindex="-1"></a>still_unmatched <span class="ot">&lt;-</span> <span class="fu">summarize_unresolved_species</span>(dt, <span class="at">taxonomy =</span> taxonomy_context)</span>
+<span id="cb19-291"><a href="#cb19-291" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-292"><a href="#cb19-292" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-293"><a href="#cb19-293" aria-hidden="true" tabindex="-1"></a><span class="in">`summarize_unresolved_species()`</span> reports mean biomass and appearance count alongside taxonomy for whatever remains genuinely unmatched, so manual review can be prioritized - a species appearing in hundreds of samples with real biomass matters more than a one-off trace appearance.</span>
+<span id="cb19-294"><a href="#cb19-294" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-295"><a href="#cb19-295" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-296"><a href="#cb19-296" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-297"><a href="#cb19-297" aria-hidden="true" tabindex="-1"></a><span class="fu">## Study area definition {#sec-area-definition}</span></span>
+<span id="cb19-298"><a href="#cb19-298" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-299"><a href="#cb19-299" aria-hidden="true" tabindex="-1"></a>Every function downstream of FG matching needs to know which "area" each sample belongs to, and needs a polygon layer to compute stratum areas from bathymetry. The shared library doesn't assume this has to be a set of official GSA polygons - it just needs *some* polygon layer with an ID column. Two approaches are covered here.</span>
+<span id="cb19-300"><a href="#cb19-300" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-301"><a href="#cb19-301" aria-hidden="true" tabindex="-1"></a><span class="fu">### Approach A - GFCM GSA polygons</span></span>
+<span id="cb19-302"><a href="#cb19-302" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-303"><a href="#cb19-303" aria-hidden="true" tabindex="-1"></a>The official GFCM GSA shapefile is downloaded once and cached. MEDITS' own <span class="in">`area`</span> field already gives each haul's GSA directly, so no spatial join is needed.</span>
+<span id="cb19-304"><a href="#cb19-304" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-307"><a href="#cb19-307" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-308"><a href="#cb19-308" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: gsa-area-setup</span></span>
+<span id="cb19-309"><a href="#cb19-309" aria-hidden="true" tabindex="-1"></a>gsa_shp_path <span class="ot">&lt;-</span> <span class="fu">list.files</span>(gsa_shp_dir, <span class="at">pattern =</span> <span class="st">"</span><span class="sc">\\</span><span class="st">.shp$"</span>, <span class="at">full.names =</span> <span class="cn">TRUE</span>, <span class="at">recursive =</span> <span class="cn">TRUE</span>)[<span class="dv">1</span>]</span>
+<span id="cb19-310"><a href="#cb19-310" aria-hidden="true" tabindex="-1"></a>area_shp <span class="ot">&lt;-</span> <span class="fu">st_read</span>(gsa_shp_path, <span class="at">quiet =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb19-311"><a href="#cb19-311" aria-hidden="true" tabindex="-1"></a>area_shp<span class="sc">$</span>gsa_num <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(area_shp<span class="sc">$</span>SMU_CODE)</span>
+<span id="cb19-312"><a href="#cb19-312" aria-hidden="true" tabindex="-1"></a>area_shp<span class="sc">$</span>gsa_num[area_shp<span class="sc">$</span>gsa_num <span class="sc">%in%</span> <span class="fu">c</span>(<span class="dv">111</span>, <span class="dv">112</span>)] <span class="ot">&lt;-</span> <span class="dv">11</span>   <span class="co"># Western/Eastern Sardinia -&gt; single GSA 11</span></span>
+<span id="cb19-313"><a href="#cb19-313" aria-hidden="true" tabindex="-1"></a>AREA_ID_COL <span class="ot">&lt;-</span> <span class="st">"gsa_num"</span></span>
+<span id="cb19-314"><a href="#cb19-314" aria-hidden="true" tabindex="-1"></a>FILTER_AREAS <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">11</span></span>
+<span id="cb19-315"><a href="#cb19-315" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-316"><a href="#cb19-316" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-319"><a href="#cb19-319" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-320"><a href="#cb19-320" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-gsa-coverage</span></span>
+<span id="cb19-321"><a href="#cb19-321" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-322"><a href="#cb19-322" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-323"><a href="#cb19-323" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Sample coverage by GSA. selected_areas highlights the GSAs actually in scope (FILTER_AREAS) with a bold black outline - the outer contour of their union, not the internal lines between them."</span></span>
+<span id="cb19-324"><a href="#cb19-324" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-325"><a href="#cb19-325" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_sample_coverage_map.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-326"><a href="#cb19-326" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-327"><a href="#cb19-327" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-328"><a href="#cb19-328" aria-hidden="true" tabindex="-1"></a><span class="fu">### Approach B - a custom boundary (bounding box or arbitrary shapefile)</span></span>
+<span id="cb19-329"><a href="#cb19-329" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-330"><a href="#cb19-330" aria-hidden="true" tabindex="-1"></a>The same MEDITS raw data can instead be restricted to a custom footprint that doesn't correspond to any GSA code - a simple bounding box, or a shapefile for a different EwE model's own boundary.</span>
+<span id="cb19-331"><a href="#cb19-331" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-334"><a href="#cb19-334" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-335"><a href="#cb19-335" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: custom-area-setup</span></span>
+<span id="cb19-336"><a href="#cb19-336" aria-hidden="true" tabindex="-1"></a>CUSTOM_BBOX <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="at">xmin =</span> <span class="dv">2</span>, <span class="at">xmax =</span> <span class="dv">8</span>, <span class="at">ymin =</span> <span class="dv">38</span>, <span class="at">ymax =</span> <span class="dv">42</span>)</span>
+<span id="cb19-337"><a href="#cb19-337" aria-hidden="true" tabindex="-1"></a>custom_poly <span class="ot">&lt;-</span> <span class="fu">st_as_sfc</span>(<span class="fu">st_bbox</span>(<span class="fu">c</span>(</span>
+<span id="cb19-338"><a href="#cb19-338" aria-hidden="true" tabindex="-1"></a>  <span class="at">xmin =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"xmin"</span>]), <span class="at">ymin =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"ymin"</span>]),</span>
+<span id="cb19-339"><a href="#cb19-339" aria-hidden="true" tabindex="-1"></a>  <span class="at">xmax =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"xmax"</span>]), <span class="at">ymax =</span> <span class="fu">unname</span>(CUSTOM_BBOX[<span class="st">"ymax"</span>])</span>
+<span id="cb19-340"><a href="#cb19-340" aria-hidden="true" tabindex="-1"></a>), <span class="at">crs =</span> <span class="dv">4326</span>))</span>
+<span id="cb19-341"><a href="#cb19-341" aria-hidden="true" tabindex="-1"></a>area_shp <span class="ot">&lt;-</span> <span class="fu">st_sf</span>(<span class="at">area_id =</span> <span class="dv">1</span>, <span class="at">geometry =</span> custom_poly)</span>
+<span id="cb19-342"><a href="#cb19-342" aria-hidden="true" tabindex="-1"></a>AREA_ID_COL <span class="ot">&lt;-</span> <span class="st">"area_id"</span></span>
+<span id="cb19-343"><a href="#cb19-343" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-344"><a href="#cb19-344" aria-hidden="true" tabindex="-1"></a>dataframe1 <span class="ot">&lt;-</span> <span class="fu">filter_samples_by_area</span>(dataframe1, <span class="at">area_filter =</span> CUSTOM_BBOX, <span class="at">filter_type =</span> <span class="st">"bbox"</span>)</span>
+<span id="cb19-345"><a href="#cb19-345" aria-hidden="true" tabindex="-1"></a>dataframe1[, AreaID <span class="sc">:</span><span class="er">=</span> <span class="dv">1</span>]</span>
+<span id="cb19-346"><a href="#cb19-346" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-347"><a href="#cb19-347" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-348"><a href="#cb19-348" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb19-349"><a href="#cb19-349" aria-hidden="true" tabindex="-1"></a><span class="fu">### `unname()` matters here</span></span>
+<span id="cb19-350"><a href="#cb19-350" aria-hidden="true" tabindex="-1"></a><span class="in">`CUSTOM_BBOX["xmin"]`</span> carries the name <span class="in">`"xmin"`</span> with it (it's already a named vector element) - <span class="in">`c(xmin = CUSTOM_BBOX["xmin"], ...)`</span> without <span class="in">`unname()`</span> concatenates into <span class="in">`"xmin.xmin"`</span> instead of <span class="in">`"xmin"`</span>, which <span class="in">`st_bbox()`</span> can't parse. This is the same bug class that shows up anywhere a named-vector element gets re-wrapped in another named vector - it also affected an earlier version of the land-basemap layer in <span class="in">`plot_sample_map()`</span>, for the same reason.</span>
+<span id="cb19-351"><a href="#cb19-351" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-352"><a href="#cb19-352" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-353"><a href="#cb19-353" aria-hidden="true" tabindex="-1"></a><span class="in">`filter_samples_by_area(filter_type = "shapefile")`</span> works the same way, but takes an <span class="in">`sf`</span> polygon (or a path to one) instead of a bounding box - for a real, non-rectangular model boundary.</span>
+<span id="cb19-354"><a href="#cb19-354" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-355"><a href="#cb19-355" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb19-356"><a href="#cb19-356" aria-hidden="true" tabindex="-1"></a><span class="fu">### The sample coverage map shows the full survey context, not just the custom box</span></span>
+<span id="cb19-357"><a href="#cb19-357" aria-hidden="true" tabindex="-1"></a><span class="in">`plot_sample_map()`</span> computes its display extent from the **union** of <span class="in">`area_shp`</span>'s own bounding box and the sample points' own Lat/Lon distribution - not <span class="in">`area_shp`</span>'s bbox alone. Passing it the full, unfiltered survey data (before <span class="in">`filter_samples_by_area()`</span> runs) means the map zooms out to show the complete MEDITS distribution across the whole survey region, with the custom area's contour highlighted within that context via <span class="in">`selected_areas`</span> - not a tight, context-free zoom into just the small box itself. Points inside vs. outside the selected area are shown in different colors either way.</span>
+<span id="cb19-358"><a href="#cb19-358" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-359"><a href="#cb19-359" aria-hidden="true" tabindex="-1"></a>A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it can genuinely overlap land. <span class="in">`land_on_top = TRUE`</span> draws the land basemap *after* the intensity fill rather than before, so any part of the box that's actually land is visibly masked - only marine area should read as part of the study region, and a rectangle has no way to exclude land on its own.</span>
+<span id="cb19-360"><a href="#cb19-360" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-361"><a href="#cb19-361" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-364"><a href="#cb19-364" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-365"><a href="#cb19-365" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-custom-coverage</span></span>
+<span id="cb19-366"><a href="#cb19-366" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-367"><a href="#cb19-367" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-368"><a href="#cb19-368" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Sample coverage within a custom bounding-box region, independent of GSA lines entirely."</span></span>
+<span id="cb19-369"><a href="#cb19-369" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-370"><a href="#cb19-370" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"custom_survey_sample_coverage_map.png"</span>), <span class="st">"medits_example_custom.R"</span>)</span>
+<span id="cb19-371"><a href="#cb19-371" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-372"><a href="#cb19-372" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-373"><a href="#cb19-373" aria-hidden="true" tabindex="-1"></a>With only one custom area, <span class="in">`AreaID`</span> is set to <span class="in">`1`</span> for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever <span class="in">`AreaID`</span>/<span class="in">`area_shp`</span> combination they're given, never assuming GSA-specific structure.</span>
+<span id="cb19-374"><a href="#cb19-374" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-375"><a href="#cb19-375" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-376"><a href="#cb19-376" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-377"><a href="#cb19-377" aria-hidden="true" tabindex="-1"></a><span class="fu">## Per-haul density and corrections {#sec-density}</span></span>
+<span id="cb19-378"><a href="#cb19-378" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-379"><a href="#cb19-379" aria-hidden="true" tabindex="-1"></a><span class="fu">### Swept area</span></span>
+<span id="cb19-380"><a href="#cb19-380" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-381"><a href="#cb19-381" aria-hidden="true" tabindex="-1"></a>Trawl catch weight on its own isn't comparable between hauls - a haul that swept more seafloor will naturally catch more, independent of true fish density. Standardizing to a **density** (weight per unit area swept) is what makes hauls comparable at all.</span>
+<span id="cb19-382"><a href="#cb19-382" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-383"><a href="#cb19-383" aria-hidden="true" tabindex="-1"></a>$$A_{\text{swept}} = \text{distance towed} \times \text{net wing opening}$$</span>
+<span id="cb19-384"><a href="#cb19-384" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-387"><a href="#cb19-387" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-388"><a href="#cb19-388" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: swept-area</span></span>
+<span id="cb19-389"><a href="#cb19-389" aria-hidden="true" tabindex="-1"></a>WING_OPENING_UNIT <span class="ot">&lt;-</span> <span class="st">"decimetres"</span></span>
+<span id="cb19-390"><a href="#cb19-390" aria-hidden="true" tabindex="-1"></a>ta_swept <span class="ot">&lt;-</span> ta <span class="sc">%&gt;%</span></span>
+<span id="cb19-391"><a href="#cb19-391" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb19-392"><a href="#cb19-392" aria-hidden="true" tabindex="-1"></a>    <span class="at">wing_opening_m =</span> <span class="cf">if</span> (WING_OPENING_UNIT <span class="sc">==</span> <span class="st">"decimetres"</span>) wing_opening <span class="sc">/</span> <span class="dv">10</span> <span class="cf">else</span> wing_opening,</span>
+<span id="cb19-393"><a href="#cb19-393" aria-hidden="true" tabindex="-1"></a>    <span class="at">swept_area_km2 =</span> (distance <span class="sc">*</span> wing_opening_m) <span class="sc">/</span> <span class="fl">1e6</span>,</span>
+<span id="cb19-394"><a href="#cb19-394" aria-hidden="true" tabindex="-1"></a>    <span class="at">mean_depth =</span> (shooting_depth <span class="sc">+</span> hauling_depth) <span class="sc">/</span> <span class="dv">2</span></span>
+<span id="cb19-395"><a href="#cb19-395" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb19-396"><a href="#cb19-396" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">compute_sample_densities</span>(dt)   <span class="co"># Density := Biomass / Effort</span></span>
+<span id="cb19-397"><a href="#cb19-397" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-398"><a href="#cb19-398" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-399"><a href="#cb19-399" aria-hidden="true" tabindex="-1"></a>The unit for <span class="in">`wing_opening`</span> (decimetres, not metres) isn't documented directly in the raw data - confirmed by cross-checking against <span class="in">`vertical_opening`</span>, a constant 20 across hauls using the standard MEDITS GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73's real vertical opening; 20 *metres* would be absurd for a bottom trawl.</span>
+<span id="cb19-400"><a href="#cb19-400" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-401"><a href="#cb19-401" aria-hidden="true" tabindex="-1"></a><span class="fu">### Depth-stratum assignment</span></span>
+<span id="cb19-402"><a href="#cb19-402" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-403"><a href="#cb19-403" aria-hidden="true" tabindex="-1"></a>MEDITS is a stratified-random survey design: the sampling area within each GSA (or custom region) is divided into 5 standard bathymetric strata.</span>
+<span id="cb19-404"><a href="#cb19-404" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-407"><a href="#cb19-407" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-408"><a href="#cb19-408" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: stratum-from-depth</span></span>
+<span id="cb19-409"><a href="#cb19-409" aria-hidden="true" tabindex="-1"></a>MEDITS_STRATA <span class="ot">&lt;-</span> <span class="fu">data.table</span>(</span>
+<span id="cb19-410"><a href="#cb19-410" aria-hidden="true" tabindex="-1"></a>  <span class="at">stratum_num =</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">5</span>,</span>
+<span id="cb19-411"><a href="#cb19-411" aria-hidden="true" tabindex="-1"></a>  <span class="at">depth_min =</span> <span class="fu">c</span>(<span class="dv">10</span>, <span class="dv">50</span>, <span class="dv">100</span>, <span class="dv">200</span>, <span class="dv">500</span>),</span>
+<span id="cb19-412"><a href="#cb19-412" aria-hidden="true" tabindex="-1"></a>  <span class="at">depth_max =</span> <span class="fu">c</span>(<span class="fl">49.9999</span>, <span class="fl">99.9999</span>, <span class="fl">199.9999</span>, <span class="fl">499.9999</span>, <span class="fl">799.9999</span>)</span>
+<span id="cb19-413"><a href="#cb19-413" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-414"><a href="#cb19-414" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">assign_depth_stratum</span>(dt, MEDITS_STRATA)</span>
+<span id="cb19-415"><a href="#cb19-415" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-416"><a href="#cb19-416" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-417"><a href="#cb19-417" aria-hidden="true" tabindex="-1"></a><span class="in">`assign_depth_stratum()`</span> supports three input shapes: no <span class="in">`Stratum`</span> column at all (fully derived from depth), a <span class="in">`Stratum`</span> column already fully populated (used as-is, no derivation attempted), or a *partially* populated one - existing values are kept, only the missing ones are derived from depth. Hauls with a mean depth outside 10-800m don't belong to any of the 5 standard strata and are excluded from the strata-weighted index, rather than force-assigned to whichever edge stratum happens to be closest.</span>
+<span id="cb19-418"><a href="#cb19-418" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-419"><a href="#cb19-419" aria-hidden="true" tabindex="-1"></a><span class="fu">### Catchability correction</span></span>
+<span id="cb19-420"><a href="#cb19-420" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-421"><a href="#cb19-421" aria-hidden="true" tabindex="-1"></a>Trawl surveys don't catch 100% of what's actually in the swept area - some individuals escape under, over, or around the net. The raw survey density is a systematic *underestimate* of true density by an amount that varies by species. Catchability ($q$, typically $0 &lt; q \le 1$) corrects this:</span>
+<span id="cb19-422"><a href="#cb19-422" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-423"><a href="#cb19-423" aria-hidden="true" tabindex="-1"></a>$$D_{\text{true}} = \frac{D_{\text{raw}}}{q}$$</span>
+<span id="cb19-424"><a href="#cb19-424" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-427"><a href="#cb19-427" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-428"><a href="#cb19-428" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: catchability</span></span>
+<span id="cb19-429"><a href="#cb19-429" aria-hidden="true" tabindex="-1"></a>catchability_raw <span class="ot">&lt;-</span> <span class="fu">fread</span>(CATCHABILITY_CSV_PATH)</span>
+<span id="cb19-430"><a href="#cb19-430" aria-hidden="true" tabindex="-1"></a>CATCHABILITY_TABLE <span class="ot">&lt;-</span> catchability_raw[, .(<span class="at">ScientificName =</span> species, <span class="at">q =</span> q_FACTOR)]</span>
+<span id="cb19-431"><a href="#cb19-431" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">apply_catchability_correction</span>(</span>
+<span id="cb19-432"><a href="#cb19-432" aria-hidden="true" tabindex="-1"></a>  dt, CATCHABILITY_TABLE, <span class="at">default_q =</span> <span class="dv">1</span>,</span>
+<span id="cb19-433"><a href="#cb19-433" aria-hidden="true" tabindex="-1"></a>  <span class="at">species_taxonomy =</span> species_taxonomy, <span class="at">exempt_fg_names =</span> EXEMPT_FG_NAMES</span>
+<span id="cb19-434"><a href="#cb19-434" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-435"><a href="#cb19-435" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-436"><a href="#cb19-436" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-437"><a href="#cb19-437" aria-hidden="true" tabindex="-1"></a>Real catchability tables mix true species binomials with broader taxonomic-group entries (e.g. "Isopoda", "Hydrozoa" - order/class names) and genus-level "spp" entries ("Cirolana spp", meaning any species in that genus). <span class="in">`apply_catchability_correction()`</span> classifies each table entry by its apparent level from its text shape and resolves species against it in order of specificity - genus before order, order before phylum - so a genus-level match always wins over a broader but explicit rule for the same species. For species matching nothing in the table at any level, a **taxonomic-proximity fallback** looks for other species already in the table sharing genus, then family, then order, and borrows the average of their $q$ rather than falling straight to a generic default.</span>
+<span id="cb19-438"><a href="#cb19-438" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-439"><a href="#cb19-439" aria-hidden="true" tabindex="-1"></a><span class="in">`exempt_fg_names`</span>/<span class="in">`exempt_species`</span> force $q=1$ (no correction) regardless of anything else resolved - for groups a bottom trawl isn't designed to sample representatively at all (pelagic, planktonic, seagrass/algae FGs), where "catchability" as a concept doesn't apply the same way.</span>
+<span id="cb19-440"><a href="#cb19-440" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-441"><a href="#cb19-441" aria-hidden="true" tabindex="-1"></a><span class="fu">### Sample-level outlier detection</span></span>
+<span id="cb19-442"><a href="#cb19-442" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-443"><a href="#cb19-443" aria-hidden="true" tabindex="-1"></a>A single anomalous haul (a genuine data error, misidentification, or unit mismatch) can distort an entire year's FG-level density if left uncorrected. <span class="in">`remove_sample_outliers()`</span> runs *before* any aggregation, so only that one species' one observation is affected - not the whole FG or the whole year for other species sharing it.</span>
+<span id="cb19-444"><a href="#cb19-444" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-447"><a href="#cb19-447" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-448"><a href="#cb19-448" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: outlier-removal</span></span>
+<span id="cb19-449"><a href="#cb19-449" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">&lt;-</span> <span class="fu">remove_sample_outliers</span>(dt, <span class="at">threshold =</span> <span class="dv">70</span>, <span class="at">min_samples =</span> <span class="dv">5</span>, <span class="at">drop_outliers =</span> DROP_OUTLIERS)</span>
+<span id="cb19-450"><a href="#cb19-450" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-451"><a href="#cb19-451" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-452"><a href="#cb19-452" aria-hidden="true" tabindex="-1"></a>Detection compares each observation only against that *same species'* own history within the *same area* - a robust (median/MAD-based) z-score, computed on <span class="in">`log1p(Density)`</span> rather than the raw scale. This matters for schooling/aggregating species (anchovy, horse mackerel, boarfish): their catch data is naturally, heavily right-skewed - most hauls catch little to nothing, occasionally a haul hits a school and catches a lot, which is genuine ecology, not an error. On the raw scale this makes the reference statistics tiny, so even a real high catch produces a huge z-score; <span class="in">`threshold=70`</span> on the log scale was calibrated against a synthetic test distribution to separate genuine school events from a clear data error, and is a starting point to tune against your own data's actual flagged/not-flagged split, not a universal constant.</span>
+<span id="cb19-453"><a href="#cb19-453" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-454"><a href="#cb19-454" aria-hidden="true" tabindex="-1"></a><span class="in">`drop_outliers=FALSE`</span> reports flagged observations without changing the data - useful for reviewing what *would* be removed before committing to it. Flagged observations (species, area, year, sample, flagged value, typical value, z-score, and whether each was actually dropped) are saved to <span class="in">`survey_outliers_flagged.csv`</span>.</span>
+<span id="cb19-455"><a href="#cb19-455" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-456"><a href="#cb19-456" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-457"><a href="#cb19-457" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-458"><a href="#cb19-458" aria-hidden="true" tabindex="-1"></a><span class="fu">## Strata-weighted density (within an area) {#sec-strata-weighted}</span></span>
+<span id="cb19-459"><a href="#cb19-459" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-460"><a href="#cb19-460" aria-hidden="true" tabindex="-1"></a>This is the central statistical correction in the pipeline. A **simple mean density across all hauls in an area** implicitly assumes every haul represents an equal share of that area's seafloor - but different strata are sampled with different numbers of hauls *and* cover different fractions of the total area, so an unweighted mean would be biased toward whichever stratum happened to get more hauls that year, independent of how much of the area it actually represents.</span>
+<span id="cb19-461"><a href="#cb19-461" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-462"><a href="#cb19-462" aria-hidden="true" tabindex="-1"></a>The standard stratified-survey estimator instead computes a per-stratum mean, then weights each stratum's contribution by its **true share of the area's total surveyable area** (not its share of hauls):</span>
+<span id="cb19-463"><a href="#cb19-463" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-464"><a href="#cb19-464" aria-hidden="true" tabindex="-1"></a>$$D_{\text{area}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{area}}}, \qquad \bar{D}_h = \frac{\sum \text{density in stratum } h}{n_{\text{samples},\,h}}$$</span>
+<span id="cb19-465"><a href="#cb19-465" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-466"><a href="#cb19-466" aria-hidden="true" tabindex="-1"></a>The stratum area shares are computed from **bathymetry**, not from sample counts - a NOAA bathymetry raster is downloaded, clipped to the area's own polygon (a GSA boundary, or the custom region from @sec-area-definition - <span class="in">`compute_strata_area_by_area()`</span> doesn't need to know which), and each cell's real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.</span>
+<span id="cb19-467"><a href="#cb19-467" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-470"><a href="#cb19-470" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-471"><a href="#cb19-471" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: strata-area-and-weighted-estimator</span></span>
+<span id="cb19-472"><a href="#cb19-472" aria-hidden="true" tabindex="-1"></a>strata_area_by_area <span class="ot">&lt;-</span> <span class="fu">compute_strata_area_by_area</span>(</span>
+<span id="cb19-473"><a href="#cb19-473" aria-hidden="true" tabindex="-1"></a>  <span class="at">area_ids =</span> FILTER_AREAS, <span class="at">area_shp =</span> area_shp, <span class="at">area_id_col =</span> AREA_ID_COL,</span>
+<span id="cb19-474"><a href="#cb19-474" aria-hidden="true" tabindex="-1"></a>  <span class="at">strata_def =</span> MEDITS_STRATA, <span class="at">cache_path =</span> <span class="fu">file.path</span>(out_dir, <span class="st">"strata_area_by_area.csv"</span>)</span>
+<span id="cb19-475"><a href="#cb19-475" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-476"><a href="#cb19-476" aria-hidden="true" tabindex="-1"></a>n_samples_by_stratum <span class="ot">&lt;-</span> dt[<span class="sc">!</span><span class="fu">is.na</span>(Stratum), .(<span class="at">n_samples =</span> <span class="fu">uniqueN</span>(SampleID)), by <span class="ot">=</span> .(AreaID, Year, Stratum)]</span>
+<span id="cb19-477"><a href="#cb19-477" aria-hidden="true" tabindex="-1"></a>per_group_fg <span class="ot">&lt;-</span> <span class="fu">compute_fg_densities_by_stratum</span>(dt, <span class="at">strata =</span> STRATA)</span>
+<span id="cb19-478"><a href="#cb19-478" aria-hidden="true" tabindex="-1"></a>fg_index <span class="ot">&lt;-</span> <span class="fu">weight_by_strata</span>(per_group_fg, n_samples_by_stratum, strata_area_by_area)</span>
+<span id="cb19-479"><a href="#cb19-479" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-480"><a href="#cb19-480" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-481"><a href="#cb19-481" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb19-482"><a href="#cb19-482" aria-hidden="true" tabindex="-1"></a><span class="fu">### `n_samples` must come from the full dataset, never a species/FG-filtered subset</span></span>
+<span id="cb19-483"><a href="#cb19-483" aria-hidden="true" tabindex="-1"></a><span class="in">`per_group_fg`</span> deliberately does **not** compute its own sample count - a species/FG-specific count would only include samples where that group had non-zero catch, understating true sampling effort (a sample where a species was genuinely absent still counts toward the denominator in a proper mean-density estimator, contributing a true zero). The one correct source of <span class="in">`n_samples`</span> is <span class="in">`n_samples_by_stratum`</span>, computed from the *full* <span class="in">`dt`</span> (every species/FG together). Using the wrong source here was confirmed, via a hand-calculated test, to produce up to a 4x overestimate for a species caught in only 1 of 4 hauls at a stratum.</span>
+<span id="cb19-484"><a href="#cb19-484" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-485"><a href="#cb19-485" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-488"><a href="#cb19-488" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-489"><a href="#cb19-489" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-strata-timeseries</span></span>
+<span id="cb19-490"><a href="#cb19-490" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-491"><a href="#cb19-491" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-492"><a href="#cb19-492" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Density index by Functional Group and area, strata-weighted (per-area version - see @sec-regional for the region-wide aggregate used in Ecopath/Ecosim inputs)."</span></span>
+<span id="cb19-493"><a href="#cb19-493" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-494"><a href="#cb19-494" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_fg_density_timeseries.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-495"><a href="#cb19-495" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-496"><a href="#cb19-496" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-497"><a href="#cb19-497" aria-hidden="true" tabindex="-1"></a><span class="fu">## Region-wide aggregation (across areas) {#sec-regional}</span></span>
+<span id="cb19-498"><a href="#cb19-498" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-499"><a href="#cb19-499" aria-hidden="true" tabindex="-1"></a>@sec-strata-weighted gives a correctly-weighted density **per area**. Combining multiple areas into a single region-wide estimate has exactly the same weighting problem one level up: areas differ substantially in total surveyable area, so a simple mean of per-area densities would implicitly treat a small area as equally representative of the region as a large one.</span>
+<span id="cb19-500"><a href="#cb19-500" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-501"><a href="#cb19-501" aria-hidden="true" tabindex="-1"></a>A single-stage estimator combining every (area, stratum) cell directly - using each cell's **absolute** area, not its proportion within its own area - avoids any double-weighting error from compounding two separate weighting stages:</span>
+<span id="cb19-502"><a href="#cb19-502" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-503"><a href="#cb19-503" aria-hidden="true" tabindex="-1"></a>$$D_{\text{region}} = \frac{\sum_{a,h} \bar{D}_{a,h} \, A_{a,h}}{\sum_{a,h} A_{a,h}}$$</span>
+<span id="cb19-504"><a href="#cb19-504" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-507"><a href="#cb19-507" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-508"><a href="#cb19-508" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: regional-estimator</span></span>
+<span id="cb19-509"><a href="#cb19-509" aria-hidden="true" tabindex="-1"></a>fg_index_regional <span class="ot">&lt;-</span> <span class="fu">weight_by_area</span>(fg_index)</span>
+<span id="cb19-510"><a href="#cb19-510" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-511"><a href="#cb19-511" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-512"><a href="#cb19-512" aria-hidden="true" tabindex="-1"></a>This is the version used for Ecopath/Ecosim-facing outputs - the per-area index (@sec-strata-weighted) is retained separately for area-level plots and comparisons, where seeing individual areas is the point.</span>
+<span id="cb19-513"><a href="#cb19-513" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-516"><a href="#cb19-516" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-517"><a href="#cb19-517" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-regional-timeseries</span></span>
+<span id="cb19-518"><a href="#cb19-518" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-519"><a href="#cb19-519" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-520"><a href="#cb19-520" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Region-wide, area-weighted density index by Functional Group."</span></span>
+<span id="cb19-521"><a href="#cb19-521" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-522"><a href="#cb19-522" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_fg_density_timeseries_regional.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-523"><a href="#cb19-523" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-524"><a href="#cb19-524" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-525"><a href="#cb19-525" aria-hidden="true" tabindex="-1"></a>For the custom-region example (@sec-area-definition, Approach B), this step is mathematically a formality with only one area in scope - <span class="in">`weight_by_area()`</span> still runs the same formula, it just sums over one area's worth of cells, so the result is identical to the per-area index above. It's kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.</span>
+<span id="cb19-526"><a href="#cb19-526" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-527"><a href="#cb19-527" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-528"><a href="#cb19-528" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-529"><a href="#cb19-529" aria-hidden="true" tabindex="-1"></a><span class="fu">## Validation: depth-strata density profile</span></span>
+<span id="cb19-530"><a href="#cb19-530" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-531"><a href="#cb19-531" aria-hidden="true" tabindex="-1"></a>A direct ecological sanity check on the strata-weighting logic itself: for each FG, plot its **raw per-sample density** (deliberately *before* area-weighting, since area-weighting is about scaling to a population estimate, not about revealing where a species actually lives) across the 5 depth strata.</span>
+<span id="cb19-532"><a href="#cb19-532" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-535"><a href="#cb19-535" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-536"><a href="#cb19-536" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: depth-profile-validation</span></span>
+<span id="cb19-537"><a href="#cb19-537" aria-hidden="true" tabindex="-1"></a>p_profile <span class="ot">&lt;-</span> <span class="fu">plot_strata_profile</span>(fg_index, MEDITS_STRATA)</span>
+<span id="cb19-538"><a href="#cb19-538" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-539"><a href="#cb19-539" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-540"><a href="#cb19-540" aria-hidden="true" tabindex="-1"></a>If the pipeline is working correctly, FGs known to live in deep water should show density concentrated toward the deeper strata, and coastal/shallow FGs should concentrate toward the shallow ones. A flat profile, or an unexpected peak for a well-documented species, is worth investigating directly - it could point at a stratum-coding issue, a swept-area problem, or a species-matching error further upstream, rather than being dismissed as noise.</span>
+<span id="cb19-541"><a href="#cb19-541" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-544"><a href="#cb19-544" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-545"><a href="#cb19-545" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-depth-profile</span></span>
+<span id="cb19-546"><a href="#cb19-546" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-547"><a href="#cb19-547" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-548"><a href="#cb19-548" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Depth-strata density profile by Functional Group."</span></span>
+<span id="cb19-549"><a href="#cb19-549" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-550"><a href="#cb19-550" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_fg_depth_strata_profile.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-551"><a href="#cb19-551" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-552"><a href="#cb19-552" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-553"><a href="#cb19-553" aria-hidden="true" tabindex="-1"></a><span class="fu">## Sample coverage map</span></span>
+<span id="cb19-554"><a href="#cb19-554" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-555"><a href="#cb19-555" aria-hidden="true" tabindex="-1"></a>Before (or alongside) the density calculations, <span class="in">`plot_sample_map()`</span> gives a direct visual and geometric check on the input data itself - independent of anything FG- or density-related.</span>
+<span id="cb19-556"><a href="#cb19-556" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-559"><a href="#cb19-559" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-560"><a href="#cb19-560" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: sample-map</span></span>
+<span id="cb19-561"><a href="#cb19-561" aria-hidden="true" tabindex="-1"></a>p_sample_map <span class="ot">&lt;-</span> <span class="fu">plot_sample_map</span>(dataframe1, area_shp, <span class="at">area_id_col =</span> AREA_ID_COL,</span>
+<span id="cb19-562"><a href="#cb19-562" aria-hidden="true" tabindex="-1"></a>                                  <span class="at">title =</span> <span class="st">"Sample coverage"</span>, <span class="at">selected_areas =</span> FILTER_AREAS)</span>
+<span id="cb19-563"><a href="#cb19-563" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-564"><a href="#cb19-564" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-565"><a href="#cb19-565" aria-hidden="true" tabindex="-1"></a>This does more than plot points - it performs concrete geometric checks and reports them directly:</span>
+<span id="cb19-566"><a href="#cb19-566" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-567"><a href="#cb19-567" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**CRS is validated explicitly**, not assumed: <span class="in">`area_shp`</span> and the sample points are both transformed to a common, known CRS before plotting rather than relying on automatic layer alignment, and the function errors clearly if <span class="in">`area_shp`</span> has no CRS defined at all (rather than silently producing a badly misplaced polygon layer).</span>
+<span id="cb19-568"><a href="#cb19-568" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Points genuinely outside every polygon** (even after correct CRS alignment) are counted and listed - this distinguishes a real projection problem (should resolve to ~0 once fixed) from genuine bad coordinate data (stays nonzero regardless).</span>
+<span id="cb19-569"><a href="#cb19-569" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Points inside vs. outside the selected study area specifically** are shown in different colors - a point can be a perfectly valid coordinate in a real, neighboring GSA and still be outside this particular analysis's scope, which is a different question from "is this a valid coordinate at all".</span>
+<span id="cb19-570"><a href="#cb19-570" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**The selected study area's outer contour** is drawn in bold, using a rasterize-then-repolygonize technique rather than a plain <span class="in">`st_union()`</span> - real shapefiles are rarely perfectly topologically snapped at shared boundaries, and a plain union can leave a visible seam artifact at the join between adjacent polygons that a coarser raster grid smooths over.</span>
+<span id="cb19-571"><a href="#cb19-571" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-574"><a href="#cb19-574" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-575"><a href="#cb19-575" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-sample-map</span></span>
+<span id="cb19-576"><a href="#cb19-576" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-577"><a href="#cb19-577" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-578"><a href="#cb19-578" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area."</span></span>
+<span id="cb19-579"><a href="#cb19-579" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-580"><a href="#cb19-580" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_sample_coverage_map.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-581"><a href="#cb19-581" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-582"><a href="#cb19-582" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-583"><a href="#cb19-583" aria-hidden="true" tabindex="-1"></a><span class="in">`by_year = TRUE`</span> produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year's samples overlaid on top of it can make a real gap look fine.</span>
+<span id="cb19-584"><a href="#cb19-584" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-587"><a href="#cb19-587" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb19-588"><a href="#cb19-588" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: fig-sample-map-byyear</span></span>
+<span id="cb19-589"><a href="#cb19-589" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: true</span></span>
+<span id="cb19-590"><a href="#cb19-590" aria-hidden="true" tabindex="-1"></a><span class="co">#| echo: false</span></span>
+<span id="cb19-591"><a href="#cb19-591" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-cap: "Sample coverage faceted by year."</span></span>
+<span id="cb19-592"><a href="#cb19-592" aria-hidden="true" tabindex="-1"></a><span class="co">#| out-width: "100%"</span></span>
+<span id="cb19-593"><a href="#cb19-593" aria-hidden="true" tabindex="-1"></a><span class="co">#| fig-width: 16</span></span>
+<span id="cb19-594"><a href="#cb19-594" aria-hidden="true" tabindex="-1"></a><span class="fu">safe_include_graphics</span>(<span class="fu">file.path</span>(<span class="st">"figures"</span>, <span class="st">"survey_sample_coverage_map_by_year.png"</span>), <span class="st">"medits_example_westmed.R"</span>)</span>
+<span id="cb19-595"><a href="#cb19-595" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb19-596"><a href="#cb19-596" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-597"><a href="#cb19-597" aria-hidden="true" tabindex="-1"></a>---</span>
+<span id="cb19-598"><a href="#cb19-598" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-599"><a href="#cb19-599" aria-hidden="true" tabindex="-1"></a><span class="fu">## Outputs</span></span>
+<span id="cb19-600"><a href="#cb19-600" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-601"><a href="#cb19-601" aria-hidden="true" tabindex="-1"></a>| File | Content |</span>
+<span id="cb19-602"><a href="#cb19-602" aria-hidden="true" tabindex="-1"></a>|---|---|</span>
+<span id="cb19-603"><a href="#cb19-603" aria-hidden="true" tabindex="-1"></a>| <span class="in">`survey_fg_annual_index.csv`</span> | Per-area, strata-weighted density by year and FG |</span>
+<span id="cb19-604"><a href="#cb19-604" aria-hidden="true" tabindex="-1"></a>| <span class="in">`survey_fg_annual_index_regional.csv`</span> | All areas combined, area-weighted - the Ecopath/Ecosim-facing version |</span>
+<span id="cb19-605"><a href="#cb19-605" aria-hidden="true" tabindex="-1"></a>| <span class="in">`survey_unmatched_for_manual_review.csv`</span> | Species still unmatched after every FG-matching stage, with mean biomass, appearance count, and taxonomy |</span>
+<span id="cb19-606"><a href="#cb19-606" aria-hidden="true" tabindex="-1"></a>| <span class="in">`survey_outliers_flagged.csv`</span> | Sample-level observations flagged as statistical outliers, with a <span class="in">`was_dropped`</span> column |</span>
+<span id="cb19-607"><a href="#cb19-607" aria-hidden="true" tabindex="-1"></a>| <span class="in">`strata_area_by_area.csv`</span> | Cached bathymetry-derived stratum area proportions per area |</span>
+<span id="cb19-608"><a href="#cb19-608" aria-hidden="true" tabindex="-1"></a>| <span class="in">`ecopath_ecosim_inputs.xlsx`</span> | Four-sheet Ecopath/Ecosim input workbook (below) |</span>
+<span id="cb19-609"><a href="#cb19-609" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-610"><a href="#cb19-610" aria-hidden="true" tabindex="-1"></a><span class="fu">### `ecopath_ecosim_inputs.xlsx` sheets</span></span>
+<span id="cb19-611"><a href="#cb19-611" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-612"><a href="#cb19-612" aria-hidden="true" tabindex="-1"></a>| Sheet | Content |</span>
+<span id="cb19-613"><a href="#cb19-613" aria-hidden="true" tabindex="-1"></a>|---|---|</span>
+<span id="cb19-614"><a href="#cb19-614" aria-hidden="true" tabindex="-1"></a>| <span class="in">`FG_spp_Ecopath`</span> | Species-level density, <span class="in">`prop_sp_fg`</span> (each species' share of its FG's total density), and taxonomy, averaged over <span class="in">`year_ecopath`</span> - the base-year snapshot for Ecopath initialization and for computing a biomass-weighted PB/QB across an FG's constituent species |</span>
+<span id="cb19-615"><a href="#cb19-615" aria-hidden="true" tabindex="-1"></a>| <span class="in">`Ecopath`</span> | FG-level biomass for the base year and the <span class="in">`year_ecopath`</span> average - **every FG in the reference table gets a row**, even one with zero observed biomass in the base years specifically (blank, not simply absent) |</span>
+<span id="cb19-616"><a href="#cb19-616" aria-hidden="true" tabindex="-1"></a>| <span class="in">`Ecosim`</span> | FG-level relative biomass time series across the full <span class="in">`ts_years`</span> range, in Ecosim's wide import format |</span>
+<span id="cb19-617"><a href="#cb19-617" aria-hidden="true" tabindex="-1"></a>| <span class="in">`FG_spp_Ecosim`</span> | Species-level density, averaged across the *full* <span class="in">`ts_years`</span> range (not just the base years) - no <span class="in">`Year`</span> column, since this is each species' overall long-term average rather than a per-year breakdown. The difference from <span class="in">`FG_spp_Ecopath`</span> is purely the time window averaged over |</span>
+<span id="cb19-618"><a href="#cb19-618" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-619"><a href="#cb19-619" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb19-620"><a href="#cb19-620" aria-hidden="true" tabindex="-1"></a><span class="fu">### Every FG and every matched species gets a row, even with no data</span></span>
+<span id="cb19-621"><a href="#cb19-621" aria-hidden="true" tabindex="-1"></a>Earlier versions of the FG_spp/Ecopath sheets were built by filtering to <span class="in">`year_ecopath`</span> *before* constructing the row list, which silently dropped any species (or, for the Ecopath sheet, any entire FG) with no observations in that specific base-year window - even when they were correctly matched and had real data for other years. The sheets are now built from the full reference lists (every matched species, every FG in <span class="in">`dataframe2`</span>) with the relevant density left-joined in, so "no data for this period" and "doesn't belong to this FG" are no longer collapsed into the same "row is absent" symptom.</span>
+<span id="cb19-622"><a href="#cb19-622" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-623"><a href="#cb19-623" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-624"><a href="#cb19-624" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
+<span id="cb19-625"><a href="#cb19-625" aria-hidden="true" tabindex="-1"></a><span class="fu">### On the Ecosim time-series format</span></span>
+<span id="cb19-626"><a href="#cb19-626" aria-hidden="true" tabindex="-1"></a>Unlike the Ecopath sheet format (checked directly against a real exported file from this project at an earlier stage), the Ecosim time-series sheet format is built from Ecosim's documented structure, not confirmed against a real exported example. If an actual exported file from Ecosim's own time-series import tool becomes available, this should be checked against it directly.</span>
+<span id="cb19-627"><a href="#cb19-627" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-628"><a href="#cb19-628" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-629"><a href="#cb19-629" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb19-630"><a href="#cb19-630" aria-hidden="true" tabindex="-1"></a><span class="fu">### On PB/QB</span></span>
+<span id="cb19-631"><a href="#cb19-631" aria-hidden="true" tabindex="-1"></a>This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density. <span class="in">`FG_spp_Ecopath`</span>'s <span class="in">`prop_sp_fg`</span> column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.</span>
+<span id="cb19-632"><a href="#cb19-632" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb19-633"><a href="#cb19-633" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-634"><a href="#cb19-634" aria-hidden="true" tabindex="-1"></a></span>
+</code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+</body></html>
