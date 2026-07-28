@@ -23,6 +23,7 @@ if (!requireNamespace("rnaturalearthhires", quietly = TRUE)) {
 ## --- 1. Download & unzip official GFCM GSA shapefile ---------------------
 
 setwd('/Users/daniel/Work/iMARES/')
+setwd('/Users/danie/Desktop/iMARES/')
 
 zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
 zip_file <- "./WMed EwE Model/shapefiles/GFCM_GSA.zip"
@@ -187,7 +188,7 @@ sicily_divide <- st_sfc(
 
 ## --- 6. Basemap (coastline) ------------------------------------------------
 
-coast <- ne_countries(scale = 10, returnclass = "sf")
+coast <- ne_countries(scale = 50, returnclass = "sf")
 
 ## --- 7. Clean Western Mediterranean outer contour -------------------------
 ## Union all GSAs, rasterize + re-polygonize to dissolve internal GSA
