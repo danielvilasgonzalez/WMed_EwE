@@ -1,5 +1,5 @@
 ## =================================================================
-## medits_example_using_functions.R
+## medits_example_westmed.R
 ##
 ## MEDITS-specific example calling into survey_fg_density_functions.R.
 ## This script's job is narrow: (1) read MEDITS' own raw file formats
@@ -10,7 +10,10 @@
 ## format documented at the top of survey_fg_density_functions.R, then
 ## (4) call the shared functions for everything genuinely generic
 ## (FG fallback matching, strata weighting, area weighting, plots,
-## Excel export).
+## Excel export). Also runs the MEDIAS acoustic survey (Step 9) as an
+## independent analysis over the same GSAs/FG scheme, then COMBINES
+## both surveys' FG-level and species-level density into the SAME
+## Ecopath/Ecosim/FG_spp sheets (Step 10) - not separate MEDIAS sheets.
 ##
 ## Produces the same outputs as medbs_pipeline_current.R - this is a
 ## refactor of that script's logic into reusable form, not a new
@@ -23,16 +26,13 @@ new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/survey_fg_density_functions.R")
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/worms_taxonomy_lookup.R")
-
 ## =================================================================
 ## STEP 1: Configuration
 ## =================================================================
-
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  setwd("/Users/daniel/Documents/Github/")
   out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
   ## Falls back to an interactive directory picker in RStudio, rather
   ## than just stopping with "set it manually" - so this script works
@@ -54,7 +54,82 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select pCloud EwE West Med Directory",
+    message = paste(
+      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  )
+  
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid pcloud directory selected.")
+  }
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the github directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Github WMed_EwE Directory",
+    message = paste(
+      "Please select the directory where you cloned the WMed_EwE repository."
+    )
+  )
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid Github directory selected.")
+  }
 }
+
+## =================================================================
+## RUN LOG - capture everything printed/messaged from this point
+## onward (every print()/cat()/summary() output, plus every message())
+## into one timestamped txt file - a full record of this run.
+## =================================================================
+log_path <- file.path(out_dir, paste0("run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+log_con  <- file(log_path, open = "wt")
+
+## stdout: print(), cat(), summary(), etc. - split=TRUE keeps this ALSO
+## visible in the console while writing a copy to the file.
+sink(log_con, type = "output", split = TRUE)
+
+## stderr: message() calls (used constantly throughout this pipeline
+## for progress/diagnostics). sink(type="message") has no split option,
+## so from here on these go to the log file ONLY and stop appearing in
+## the R console for the rest of this run - open the log file (or tail
+## it in another editor) if you want to watch progress live.
+sink(log_con, type = "message")
+
+message("Run log started: ", log_path, " at ", Sys.time())
+
+## SAFETY NOTE: if this script errors out or is interrupted (Ctrl+C/Esc)
+## before reaching the closing block at the very end, the console stays
+## silently redirected to log_con. If output/messages stop appearing as
+## expected, run this manually to restore the console:
+##   while (sink.number(type = "message") > 0) sink(type = "message")
+##   while (sink.number(type = "output")  > 0) sink(type = "output")
+
+#call functions
+source(paste0(git_dir,"/scripts/survey_fg_density_functions.R"))
+source(paste0(git_dir,"./scripts/worms_taxonomy_lookup.R"))
+
+#files in pcloud
+#fg_file should be correctly reference the species scientific name with the FG_name and FG_num
+fg_file          <- paste0(pcloud_dir,"/data/FG_WMed.xlsx")
+#taxonomy list of MEDITS and MEDIAS species and code species
+#downloaded from MEDITS website
+tm_list_file     <- paste0(pcloud_dir,"/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/TM_list_(April_2019).xlsx")
+
 ## plot_dir is INSIDE out_dir (out_dir/plots), not two directories up
 ## from it - both are created (recursive=TRUE, in case the full parent
 ## path doesn't exist yet) rather than assuming either already exists.
@@ -72,35 +147,28 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 ## collision. Printed clearly here so it's directly checkable by eye,
 ## and the existing-file check below catches it even if you don't
 ## read the console output carefully.
-message("This script (GSA example) will write its outputs to:\n  out_dir  = ", out_dir, "\n  plot_dir = ", plot_dir,
-        "\nConfirm this does NOT match medits_example_custom_region.R's own out_dir before proceeding.")
-existing_plot_files <- list.files(plot_dir, pattern = "\\.png$")
-if (length(existing_plot_files) > 0) {
-  message("NOTE: plot_dir already contains ", length(existing_plot_files), " .png file(s) from a previous run",
-          " (either this same script, or - if out_dir is accidentally shared - the custom-region example).",
-          " They'll be overwritten below. If any of these came from a DIFFERENT example script,",
-          " out_dir needs to be changed to something distinct for this one.")
-}
-
-in_dir   <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/2024_MEDBSsurvey/"
-
-fg_file          <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/FG_WMed.xlsx"
-tm_list_file     <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/2024_MEDBSsurvey/TM_list_(April_2019).xlsx"
+message("This script will write its outputs to:\n  out_dir  = ", out_dir, "\n  plot_dir = ", plot_dir)
 
 FILTER_AREAS  <- 1:11
 STRATA        <- TRUE                       # function attribute: strata
 YEAR_ECOPATH  <- 1994:1996                   # function attribute: year_ecopath
-TS_YEARS      <- NULL                        # function attribute: ts_years (NULL -> min:max of data)
-DROP_OUTLIERS <- TRUE                        # function attribute: whether remove_sample_outliers() actually
+TS_YEARS      <- 1995:2023                        # function attribute: ts_years (NULL -> min:max of data)
+DROP_OUTLIERS <- FALSE                        # function attribute: whether remove_sample_outliers() actually
+NORMALIZE_TS  <- TRUE   # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
 # removes flagged observations (TRUE) or only reports them (FALSE)
+
+message(
+  "This script will run for GSA: ", paste(FILTER_AREAS, collapse = ", "),
+  "\nfor Ecopath years: ", paste(range(YEAR_ECOPATH), collapse = "-"),
+  "\nfor Ecosim years: ", paste(range(TS_YEARS), collapse = "-")
+)
 
 ## MEDITS' 5 standard bathymetric strata - passed as strata_def to the
 ## shared functions, not hardcoded inside them
 MEDITS_STRATA <- data.table(
   stratum_num = 1:5,
   depth_min = c(10, 50, 100, 200, 500),
-  depth_max = c(49.9999, 99.9999, 199.9999, 499.9999, 799.9999)
-)
+  depth_max = c(49.9999, 99.9999, 199.9999, 499.9999, 799.9999))
 
 ## GFCM GSA shapefile - this is the "area_shp" function attribute
 gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
@@ -123,13 +191,12 @@ AREA_ID_COL <- "gsa_num"
 ## STEP 2: Input data - MEDITS-specific loading, reshaped into the
 ## standardized dataframe1/dataframe2 format
 ## =================================================================
-
 ## --- dataframe2: species -> FG reference ------------------------------------
 fg_raw <- as.data.table(readxl::read_excel(fg_file, sheet = 4))
 dataframe2 <- unique(fg_raw[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)])
 
 ## --- dataframe1: MEDITS' TA.csv (samples/hauls) + TB.csv (catch) -----------
-ta <- read_csv(file.path(in_dir, "Demersal", "TA.csv"), show_col_types = FALSE)
+ta <- read_csv(file.path(pcloud_dir,"data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/TA.csv"), show_col_types = FALSE)
 
 ## swept area (the "Effort" column) - MEDITS-specific: distance towed x
 ## wing opening, unit confirmed via cross-check against vertical_opening
@@ -183,7 +250,7 @@ ta_swept <- ta %>%
   dplyr::select(SampleID, swept_area_km2, mean_depth,
                 shooting_latitude, shooting_longitude)
 
-tb <- read_csv(file.path(in_dir, "Demersal", "TB.csv"), show_col_types = FALSE)
+tb <- read_csv(file.path(pcloud_dir, "data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/TB.csv"), show_col_types = FALSE)
 tb <- tb %>%
   mutate(
     species_code = paste0(genus, species),
@@ -249,7 +316,6 @@ ggsave(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"), p_sample_m
 ## =================================================================
 ## STEP 3: Scientific name -> FG (direct match)
 ## =================================================================
-
 fg_lookup_safe <- prepare_fg_lookup(dataframe2)
 dt <- match_species_to_fg(dataframe1, fg_lookup_safe)
 dt <- match_nominate_subspecies_fg(dt, fg_lookup_safe)
@@ -262,8 +328,7 @@ MANUAL_OVERRIDES <- data.table(
   species_code = c("ARGRACU", "FMBONEL", "GASTRDA", "ILLESPP", "BUCCSPP", "ASCDCEA", "PTEDGRI",'SOLEAEG'),
   taxon_name   = c("Argyropelecus aculeatus", "Bonellidae", "Gastropoda", "Illex",
                    "Buccinum", "Ascidiacea", "Pteroeides griseum", 'Solea aegyptiaca'),
-  taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species",'species')
-)
+  taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species",'species'))
 
 ## needs taxonomy on fg_lookup_safe to resolve genus/family/class-rank overrides
 fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "worms")
@@ -275,6 +340,7 @@ resolve_override <- function(taxon_name, rank) {
   if (nrow(matches) != 1) return(data.table(FG_num = NA_real_, FG_name = NA_character_))
   matches
 }
+
 ## keep taxon_name alongside the resolved FG - needed to fill in
 ## ScientificName on dt for these rows, since dt's own ScientificName
 ## is NA for exactly these species_codes
@@ -293,8 +359,6 @@ dt[!is.na(FG_num_override), `:=`(FG_num = FG_num_override, FG_name = FG_name_ove
 dt[, c("FG_num_override", "FG_name_override", "override_ScientificName") := NULL]
 
 message("After manual overrides: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " species matched.")
-
-
 
 ## =================================================================
 ## STEP 4: Maximize FG assignment via taxonomy fallback
@@ -383,8 +447,7 @@ SEED_RULES <- data.table(
     "Other macro-benthos",
     "Other macro-benthos",
     "Other macro-benthos"
-  )
-)
+  ))
 
 ## Species-level exceptions - applied BEFORE the rank rules above, so a
 ## named species is never caught by a broader rule that's wrong for it
@@ -394,8 +457,7 @@ SEED_RULES <- data.table(
 ## this override.
 SPECIES_EXCEPTIONS <- data.table(
   ScientificName = "Squilla mantis",
-  fg_name_target = "Other commercial decapods"
-)
+  fg_name_target = "Other commercial decapods")
 
 dt <- apply_seed_fg_rules(dt, dataframe2, SEED_RULES, species_exceptions = SPECIES_EXCEPTIONS)
 
@@ -434,8 +496,7 @@ message("\nFinal FG match rate: ", dt[!is.na(FG_num), uniqueN(ScientificName)], 
 ## no new species get introduced between here and there.
 species_taxonomy <- unique(rbindlist(list(
   fg_lookup_safe[, .(ScientificName, Genus, Family, Order, Class, Phylum)],
-  attr(dt, "fetched_taxonomy")
-), fill = TRUE), by = "ScientificName")
+  attr(dt, "fetched_taxonomy")), fill = TRUE), by = "ScientificName")
 
 species_actually_observed <- unique(dt[!is.na(ScientificName), ScientificName])
 still_missing_taxonomy <- setdiff(species_actually_observed, species_taxonomy$ScientificName)
@@ -452,7 +513,6 @@ if (length(still_missing_taxonomy) > 0) {
 ## STEP 5: densities (biomass/effort), mean/sum across species within
 ## FG, by year/strata/area
 ## =================================================================
-
 ## OPTIONAL - custom sub-region filter, independent of GSA/AreaID.
 ## Useful if the SAME survey data needs to support a DIFFERENT EwE
 ## model with its own boundary (a specific bay, a custom polygon that
@@ -484,7 +544,7 @@ dt <- dt[AreaID %in% FILTER_AREAS]
 ## FG/FG_name columns dropped (confirmed not needed), species/q_FACTOR
 ## renamed. Filename extension (.csv) is still a guess - confirm this
 ## matches the actual file once it's placed in data/raw.
-CATCHABILITY_CSV_PATH <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/Elena_EDelta_MEDI.csv"
+CATCHABILITY_CSV_PATH <- paste0(pcloud_dir,"/data/catchability_factors_ecotrans_medits_2021_spp.csv")
 
 ## PLACEHOLDER - not filled in with your real FG names. Pelagic/
 ## planktonic/seagrass/algae FGs get q=1 (no catchability correction)
@@ -562,12 +622,10 @@ n_samples_by_area <- dt[
 ## =================================================================
 ## STEP 6: weight densities per stratum -> FG, year, area
 ## =================================================================
-
 strata_area_by_area <- compute_strata_area_by_area(
   area_ids = sort(unique(dt$AreaID[dt$AreaID %in% FILTER_AREAS])),
   area_shp = area_shp, area_id_col = AREA_ID_COL, strata_def = MEDITS_STRATA,
-  cache_path = file.path(out_dir, "strata_area_by_area.csv")
-)
+  cache_path = file.path(out_dir, "strata_area_by_area.csv"))
 
 fg_index <- if (STRATA) {
   weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_area)
@@ -575,10 +633,20 @@ fg_index <- if (STRATA) {
   simple_area_density(per_group_fg, n_samples_by_area)
 }
 
+## --- MEDITS per-haul density (the replicate unit for CV.log) --------------
+## Mirrors the per_sample_fg step inside compute_fg_densities_by_stratum()
+## but kept un-aggregated here specifically to measure within-year spread.
+medits_replicate_dt <- dt[!is.na(Stratum)][
+  !is.na(FG_num) & !is.na(Density),
+  .(fg_density = sum(Density, na.rm = TRUE)),
+  by = .(SampleID, AreaID, Year, FG_num, FG_name)
+]
+fg_cv_log_medits <- compute_cv_log_by_fg(medits_replicate_dt, "fg_density")
+fg_cv_log_medits[, Survey := "MEDITS"]
+
 ## =================================================================
 ## STEP 7: weight densities per area -> FG, year (region-wide)
 ## =================================================================
-
 fg_index_regional <- weight_by_area(fg_index)
 
 ## species-level regional density (for the FG_spp Excel sheet)
@@ -586,9 +654,8 @@ per_group_sp <- compute_species_densities_by_stratum(dt, strata = STRATA)
 species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area)
 
 ## =================================================================
-## STEP 8: plots
+## STEP 8: plots (MEDITS)
 ## =================================================================
-
 p_by_area <- plot_fg_timeseries_by_area(
   fg_index, title = "MEDITS trawl survey by FG and area (strata-weighted)", y_lab = "Density (t/km^2)")
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = 150, bg = "white")
@@ -603,25 +670,323 @@ if (STRATA) {
 }
 
 ## =================================================================
-## STEP 9: Excel export
+## STEP 9: MEDIAS acoustic survey - FG-level AND species-level DENSITY
+## (biomass & abundance per unit area), same FILTER_AREAS/
+## fg_lookup_safe/area_shp as MEDITS. NOT strata-weighted (no per-haul
+## depth here) and NO catchability correction applied to this data.
+## Ends (9f/9g) by combining with MEDITS into single FG-level and
+## species-level tables, fed into ONE set of Ecopath/Ecosim/FG_spp
+## sheets in Step 10 - NOT written as separate MEDIAS sheets.
+##
+## Per the MEDIAS Handbook (April 2025, medias-project.eu):
+##  - official reporting convention is BIOMASS IN TONS and DENSITY IN
+##    t/nm^2 (not kg/km^2) - "Biomass estimation results in tons by GSA
+##    and graphs in terms of biomass density (time series of average
+##    t/nm2)"
+##  - acoustic sampling covers a 10-200m depth band (10m isobath
+##    minimum, 200m max echo-sounding depth)
+##  - Table 1 gives each institute's own reported survey area size
+##    (NM^2) by country/geographic-area name - used here as the primary
+##    area denominator, with a bathymetry-derived 10-200m fallback
+##    (reusing compute_strata_area_by_area() from the shared library)
+##    for any GSA/country combination Table 1 doesn't cover.
 ## =================================================================
+medias_dir  <- paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Acoustic/")
+## ASFIS species list, downloaded from https://www.fao.org/fishery/collection/asfis/en
+asfis_file  <- paste0(pcloud_dir, "/data/ASFIS_sp_2026.1.csv")
 
+## --- 9a. Load + collapse to country/gsa/year/species -----------------------
+sum_lengthclasses <- function(df) {
+  lc_cols <- grep("^lengthclass", names(df), value = TRUE)
+  mat <- as.matrix(df[lc_cols]); mat[mat < 0] <- NA
+  totals <- rowSums(mat, na.rm = TRUE)
+  totals[rowSums(!is.na(mat)) == 0] <- NA
+  totals
+}
+
+check_raw_replication <- function(file) {
+  df <- read_csv(file.path(medias_dir, file), show_col_types = FALSE) %>%
+    mutate(gsa = as.numeric(str_extract(area, "\\d+")))
+  if (any(df$sex == "C")) df <- filter(df, sex == "C")
+  df %>% dplyr::count(country, gsa, year, species)
+}
+abund_reps <- check_raw_replication("abundance.csv")
+biom_reps  <- check_raw_replication("biomass.csv")
+AGG_FUN_MEDIAS <- if (max(abund_reps$n, biom_reps$n) > 1) "mean" else "sum"
+message("MEDIAS: using ", AGG_FUN_MEDIAS, "() to collapse raw records",
+        " (based on replication check).")
+
+load_acoustic <- function(file, value_name, agg_fun = AGG_FUN_MEDIAS) {
+  df <- read_csv(file.path(medias_dir, file), show_col_types = FALSE)
+  df$total_value <- sum_lengthclasses(df)
+  result <- df %>%
+    dplyr::mutate(gsa = as.numeric(str_extract(area, "\\d+"))) %>%
+    { if (any(.$sex == "C")) dplyr::filter(., sex == "C") else . } %>%
+    dplyr::group_by(country, gsa, year, species) %>%
+    dplyr::summarise(value = if (agg_fun == "mean") mean(total_value, na.rm = TRUE)
+                     else sum(total_value, na.rm = TRUE), .groups = "drop")
+  setnames(as.data.table(result), "value", value_name)
+}
+acoustic_abund <- load_acoustic("abundance.csv", "total_abundance")
+acoustic_biom  <- load_acoustic("biomass.csv",   "total_biomass")
+acoustic <- merge(acoustic_biom, acoustic_abund, by = c("country","gsa","year","species"), all = TRUE)
+
+## --- 9b. species code -> ScientificName -> FG (reuses fg_lookup_safe) -----
+## ASFIS 2026.1 structure: ISSCAAP_Group, Taxonomic_Code, Alpha3_Code,
+## Scientific_Name, English_name, ... - species code column is Alpha3_Code.
+fao_species <- fread(asfis_file, encoding = "UTF-8")
+fao_code_lookup <- unique(fao_species[, .(species = Alpha3_Code, ScientificName = Scientific_Name)])
+acoustic <- merge(acoustic, fao_code_lookup, by = "species", all.x = TRUE)
+
+n_no_sci <- acoustic[is.na(ScientificName), uniqueN(species)]
+if (n_no_sci > 0) {
+  message("MEDIAS: ", n_no_sci, " species code(s) with no ASFIS scientific-name match - excluded:")
+  print(unique(acoustic[is.na(ScientificName), .(species)]))
+}
+
+acoustic_matched <- match_species_to_fg(acoustic[!is.na(ScientificName)], fg_lookup_safe)
+acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
+acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms")
+message("MEDIAS: ", acoustic_matched[!is.na(FG_num), uniqueN(ScientificName)], " of ",
+        acoustic_matched[, uniqueN(ScientificName)], " species matched to an FG.")
+
+## --- 9c. Area denominator: MEDIAS Handbook Table 1 (per country, NM^2) ----
+## Restricted here to entries plausibly overlapping FILTER_AREAS (GSA 1-11,
+## Western Med) - Adriatic/Black Sea entries from Table 1 omitted since
+## they're out of scope for this pipeline's region.
+MEDIAS_HANDBOOK_AREAS <- data.table(
+  country        = c("Spain", "France", "Italy",           "Italy",                      "Italy",   "Malta"),
+  geographic_area = c("Iberian coast", "Gulf of Lion", "Sardinia (east)", "Tyrrhenian and Ligurian Sea", "Sicily Channel", "Malta (east)"),
+  area_nm2       = c(8829,   3300,      3207,              6644,                          4300,      1868)
+)
+
+## Area-name -> GSA number crosswalk. NOT stated explicitly in the
+## handbook (Table 1 only names geographic areas) - this is my best-guess
+## mapping based on standard GFCM GSA geography and should be CONFIRMED
+## against your own institute's MEDIAS survey reports before trusting the
+## resulting density values, particularly for Spain (Iberian coast could
+## plausibly span more/fewer GSAs than listed here depending on which
+## years/vessels covered which stretch).
+GSA_AREA_CROSSWALK <- data.table(
+  country = c("Spain", "Spain", "Spain", "France", "Italy", "Italy", "Italy", "Italy", "Malta"),
+  gsa     = c(1,        5,       6,       7,        9,       10,      11,      16,      15),
+  geographic_area = c("Iberian coast", "Iberian coast", "Iberian coast", "Gulf of Lion",
+                      "Tyrrhenian and Ligurian Sea", "Tyrrhenian and Ligurian Sea",
+                      "Sardinia (east)", "Sicily Channel", "Malta (east)")
+)
+GSA_AREA_CROSSWALK <- merge(GSA_AREA_CROSSWALK, MEDIAS_HANDBOOK_AREAS,
+                            by = c("country", "geographic_area"))
+message("GSA <-> handbook area crosswalk (VERIFY this against your own institute's",
+        " reports before trusting density values downstream):")
+print(GSA_AREA_CROSSWALK[order(country, gsa)])
+
+## --- 9c(i). Per-country/GSA biomass totals - no country-averaging here,
+## country coverage areas are real, additive quantities -------------------
+acoustic_fg_by_country_gsa <- acoustic_matched[
+  !is.na(FG_num),
+  .(total_biomass_t = sum(total_biomass, na.rm = TRUE),   # ASSUMED already tons - verify against summary() below
+    total_abundance = sum(total_abundance, na.rm = TRUE)),
+  by = .(country, AreaID = gsa, Year = year, FG_num, FG_name)
+][AreaID %in% FILTER_AREAS]
+
+message("Biomass summary (verify these look like tons, not kg, per the handbook's own",
+        " 'biomass estimation results in tons' convention):")
+print(summary(acoustic_matched[!is.na(FG_num), total_biomass]))
+
+## --- 9c(ii). Attach area: handbook value where the crosswalk covers it,
+## bathymetric 10-200m fallback (compute_strata_area_by_area(), reused
+## from survey_fg_density_functions.R) otherwise ---------------------------
+acoustic_fg_by_country_gsa <- merge(
+  acoustic_fg_by_country_gsa, GSA_AREA_CROSSWALK[, .(country, AreaID = gsa, area_nm2)],
+  by = c("country", "AreaID"), all.x = TRUE)
+
+missing_area <- unique(acoustic_fg_by_country_gsa[is.na(area_nm2), .(country, AreaID)])
+if (nrow(missing_area) > 0) {
+  message(nrow(missing_area), " country/GSA combination(s) not in the handbook crosswalk -",
+          " falling back to a bathymetry-derived 10-200m area estimate for these:")
+  print(missing_area)
+  
+  MEDIAS_DEPTH_RANGE <- data.table(stratum_num = 1, depth_min = 10, depth_max = 200)
+  fallback_area_km2 <- compute_strata_area_by_area(
+    area_ids = missing_area$AreaID, area_shp = area_shp, area_id_col = AREA_ID_COL,
+    strata_def = MEDIAS_DEPTH_RANGE,
+    cache_path = file.path(out_dir, "medias_area_10_200m_fallback.csv")
+  )[, .(AreaID, area_nm2_fallback = area_km2 / 1.852^2)]
+  
+  acoustic_fg_by_country_gsa <- merge(acoustic_fg_by_country_gsa, fallback_area_km2,
+                                      by = "AreaID", all.x = TRUE)
+  acoustic_fg_by_country_gsa[is.na(area_nm2), area_nm2 := area_nm2_fallback]
+  acoustic_fg_by_country_gsa[, area_nm2_fallback := NULL]
+}
+acoustic_fg_by_country_gsa <- acoustic_fg_by_country_gsa[!is.na(area_nm2)]
+
+## --- 9c(iii). Combine countries within a GSA (e.g. a GSA covered by more
+## than one institute) via a proper area-weighted sum, then compute density
+KM2_PER_NM2 <- 1.852^2
+acoustic_fg_by_gsa <- acoustic_fg_by_country_gsa[
+  , .(total_biomass_t = sum(total_biomass_t, na.rm = TRUE),
+      total_abundance = sum(total_abundance, na.rm = TRUE),
+      area_nm2        = sum(unique(area_nm2))),   # unique() - country-level area shouldn't be summed per FG row, just once per country/GSA
+  by = .(AreaID, Year, FG_num, FG_name)
+]
+acoustic_fg_by_gsa[, `:=`(
+  density_biomass_t_nm2   = total_biomass_t / area_nm2,          # official MEDIAS convention
+  density_biomass_t_km2   = total_biomass_t / (area_nm2 * KM2_PER_NM2),  # for MEDITS comparison
+  density_abundance_n_nm2 = total_abundance / area_nm2
+)]
+
+## --- MEDIAS per-country/GSA density (the replicate unit for CV.log) ------
+## No individual hauls in MEDIAS' aggregated data - country/GSA totals
+## within a year are the finest replicate unit available.
+acoustic_fg_by_country_gsa[, density_t_km2 := total_biomass_t / (area_nm2 * KM2_PER_NM2)]
+fg_cv_log_medias <- compute_cv_log_by_fg(acoustic_fg_by_country_gsa, "density_t_km2")
+fg_cv_log_medias[, Survey := "MEDIAS"]
+
+## --- 9d. Region-wide FG index - area-weighted, same pattern as MEDITS'
+## weight_by_area(): D_region = sum(D_gsa * A_gsa) / sum(A_gsa)
+medias_fg_index_regional <- acoustic_fg_by_gsa[
+  , .(mean_density_biomass_t_nm2   = sum(density_biomass_t_nm2 * area_nm2, na.rm = TRUE) / sum(area_nm2, na.rm = TRUE),
+      mean_density_biomass_t_km2   = sum(total_biomass_t, na.rm = TRUE) / sum(area_nm2 * KM2_PER_NM2, na.rm = TRUE),
+      mean_density_abundance_n_nm2 = sum(density_abundance_n_nm2 * area_nm2, na.rm = TRUE) / sum(area_nm2, na.rm = TRUE),
+      n_gsa_contributing = uniqueN(AreaID)),
+  by = .(Year, FG_num, FG_name)
+]
+message("MEDIAS region-wide FG annual DENSITY index built: ", nrow(medias_fg_index_regional),
+        " rows. Density in t/nm^2 (handbook convention) and t/km^2 (MEDITS comparison).",
+        " NO catchability correction applied.")
+
+fwrite(acoustic_fg_by_gsa, file.path(out_dir, "medias_fg_annual_density_by_area.csv"))
+fwrite(medias_fg_index_regional, file.path(out_dir, "medias_fg_annual_density_regional.csv"))
+
+## --- 9e. Plots (MEDIAS) -----------------------------------------------------
+p_medias_biom <- plot_fg_timeseries_regional(
+  medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_biomass_t_nm2)],
+  title = "MEDIAS acoustic survey - biomass density by FG, Western Med", y_lab = "Density (t/nm^2)")
+ggsave(file.path(plot_dir, "medias_fg_biomass_density_timeseries_regional.png"), p_medias_biom,
+       width = 14, height = 10, dpi = 150, bg = "white")
+
+p_medias_abund <- plot_fg_timeseries_regional(
+  medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_abundance_n_nm2)],
+  title = "MEDIAS acoustic survey - abundance density by FG, Western Med", y_lab = "Density (n/nm^2)")
+ggsave(file.path(plot_dir, "medias_fg_abundance_density_timeseries_regional.png"), p_medias_abund,
+       width = 14, height = 10, dpi = 150, bg = "white")
+
+## --- 9f. Species-level MEDIAS density (mirrors species_density_regional
+## from MEDITS) - needed to feed FG_spp_Ecopath/FG_spp_Ecosim, not just
+## the FG-level Ecopath/Ecosim sheets. Reuses the SAME per-country/GSA
+## area (area_nm2) already resolved in 9c(ii)/9c(iii) for the FG-level
+## index - area doesn't depend on species, so pulled from
+## acoustic_fg_by_country_gsa rather than recomputed.
+area_by_country_gsa <- unique(acoustic_fg_by_country_gsa[, .(country, AreaID, area_nm2)])
+
+acoustic_sp_by_country_gsa <- acoustic_matched[
+  !is.na(FG_num),
+  .(species_biomass_t = sum(total_biomass, na.rm = TRUE)),
+  by = .(country, AreaID = gsa, Year = year, FG_num, FG_name, ScientificName)
+][AreaID %in% FILTER_AREAS]
+
+acoustic_sp_by_country_gsa <- merge(acoustic_sp_by_country_gsa, area_by_country_gsa,
+                                    by = c("country", "AreaID"), all.x = TRUE)
+acoustic_sp_by_country_gsa <- acoustic_sp_by_country_gsa[!is.na(area_nm2)]
+
+acoustic_sp_by_gsa <- acoustic_sp_by_country_gsa[
+  , .(species_biomass_t = sum(species_biomass_t, na.rm = TRUE),
+      area_nm2 = sum(unique(area_nm2))),
+  by = .(AreaID, Year, FG_num, FG_name, ScientificName)
+]
+acoustic_sp_by_gsa[, density_t_km2 := species_biomass_t / (area_nm2 * KM2_PER_NM2)]
+
+species_density_regional_medias <- acoustic_sp_by_gsa[
+  , .(mean_density = sum(density_t_km2 * (area_nm2 * KM2_PER_NM2), na.rm = TRUE) /
+        sum(area_nm2 * KM2_PER_NM2, na.rm = TRUE)),
+  by = .(Year, FG_num, FG_name, ScientificName)
+]
+message("MEDIAS region-wide species-level density built: ", nrow(species_density_regional_medias), " rows.")
+
+## --- 9g. Combine MEDITS + MEDIAS into single FG-level and species-level
+## tables (t/km^2 throughout) - these, not separate MEDIAS sheets, are
+## what feed export_ecopath_ecosim_excel() in Step 10.
+fg_index_combined_raw <- rbindlist(list(
+  fg_index_regional[, .(Year, FG_num, FG_name, mean_density, Survey = "MEDITS")],
+  medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_biomass_t_km2, Survey = "MEDIAS")]
+), fill = TRUE)
+
+fg_overlap <- fg_index_combined_raw[, .N, by = .(Year, FG_num, FG_name)][N > 1]
+if (nrow(fg_overlap) > 0) {
+  message("NOTE: ", nrow(fg_overlap), " FG/Year combination(s) have density from BOTH MEDITS",
+          " and MEDIAS - these are AVERAGED in the combined Ecopath/Ecosim index below.",
+          " Review whether blending a demersal-trawl density with an acoustic density is",
+          " appropriate for these specific FG/years before trusting them:")
+  print(merge(fg_overlap[, .(Year, FG_num, FG_name)], fg_index_combined_raw,
+              by = c("Year", "FG_num", "FG_name"))[order(FG_num, Year)])
+}
+fg_index_regional_combined <- fg_index_combined_raw[
+  , .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
+
+sp_index_combined_raw <- rbindlist(list(
+  species_density_regional[, .(Year, FG_num, FG_name, ScientificName, mean_density, Survey = "MEDITS")],
+  species_density_regional_medias[, .(Year, FG_num, FG_name, ScientificName, mean_density, Survey = "MEDIAS")]
+), fill = TRUE)
+
+sp_overlap <- sp_index_combined_raw[, .N, by = .(Year, ScientificName)][N > 1]
+if (nrow(sp_overlap) > 0) {
+  message("NOTE: ", nrow(sp_overlap), " species/Year combination(s) appear in BOTH surveys -",
+          " averaged in the combined species-level index. Likely genuine overlap species",
+          " (e.g. a small pelagic also taken in demersal trawl catches) - worth a look:")
+  print(merge(sp_overlap[, .(Year, ScientificName)], sp_index_combined_raw,
+              by = c("Year", "ScientificName"))[order(ScientificName, Year)])
+}
+species_density_regional_combined <- sp_index_combined_raw[
+  , .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name, ScientificName)]
+
+## --- Combine CV.log across surveys - average where both have a value,
+## use whichever exists otherwise. Prints overlaps for the same reason
+## the density combination does: blending two different sampling designs'
+## variability estimates is a modeling choice worth a second look, not
+## something to average away silently.
+cv_log_combined_raw <- rbindlist(list(fg_cv_log_medits, fg_cv_log_medias), fill = TRUE)
+cv_overlap <- cv_log_combined_raw[, .N, by = FG_num][N > 1]
+if (nrow(cv_overlap) > 0) {
+  message("NOTE: ", nrow(cv_overlap), " FG(s) have a CV.log from BOTH surveys - AVERAGED below:")
+  print(merge(cv_overlap[, .(FG_num)], cv_log_combined_raw, by = "FG_num")[order(FG_num)])
+}
+fg_cv_log_combined <- cv_log_combined_raw[, .(cv_log = mean(cv_log, na.rm = TRUE)), by = FG_num]
+
+## =================================================================
+## STEP 10: Excel export - MEDITS + MEDIAS COMBINED into the SAME
+## FG_spp_Ecopath/Ecopath/Ecosim/FG_spp_Ecosim sheets (no separate
+## MEDIAS sheets). species_taxonomy was already built earlier (right
+## after Step 4, FG matching) since apply_catchability_correction()
+## needed it too - reused as-is here, not rebuilt.
+## =================================================================
 fwrite(fg_index, file.path(out_dir, "survey_fg_annual_index.csv"))
-fwrite(fg_index_regional, file.path(out_dir, "survey_fg_annual_index_regional.csv"))
-
-## species_taxonomy was already built earlier (right after Step 4, FG
-## matching) since apply_catchability_correction() needed it too - reused
-## as-is here, not rebuilt.
+fwrite(fg_index_regional_combined, file.path(out_dir, "survey_fg_annual_index_regional_combined.csv"))
 
 export_ecopath_ecosim_excel(
-  fg_index_regional = fg_index_regional,
-  species_density_regional = species_density_regional,
+  fg_index_regional = fg_index_regional_combined,
+  species_density_regional = species_density_regional_combined,
   n_samples_by_area_year = n_samples_by_stratum[, .(n_samples = sum(n_samples)), by = .(AreaID, Year)],
   dataframe2 = dataframe2,
   year_ecopath = YEAR_ECOPATH,
   ts_years = TS_YEARS,
   out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
-  species_taxonomy = species_taxonomy
+  species_taxonomy = species_taxonomy,
+  fg_cv_log = fg_cv_log_combined,
+  normalize_ts = NORMALIZE_TS
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
+
+## =================================================================
+## STEP 11: close the run log
+## =================================================================
+message("Run finished: ", Sys.time())
+
+## release message sink BEFORE output sink - releasing output first
+## would leave message() output silently diverted to a connection the
+## console no longer tracks as active.
+sink(type = "message")
+sink(type = "output")
+close(log_con)
+
+message("Full run log saved to: ", log_path)

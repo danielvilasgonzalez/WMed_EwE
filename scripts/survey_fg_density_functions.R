@@ -741,6 +741,27 @@ compute_sample_densities <- function(dt) {
   dt
 }
 
+
+## Shared dedup guard - collapses duplicate key entries in an external
+## lookup table (species_q/genus_q/broad_q) to one row per key (mean q)
+## BEFORE merging into dt. Left un-deduped, a merge() where the
+## right-hand table has duplicate keys fans out multiplicatively against
+## every dt row sharing that key - the actual cause of a "Join
+## results in ... rows" cartesian error. Warns loudly since a duplicate
+## entry is almost always a real data issue in catchability_table (e.g.
+## the same taxon name entered twice with different q values), not
+## something to average away silently without being seen.
+dedupe_lookup <- function(lookup_dt, key_col, source_label) {
+  dup_keys <- lookup_dt[, .N, by = key_col][N > 1][[key_col]]
+  if (length(dup_keys) == 0) return(lookup_dt)
+  message("WARNING: catchability_table has ", length(dup_keys), " duplicate ",
+          source_label, " entry name(s) - averaging their q values",
+          " (check catchability_table for these names directly, this is",
+          " likely a data-entry duplicate in the CSV):")
+  print(lookup_dt[get(key_col) %in% dup_keys][order(get(key_col))])
+  lookup_dt[, .(q = mean(q, na.rm = TRUE)), by = key_col]
+}
+
 ## =================================================================
 ## Catchability correction - trawl surveys don't catch 100% of what's
 ## actually in the swept area (some individuals escape under/over/
@@ -842,8 +863,17 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
           paste(names(table(ct$level)), table(ct$level), sep = "=", collapse = ", "))
   
   species_q <- ct[level == "species", .(ScientificName = match_value, q)]
+  species_q <- dedupe_lookup(species_q, "ScientificName", "species-level")
+  
   genus_q   <- ct[level == "genus",   .(Genus = match_value, q)]
+  genus_q   <- dedupe_lookup(genus_q, "Genus", "genus-level")
+  
   broad_q   <- ct[level == "broad_rank", .(match_value, q)]
+  ## broad_q is deliberately NOT deduped here - its key column is still
+  ## the generic "match_value" and hasn't been filtered down to just the
+  ## rank(s) actually present in dt yet. Deduping happens per-rank
+  ## inside apply_explicit_at_rank() below, right before that rank's
+  ## merge, once broad_q has been subset to that rank's actual values.
   
   dt[, q_resolved := NA_real_]
   dt[, match_level := NA_character_]
@@ -884,6 +914,14 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
     apply_explicit_at_rank <- function(dt, rank_col) {
       rank_q <- broad_q[match_value %in% unique(dt[[rank_col]])]
       if (nrow(rank_q) == 0) return(dt)
+      ## dedup BEFORE the merge - broad_q can legitimately contain
+      ## entries for ranks other than rank_col too, so dedup only after
+      ## subsetting down to this rank's actual matching names, not on
+      ## the full broad_q up front (which could falsely flag two
+      ## different-rank entries that happen to share a match_value as
+      ## "duplicates" of each other).
+      rank_q <- dedupe_lookup(rank_q, "match_value", paste0(rank_col, "-level"))
+      
       setnames(rank_q, "match_value", rank_col)
       dt <- merge(dt, rank_q, by = rank_col, all.x = TRUE, suffixes = c("", paste0("_", tolower(rank_col))))
       dt[is.na(q_resolved) & !is.na(q), `:=`(q_resolved = q, match_level = paste0(rank_col, " (explicit entry)"))]
@@ -959,7 +997,6 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
           " (species-specific where available, default_q = ", default_q, " otherwise).")
   dt
 }
-
 ## =================================================================
 ## Sample-level outlier removal - operates on individual (Sample,
 ## Species) observations, BEFORE any aggregation into FG/area sums, so
@@ -1253,6 +1290,52 @@ weight_by_area <- function(fg_index_stratified) {
   ]
   message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows.")
   fg_index_regional
+}
+
+## =================================================================
+## CV-log weight for Ecosim's "Weight" row - approximates CV.log from
+## fn.survey_to_ecosim_ts()'s Monte-Carlo-simulated abundance index:
+## there, CV.log = sd(log(index+1)) / mean(log(index+1)) per year,
+## averaged across years per FG, drawn from a delta-GLM/LSmeans
+## simulated distribution. This pipeline doesn't fit that same model,
+## so this is a SIMPLER, DIRECT analog: CV.log computed straight from
+## whatever replicate observations exist at that survey's finest
+## resolution for a given FG/year (MEDITS: per-haul density; MEDIAS:
+## per-country/GSA density), log1p-transformed to match the reference's
+## log(x+1) treatment, then averaged across years. It captures the same
+## idea (higher variability -> lower confidence -> higher CV -> less
+## weight in Ecosim) but is NOT a reproduction of the simulated CI
+## width the reference computes.
+##
+## value_dt: any data.table with FG_num, FG_name, Year, and a numeric
+## value_col holding one observation per replicate (a haul's density,
+## a GSA's density, etc.) - NOT already aggregated to one row per
+## FG/Year, since the within-year spread across replicates is exactly
+## what's being measured.
+## min_replicates: years with fewer than this many replicate
+## observations for a given FG have no meaningful spread to compute a
+## CV from - excluded from that FG's across-year average rather than
+## contributing an NA/Inf.
+## =================================================================
+compute_cv_log_by_fg <- function(value_dt, value_col, min_replicates = 2) {
+  value_dt <- copy(value_dt)
+  value_dt[, log_value := log1p(get(value_col))]
+  
+  cv_by_year <- value_dt[
+    , .(cv_log = sd(log_value, na.rm = TRUE) / mean(log_value, na.rm = TRUE), n = .N),
+    by = .(FG_num, FG_name, Year)
+  ]
+  n_excluded <- cv_by_year[n < min_replicates, .N]
+  if (n_excluded > 0) {
+    message(n_excluded, " FG/Year combination(s) had fewer than ", min_replicates,
+            " replicate observation(s) - excluded from that FG's CV.log average",
+            " (no meaningful spread to measure from a single observation).")
+  }
+  cv_by_year <- cv_by_year[n >= min_replicates & is.finite(cv_log)]
+  
+  cv_by_fg <- cv_by_year[, .(cv_log = mean(cv_log, na.rm = TRUE), n_years = .N), by = .(FG_num, FG_name)]
+  message("CV.log computed for ", nrow(cv_by_fg), " FG(s), averaged across years.")
+  cv_by_fg
 }
 
 ## =================================================================
@@ -1706,10 +1789,12 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
 ## here, carried over as-is. See the original pipeline's own note: if
 ## an actual Ecosim-exported CSV becomes available for cross-checking,
 ## verify this format against it directly.
-
 export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
                                         n_samples_by_area_year, dataframe2, year_ecopath = 1994:1996,
-                                        ts_years = NULL, out_path, species_taxonomy = NULL) {
+                                        ts_years = NULL, out_path, species_taxonomy = NULL,
+                                        extra_sheets = NULL,
+                                        fg_cv_log = NULL,        ## data.table(FG_num, cv_log) for the Weight row
+                                        normalize_ts = TRUE) {   ## TRUE = rescale to reference index (first value = 1); FALSE = raw density
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
   
   ## Validate expected columns upfront, by name, so a mismatch (e.g. a
@@ -1800,7 +1885,8 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## year_ecopath (e.g. nothing in that FG was caught during the base
   ## years specifically) still needs a row for Ecopath model-building,
   ## just with blank biomass rather than being silently absent from the
-  ## whole sheet.
+  ## whole sheet. NOT rescaled by normalize_ts - it's a single base-year
+  ## snapshot, not a time series, so "first value = 1" doesn't apply.
   base_year <- year_ecopath[1]
   ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
   ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
@@ -1819,21 +1905,65 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   }
   
   ## --- Ecosim sheet -----------------------------------------------------------
-  ## Also built from full_fg_list for the same reason - every FG gets a
-  ## column, even one with no data at all across the whole time series
-  ## (its column will just be all-blank/all-zero depending on
-  ## years_with_effort, same logic as before).
   if (is.null(ts_years)) {
     ts_years <- min(fg_index_regional$Year, na.rm = TRUE):max(fg_index_regional$Year, na.rm = TRUE)
   }
   years_with_effort <- sort(unique(n_samples_by_area_year[Year %in% ts_years, Year]))
   
+  ## Rescales each FG's time series to a REFERENCE INDEX when
+  ## normalize_ts=TRUE: the first non-NA value in the series becomes 1,
+  ## every other value expressed relative to it - matches the "Scaling:
+  ## relative" metadata row literally, rather than leaving raw absolute
+  ## density under a "relative" label. If ts_years' actual first
+  ## calendar year has no survey effort (NA), the reference is taken
+  ## from the first year that DOES have a value instead - flagged
+  ## explicitly, since it means "first row = 1" in the output isn't
+  ## literally ts_years[1] in that case. When normalize_ts=FALSE, the
+  ## raw density (whatever unit fg_index_regional is in) is returned
+  ## unchanged.
   build_ts_column <- function(fg_num) {
     vals <- fg_index_regional[FG_num == fg_num, .(Year, mean_density)]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
-    vals[order(Year), mean_density]
+    vals <- vals[order(Year)]
+    
+    if (!normalize_ts) return(vals$mean_density)
+    
+    first_valid_idx <- which(!is.na(vals$mean_density))[1]
+    if (is.na(first_valid_idx)) {
+      message("FG ", fg_num, ": no non-NA values across the whole time series - column left blank.")
+      return(vals$mean_density)
+    }
+    ref_value <- vals$mean_density[first_valid_idx]
+    ref_year  <- vals$Year[first_valid_idx]
+    if (ref_year != ts_years[1]) {
+      message("FG ", fg_num, ": relative-scaling reference is year ", ref_year,
+              " (first year WITH data), not the series' first year ", ts_years[1],
+              " (no survey effort that year).")
+    }
+    if (is.na(ref_value) || ref_value == 0) {
+      message("WARNING: FG ", fg_num, "'s reference value (year ", ref_year, ") is ",
+              ifelse(is.na(ref_value), "NA", "zero"), " - cannot rescale to a relative index,",
+              " leaving this column as raw density instead.")
+      return(vals$mean_density)
+    }
+    vals$mean_density / ref_value
+  }
+  
+  ## Weight row: CV.log per FG if fg_cv_log was provided (see
+  ## compute_cv_log_by_fg()), else "1" (the old placeholder) with an
+  ## explicit per-FG warning so a missing weight is visible rather than
+  ## silently defaulting.
+  get_weight <- function(fg_num) {
+    if (is.null(fg_cv_log)) return("1")
+    w <- fg_cv_log[FG_num == fg_num, cv_log]
+    if (length(w) == 0 || is.na(w)) {
+      message("FG ", fg_num, ": no CV.log available - Weight defaults to 1",
+              " (check whether this FG had enough replicate observations).")
+      return("1")
+    }
+    as.character(round(w, 4))
   }
   
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
@@ -1841,22 +1971,15 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   for (i in seq_len(nrow(full_fg_list))) {
     fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
     ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))
-    col <- c(ts_name, "Biomass (relative)", "reference", "relative", "1",
+    col <- c(ts_name, "Biomass (relative)", "reference", "relative", get_weight(fg_num),
              paste0(fg_num, ": ", fg_name), "", "Annual", as.character(build_ts_column(fg_num)))
     ecosim_sheet[, (paste0("fg_", fg_num)) := col]
   }
   
   ## --- FG_spp_Ecosim sheet -----------------------------------------------------
-  ## Species-level (not FG-level) mean density across the FULL ts_years
-  ## range - one row per species, no Year column, since this is the
-  ## species' overall average over the whole time series, not a
-  ## per-year breakdown. The key difference from FG_spp_Ecopath is the
-  ## time window averaged over: FG_spp_Ecopath uses just year_ecopath
-  ## (the base-year snapshot for Ecopath initialization), this uses the
-  ## full ts_years range (the long-term average across the whole survey
-  ## period). Same "always a row, blank if no data at all" principle as
-  ## FG_spp_Ecopath - a species with genuinely zero observations across
-  ## the whole ts_years range still gets a row, just with blank density.
+  ## Species-level mean density across the FULL ts_years range - one row
+  ## per species, no Year column, since this is the species' overall
+  ## average over the whole time series, not a per-year breakdown.
   species_mean_ts <- species_density_regional[Year %in% ts_years,
                                               .(Density = mean(mean_density, na.rm = TRUE)),
                                               by = .(FG_num, FG_name, Species = ScientificName)]
@@ -1866,6 +1989,20 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
                           Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
+  
+  ## extra_sheets: named list of additional data.tables/data.frames to
+  ## include in the SAME workbook/write call - appended here rather
+  ## than requiring a separate loadWorkbook()/saveWorkbook() round-trip
+  ## after this function already wrote the file.
+  if (!is.null(extra_sheets)) {
+    dup_names <- intersect(names(extra_sheets), names(sheets_to_write))
+    if (length(dup_names) > 0) {
+      stop("export_ecopath_ecosim_excel(): extra_sheets name(s) collide with",
+           " built-in sheet names: ", paste(dup_names, collapse = ", "))
+    }
+    sheets_to_write <- c(sheets_to_write, extra_sheets)
+  }
+  
   openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
   message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
   invisible(sheets_to_write)
