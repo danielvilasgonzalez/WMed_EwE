@@ -1,8 +1,16 @@
 ## =================================================================
-## medits_example_custom_region.R
+## PIPELINE STEP 1 of 4 (custom / non-GSA region version)
+## Alternative to 01_survey_density_westmed.R for a custom bounding-box
+## or shapefile study area - run ONE OR THE OTHER, not both, as your
+## Step 1. Same downstream role: 02_fao_catches.R and 04_pbqb_calc.R
+## both depend on this step's output.
+## =================================================================
+
+## =================================================================
+## 01_survey_density_custom.R
 ##
 ## Same underlying MEDITS survey data and pipeline as
-## medits_example_using_functions.R, but demonstrates the OTHER way to
+## 01_survey_density_westmed.R, but demonstrates the OTHER way to
 ## define a study area: a custom boundary (a shapefile for a specific
 ## EwE model's own footprint, or a simple bounding box) instead of the
 ## GFCM GSA polygons. Useful when the same survey data needs to support
@@ -24,38 +32,82 @@ new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/survey_fg_density_functions.R")
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/worms_taxonomy_lookup.R")
-
 ## =================================================================
 ## STEP 1: Configuration
+## Mirrors 01_survey_density_westmed.R's pattern exactly: NO setwd()
+## anywhere (absolute paths via file.path()/paste0() everywhere below
+## instead) and all three directories - out_dir, pcloud_dir, git_dir -
+## resolved together, with an RStudio picker fallback for each one
+## individually, not just out_dir. The previous version of this script
+## only ever asked for out_dir and hardcoded Daniel's absolute paths
+## for everything else (source() calls, fg_file, tm_list_file, in_dir)
+## regardless of who was actually running it - broken for anyone else,
+## and inconsistent with how the GSA example handles the same thing.
 ## =================================================================
-
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  setwd("/Users/daniel/Documents/Github/")
-  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/custom_region/"
+  out_dir    <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/custom_region/"
+  pcloud_dir <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir    <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
-  ## Falls back to an interactive directory picker in RStudio, rather
+  ## Falls back to interactive directory pickers in RStudio, rather
   ## than just stopping with "set it manually" - so this script works
   ## for anyone, not just the one hardcoded username above.
-  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
-      !rstudioapi::isAvailable()) {
-    stop(
-      "This script requires RStudio. Please select the output directory manually."
-    )
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio. Please select the output directory manually.")
   }
   rstudioapi::showQuestion(
     title = "Select Output Directory",
-    message = paste(
-      "Please select the directory where output files",
-      "and intermediate results will be saved."
-    )
+    message = paste("Please select the directory where output files",
+                    "and intermediate results will be saved.")
   )
   out_dir <- rstudioapi::selectDirectory()
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
+  
+  rstudioapi::showQuestion(
+    title = "Select pCloud EwE West Med Directory",
+    message = "Please select the location of the pCloud Drive/EwE Western Med 2026 folder."
+  )
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
+    stop("No valid pCloud directory selected.")
+  }
+  
+  rstudioapi::showQuestion(
+    title = "Select Github WMed_EwE Directory",
+    message = "Please select the directory where you cloned the WMed_EwE repository."
+  )
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
+    stop("No valid Github directory selected.")
+  }
 }
+
+## =================================================================
+## RUN LOG - same as 01_survey_density_westmed.R: captures everything
+## printed/messaged from this point onward into one timestamped txt
+## file. See that script's own comment for the sink() recovery command
+## if this script errors out before reaching its closing block.
+## =================================================================
+log_path <- file.path(out_dir, paste0("run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
+log_con  <- file(log_path, open = "wt")
+sink(log_con, type = "output", split = TRUE)
+sink(log_con, type = "message")
+message("Run log started: ", log_path, " at ", Sys.time())
+
+source(paste0(git_dir, "/scripts/lib_survey_fg_density_functions.R"))
+source(paste0(git_dir, "./scripts/lib_worms_taxonomy_lookup.R"))
+
+## Same pcloud_dir-based convention as 01_survey_density_westmed.R -
+## previously this script read fg_file/tm_list_file/in_dir from a
+## stale "data/raw/..." location under git_dir instead, which is a
+## DIFFERENT (and older) location than where the GSA example actually
+## reads the same underlying files from now.
+fg_file      <- paste0(pcloud_dir, "/data/FG_WMed.xlsx")
+tm_list_file <- paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/TM_list_(April_2019).xlsx")
+in_dir       <- paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/")
+
 ## plot_dir is INSIDE out_dir (out_dir/plots), not two directories up -
 ## this also naturally avoids a real collision the earlier version had:
 ## with plot_dir = dirname(dirname(out_dir))/plots, this script's
@@ -70,7 +122,7 @@ plot_dir <- file.path(out_dir, "plots")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## Loud and explicit on purpose - if out_dir here ever ends up matching
-## medits_example_using_functions.R's own out_dir (e.g. both edited by
+## 01_survey_density_westmed.R's own out_dir (e.g. both edited by
 ## hand to the same value after this script was first set up), both
 ## scripts would silently write to the exact same plot files, and
 ## whichever ran most recently would overwrite the other's output with
@@ -80,7 +132,7 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 ## checkable by eye, and the existing-file check below catches it even
 ## without reading the console output carefully.
 message("This script (custom-region example) will write its outputs to:\n  out_dir  = ", out_dir, "\n  plot_dir = ", plot_dir,
-        "\nConfirm this does NOT match medits_example_using_functions.R's own out_dir before proceeding.")
+        "\nConfirm this does NOT match 01_survey_density_westmed.R's own out_dir before proceeding.")
 existing_plot_files <- list.files(plot_dir, pattern = "\\.png$")
 if (length(existing_plot_files) > 0) {
   message("NOTE: plot_dir already contains ", length(existing_plot_files), " .png file(s) from a previous run",
@@ -88,11 +140,6 @@ if (length(existing_plot_files) > 0) {
           " They'll be overwritten below. If any of these came from a DIFFERENT example script,",
           " out_dir needs to be changed to something distinct for this one.")
 }
-
-in_dir   <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/2024_MEDBSsurvey/"
-
-fg_file          <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/FG_WMed.xlsx"
-tm_list_file     <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/2024_MEDBSsurvey/TM_list_(April_2019).xlsx"
 
 STRATA        <- TRUE
 YEAR_ECOPATH  <- 1994:1996
@@ -430,6 +477,18 @@ fg_index_regional <- weight_by_area(fg_index)
 per_group_sp <- compute_species_densities_by_stratum(dt, strata = STRATA)
 species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area)
 
+## Written out here as its own file, same as 01_survey_density_westmed.R's
+## Step 9g - 04_pbqb_calc.R's lib_build_species_df_from_survey.R needs
+## this exact filename (Species/FG/Biomass input for PB/QB estimation)
+## regardless of which Step 1 script produced it. This is a single-
+## survey table here (no MEDIAS combination in this custom-region
+## example, unlike the GSA one), but the output filename and schema
+## match exactly so 04_pbqb_calc.R works transparently either way.
+fwrite(species_density_regional, file.path(out_dir, "species_density_regional_combined.csv"))
+message("Saved species_density_regional_combined.csv (", nrow(species_density_regional),
+        " rows) - MEDITS species-level density, all years. This is the file",
+        " lib_build_species_df_from_survey.R reads to build 04_pbqb_calc.R's species_df input.")
+
 ## =================================================================
 ## STEP 8: plots
 ## =================================================================
@@ -466,3 +525,8 @@ export_ecopath_ecosim_excel(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
+
+## Close the run log started in STEP 1 - restores normal console output.
+sink(type = "message")
+sink(type = "output")
+close(log_con)

@@ -1,4 +1,15 @@
 ## =================================================================
+## PIPELINE STEP 2 of 4
+## REQUIRES Step 1 (01_survey_density_westmed.R or
+## 01_survey_density_custom.R) to have already run - this script reads
+## strata_area_by_area.csv, written by that step, to convert catch
+## totals into a t/km^2 density. Running this before Step 1 will fail
+## with a clear error pointing back here.
+## Produces: Catches_Ecopath/Catches_Ecosim sheets in
+## output/ecopath_ecosim_inputs.xlsx.
+## =================================================================
+
+## =================================================================
 ## WMed EwE Model - Catch data pipeline
 ##
 ## Structure: config-driven instead of repeated if/else branches per
@@ -13,15 +24,100 @@
 ## rather than silently applying a division filter that wouldn't work.
 ## =================================================================
 
+## =================================================================
+## STEP 0: Configuration - directories and user options
+## Standardized with 01_survey_density_westmed.R's pattern: absolute
+## directory variables used via file.path() everywhere below, NO
+## setwd() call at all. (fig_WMed_basemap.R uses the other pattern - setwd()
+## then relative "./..." paths - but that's exactly the shape of bug
+## that produced the earlier "sh: ./WMed: No such file or directory"
+## crash here: a relative path silently depends on the working
+## directory being exactly right, with no local warning if it isn't.
+## Absolute paths sidestep that class of bug entirely, so this script
+## follows 01_survey_density_westmed.R's approach instead.)
+##
+## Known users get hardcoded paths; anyone else gets an interactive
+## RStudio directory picker per folder, rather than requiring a manual
+## path edit before the script will even run.
+## =================================================================
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  base_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model"
+  git_dir  <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
+} else if (tolower(Sys.info()[["user"]]) == "danie") {
+  ## PLACEHOLDER - base_dir matches fig_WMed_basemap.R's known Windows path;
+  ## git_dir's Windows equivalent hasn't been confirmed anywhere yet
+  ## (01_survey_density_westmed.R only ever hardcodes "daniel"'s Mac
+  ## paths) - update this once you know the real clone location.
+  base_dir <- "C:/Users/danie/Desktop/iMARES/WMed EwE Model"
+  git_dir  <- "C:/Users/danie/Documents/GitHub/WMed_EwE/"
+} else {
+  ## Falls back to interactive directory pickers in RStudio, rather
+  ## than just stopping with "set it manually" - so this script works
+  ## for anyone, not just the two hardcoded usernames above.
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio to select directories interactively -",
+         " or add your username's paths to the if/else block above.")
+  }
+  rstudioapi::showQuestion(
+    title = "Select WMed EwE Model Directory",
+    message = "Please select the 'WMed EwE Model' project folder."
+  )
+  base_dir <- rstudioapi::selectDirectory()
+  if (is.null(base_dir) || base_dir == "" || !dir.exists(base_dir)) {
+    stop("No valid WMed EwE Model directory selected.")
+  }
+  
+  rstudioapi::showQuestion(
+    title = "Select GitHub WMed_EwE Directory",
+    message = "Please select the directory where you cloned the WMed_EwE repository."
+  )
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
+    stop("No valid GitHub WMed_EwE directory selected.")
+  }
+}
+
+## kept as BASE_DIR (upper case) below since the rest of this script -
+## the DATASETS registry especially - already refers to it that way;
+## only the RIGHT-HAND SIDE changed (now an absolute path resolved
+## above, not a relative "./WMed EwE Model" that depended on setwd())
+BASE_DIR <- base_dir
+if (!dir.exists(BASE_DIR)) {
+  stop("BASE_DIR ('", BASE_DIR, "') does not exist - check the path for your",
+       " username in the if/else block above, or the folder you picked.")
+}
+
 library(data.table)
 library(ggplot2)
 
-setwd("/Users/daniel/Work/iMARES/")
-BASE_DIR   <- "./WMed EwE Model"
+source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))
+
+## Must match 01_survey_density_westmed.R's own YEAR_ECOPATH - this is the
+## snapshot period Catches_Ecopath averages over, and it needs to
+## describe the SAME years as the workbook's existing Ecopath (Biomass)
+## sheet, or the two sheets end up describing different time periods
+## under the same base-year label.
+YEAR_ECOPATH <- 1994:1996
+ECOPATH_WORKBOOK_PATH <- file.path(BASE_DIR, "output", "ecopath_ecosim_inputs.xlsx")
+
 START_YEAR <- 1995
 TOP_N_SPECIES <- 20
 OUT_DIR <- file.path(BASE_DIR, "data", "processed")
 if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
+
+## Forces file= interpretation (bypasses fread's input-must-be-guessed
+## heuristic entirely - the actual fix for the shell-command fallback,
+## per the fread() warning's own pointer to NEWS item 5 for v1.11.6),
+## AND checks file.exists() itself first so a genuinely missing file
+## fails with a plain, specific message instead of either fread's
+## generic "size 0 - returning NULL" warning or the shell error.
+safe_fread <- function(path, label = path) {
+  if (!file.exists(path)) {
+    stop("File not found for '", label, "': '", path, "'",
+         " - check BASE_DIR/data_dir above match this file's actual location.")
+  }
+  fread(file = path)
+}
 
 DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
 
@@ -34,7 +130,7 @@ DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
 DATASETS <- list(
   GFCM_2025 = list(
     format = "gfcm_regional",
-    data_dir = file.path(BASE_DIR, "data/FI_Regional_2025.1.0"),
+    data_dir = file.path(BASE_DIR, "data/raw/FAO-GFCM_catches/FI_Regional_2025.1.0"),
     capture_file   = "GFCM_Capture_Quantity.csv",
     species_file   = "CL_FI_SPECIES_GROUPS.csv",
     countries_file = "CL_FI_COUNTRY_GROUPS.csv",
@@ -42,27 +138,27 @@ DATASETS <- list(
     area_code_col  = "DIVISION.CODE",     # column in capture data to filter on
     area_join_col  = "Code",              # matching column in the area reference file
     area_filter_values = c("37.1.1", "37.1.2", "37.1.3"),
-    fg_file = file.path(BASE_DIR, "data/FG_WMed.xlsx")
-  ),
-  FAO_2026 = list(
-    format = "gfcm_regional",   # same processing shape as GFCM_2025
-    data_dir = file.path(BASE_DIR, "data/Capture_2026.1.0"),
-    capture_file   = "Capture_Quantity.csv",
-    species_file   = "CL_FI_SPECIES_GROUPS.csv",
-    countries_file = "CL_FI_COUNTRY_GROUPS.csv",
-    area_file      = "CL_FI_WATERAREA_GROUPS.csv",
-    area_code_col  = "AREA.CODE",
-    area_join_col  = "Code",
-    ## global FAO data only has Major Fishing Area level (37), not the
-    ## finer 37.1.x subdivisions GFCM's own regional database has -
-    ## filtering to "37" here reflects that limitation explicitly
-    area_filter_values = c("37"),
     fg_file = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
   ),
+  # FAO_2026 = list(
+  #   format = "gfcm_regional",   # same processing shape as GFCM_2025
+  #   data_dir = file.path(BASE_DIR, "data/Capture_2026.1.0"),
+  #   capture_file   = "Capture_Quantity.csv",
+  #   species_file   = "CL_FI_SPECIES_GROUPS.csv",
+  #   countries_file = "CL_FI_COUNTRY_GROUPS.csv",
+  #   area_file      = "CL_FI_WATERAREA_GROUPS.csv",
+  #   area_code_col  = "AREA.CODE",
+  #   area_join_col  = "Code",
+  #   ## global FAO data only has Major Fishing Area level (37), not the
+  #   ## finer 37.1.x subdivisions GFCM's own regional database has -
+  #   ## filtering to "37" here reflects that limitation explicitly
+  #   area_filter_values = c("37"),
+  #   fg_file = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
+  # ),
   FAO_2020 = list(
     format = "legacy_excel",
-    catch_file = file.path(BASE_DIR, "data/raw/FAO-GFCM-CapturepProduction-1970_2020.xlsx"),
-    fg_file    = file.path(BASE_DIR, "data/FG_WMed.xlsx")
+    catch_file = file.path(BASE_DIR, "data/raw/FAO-GFCM_catches/FAO-GFCM-CapturepProduction-1970_2023.xlsx"),
+    fg_file    = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
   )
 )
 
@@ -75,10 +171,19 @@ cfg <- DATASETS[[DATASET_VERSION]]
 load_gfcm_regional <- function(cfg) {
   p <- function(f) file.path(cfg$data_dir, f)
   
-  capture   <- fread(p(cfg$capture_file))
-  species   <- fread(p(cfg$species_file))[, .(SPECIES.ALPHA_3_CODE = `3A_Code`, Species = Name_En)]
-  countries <- fread(p(cfg$countries_file))[, .(COUNTRY.UN_CODE = UN_Code, Country = Name_En)]
-  area_ref  <- fread(p(cfg$area_file))
+  capture   <- safe_fread(p(cfg$capture_file), "capture_file")
+  species   <- safe_fread(p(cfg$species_file), "species_file")
+  if (!all(c("3A_Code", "Name_En") %in% names(species))) {
+    stop("species_file ('", cfg$species_file, "') is missing expected column(s)",
+         " '3A_Code'/'Name_En' - got: ", paste(names(species), collapse = ", "),
+         ". Either the file read as empty (check the file.exists() error above",
+         " didn't get skipped) or this dataset version uses different column names.")
+  }
+  species <- species[, .(SPECIES.ALPHA_3_CODE = `3A_Code`, Species = Name_En)]
+  
+  countries <- safe_fread(p(cfg$countries_file), "countries_file")[
+    , .(COUNTRY.UN_CODE = UN_Code, Country = Name_En)]
+  area_ref  <- safe_fread(p(cfg$area_file), "area_file")
   setnames(area_ref, cfg$area_join_col, "AreaCode")
   area_ref  <- unique(area_ref[, .(AreaCode, Division = Name_En)])
   
@@ -90,6 +195,7 @@ load_gfcm_regional <- function(cfg) {
   
   capture
 }
+
 
 load_legacy_excel <- function(cfg) {
   as.data.table(readxl::read_excel(cfg$catch_file))
@@ -158,9 +264,20 @@ unmatched_species <- ts_data$westmed[
 setnames(unmatched_species, ts_data$species_col, "Species")
 unmatched_species[, `:=`(FG_num = NA, FG_name = NA)]
 
-message(nrow(unmatched_species), " species need FG matching - running matching pipeline...")
-source("species_fg_matching_final.R")   # uses unmatched_species + fg from this environment,
-# produces `output` (species_fg_matched.csv)
+message(nrow(unmatched_species), " species need FG matching - the matching pipeline",
+        " further down in this same script (STEP 0-4, starting at '# unmatched",
+        " species ####') runs automatically after this point and produces `output`",
+        " (species_fg_matched.csv) before it's needed below.")
+## NOTE: there is no separate species_fg_matching_final.R file on disk - the
+## matching logic lives entirely in the second half of THIS script (below
+## the Export section). A source() call to an external copy of that name
+## used to sit here and failed with "cannot open the connection" because
+## that file was never actually saved on its own - removed rather than
+## pointed at a real path, since the inline copy already runs in sequence
+## and does the same job. If you DO want it split into its own file later
+## (e.g. to reuse it from 04_pbqb_calc.R or elsewhere), cut everything from
+## '# unmatched species ####' down to the species_fg_matched.csv fwrite()
+## into a real species_fg_matching_final.R and source() that instead.
 
 ## =================================================================
 ## Summary statistics
@@ -360,16 +477,23 @@ if (uniqueN(exact_resolved$ambiguous$Species) > 0) {
 remaining <- remaining[!Species %in% exact_matches$Species]
 
 find_or_download_fao_species <- function() {
-  found <- list.files(".", pattern = "CL_FI_SPECIES_GROUPS.csv$",
+  ## searches BASE_DIR recursively - this is very likely already
+  ## present there anyway, since GFCM_2025's own species_file
+  ## (CL_FI_SPECIES_GROUPS.csv) is the same reference file - only
+  ## downloads a fresh copy if genuinely not found anywhere under
+  ## BASE_DIR. Absolute path search/download, not "." (ambient working
+  ## directory) - relying on "." here would have the same class of bug
+  ## the setwd()-removal above was meant to eliminate.
+  found <- list.files(BASE_DIR, pattern = "CL_FI_SPECIES_GROUPS.csv$",
                       recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
   if (length(found) > 0) return(found[1])
   url <- "https://data.apps.fao.org/catalog/dataset/b70c52c1-475f-4951-a8ac-de44016abd9b/resource/2c0f936d-6c36-4715-9c7f-fa5a70c00249/download/cl_fi_species_groups.csv"
-  destfile <- "CL_FI_SPECIES_GROUPS.csv"
+  destfile <- file.path(OUT_DIR, "CL_FI_SPECIES_GROUPS.csv")
   download.file(url, destfile = destfile, mode = "wb", method = "libcurl")
   destfile
 }
 
-fao_species <- fread(find_or_download_fao_species(), encoding = "UTF-8")
+fao_species <- fread(file = find_or_download_fao_species(), encoding = "UTF-8")
 name_col <- grep("english|name.*en$|^name$", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
 sci_col  <- grep("scientific", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
 setnames(fao_species, c(name_col, sci_col), c("Name_En", "Scientific_Name"), skip_absent = TRUE)
@@ -536,6 +660,113 @@ ambiguity_notes <- rbindlist(list(
 output <- merge(resolved_final, ambiguity_notes, by = "Species", all.x = TRUE)
 setorder(output, status, -Catch)
 
-fwrite(output, "species_fg_matched.csv")
-message("\nSaved full results to species_fg_matched.csv (", nrow(output), " rows) -",
+fwrite(output, file.path(OUT_DIR, "species_fg_matched.csv"))
+message("\nSaved full results to ", file.path(OUT_DIR, "species_fg_matched.csv"), " (", nrow(output), " rows) -",
         " open in Excel to review/correct 'unresolved' rows, or anything you want to double-check.")
+
+## =================================================================
+## FG-level Year timeseries - what 04_pbqb_calc.R's fishing-mortality
+## step actually needs (Year x FG_num x Catch), not the lifetime-total-
+## per-species table above. `output` only has ONE Catch value per
+## species (summed across all years, since unmatched_species was built
+## without a Year dimension - it exists purely to resolve each species
+## name to an FG once). ts_data$species_ts DOES have the Year dimension
+## (Year x Species[common name] x Division x Catch) but no FG yet - so
+## this joins the two: ts_data$species_ts's per-year catch against
+## output's Species -> FG_num mapping, then re-aggregates by Year/FG.
+##
+## CAVEAT: a species whose common name happened to exactly equal a
+## scientific name in fg$ESPECIE would have been excluded from
+## unmatched_species entirely (STEP 0 upstream) and so has no row in
+## `output` at all - vanishingly unlikely in practice (a common English
+## name matching a Latin binomial verbatim) but means "unmatched" here
+## isn't a perfect complement of "resolved".
+## =================================================================
+species_to_fg <- unique(output[!is.na(FG_num), .(Species, FG_num, FG_name)])
+
+fg_year_matched <- merge(ts_data$species_ts, species_to_fg, by = "Species")
+fg_catch_timeseries <- fg_year_matched[
+  , .(Catch_t = sum(Catch, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
+
+catch_matched_value  <- sum(fg_year_matched$Catch, na.rm = TRUE)
+catch_total_value    <- sum(ts_data$species_ts$Catch, na.rm = TRUE)
+message("\n=== FG-level Year timeseries ===")
+message("Catch value matched to an FG: ", round(catch_matched_value, 1), " of ",
+        round(catch_total_value, 1), " t total (",
+        round(100 * catch_matched_value / catch_total_value, 1), "%) -",
+        " the remainder is catch from species that never resolved to an FG",
+        " (see species_fg_matched.csv, status == 'unresolved') and is NOT",
+        " included in fg_catch_timeseries.csv below, not silently distributed",
+        " across the FGs that DID resolve.")
+
+## NOTE ON SCOPE: this is nominal CATCH/LANDINGS as reported by
+## FAO/GFCM capture production statistics - it is NOT confirmed to
+## include discards. Treat fg_catch_timeseries.csv as a landings-only
+## lower bound on total removals until a discard-inclusive source
+## (e.g. STECF FDI, GFCM DCRF discard tables) is added and combined in.
+fwrite(fg_catch_timeseries, file.path(OUT_DIR, paste0("fg_catch_timeseries_", DATASET_VERSION, ".csv")))
+message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_timeseries), " rows,",
+        " Year x FG_num x FG_name x Catch_t) - this is a LANDINGS-ONLY figure from ", DATASET_VERSION,
+        ", not confirmed to include discards. Kept as an audit/intermediate CSV; the actual",
+        " EwE-ready deliverable is the Catches_Ecopath/Catches_Ecosim sheets below.")
+
+## =================================================================
+## Add Catches_Ecopath/Catches_Ecosim to output/ecopath_ecosim_inputs.xlsx
+##
+## DATASET_VERSION is currently the ONE real, working catch source
+## (FAO_GFCM/GFCM_2025) - written straight to the workbook rather than
+## through a multi-source combiner, since there's nothing else
+## implemented to combine with yet. If a second source (most likely
+## STECF_FDI, for discards) gets implemented later, that's the point
+## to reintroduce a combination step - not before, since a combiner
+## with only one real input just adds indirection.
+##
+## fg_catch_timeseries's Catch_t is a RAW TOTAL (tonnes landed across
+## the whole region, MEASURE == "Q_tlw" above) - add_catches_to_
+## ecopath_workbook() converts this to a t/km^2 density using
+## area_km2 below, to match Biomass's units in the Ecopath sheet.
+## strata_area_by_area.csv is written by 01_survey_density_westmed.R
+## (Step 6) - the SAME area figure 04_pbqb_calc.R's FG-level F step uses,
+## so Catches and F are consistent with each other too, not just with
+## Biomass.
+## =================================================================
+strata_area_path <- file.path(BASE_DIR, "output", "strata_area_by_area.csv")
+if (!file.exists(strata_area_path)) {
+  stop("strata_area_by_area.csv not found at '", strata_area_path, "' - needed to convert",
+       " fg_catch_timeseries's raw total tonnes into a t/km^2 density matching Biomass's",
+       " units in the Ecopath sheet. Run 01_survey_density_westmed.R first (Step 6 writes",
+       " this file), or check BASE_DIR matches where it actually saved it.")
+}
+area_total_km2 <- fread(strata_area_path)[, sum(area_km2, na.rm = TRUE)]
+message("Study area for the Catches density conversion: ", round(area_total_km2, 1), " km^2",
+        " (sum of strata_area_by_area.csv, from 01_survey_density_westmed.R).")
+
+## KNOWN, UNRESOLVED MISMATCH: per GFCM's own GSA-to-Division table,
+## Divisions 37.1.1/37.1.2/37.1.3 (area_filter_values above) cover
+## GSA 1-11 - matching 01_survey_density_westmed.R's FILTER_AREAS - PLUS
+## GSA 12 (Northern Tunisia), which FILTER_AREAS does NOT include.
+## So fg_catch_timeseries's Catch_t (filtered by Division) contains
+## some landings from OUTSIDE the survey's modeled area, while
+## area_total_km2 above does not include GSA 12's area - the resulting
+## Catches density is therefore a SLIGHT OVERESTIMATE relative to
+## Biomass's area, not an underestimate. GFCM's capture statistics are
+## reported at Division resolution, not GSA resolution, so GSA 12's
+## specific contribution can't be subtracted out of Catch_t directly -
+## this is a genuine data-resolution limitation, not a fixable bug.
+## Likely small in practice (Tunisia's share of Division 37.1.3's total
+## catch), but not quantified here - if that matters for a specific FG,
+## check whether it's disproportionately caught in GSA 12/Division
+## 37.1.3 specifically.
+message("NOTE: Divisions 37.1.1-37.1.3 (used to filter catch data) cover GSA 1-11 PLUS",
+        " GSA 12 (Northern Tunisia) per GFCM's own GSA-to-Division table - GSA 12 is",
+        " NOT in FILTER_AREAS (the survey's modeled area). Catches density above is",
+        " therefore a slight OVERESTIMATE relative to Biomass's area - GFCM's Division-",
+        " level catch reporting can't isolate GSA 12's specific contribution to subtract it out.")
+
+add_catches_to_ecopath_workbook(
+  fg_catch      = fg_catch_timeseries,
+  fg_lookup     = fg_lookup,
+  out_path      = ECOPATH_WORKBOOK_PATH,
+  year_ecopath  = YEAR_ECOPATH,
+  area_km2      = area_total_km2
+)

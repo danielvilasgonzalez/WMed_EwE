@@ -1,4 +1,11 @@
 ## =================================================================
+## PIPELINE STEP 3 of 4
+## No dependency on Steps 1/2 - can run anytime before Step 4. Produces
+## ecobase_literature_pb_qb_simple.csv, an OPTIONAL input to Step 4
+## (04_pbqb_calc.R) for literature PB/QB gap-filling and comparison.
+## =================================================================
+
+## =================================================================
 ## Compile PB/QB/Biomass values from EXISTING PUBLISHED ECOPATH
 ## MODELS (via EcoBase), as a literature-derived alternative/
 ## supplement to the empirical-formula estimates in
@@ -48,6 +55,12 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
+  ## Note: unlike the hardcoded "daniel" path above (which ends in "/"),
+  ## rstudioapi::selectDirectory() returns a path with NO trailing
+  ## slash - every fwrite() below uses file.path(out_dir, "...") rather
+  ## than paste0(out_dir, "...") specifically so this works correctly
+  ## either way, instead of silently concatenating a folder name and a
+  ## filename together with no separator for anyone using this picker.
   plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
   if (!dir.exists(plot_dir)) {
     dir.create(plot_dir)
@@ -100,7 +113,7 @@ print(names(model_list))
 message("\nFirst few rows:")
 print(head(model_list))
 
-fwrite(model_list, paste0(out_dir,"ecobase_model_list_full.csv"))
+fwrite(model_list, file.path(out_dir, "ecobase_model_list_full.csv"))
 message("\nSaved full model list to ecobase_model_list_full.csv")
 
 ## --- 2. Filter to models geographically in the Mediterranean -------------
@@ -111,6 +124,13 @@ message("\nSaved full model list to ecobase_model_list_full.csv")
 ## values before relying on it here (an Aegean Sea entry correctly
 ## flagged TRUE; Alaska/PNG/Bering/Antarctica/Florida entries correctly
 ## flagged FALSE).
+##
+## Runs on the FULL model list (not yet filtered by dissemination_allow -
+## see below) so mediterranean_models reflects every EcoBase model that
+## geographically matches the study area, whether or not its data is
+## actually downloadable. That distinction matters for the "without
+## data" CSV further down - "not in the Mediterranean at all" and
+## "in the Mediterranean but not downloadable" are different things.
 ##
 ## Bounding box covers the FULL Mediterranean (Gibraltar to the Levant) -
 ## narrow MED_LON_MIN/MED_LAT_MIN/etc. below if you want Western Med only
@@ -152,18 +172,45 @@ print(mediterranean_models[, .SD, .SDcols = intersect(
   c("model_number", "model_name", "ecosystem_name", "country", "lon_min", "lat_min", "lon_max", "lat_max"),
   names(mediterranean_models))])
 
-fwrite(mediterranean_models, paste0(out_dir,"ecobase_mediterranean_models.csv"))
+fwrite(mediterranean_models, file.path(out_dir, "ecobase_mediterranean_models.csv"))
 message("\nSaved to ecobase_mediterranean_models.csv - review this list directly",
         " (a bounding-box overlap can still catch models that only brush the edge",
         " of the Mediterranean, or miss ones with an unusually large/imprecise",
         " extent) and pick the model ID column to build KNOWN_RELEVANT_MODEL_IDS below.")
+
+## --- dissemination_allow: EcoBase's OWN flag for which models actually
+## have downloadable input data - per their site, only 233 of ~500
+## listed models do (the rest are metadata/reference-only). Their own
+## official R example (published on the EcoBase site itself) filters
+## on this BEFORE attempting to fetch anything:
+##   ldply(xmlToList(data),data.frame) %>% filter(model.dissemination_allow=='true')
+## This was MISSING here previously - every Mediterranean model was
+## being attempted regardless, including ones EcoBase itself flags as
+## not actually available. That's almost certainly why input fetching
+## kept coming back empty: most attempted models were metadata-only to
+## begin with, not a parsing bug on this end.
+if (!"dissemination_allow" %in% names(mediterranean_models)) {
+  message("\nWARNING: no 'dissemination_allow' column found - check the column names",
+          " printed earlier and adjust the field name below if it's called something",
+          " else. Proceeding WITHOUT this filter means every Mediterranean model will",
+          " be attempted, including likely metadata-only ones - expect many failures.")
+  mediterranean_models[, dissemination_allow := NA_character_]
+}
+
+n_disseminable <- mediterranean_models[tolower(dissemination_allow) == "true", .N]
+message("\nOf the ", nrow(mediterranean_models), " Mediterranean model(s): ", n_disseminable,
+        " have dissemination_allow == 'true' (EcoBase's own flag for actually-",
+        " downloadable data) and will actually be queried for input values below.",
+        " The remaining ", nrow(mediterranean_models) - n_disseminable, " are metadata-only",
+        " per EcoBase itself - not queried, since the input endpoint won't have anything",
+        " to return for them (skipped immediately, not counted as a fetch failure).")
 
 ## Still worth keeping explicit, high-confidence IDs found by directly
 ## browsing the site (bounding-box filtering catches broad geographic
 ## overlap, but doesn't tell you which specific Western Med models are
 ## the most directly relevant, e.g. covering your specific GSAs, or
 ## that models 766/767 may be your own published work)
-KNOWN_RELEVANT_MODEL_IDS <- c(mediterranean_models$model_number)
+KNOWN_RELEVANT_MODEL_IDS <- mediterranean_models[tolower(dissemination_allow) == "true", model_number]
 print(KNOWN_RELEVANT_MODEL_IDS)
 
 ## --- 3. Fetch input values (Biomass, PB, QB per group) for specific models
@@ -175,9 +222,11 @@ fetch_model_inputs <- function(model_id) {
                      message("  Model ", model_id, ": request failed - ", conditionMessage(e))
                      NULL
                    })
-  if (is.null(resp) || httr::status_code(resp) != 200) {
-    message("  Model ", model_id, ": HTTP request did not succeed.")
-    return(NULL)
+  if (is.null(resp)) return(list(data = NULL, status = "request_failed"))
+  if (httr::status_code(resp) != 200) {
+    message("  Model ", model_id, ": HTTP request did not succeed (status ",
+            httr::status_code(resp), ").")
+    return(list(data = NULL, status = paste0("http_status_", httr::status_code(resp))))
   }
   
   xml_data <- tryCatch(xml2::read_xml(httr::content(resp, as = "text", encoding = "UTF-8")),
@@ -185,7 +234,7 @@ fetch_model_inputs <- function(model_id) {
                          message("  Model ", model_id, ": response wasn't valid XML - ", conditionMessage(e))
                          NULL
                        })
-  if (is.null(xml_data)) return(NULL)
+  if (is.null(xml_data)) return(list(data = NULL, status = "invalid_xml"))
   
   ## EcoBase distinguishes "listed with metadata" from "data openly
   ## downloadable" (per their own site: 233 available for download out
@@ -194,7 +243,9 @@ fetch_model_inputs <- function(model_id) {
   ## raw response was exactly <EcoBaseModel><Description>Datas for this
   ## model are not available</Description></EcoBaseModel> - checked for
   ## explicitly here so this shows as a clear, distinct reason rather
-  ## than the generic "unexpected structure" message.
+  ## than the generic "unexpected structure" message. Kept as a safety
+  ## net even with the dissemination_allow pre-filter above (in case
+  ## that flag and this endpoint ever disagree for a given model).
   description_node <- xml2::xml_find_first(xml_data, ".//Description")
   if (!is.na(description_node) && grepl("not available", xml2::xml_text(description_node), ignore.case = TRUE)) {
     message("  Model ", model_id, ": EcoBase reports this model's data is NOT",
@@ -202,7 +253,7 @@ fetch_model_inputs <- function(model_id) {
             " not a parsing issue. Consider contacting the model's authors",
             " directly, or checking the original publication for a",
             " supplementary parameter table.")
-    return(NULL)
+    return(list(data = NULL, status = "not_available_despite_flag"))
   }
   
   group_nodes <- xml2::xml_find_all(xml_data, ".//group")
@@ -210,8 +261,8 @@ fetch_model_inputs <- function(model_id) {
     message("  Model ", model_id, ": no <group> nodes found - response structure",
             " may differ from what this script assumes. Raw response saved for inspection.")
     writeLines(httr::content(resp, as = "text", encoding = "UTF-8"),
-               paste0("ecobase_raw_response_model_", model_id, ".xml"))
-    return(NULL)
+               file.path(out_dir, paste0("ecobase_raw_response_model_", model_id, ".xml")))
+    return(list(data = NULL, status = "no_group_nodes_found"))
   }
   
   groups_dt <- rbindlist(lapply(group_nodes, function(node) {
@@ -220,20 +271,61 @@ fetch_model_inputs <- function(model_id) {
     as.data.table(vals)
   }), fill = TRUE)
   groups_dt[, model_id := model_id]
-  groups_dt
+  list(data = groups_dt, status = "success")
 }
 
-message("\nFetching input values (Biomass/PB/QB per group) for known relevant models...")
-all_inputs <- rbindlist(lapply(KNOWN_RELEVANT_MODEL_IDS, function(id) {
+message("\nFetching input values (Biomass/PB/QB per group) for models with",
+        " dissemination_allow == 'true'...")
+fetch_results <- lapply(KNOWN_RELEVANT_MODEL_IDS, function(id) {
   message(" Model ", id, "...")
   fetch_model_inputs(id)
-}), fill = TRUE)
+})
+names(fetch_results) <- as.character(KNOWN_RELEVANT_MODEL_IDS)
+
+fetched_status <- data.table(
+  model_number = names(fetch_results),
+  status = vapply(fetch_results, function(x) x$status, character(1))
+)
+
+## --- Combined status for EVERY Mediterranean-matching model, whether
+## it was actually attempted or skipped for being metadata-only -
+## this is the full audit trail behind ecobase_models_without_data.csv
+## below. -----------------------------------------------------------
+mediterranean_models[, model_number := as.character(model_number)]
+skipped_status <- data.table(
+  model_number = mediterranean_models[tolower(dissemination_allow) != "true" | is.na(dissemination_allow), model_number],
+  status = "dissemination_not_allowed"
+)
+all_status <- rbindlist(list(fetched_status, skipped_status), use.names = TRUE)
+
+mediterranean_models_status <- merge(mediterranean_models, all_status, by = "model_number", all.x = TRUE)
+fwrite(mediterranean_models_status, file.path(out_dir, "ecobase_mediterranean_models_status.csv"))
+message("\nSaved ecobase_mediterranean_models_status.csv - every Mediterranean-",
+        " matching model with its outcome (success / dissemination_not_allowed /",
+        " a specific fetch-failure reason).")
+
+## The specific deliverable: models that geographically match the study
+## area but have NO usable data, with the reason why - so this covers
+## metadata-only models AND ones that looked fetchable but still failed
+## for a specific reason, in one place.
+models_without_data <- mediterranean_models_status[status != "success"]
+fwrite(models_without_data, file.path(out_dir, "ecobase_models_without_data.csv"))
+message("\nSaved ecobase_models_without_data.csv (", nrow(models_without_data), " of ",
+        nrow(mediterranean_models_status), " Mediterranean-matching models have NO usable",
+        " data): ", nrow(models_without_data[status == "dissemination_not_allowed"]),
+        " metadata-only (EcoBase's own flag), ",
+        nrow(models_without_data[status != "dissemination_not_allowed"]),
+        " attempted but failed for another reason (see the status column).")
+print(models_without_data[, .SD, .SDcols = intersect(
+  c("model_number", "model_name", "ecosystem_name", "country", "status"), names(models_without_data))])
+
+all_inputs <- rbindlist(lapply(fetch_results, `[[`, "data"), fill = TRUE)
 
 if (nrow(all_inputs) > 0) {
   message("\nColumns returned (verify these actually contain group name/Biomass/PB/QB",
           " - names may differ from what's assumed here):")
   print(names(all_inputs))
-  fwrite(all_inputs, paste0(out_dir,"ecobase_literature_pb_qb_raw.csv"))
+  fwrite(all_inputs, file.path(out_dir, "ecobase_literature_pb_qb_raw.csv"))
   message("\nSaved raw compiled values to ecobase_literature_pb_qb_raw.csv -",
           " inspect this directly, then map its group names to your own",
           " fg_lookup FG_num/FG_name by hand (species/group naming won't match",
@@ -293,7 +385,7 @@ if (nrow(all_inputs) > 0) {
   
   pb_qb_final <- pb_qb_final[, .(FG_name, PB, QB, EwE_model, year, authors)]
   
-  fwrite(pb_qb_final, paste0(out_dir,"ecobase_literature_pb_qb_simple.csv"))
+  fwrite(pb_qb_final, file.path(out_dir, "ecobase_literature_pb_qb_simple.csv"))
   message("\nSaved final summary table to ecobase_literature_pb_qb_simple.csv",
           " (", nrow(pb_qb_final), " rows: FG_name, PB, QB, EwE_model, year, authors).")
   print(pb_qb_final)

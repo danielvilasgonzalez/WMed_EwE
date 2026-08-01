@@ -1,5 +1,11 @@
 ## =================================================================
-## survey_fg_density_functions.R
+## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
+## sourced automatically by the numbered pipeline scripts (01-04) -
+## do not run this directly, it has no top-level driver code of its own.
+## =================================================================
+
+## =================================================================
+## lib_survey_fg_density_functions.R
 ##
 ## Generalized, survey-agnostic functions for converting a fishery-
 ## independent survey (biomass/abundance by species, haul/station,
@@ -307,7 +313,7 @@ match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
 fetch_taxonomy_worms <- function(species_names) {
   if (!exists("worms_taxonomy_lookup")) {
     stop("worms_taxonomy_lookup() not found - source() the same",
-         " worms_taxonomy_lookup.R used elsewhere in this project first.")
+         " lib_worms_taxonomy_lookup.R used elsewhere in this project first.")
   }
   raw <- worms_taxonomy_lookup(species_names)
   as.data.table(raw)[, .(ScientificName = original_name, Genus = genus, Family = family,
@@ -1780,6 +1786,85 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
 ## =================================================================
 ## STEP 9: Output Excel file (Ecopath/Ecosim-ready workbook)
 ## =================================================================
+## =================================================================
+## upsert_workbook_sheets() / read_existing_ts_years()
+##
+## Shared building block for progressively assembling ONE workbook
+## (output/ecopath_ecosim_inputs.xlsx) from THREE independent scripts
+## that can run in ANY order - 01_survey_density_westmed.R (Biomass:
+## FG_spp_Ecopath/Ecopath/Ecosim/FG_spp_Ecosim), 02_fao_catches.R
+## (Catches_Ecopath/Catches_Ecosim), 04_pbqb_calc.R (PB_QB). None of them
+## needs to run before/after the others, and none of them should be
+## able to silently erase what another one already wrote.
+##
+## This replaces the previous approach (export_ecopath_ecosim_excel()
+## calling openxlsx::write.xlsx() directly), which unconditionally
+## overwrote the ENTIRE file - if 02_fao_catches.R ran first and wrote
+## Catches_Ecopath/Catches_Ecosim, then 01_survey_density_westmed.R ran
+## and called write.xlsx(), it would have silently wiped those two
+## sheets out. upsert_workbook_sheets() loads the existing file if
+## there is one and only touches the sheet names it's given.
+##
+##   sheets   - named list of data.frames/data.tables; each name
+##              becomes a sheet name. A sheet that already exists in
+##              the workbook under that name is REPLACED (safe to
+##              re-run the same script repeatedly); any OTHER,
+##              differently-named sheet already present is always
+##              left untouched.
+##   out_path - path to the shared workbook
+## =================================================================
+upsert_workbook_sheets <- function(sheets, out_path) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("openxlsx is required to write/append to '", out_path, "'.")
+  }
+  if (is.null(names(sheets)) || any(names(sheets) == "")) {
+    stop("upsert_workbook_sheets(): every element of `sheets` needs a name",
+         " (used as the sheet name) - got: ", paste(names(sheets), collapse = ", "))
+  }
+  
+  if (file.exists(out_path)) {
+    wb <- openxlsx::loadWorkbook(out_path)
+    message("Found existing workbook at '", out_path, "' (sheets: ",
+            paste(openxlsx::getSheetNames(out_path), collapse = ", "), ") - adding/replacing: ",
+            paste(names(sheets), collapse = ", "), ". Other sheets left untouched.")
+  } else {
+    wb <- openxlsx::createWorkbook()
+    if (!dir.exists(dirname(out_path))) dir.create(dirname(out_path), recursive = TRUE)
+    message("No existing workbook at '", out_path, "' - creating a NEW one with ONLY: ",
+            paste(names(sheets), collapse = ", "), ". Sheets from the OTHER pipeline",
+            " scripts (survey/catches/PB-QB, whichever haven't run against this exact",
+            " path yet) will be missing until they are.")
+  }
+  
+  for (nm in names(sheets)) {
+    if (nm %in% names(wb)) {
+      openxlsx::removeWorksheet(wb, nm)
+      message("Sheet '", nm, "' already existed in the workbook - replaced.")
+    }
+    openxlsx::addWorksheet(wb, nm)
+    openxlsx::writeData(wb, nm, sheets[[nm]], colNames = TRUE)
+  }
+  
+  openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
+  message("Saved '", out_path, "' (sheets now: ", paste(names(wb), collapse = ", "), ")")
+  invisible(wb)
+}
+
+## Lets a sheet-writer match ITS year-row range to another sheet
+## already in the workbook (e.g. Catches_Ecosim matching Ecosim's
+## years) WITHOUT requiring that other sheet to have been written
+## first - if it isn't there yet, this just returns NULL and the
+## caller falls back to deriving its own range, order-independently.
+read_existing_ts_years <- function(out_path, sheet_name) {
+  if (!file.exists(out_path)) return(NULL)
+  if (!(sheet_name %in% openxlsx::getSheetNames(out_path))) return(NULL)
+  existing <- openxlsx::read.xlsx(out_path, sheet = sheet_name)
+  year_rows <- suppressWarnings(as.numeric(existing[[1]]))
+  ts_years <- sort(year_rows[!is.na(year_rows)])
+  if (length(ts_years) == 0) return(NULL)
+  ts_years
+}
+
 ## Generalized from the MEDITS pipeline's 3-sheet workbook (FG_spp,
 ## Ecopath, Ecosim). year_ecopath and ts_years are the function
 ## attributes specified up top.
@@ -2003,7 +2088,190 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     sheets_to_write <- c(sheets_to_write, extra_sheets)
   }
   
-  openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
-  message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
+  upsert_workbook_sheets(sheets_to_write, out_path)
   invisible(sheets_to_write)
+}
+
+## =================================================================
+## add_catches_to_ecopath_workbook()
+##
+## Formats an FG-level catch time series (Year x FG_num x FG_name x
+## Catch_t - e.g. from a catch/landings pipeline like 02_fao_catches.R)
+## as two more sheets in the SAME shape as export_ecopath_ecosim_excel()
+## above, and adds them to the SAME workbook - Catches_Ecopath next to
+## Ecopath, Catches_Ecosim next to Ecosim - rather than as a separate
+## standalone catches file.
+##
+## If out_path already exists (e.g. export_ecopath_ecosim_excel() has
+## already been run against it), this loads it, matches Catches_Ecosim's
+## year rows to whatever Ecosim's already are, and adds/replaces just
+## these two sheets - the rest of the workbook is untouched. If it
+## doesn't exist yet, creates a new workbook with ONLY these two sheets,
+## flagged explicitly since the Biomass-side sheets are still missing.
+##
+## Catches_Ecopath mirrors the Ecopath sheet exactly: one row per FG
+## (every FG in fg_lookup, not just ones with matched catch), a
+## base-year snapshot column, and a year_ecopath-range average column -
+## named Catch_<year>/Catch_<start>_<end> instead of Biomass_<...>.
+##
+## Catches_Ecosim mirrors the Ecosim sheet's meta-row + year-row shape,
+## but is NOT rescaled to a first-year=1 reference the way
+## build_ts_column() rescales biomass above - EwE drives Ecosim with
+## the catch series in ABSOLUTE units (t/km^2/year), so Type/Scaling
+## are "Catches"/"absolute" rather than "Biomass (relative)"/"relative".
+## Missing Year x FG combinations stay NA (unknown), never filled with
+## 0 - catch data being absent for a species/FG/year isn't the same
+## claim as a confirmed zero catch that year.
+##
+##   fg_catch      - data.table: Year, FG_num, FG_name, Catch_t
+##   fg_lookup     - data.table: FG_num, FG_name for EVERY FG in the
+##                   scheme (same reference used elsewhere in the
+##                   pipeline) - needed so zero-catch FGs still get a
+##                   blank row instead of being silently absent
+##   out_path      - path to output/ecopath_ecosim_inputs.xlsx (or
+##                   wherever export_ecopath_ecosim_excel() wrote to)
+##   year_ecopath  - MUST match the year_ecopath used to build the
+##                   Ecopath sheet in the same workbook, or Catches_
+##                   Ecopath's snapshot describes a different period
+##                   than Biomass's
+##   ts_years      - optional; if NULL and an Ecosim sheet already
+##                   exists in the workbook, its year rows are reused
+##                   so both Ecosim sheets line up. Otherwise derived
+##                   from fg_catch's own Year range.
+## =================================================================
+## area_km2: total study area (km^2) to convert fg_catch's Catch_t
+## (RAW TOTAL TONNES landed across the whole region - see
+## 02_fao_catches.R, MEASURE == "Q_tlw") into a density, t/km^2/year -
+## the same units Biomass_<year> in the Ecopath sheet is already in.
+## Without this conversion, Catches_Ecopath/Catches_Ecosim would be off
+## by a factor of the whole study area (tens of thousands of km^2) versus
+## Biomass, which breaks Ecopath's mass balance (Ecotrophic Efficiency
+## is computed from Biomass and Catches together, in the same units).
+add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL) {
+  
+  if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
+    stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
+         " Catch_t is a RAW TOTAL (tonnes landed across the whole region), not a density,",
+         " and needs to be divided by the study area to match Biomass's t/km^2 units in",
+         " the Ecopath sheet. Pass the same total area used elsewhere in the pipeline",
+         " (e.g. sum(area_km2) from strata_area_by_area.csv).")
+  }
+  
+  ## convert once, up front - everything below (Catches_Ecopath AND
+  ## Catches_Ecosim) reads Catch_t_km2, never the raw Catch_t
+  fg_catch <- copy(fg_catch)
+  fg_catch[, Catch_t_km2 := Catch_t / area_km2]
+  message("Converted fg_catch's raw total tonnes to a density using area_km2 = ",
+          round(area_km2, 1), " km^2 (t/km^2/year, matching Biomass's units in the",
+          " Ecopath sheet) - e.g. total catch of ", round(fg_catch[1, Catch_t], 1),
+          " t for FG ", fg_catch[1, FG_num], " in ", fg_catch[1, Year], " becomes ",
+          signif(fg_catch[1, Catch_t_km2], 4), " t/km^2.")
+  
+  full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])[order(FG_num)]
+  
+  if (is.null(ts_years)) {
+    ts_years <- read_existing_ts_years(out_path, "Ecosim")
+    if (!is.null(ts_years)) {
+      message("ts_years taken from the existing Ecosim sheet: ",
+              min(ts_years), "-", max(ts_years), " (", length(ts_years), " years) -",
+              " keeps Catches_Ecosim's year rows lined up with it, order-independently",
+              " of whether Ecosim was written before or after this.")
+    } else {
+      ts_years <- min(fg_catch$Year, na.rm = TRUE):max(fg_catch$Year, na.rm = TRUE)
+      message("No existing Ecosim sheet found to match years against yet - ts_years",
+              " derived from fg_catch's own range instead: ", min(ts_years), "-",
+              max(ts_years), ". If Ecosim gets added to this workbook LATER with a",
+              " different range, re-run this function afterward to pick it up.")
+    }
+  }
+  
+  ## --- Catches_Ecopath ---------------------------------------------------
+  base_year <- year_ecopath[1]
+  catch_base <- fg_catch[Year == base_year, .(FG_num, Catch_baseyear = Catch_t_km2)]
+  catch_avg  <- fg_catch[Year %in% year_ecopath,
+                         .(Catch_avg = mean(Catch_t_km2, na.rm = TRUE)), by = FG_num]
+  catches_ecopath <- merge(full_fg_list, catch_base, by = "FG_num", all.x = TRUE)
+  catches_ecopath <- merge(catches_ecopath, catch_avg, by = "FG_num", all.x = TRUE)
+  range_col <- paste0("Catch_", min(year_ecopath), "_", max(year_ecopath))
+  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(paste0("Catch_", base_year), range_col))
+  setorder(catches_ecopath, FG_num)
+  
+  n_fg_no_catch <- catches_ecopath[is.na(get(range_col)), .N]
+  if (n_fg_no_catch > 0) {
+    message(n_fg_no_catch, " of ", nrow(catches_ecopath), " FG(s) have no catch data in ",
+            min(year_ecopath), "-", max(year_ecopath), " - included with a blank catch value,",
+            " NOT assumed zero (genuinely unfished and simply unmatched/unresolved look",
+            " identical here):")
+    print(catches_ecopath[is.na(get(range_col)), .(FG_num, FG_name)])
+  }
+  
+  ## --- Catches_Ecosim ------------------------------------------------------
+  meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+  catches_ecosim <- data.table(` ` = c(meta_labels, as.character(ts_years)))
+  
+  build_catch_ts_column <- function(fg_num) {
+    vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
+    full_years <- data.table(Year = ts_years)
+    vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
+    vals[order(Year)]$Catch_t_km2
+  }
+  
+  for (i in seq_len(nrow(full_fg_list))) {
+    fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
+    ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
+    col <- c(ts_name, "Catches", "reference", "absolute", "1",
+             paste0(fg_num, ": ", fg_name), "", "Annual",
+             as.character(build_catch_ts_column(fg_num)))
+    catches_ecosim[, (paste0("fg_", fg_num)) := col]
+  }
+  
+  upsert_workbook_sheets(
+    list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim),
+    out_path
+  )
+  
+  invisible(list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim))
+}
+
+## =================================================================
+## add_pbqb_to_ecopath_workbook()
+##
+## Adds 04_pbqb_calc.R's FG-level PB/QB estimates as one more sheet -
+## "PB_QB" - in the SAME shared workbook as the Biomass sheets
+## (01_survey_density_westmed.R) and Catches sheets (02_fao_catches.R),
+## via the same order-independent upsert_workbook_sheets() both of
+## those use. This can be run before, after, or between those two -
+## no dependency on either having run first.
+##
+##   fg_weighted - 04_pbqb_calc.R's FG-level table. Requires FG, FG_name,
+##                 PB_FG, QB_FG at minimum. A handful of other columns
+##                 (Biomass_FG, F_FG, PB_source, QB_source, etc.) are
+##                 carried through as extra audit-trail columns IF
+##                 present, but aren't required - different 04_pbqb_calc.R
+##                 runs may or may not have gone through the EcoBase-fill
+##                 or FG-level-F steps.
+##   out_path    - path to output/ecopath_ecosim_inputs.xlsx
+## =================================================================
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
+  required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
+  missing_cols <- setdiff(required_cols, names(fg_weighted))
+  if (length(missing_cols) > 0) {
+    stop("add_pbqb_to_ecopath_workbook(): fg_weighted is missing required column(s): ",
+         paste(missing_cols, collapse = ", "), " - check it's the table produced",
+         " further up in 04_pbqb_calc.R (after the FG-level aggregation step), not",
+         " something else.")
+  }
+  
+  optional_cols <- intersect(
+    c("Biomass_FG", "n_species_with_PB", "n_species_with_QB", "n_species_total",
+      "biomass_coverage_PB", "biomass_coverage_QB", "n_species_with_F",
+      "PB_FG_before_F", "F_FG", "PB_source", "QB_source"),
+    names(fg_weighted)
+  )
+  pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
+  setnames(pbqb_sheet, "FG", "FG_num")
+  setorder(pbqb_sheet, FG_num)
+  
+  upsert_workbook_sheets(list(PB_QB = pbqb_sheet), out_path)
+  invisible(pbqb_sheet)
 }

@@ -1,3 +1,9 @@
+## =================================================================
+## lib_worms_taxonomy_lookup.R - LIBRARY FILE, not a pipeline step.
+## sourced automatically by the numbered pipeline scripts (01-04) -
+## do not run this directly, it has no top-level driver code of its own.
+## =================================================================
+
 # ============================================================
 # Reusable WoRMS taxonomy lookup function
 # (World Register of Marine Species)

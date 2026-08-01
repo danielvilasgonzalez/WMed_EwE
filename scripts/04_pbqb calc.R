@@ -1,4 +1,14 @@
 ## =================================================================
+## PIPELINE STEP 4 of 4 - run LAST
+## REQUIRES Step 1's species_density_regional_combined.csv. OPTIONALLY
+## uses Step 2's fg_catch_timeseries CSV (FG_YIELD_SOURCE toggle, near
+## species_df's Yield loading) and Step 3's ecobase_literature_pb_qb_
+## simple.csv, if present - both degrade gracefully with a clear
+## message if missing, they don't hard-fail this script.
+## Produces: PB_QB/Ecobase sheets in output/ecopath_ecosim_inputs.xlsx.
+## =================================================================
+
+## =================================================================
 ## PB and QB estimation for EwE Functional Groups - FULLY AUTOMATED
 ## Taxon-specific methods per: "Quick guide on how to calculate P/B
 ## and Q/B for EwE models" - Vilas, Coll, Piroddi, Steenbeek
@@ -180,14 +190,289 @@ message("Starting pipeline - ", length(PIPELINE_STAGES), " stages",
         if (USE_GUI_PROGRESS) " (GUI progress window, if available)" else " (console progress bar)")
 message(strrep("=", 70))
 
-SPECIES_DF_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/test_species_df.rds"
-species_df <- readRDS(SPECIES_DF_PATH)
+## SPECIES_DF_SOURCE controls where species_df comes from:
+##  "survey" - the real MEDITS+MEDIAS combined species density from
+##             01_survey_density_westmed.R (species_density_regional_combined.csv),
+##             reshaped via lib_build_species_df_from_survey.R. This is the
+##             real data source - use this for actual model runs.
+##  "test"   - the old test_species_df.rds placeholder. Kept only for
+##             quick pipeline smoke-testing when survey outputs aren't
+##             available/up to date.
+SPECIES_DF_SOURCE <- "survey"
+
+SURVEY_OUT_DIR   <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+SURVEY_DENSITY_CSV <- file.path(SURVEY_OUT_DIR, "species_density_regional_combined.csv")
+
+## Same shared workbook 01_survey_density_westmed.R and 02_fao_catches.R
+## write to (order-independent - this can run before, after, or
+## between those two). add_pbqb_to_ecopath_workbook() is defined in
+## lib_survey_fg_density_functions.R, sourced here since this script
+## doesn't otherwise need it.
+source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_survey_fg_density_functions.R")
+ECOPATH_WORKBOOK_PATH <- file.path(SURVEY_OUT_DIR, "ecopath_ecosim_inputs.xlsx")
+## Must match YEAR_ECOPATH in 01_survey_density_westmed.R exactly - this is
+## what defines the Biomass snapshot species_df's density values (and
+## therefore fg_weighted's Biomass_FG below, and ecopath_ready's
+## "Biomass in habitat area (t/km^2)") are drawn from. If that script's
+## YEAR_ECOPATH ever changes, update this to match or the PB/QB weights
+## and the Ecopath Biomass column will be describing two different
+## time snapshots without any warning.
+YEAR_ECOPATH <- 1994:1996
+
+if (SPECIES_DF_SOURCE == "survey") {
+  source('/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_build_species_df_from_survey.R')
+  species_df <- build_species_df_from_survey(
+    survey_csv_path    = SURVEY_DENSITY_CSV,
+    year_ecopath_range = YEAR_ECOPATH,
+    out_rds_path        = paste0(out_dir, "/survey_species_df.rds")
+  )
+} else {
+  SPECIES_DF_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/test_species_df.rds"
+  message("SPECIES_DF_SOURCE = 'test' - using placeholder test data, NOT the real",
+          " survey pipeline output. Set SPECIES_DF_SOURCE <- 'survey' for real runs.")
+  species_df <- readRDS(SPECIES_DF_PATH)
+}
 
 setDT(species_df)
 stopifnot(all(c("Species", "FG", "Biomass") %in% names(species_df)))
 if (!"Yield" %in% names(species_df)) species_df[, Yield := NA_real_]
 sp_list <- unique(species_df$Species)
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Load species_df")))
+
+## =================================================================
+## Fishing mortality (F = Yield/Biomass) - TWO possible attachment
+## points, kept separate because the data actually available doesn't
+## support both the same way:
+##
+##  (A) SPECIES-level, via attach_yield_from_landings() below - stays
+##      "none" for now. This needs a source with genuine species x
+##      GSA x year granularity, which nothing currently available has.
+##      Kept here for later (e.g. if STECF_FDI turns out to report at
+##      that resolution once its format is confirmed).
+##
+##  (B) FG-level, further down (after fg_weighted is built) - this IS
+##      wired up and working, reading 02_fao_catches.R's real output
+##      directly (fg_catch_timeseries_<DATASET_VERSION>.csv - the one
+##      real, working catch source right now is FAO_GFCM). FAO/GFCM
+##      catch data only resolves reliably to FG (many records are
+##      NEI/genus-level aggregates, not exact species), so F is
+##      applied at FG level, on top of the biomass-weighted PB_FG -
+##      not folded into individual species' PB, which stays M-only
+##      throughout Step "Calculate PB/QB" below regardless of which
+##      path is used here.
+##
+## species_df$Yield being NA (path A off) does NOT mean F is unused -
+## check the FG-level section after fg_weighted for the actual applied
+## F, and n_species_with_F / F_FG in the exported CSVs either way.
+## =================================================================
+YIELD_SOURCE <- "none"
+
+## PLACEHOLDER path AND placeholder column names inside
+## attach_yield_from_landings() below - the actual landings/catch data
+## source for this project (STECF/GFCM data-call catch tables, national
+## logbook data, FAO capture statistics, etc.) hasn't been identified
+## yet. Point this at the real file once you have one, and confirm the
+## required_cols list inside attach_yield_from_landings() matches its
+## actual column names before trusting the output.
+LANDINGS_CSV_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/raw/landings_by_species_gsa_year.csv"
+
+## area_lookup_csv_path expects strata_area_by_area.csv - written by
+## 01_survey_density_westmed.R's compute_strata_area_by_area() cache
+## (Step 6 there) - reused here rather than re-deriving GSA areas, so
+## landings density (t/km^2/year) is computed against the SAME area
+## figures the survey Biomass density already uses. Without this, a
+## landings total in tonnes has no way to become a density comparable
+## to species_df$Biomass.
+attach_yield_from_landings <- function(species_df, landings_csv_path, area_lookup_csv_path, year_range) {
+  if (!file.exists(landings_csv_path)) {
+    message("YIELD_SOURCE = 'landings_csv' but no file found at '", landings_csv_path,
+            "' - species_df$Yield stays NA for every species. Fishing mortality (F)",
+            " will NOT be computed anywhere below - PB will be NATURAL MORTALITY (M)",
+            " ONLY for the whole pipeline, which underestimates PB for any",
+            " commercially exploited species/FG. Point LANDINGS_CSV_PATH at your",
+            " real landings file once you have one.")
+    return(species_df)
+  }
+  if (!file.exists(area_lookup_csv_path)) {
+    stop("Landings file found but area_lookup_csv_path is missing at '", area_lookup_csv_path,
+         "' - this should be strata_area_by_area.csv written by 01_survey_density_westmed.R.",
+         " Needed to convert landings totals (t) into a density (t/km^2/year)",
+         " comparable to species_df$Biomass. Run that script first, or point this",
+         " at wherever it actually saved that file.")
+  }
+  
+  landings <- fread(landings_csv_path)
+  ## PLACEHOLDER schema - CONFIRM against your actual landings file and
+  ## edit this list (and the fread column references below) to match
+  ## its real column names before trusting anything downstream of this.
+  required_cols <- c("ScientificName", "Year", "AreaID", "catch_t")
+  missing_cols <- setdiff(required_cols, names(landings))
+  if (length(missing_cols) > 0) {
+    stop("landings_csv_path is missing expected column(s): ", paste(missing_cols, collapse = ", "),
+         " - this is a placeholder schema (ScientificName/Year/AreaID/catch_t),",
+         " not yet confirmed against your real landings file. Update",
+         " attach_yield_from_landings() to match its actual column names.")
+  }
+  
+  area_lookup <- fread(area_lookup_csv_path)
+  ## strata_area_by_area.csv is per AreaID x Stratum (depth band) -
+  ## summed here to one total area per GSA, since landings aren't
+  ## reported by depth stratum the way survey hauls are.
+  area_by_gsa <- area_lookup[, .(area_km2 = sum(area_km2, na.rm = TRUE)), by = AreaID]
+  
+  landings_in_range <- landings[Year %in% year_range]
+  message("Landings: ", nrow(landings_in_range), " of ", nrow(landings), " rows fall within",
+          " YEAR_ECOPATH (", paste(range(year_range), collapse = "-"), ").")
+  
+  landings_by_area <- landings_in_range[
+    , .(catch_t = sum(catch_t, na.rm = TRUE)), by = .(ScientificName, AreaID)]
+  landings_by_area <- merge(landings_by_area, area_by_gsa, by = "AreaID", all.x = TRUE)
+  
+  no_area <- unique(landings_by_area[is.na(area_km2), AreaID])
+  if (length(no_area) > 0) {
+    message(length(no_area), " AreaID(s) in the landings file have no matching area in",
+            " strata_area_by_area.csv - excluded from the Yield density calculation: ",
+            paste(no_area, collapse = ", "))
+  }
+  landings_by_area <- landings_by_area[!is.na(area_km2)]
+  
+  ## region-wide annual Yield density per species: total catch across
+  ## GSAs and years in range, divided by total area and by the number
+  ## of years - mirrors how Biomass above is a mean annual density, not
+  ## a multi-year sum, so Fmort = Yield/Biomass stays a genuine
+  ## per-year rate rather than an accumulated multi-year ratio.
+  yield_density <- landings_by_area[
+    , .(Yield = sum(catch_t, na.rm = TRUE) / sum(area_km2, na.rm = TRUE) / length(year_range)),
+    by = ScientificName]
+  
+  message("Computed Yield density for ", nrow(yield_density), " species (t/km^2/year,",
+          " region-wide, averaged over ", length(year_range), " Ecopath years).")
+  
+  species_df <- merge(species_df, yield_density, by.x = "Species", by.y = "ScientificName",
+                      all.x = TRUE, suffixes = c("", "_landings"))
+  species_df[!is.na(Yield_landings), Yield := Yield_landings]
+  species_df[, Yield_landings := NULL]
+  
+  n_with_yield <- species_df[!is.na(Yield), .N]
+  n_total <- nrow(species_df)
+  message(n_with_yield, " of ", n_total, " species (", round(100 * n_with_yield / n_total, 1),
+          "%) now have a Yield value - fishing mortality (F = Yield/Biomass) will be",
+          " computed for these below. The remaining ", n_total - n_with_yield,
+          " species have no landings match and stay M-only (natural mortality),",
+          " NOT a genuine zero-fishing assumption - worth checking whether that's a",
+          " real gap in the landings source or a name-matching mismatch",
+          " (species_df$Species vs landings$ScientificName spelling/synonymy).")
+  
+  species_df
+}
+
+if (YIELD_SOURCE == "landings_csv") {
+  species_df <- attach_yield_from_landings(
+    species_df, LANDINGS_CSV_PATH,
+    file.path(SURVEY_OUT_DIR, "strata_area_by_area.csv"),
+    YEAR_ECOPATH
+  )
+} else {
+  message("YIELD_SOURCE = 'none' - species_df$Yield stays NA for every species (species-",
+          " level path). This is expected right now - see the FG-level catch loading",
+          " right below for the path that's actually wired to real data",
+          " (02_fao_catches.R's own output) and feeds calc_fish()'s F fallback.")
+}
+
+## =================================================================
+## FG-level catch data - loaded HERE, before dispatch, so it can feed
+## a per-species Fmort FALLBACK inside calc_fish() below, not just a
+## post-hoc bolt-on after PB is already computed. Several fish PB
+## methods (Pauly, Hoenig, Then et al., Alverson & Carney) are
+## Z = M+F, and F was previously ALWAYS NA - species-level Yield above
+## is NA with no species-level landings source, so every "+F(Y/B)"
+## term was silently reducing to M-only for every fish species, all
+## along.
+##
+## FAO/GFCM catch data only resolves reliably to FG (many records are
+## NEI/genus-level aggregates - see 02_fao_catches.R), so F here is a
+## per-FG RATE (year^-1), applied identically to every species within
+## that FG - not a per-species value. That's a normal simplification,
+## not a special-cased one: F, like M, is a mortality RATE, and
+## several of the M methods already used here (e.g. Gascuel's, a
+## function of trophic level and temperature only) also don't vary
+## within a species beyond those traits either.
+##
+## Species-level F (from species_df$Yield above) ALWAYS takes priority
+## over this FG-wide rate when both exist, for the same reason
+## hierarchical catchability matching prioritizes rank specificity
+## elsewhere in this pipeline - a more specific match beats a broader
+## fallback.
+##
+## FG_YIELD_SOURCE:
+##  "fg_catch_csv" - read FG_CATCH_CSV_PATH (02_fao_catches.R's output),
+##                   compute a per-FG F, and store it as species_df$Fmort_FG
+##  "none"         - skip; every fish species' Fmort stays NA unless a
+##                   species-level Yield source is added separately above
+## =================================================================
+FG_YIELD_SOURCE <- "none"
+
+## Filename must match DATASET_VERSION set in 02_fao_catches.R - default
+## here assumes its default ("GFCM_2025"); update both if that changes.
+FG_CATCH_CSV_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/fg_catch_timeseries_GFCM_2025.csv"
+
+species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
+
+if (FG_YIELD_SOURCE == "fg_catch_csv") {
+  area_lookup_path <- file.path(SURVEY_OUT_DIR, "strata_area_by_area.csv")
+  
+  if (!file.exists(FG_CATCH_CSV_PATH)) {
+    message("FG_YIELD_SOURCE = 'fg_catch_csv' but no file found at '", FG_CATCH_CSV_PATH,
+            "' - run 02_fao_catches.R first (check DATASET_VERSION there matches the",
+            " filename above). Every fish species' Fmort stays NA (M-only PB) until this exists.")
+  } else if (!file.exists(area_lookup_path)) {
+    message("FG_YIELD_SOURCE = 'fg_catch_csv' but strata_area_by_area.csv not found at '",
+            area_lookup_path, "' - needed to convert FG catch totals (t) into a density",
+            " (t/km^2/yr) comparable to Biomass. Run 01_survey_density_westmed.R first.",
+            " Every fish species' Fmort stays NA (M-only PB).")
+  } else {
+    fg_catch <- fread(FG_CATCH_CSV_PATH)
+    ## strata_area_by_area.csv was already built restricted to
+    ## FILTER_AREAS (the Western Med GSAs actually used) by
+    ## 01_survey_density_westmed.R - summed here as one region-wide total,
+    ## same as how Biomass is a region-wide density everywhere else.
+    area_total_km2 <- fread(area_lookup_path)[, sum(area_km2, na.rm = TRUE)]
+    
+    fg_catch_in_range <- fg_catch[Year %in% YEAR_ECOPATH]
+    message("FG catch data: ", nrow(fg_catch_in_range), " of ", nrow(fg_catch), " rows fall",
+            " within YEAR_ECOPATH (", paste(range(YEAR_ECOPATH), collapse = "-"), ").",
+            " REMINDER: this is landings-only (see 02_fao_catches.R) - true F is",
+            " underestimated wherever discards are non-trivial for a given FG.")
+    
+    fg_yield_density <- fg_catch_in_range[
+      , .(Yield_FG = sum(Catch_t, na.rm = TRUE) / area_total_km2 / length(YEAR_ECOPATH)),
+      by = FG_num]
+    
+    ## Biomass_FG computed directly from species_df here (fg_weighted
+    ## doesn't exist yet at this point) - same region-wide sum-of-
+    ## species-densities definition used everywhere Biomass_FG appears
+    ## later, so this Fmort_FG is consistent with the one the later
+    ## FG-level section would otherwise compute independently.
+    biomass_fg <- species_df[, .(Biomass_FG = sum(Biomass, na.rm = TRUE)), by = FG]
+    fg_fmort <- merge(fg_yield_density, biomass_fg, by.x = "FG_num", by.y = "FG", all.x = TRUE)
+    fg_fmort[, Fmort_FG_computed := Yield_FG / Biomass_FG]
+    
+    species_df[fg_fmort, Fmort_FG := i.Fmort_FG_computed, on = c(FG = "FG_num")]
+    
+    n_fg_with_fmort <- fg_fmort[!is.na(Fmort_FG_computed), .N]
+    n_species_covered <- species_df[!is.na(Fmort_FG), .N]
+    message(n_fg_with_fmort, " FG(s) have a computed Fmort_FG rate, covering ",
+            n_species_covered, " of ", nrow(species_df), " species in species_df.",
+            " calc_fish() below uses this as a FALLBACK wherever a species doesn't",
+            " have its own species-level Yield (currently: always, since no species-",
+            " level landings source exists) - species-level F, if ever available,",
+            " always takes priority over this FG-wide rate.")
+  }
+} else {
+  message("FG_YIELD_SOURCE = 'none' - every fish species' Fmort stays NA (M-only PB)",
+          " unless a species-level Yield source is added separately above.")
+}
+
 
 ## =================================================================
 ## STEP 1: taxonomic classification -> dispatch group
@@ -197,7 +482,7 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Load species_df")))
 ## more robust than relying on Class string-matching alone.
 ## =================================================================
 
-source('/Users/daniel/Documents/GitHub/WMed_EwE/scripts/worms_taxonomy_lookup.R')
+source('/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_worms_taxonomy_lookup.R')
 
 taxonomy <- as.data.table(worms_taxonomy_lookup(sp_list))[
   , .(Species = original_name, Genus = genus, Family = family, Order = order, Class = class, Phylum = phylum)
@@ -1063,10 +1348,18 @@ calc_fish <- function(out) {
     out <- fill_by_taxonomic_proximity(out, col)
   }
   
-  ## F = Yield/Biomass - BOTH must be densities (t/km^2, t/km^2/yr) for
-  ## this ratio to be a valid rate; applies identically on top of
-  ## whichever M source, since Z = M+F regardless of how M was obtained
-  out[, Fmort := Yield / Biomass]
+  ## F = Yield/Biomass at SPECIES level (both must be densities) when
+  ## available; falls back to Fmort_FG (the FG-wide catch/biomass rate
+  ## computed early in the script from 02_fao_catches.R's data) when
+  ## species-level Yield is NA - which right now is EVERY fish species,
+  ## since no species-level landings source is implemented. Species-
+  ## level F always takes priority when present. Applies identically
+  ## on top of whichever M source, since Z = M+F regardless of how M
+  ## was obtained.
+  out[, Fmort_species := Yield / Biomass]
+  out[, Fmort := fifelse(!is.na(Fmort_species), Fmort_species, Fmort_FG)]
+  out[, Fmort_source := fifelse(!is.na(Fmort_species), "species (Y/B)",
+                                fifelse(!is.na(Fmort_FG), "FG rate (02_fao_catches.R)", NA_character_))]
   out[, PB_Pauly_1980    := fifelse(!is.na(Fmort), M_Pauly_1980 + Fmort, M_Pauly_1980)]
   out[, PB_FishLife_2023 := fifelse(!is.na(Fmort), M_FishLife_2023 + Fmort, M_FishLife_2023)]
   out[, PB_Gascuel_2008  := fifelse(!is.na(Fmort), M_Gascuel_2008 + Fmort, M_Gascuel_2008)]
@@ -1084,7 +1377,7 @@ calc_fish <- function(out) {
                       PB_FishLife_2023 = "FishLife", PB_Gascuel_2008 = "Gascuel 2008 (Eq.15)")
   out[, PB := select_chosen(out, names(fish_pb_labels))]
   out[, PB_method := describe_chosen(out, fish_pb_labels)]
-  out[!is.na(Fmort) & !is.na(PB), PB_method := paste0(PB_method, "+F(Y/B)")]
+  out[!is.na(Fmort) & !is.na(PB), PB_method := paste0(PB_method, "+F(", Fmort_source, ")")]
   
   ## =================================================================
   ## QB - four independent methods, each as its own column
@@ -1144,7 +1437,8 @@ calc_fish <- function(out) {
   out[, QB_method := describe_chosen(out, fish_qb_labels)]
   
   out[, .(Species, FG, FG_name, Biomass, dispatch_group,
-          M_Pauly_1980, M_FishLife_2023, M_Gascuel_2008, M_Hoenig_1983, M_Then_2015, M_AlversonCarney_1975, Fmort,
+          M_Pauly_1980, M_FishLife_2023, M_Gascuel_2008, M_Hoenig_1983, M_Then_2015, M_AlversonCarney_1975,
+          Fmort, Fmort_species, Fmort_source,
           PB_Pauly_1980, PB_FishLife_2023, PB_Gascuel_2008, PB_Hoenig_1983, PB_Then_2015, PB_AlversonCarney_1975, PB, PB_method,
           QB_PalomaresPauly_1998Z, QB_PalomaresPauly_1998noZ, QB_ChristensenPauly_1992, QB_ChristensenEtAl_2008, QB, QB_method)]
 }
@@ -1390,9 +1684,22 @@ fg_weighted <- results[!is.na(PB) | !is.na(QB), .(
   n_species_with_QB = sum(!is.na(QB)),
   n_species_total = .N,
   biomass_coverage_PB = sum(Biomass[!is.na(PB)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE),
-  biomass_coverage_QB = sum(Biomass[!is.na(QB)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE)
+  biomass_coverage_QB = sum(Biomass[!is.na(QB)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE),
+  ## F coverage - separate from PB/QB coverage above, since a species
+  ## can have a perfectly good PB estimate that's still M-only (Fmort
+  ## NA). Tracked explicitly so a fully-M-only FG is visible here
+  ## rather than looking identical to one where F was genuinely zero.
+  n_species_with_F = sum(!is.na(Fmort)),
+  biomass_coverage_F = sum(Biomass[!is.na(Fmort)], na.rm = TRUE) / sum(Biomass, na.rm = TRUE)
 ), by = FG]
 fg_weighted <- merge(fg_biomass_total, fg_weighted, by = "FG", all.x = TRUE)
+
+## FG_name attached here (fg_weighted was FG-num-only up to this point) -
+## needed below both for readability and as the join key for the
+## EcoBase literature merge (EcoBase has no FG_num of its own, only
+## group names, so FG_name has to exist on this table to match against).
+fg_name_lookup <- unique(results[!is.na(FG_name), .(FG, FG_name)])
+fg_weighted <- merge(fg_weighted, fg_name_lookup, by = "FG", all.x = TRUE)
 
 message("\n=== FG-level PB/QB (biomass-weighted average) ===")
 print(fg_weighted[order(FG)])
@@ -1400,6 +1707,21 @@ print(fg_weighted[order(FG)])
 message("\nFGs with LOW biomass coverage (<50%):")
 print(fg_weighted[biomass_coverage_PB < 0.5 | biomass_coverage_QB < 0.5,
                   .(FG, biomass_coverage_PB, biomass_coverage_QB, n_species_total)])
+
+## FGs with NO fishing mortality data at all - their PB above is
+## M-only, not M+F, for every species in the group. Printed
+## unconditionally (not just when YIELD_SOURCE == "none") since even
+## with a real landings source attached, individual FGs can still end
+## up with zero matched species.
+n_fg_no_F <- fg_weighted[n_species_with_F == 0, .N]
+if (n_fg_no_F > 0) {
+  message("\n", n_fg_no_F, " of ", nrow(fg_weighted), " FG(s) have ZERO species with a Fmort",
+          " value - PB_FG for these is NATURAL MORTALITY (M) ONLY, which underestimates",
+          " true PB for anything actually fished (a real biomass-removal rate silently",
+          " treated as 0 rather than unknown). Review before using PB_FG for these",
+          " FGs as-is, especially any that are commercially targeted:")
+  print(fg_weighted[n_species_with_F == 0, .(FG, FG_name, PB_FG, n_species_total)])
+}
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
 
 ## =================================================================
@@ -1410,8 +1732,166 @@ fwrite(results, paste0(out_dir,"/species_pb_qb_by_taxon_group.csv"))
 fwrite(fg_weighted, paste0(out_dir,"/fg_pb_qb_weighted.csv"))
 fwrite(phyto_flagged, paste0(out_dir,"/phytoplankton_needs_separate_method.csv"))
 
+## =================================================================
+## Supplement with EcoBase literature values (03_ecobase_query.R output)
+## =================================================================
+## 03_ecobase_query.R produces ecobase_literature_pb_qb_simple.csv - PB/QB
+## from PUBLISHED Ecopath models, one row per FG_name per source model.
+## Matched here on FG_name (EcoBase has no FG_num of its own - group
+## naming won't line up automatically across different models' own
+## definitions, so this is a text match and should be spot-checked,
+## not trusted blindly). Where a model_id column exists, values are
+## averaged across all matching EcoBase models per FG_name first, so
+## one FG doesn't get weighted toward whichever model happened to have
+## the most rows.
+ECOBASE_CSV_PATH <- paste0(out_dir, "/ecobase_literature_pb_qb_simple.csv")
+
+if (file.exists(ECOBASE_CSV_PATH)) {
+  ecobase_raw <- fread(ECOBASE_CSV_PATH)
+  message("\nLoaded EcoBase literature PB/QB: ", nrow(ecobase_raw), " rows across ",
+          uniqueN(ecobase_raw$FG_name), " distinct FG_name values from ",
+          uniqueN(ecobase_raw$EwE_model), " published model(s).")
+  
+  ecobase_by_fgname <- ecobase_raw[, .(
+    PB_ecobase = mean(PB, na.rm = TRUE),
+    QB_ecobase = mean(QB, na.rm = TRUE),
+    n_ecobase_models = uniqueN(EwE_model[!is.na(PB) | !is.na(QB)])
+  ), by = FG_name]
+  
+  fg_weighted_ecobase <- merge(fg_weighted, ecobase_by_fgname, by = "FG_name", all.x = TRUE)
+  
+  n_matched <- fg_weighted_ecobase[!is.na(PB_ecobase) | !is.na(QB_ecobase), .N]
+  message(n_matched, " of ", nrow(fg_weighted_ecobase), " FGs matched an EcoBase FG_name -",
+          " unmatched FGs likely need a manual name alignment (check FG_name spelling/",
+          " wording against ecobase_literature_pb_qb_raw.csv's group_name values),",
+          " not necessarily a genuine absence in the literature.")
+  
+  ## Divergence flag - a >2x difference between the empirical estimate
+  ## and the literature value is worth a manual look (not automatically
+  ## "wrong" - real ecosystems differ - but worth checking before trusting
+  ## either one blindly), not silently averaged together.
+  fg_weighted_ecobase[, PB_ratio := PB_FG / PB_ecobase]
+  fg_weighted_ecobase[, QB_ratio := QB_FG / QB_ecobase]
+  fg_weighted_ecobase[, PB_diverges := !is.na(PB_ratio) & (PB_ratio > 2 | PB_ratio < 0.5)]
+  fg_weighted_ecobase[, QB_diverges := !is.na(QB_ratio) & (QB_ratio > 2 | QB_ratio < 0.5)]
+  
+  if (fg_weighted_ecobase[PB_diverges == TRUE | QB_diverges == TRUE, .N] > 0) {
+    message("\nFGs where empirical and EcoBase-literature PB/QB differ by more than 2x",
+            " (review before trusting either value for these):")
+    print(fg_weighted_ecobase[PB_diverges == TRUE | QB_diverges == TRUE,
+                              .(FG, FG_name, PB_FG, PB_ecobase, QB_FG, QB_ecobase)])
+  }
+  
+  ## Gap-fill: only for FGs where the empirical method produced NOTHING
+  ## (e.g. no species matched, or the taxon-specific method genuinely
+  ## doesn't apply) - never overwrites an existing empirical estimate,
+  ## since fg_weighted's own biomass-weighted species-level calculation
+  ## is more directly tied to this specific model's own species
+  ## composition than a borrowed literature value.
+  fg_weighted_ecobase[, PB_FG_filled := fifelse(is.na(PB_FG), PB_ecobase, PB_FG)]
+  fg_weighted_ecobase[, QB_FG_filled := fifelse(is.na(QB_FG), QB_ecobase, QB_FG)]
+  fg_weighted_ecobase[, PB_source := fifelse(is.na(PB_FG), "EcoBase (literature)", "empirical")]
+  fg_weighted_ecobase[, QB_source := fifelse(is.na(QB_FG), "EcoBase (literature)", "empirical")]
+  
+  n_pb_filled <- fg_weighted_ecobase[PB_source == "EcoBase (literature)" & !is.na(PB_FG_filled), .N]
+  n_qb_filled <- fg_weighted_ecobase[QB_source == "EcoBase (literature)" & !is.na(QB_FG_filled), .N]
+  message(n_pb_filled, " FG(s) had PB gap-filled from EcoBase; ",
+          n_qb_filled, " FG(s) had QB gap-filled from EcoBase.",
+          " PB_FG/QB_FG above are left as the pure empirical estimate (NA where absent) -",
+          " PB_FG_filled/QB_FG_filled are what's recommended for the Ecopath basic input",
+          " where an empirical estimate wasn't available.")
+  
+  fwrite(fg_weighted_ecobase, paste0(out_dir, "/fg_pb_qb_weighted_with_ecobase.csv"))
+  message("Saved fg_pb_qb_weighted_with_ecobase.csv.")
+  
+  ## Dedicated Ecobase sheet in the shared workbook - the raw per-FG
+  ## literature values on their own, for audit/comparison, separate
+  ## from PB_QB's gap-filled result (which only shows where EcoBase
+  ## was actually USED to fill a gap, not every FG it has a value for).
+  ecobase_sheet <- merge(fg_name_lookup, ecobase_by_fgname, by = "FG_name", all.x = TRUE)
+  setorder(ecobase_sheet, FG)
+  setnames(ecobase_sheet, "FG", "FG_num")
+  upsert_workbook_sheets(list(Ecobase = ecobase_sheet), ECOPATH_WORKBOOK_PATH)
+  
+  ## downstream Ecopath export (below) uses the gap-filled values so FGs
+  ## with no empirical estimate aren't just left blank when a literature
+  ## value was available
+  fg_weighted <- copy(fg_weighted_ecobase)
+  fg_weighted[, `:=`(PB_FG = PB_FG_filled, QB_FG = QB_FG_filled)]
+} else {
+  message("\nNo EcoBase literature file found at ", ECOBASE_CSV_PATH,
+          " - run 03_ecobase_query.R first if you want literature PB/QB values",
+          " merged in as a comparison/gap-fill. Continuing with empirical",
+          " estimates only.")
+}
+
 message("\nSaved: species_pb_qb_by_taxon_group.csv, fg_pb_qb_weighted.csv,",
         " phytoplankton_needs_separate_method.csv")
+
+## =================================================================
+## FG-level fishing mortality (F) - applied to fg_weighted's PB_FG
+## =================================================================
+## fg_yield_density was already loaded EARLY (right after species_df's
+## Yield block, before dispatch) so calc_fish() could use it as a
+## per-species F fallback - see that section for FG_YIELD_SOURCE/
+## FG_CATCH_CSV_PATH and why F is a per-FG rate. Reused here rather
+## than re-reading the same file a second time.
+##
+## In practice this section now mainly matters for NON-fish FGs
+## (mammal/seabird/invertebrate) - those dispatch functions don't
+## compute a species-level Fmort at all, so their species never have
+## n_species_with_F > 0, and this correctly applies F_FG on top of
+## their M-only PB_FG. Fish FGs already got F baked in at the species
+## level above (in calc_fish, before this PB_FG aggregate was even
+## built) - the same double-count guard below detects that
+## (n_species_with_F > 0 for those FGs) and correctly SKIPS them here,
+## so nothing is added twice.
+if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
+  fg_yield_for_merge <- copy(fg_yield_density)
+  setnames(fg_yield_for_merge, "FG_num", "FG")
+  
+  fg_weighted <- merge(fg_weighted, fg_yield_for_merge, by = "FG", all.x = TRUE)
+  fg_weighted[, F_FG := Yield_FG / Biomass_FG]
+  
+  already_has_species_F <- fg_weighted[n_species_with_F > 0 & !is.na(F_FG), .N]
+  if (already_has_species_F > 0) {
+    message("\n", already_has_species_F, " FG(s) already have species-level F baked into",
+            " PB_FG (from calc_fish()'s Fmort fallback) - FG-level F is NOT added again",
+            " for these, to avoid double-counting the same fishing removal:")
+    print(fg_weighted[n_species_with_F > 0 & !is.na(F_FG), .(FG, FG_name, n_species_with_F, F_FG)])
+  }
+  
+  fg_weighted[, PB_FG_before_F := PB_FG]
+  fg_weighted[n_species_with_F == 0 & !is.na(F_FG), PB_FG := PB_FG_before_F + F_FG]
+  
+  n_fg_with_F <- fg_weighted[n_species_with_F == 0 & !is.na(F_FG), .N]
+  message(n_fg_with_F, " of ", nrow(fg_weighted), " FG(s) had FG-level F added here",
+          " (typically non-fish groups; fish FGs got F earlier, at the species level).",
+          " PB_FG_before_F keeps the pre-F value for comparison. FGs with no catch",
+          " matched at all stay M-only - if one of those is commercially fished, check",
+          " species_fg_matched.csv for an 'unresolved' status or a naming mismatch.")
+  
+  fwrite(fg_weighted, paste0(out_dir, "/fg_pb_qb_weighted_with_F.csv"))
+  message("Saved fg_pb_qb_weighted_with_F.csv.")
+} else {
+  message("\nFG_YIELD_SOURCE = 'none' (or catch data wasn't found earlier) - fg_weighted's",
+          " PB stays NATURAL MORTALITY (M) ONLY for every FG (M+F not applied anywhere).",
+          " Set FG_YIELD_SOURCE <- 'fg_catch_csv' near species_df's Yield loading, once",
+          " 02_fao_catches.R has been run - until then, treat every PB value below as a",
+          " lower bound for any FG that's actually fished.")
+}
+
+## =================================================================
+## Add PB_QB to output/ecopath_ecosim_inputs.xlsx
+##
+## Same shared workbook 01_survey_density_westmed.R (Biomass sheets) and
+## 02_fao_catches.R (Catches sheets) write to, via the same order-
+## independent upsert - this can run before, after, or between those
+## two scripts. fg_weighted here reflects whichever of the EcoBase-fill
+## and FG-level-F steps above actually ran (or neither), so re-running
+## this after changing either toggle updates the PB_QB sheet in place.
+## =================================================================
+add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKBOOK_PATH)
 
 ## =================================================================
 ## Method comparison plots - fish only, since that's the group with
@@ -1619,37 +2099,96 @@ species_pb_long[, Species_label := factor(Species_label, levels = species_label_
 species_qb_mean[, Species_label := factor(Species_label, levels = species_label_order)]
 species_qb_long[, Species_label := factor(Species_label, levels = species_label_order)]
 
-p_species_pb <- ggplot() +
-  geom_segment(data = species_pb_mean,
-               aes(x = PB_mean - PB_sd, xend = PB_mean + PB_sd, y = Species_label, yend = Species_label),
-               linewidth = 0.7, colour = "black") +
-  geom_point(data = species_pb_mean, aes(x = PB_mean, y = Species_label),
-             shape = "|", size = 5, colour = "black") +
-  geom_point(data = species_pb_long, aes(x = PB, y = Species_label, colour = method, fill = method),
-             shape = 21, size = 2.5, alpha = 0.7) +
-  scale_colour_brewer(palette = "Set1") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_bw(base_size = 12) +
-  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-  labs(x = expression(P/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
+## =================================================================
+## save_paginated_pb_qb_plot()
+##
+## height = 0.35 * n_rows (one row per species/FG) exceeds ggsave's
+## 50in hard limit once there are more than ~140 rows - hit exactly
+## this on the species-level plot. Raising the limit
+## (limitsize = FALSE) would "fix" the error but produce an image
+## nobody can actually read at any zoom level; paginating into
+## several page-sized PNGs is the useful fix, not a bigger file.
+##
+## Takes standardized-name copies of the mean/long data (Label, Mean,
+## SD, method, Value - renamed at each call site from the real
+## Species_label/PB_mean/... or FG_label/... columns) so this one
+## function serves both the species-level and FG-level plots below,
+## which are otherwise near-identical ggplot code.
+## =================================================================
+save_paginated_pb_qb_plot <- function(pb_mean, pb_long, qb_mean, qb_long, label_order,
+                                      pb_x_lab, qb_x_lab, file_prefix, plot_dir,
+                                      height_per_row = 0.35, width_in = 16, dpi = 150,
+                                      max_height_in = 40) {
+  n_per_page <- max(10, floor(max_height_in / height_per_row))
+  pages <- if (length(label_order) <= n_per_page) {
+    list(label_order)
+  } else {
+    split(label_order, ceiling(seq_along(label_order) / n_per_page))
+  }
+  
+  if (length(pages) > 1) {
+    message(length(label_order), " rows would need height = ",
+            round(height_per_row * length(label_order), 1), "in - over ggsave's 50in hard",
+            " limit. Split into ", length(pages), " page(s) of up to ", n_per_page,
+            " rows each (", file_prefix, "_page1.png, _page2.png, ...) instead of one",
+            " oversized image nobody could actually read.")
+  }
+  
+  saved <- character(0)
+  for (i in seq_along(pages)) {
+    page_labels <- pages[[i]]
+    page_height <- max(6, height_per_row * length(page_labels))
+    
+    p_pb_i <- ggplot() +
+      geom_segment(data = pb_mean[Label %in% page_labels],
+                   aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label),
+                   linewidth = 0.7, colour = "black") +
+      geom_point(data = pb_mean[Label %in% page_labels], aes(x = Mean, y = Label),
+                 shape = "|", size = 5, colour = "black") +
+      geom_point(data = pb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method),
+                 shape = 21, size = 2.5, alpha = 0.7) +
+      scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
+      theme_bw(base_size = 12) +
+      theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+      labs(x = pb_x_lab, y = NULL, colour = "Method", fill = "Method")
+    
+    p_qb_i <- ggplot() +
+      geom_segment(data = qb_mean[Label %in% page_labels],
+                   aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label),
+                   linewidth = 0.7, colour = "black") +
+      geom_point(data = qb_mean[Label %in% page_labels], aes(x = Mean, y = Label),
+                 shape = "|", size = 5, colour = "black") +
+      geom_point(data = qb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method),
+                 shape = 21, size = 2.5, alpha = 0.7) +
+      scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
+      theme_bw(base_size = 12) +
+      theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+      labs(x = qb_x_lab, y = NULL, colour = "Method", fill = "Method")
+    
+    p_combined_i <- p_pb_i + p_qb_i
+    fname <- if (length(pages) > 1) paste0(file_prefix, "_page", i, ".png") else paste0(file_prefix, ".png")
+    fpath <- file.path(plot_dir, fname)
+    ggsave(fpath, p_combined_i, width = width_in, height = page_height, dpi = dpi)
+    saved <- c(saved, fpath)
+    if (i == 1) print(p_combined_i)   # only the first page previewed inline
+  }
+  message("Saved: ", paste(basename(saved), collapse = ", "))
+  invisible(saved)
+}
 
-p_species_qb <- ggplot() +
-  geom_segment(data = species_qb_mean,
-               aes(x = QB_mean - QB_sd, xend = QB_mean + QB_sd, y = Species_label, yend = Species_label),
-               linewidth = 0.7, colour = "black") +
-  geom_point(data = species_qb_mean, aes(x = QB_mean, y = Species_label),
-             shape = "|", size = 5, colour = "black") +
-  geom_point(data = species_qb_long, aes(x = QB, y = Species_label, colour = method, fill = method),
-             shape = 21, size = 2.5, alpha = 0.7) +
-  scale_colour_brewer(palette = "Set1") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_bw(base_size = 12) +
-  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-  labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
+save_paginated_pb_qb_plot(
+  pb_mean   = copy(species_pb_mean)[, .(Label = Species_label, Mean = PB_mean, SD = PB_sd)],
+  pb_long   = copy(species_pb_long)[, .(Label = Species_label, Value = PB, method)],
+  qb_mean   = copy(species_qb_mean)[, .(Label = Species_label, Mean = QB_mean, SD = QB_sd)],
+  qb_long   = copy(species_qb_long)[, .(Label = Species_label, Value = QB, method)],
+  label_order = species_label_order,
+  pb_x_lab  = expression(P/B~(year^-1)),
+  qb_x_lab  = expression(Q/B~(year^-1)),
+  file_prefix = "species_PB_QB_comparison",
+  plot_dir    = plot_dir
+)
 
-p_species_combined <- p_species_pb + p_species_qb
-ggsave(paste0(plot_dir,"/species_PB_QB_comparison.png"), p_species_combined, width = 16, height = max(6, 0.35 * uniqueN(results$Species)), dpi = 150)
-print(p_species_combined)
+
 
 ## --- FG-level: for EACH method, a biomass-weighted average across the
 ## species within that FG that have a value for that method - mirrors
@@ -1710,37 +2249,19 @@ fg_pb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
 fg_qb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
 fg_qb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
 
-p_fg_pb <- ggplot() +
-  geom_segment(data = fg_pb_mean,
-               aes(x = PB_mean - PB_sd, xend = PB_mean + PB_sd, y = FG_label, yend = FG_label),
-               linewidth = 0.7, colour = "black") +
-  geom_point(data = fg_pb_mean, aes(x = PB_mean, y = FG_label), shape = "|", size = 5, colour = "black") +
-  geom_point(data = fg_pb_by_method, aes(x = PB, y = FG_label, colour = method, fill = method),
-             shape = 21, size = 2.5, alpha = 0.7) +
-  scale_colour_brewer(palette = "Set1") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_bw(base_size = 12) +
-  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-  labs(x = expression(P/B~(year^-1)), y = "Functional Group", colour = "Method", fill = "Method")
+save_paginated_pb_qb_plot(
+  pb_mean   = copy(fg_pb_mean)[, .(Label = FG_label, Mean = PB_mean, SD = PB_sd)],
+  pb_long   = copy(fg_pb_by_method)[, .(Label = FG_label, Value = PB, method)],
+  qb_mean   = copy(fg_qb_mean)[, .(Label = FG_label, Mean = QB_mean, SD = QB_sd)],
+  qb_long   = copy(fg_qb_by_method)[, .(Label = FG_label, Value = QB, method)],
+  label_order = fg_label_order,
+  pb_x_lab  = expression(P/B~(year^-1)),
+  qb_x_lab  = expression(Q/B~(year^-1)),
+  file_prefix = "FG_PB_QB_comparison",
+  plot_dir    = plot_dir
+)
 
-p_fg_qb <- ggplot() +
-  geom_segment(data = fg_qb_mean,
-               aes(x = QB_mean - QB_sd, xend = QB_mean + QB_sd, y = FG_label, yend = FG_label),
-               linewidth = 0.7, colour = "black") +
-  geom_point(data = fg_qb_mean, aes(x = QB_mean, y = FG_label), shape = "|", size = 5, colour = "black") +
-  geom_point(data = fg_qb_by_method, aes(x = QB, y = FG_label, colour = method, fill = method),
-             shape = 21, size = 2.5, alpha = 0.7) +
-  scale_colour_brewer(palette = "Set1") +
-  scale_fill_brewer(palette = "Set1") +
-  theme_bw(base_size = 12) +
-  theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-  labs(x = expression(Q/B~(year^-1)), y = NULL, colour = "Method", fill = "Method")
-
-p_fg_combined <- p_fg_pb + p_fg_qb
-ggsave(paste0(plot_dir,"/FG_PB_QB_comparison.png"), p_fg_combined, width = 16, height = max(6, 0.35 * uniqueN(results$FG)), dpi = 150)
-print(p_fg_combined)
-
-message("\nSaved: species_PB_QB_comparison.png, FG_PB_QB_comparison.png")
+message("\nSaved: species_PB_QB_comparison*.png, FG_PB_QB_comparison*.png")
 
 ## =================================================================
 ## OUTPUT 3: Ecopath-ready CSV - matches the REAL Ecopath Basic Input
@@ -1775,8 +2296,13 @@ format_ecopath_num <- function(x, digits = 4) {
 ecopath_ready <- copy(fg_weighted)
 ecopath_ready[, FG := as.character(FG)]
 
-## FG_name from results (the reliable source - known FGs, hand-labeled
-## at input for this test data) for whatever FGs have species in this run
+## fg_weighted already carries FG_name (attached earlier for the EcoBase
+## merge) - dropped here and re-merged fresh from results rather than
+## trusting it as-is, since results is still the reliable, hand-labeled
+## source and this re-merge also lets fg_ref_unique below fill in FGs
+## that have no FG_name yet (fg_weighted's own FG_name would be NA for
+## those, same as before).
+ecopath_ready[, FG_name := NULL]
 results_fg_names <- unique(results[!is.na(FG_name), .(FG = as.character(FG), FG_name)])
 ecopath_ready <- merge(ecopath_ready, results_fg_names, by = "FG", all.x = TRUE)
 

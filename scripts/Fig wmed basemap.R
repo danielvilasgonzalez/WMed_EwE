@@ -278,6 +278,6 @@ p <- ggplot() +
 
 print(p)
 
-dir.create("/output/plots", recursive = TRUE, showWarnings = FALSE)
-ggsave("/output/plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 300)
+dir.create("./output/plots", recursive = TRUE, showWarnings = FALSE)
+ggsave("./output/plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 300)
 message("Map saved to output/plots/westmed_gsa_map.png")

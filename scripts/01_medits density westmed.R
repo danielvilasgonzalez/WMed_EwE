@@ -1,13 +1,26 @@
 ## =================================================================
-## medits_example_westmed.R
+## PIPELINE STEP 1 of 4 (Western Med GSA version)
+## Run FIRST - no dependencies on the other numbered scripts.
+## Produces: species_density_regional_combined.csv, strata_area_by_area.csv,
+## and the Biomass sheets (FG_spp_Ecopath/Ecopath/Ecosim/FG_spp_Ecosim)
+## in output/ecopath_ecosim_inputs.xlsx.
+## 02_fao_catches.R and 04_pbqb_calc.R both REQUIRE this to have run
+## first (strata_area_by_area.csv and species_density_regional_combined.csv
+## respectively don't exist until this does).
+## Use 01_survey_density_custom.R INSTEAD of this one for a custom
+## (non-GSA) study area - run one or the other, not both.
+## =================================================================
+
+## =================================================================
+## 01_survey_density_westmed.R
 ##
-## MEDITS-specific example calling into survey_fg_density_functions.R.
+## MEDITS-specific example calling into lib_survey_fg_density_functions.R.
 ## This script's job is narrow: (1) read MEDITS' own raw file formats
 ## (TA.csv/TB.csv), (2) compute MEDITS-specific things the shared
 ## library can't know about (swept area from distance x wing opening,
 ## MEDITS species-code -> scientific-name lookup, MEDITS' own manual FG
 ## overrides), (3) reshape into the standardized dataframe1/dataframe2
-## format documented at the top of survey_fg_density_functions.R, then
+## format documented at the top of lib_survey_fg_density_functions.R, then
 ## (4) call the shared functions for everything genuinely generic
 ## (FG fallback matching, strata weighting, area weighting, plots,
 ## Excel export). Also runs the MEDIAS acoustic survey (Step 9) as an
@@ -120,8 +133,8 @@ message("Run log started: ", log_path, " at ", Sys.time())
 ##   while (sink.number(type = "output")  > 0) sink(type = "output")
 
 #call functions
-source(paste0(git_dir,"/scripts/survey_fg_density_functions.R"))
-source(paste0(git_dir,"./scripts/worms_taxonomy_lookup.R"))
+source(paste0(git_dir,"/scripts/lib_survey_fg_density_functions.R"))
+source(paste0(git_dir,"./scripts/lib_worms_taxonomy_lookup.R"))
 
 #files in pcloud
 #fg_file should be correctly reference the species scientific name with the FG_name and FG_num
@@ -138,7 +151,7 @@ plot_dir <- file.path(out_dir, "plots")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## Loud and explicit on purpose - if this ever matches the OTHER
-## example script's own out_dir (medits_example_custom_region.R), both
+## example script's own out_dir (01_survey_density_custom.R), both
 ## scripts would silently write their own survey_sample_coverage_map.png
 ## etc. to the exact same files, and whichever script ran most recently
 ## would overwrite the other's plots with no error or warning at all -
@@ -795,7 +808,7 @@ print(summary(acoustic_matched[!is.na(FG_num), total_biomass]))
 
 ## --- 9c(ii). Attach area: handbook value where the crosswalk covers it,
 ## bathymetric 10-200m fallback (compute_strata_area_by_area(), reused
-## from survey_fg_density_functions.R) otherwise ---------------------------
+## from lib_survey_fg_density_functions.R) otherwise ---------------------------
 acoustic_fg_by_country_gsa <- merge(
   acoustic_fg_by_country_gsa, GSA_AREA_CROSSWALK[, .(country, AreaID = gsa, area_nm2)],
   by = c("country", "AreaID"), all.x = TRUE)
@@ -938,6 +951,17 @@ if (nrow(sp_overlap) > 0) {
 }
 species_density_regional_combined <- sp_index_combined_raw[
   , .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name, ScientificName)]
+
+## Written out here as its own file - up to now this table only ever
+## existed in-memory, passed straight into export_ecopath_ecosim_excel()
+## for the FG_spp sheets. 04_pbqb_calc.R (the PB/QB estimation pipeline)
+## needs this same species x FG x density data as its species_df input
+## (Species/FG/Biomass), so it's saved as a plain CSV here rather than
+## making 04_pbqb_calc.R parse the Ecopath-formatted Excel sheet.
+fwrite(species_density_regional_combined, file.path(out_dir, "species_density_regional_combined.csv"))
+message("Saved species_density_regional_combined.csv (", nrow(species_density_regional_combined),
+        " rows) - MEDITS+MEDIAS combined species-level density, all years. This is the",
+        " file lib_build_species_df_from_survey.R reads to build 04_pbqb_calc.R's species_df input.")
 
 ## --- Combine CV.log across surveys - average where both have a value,
 ## use whichever exists otherwise. Prints overlaps for the same reason
