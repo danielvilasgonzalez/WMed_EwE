@@ -1821,7 +1821,20 @@ if (file.exists(ECOBASE_CSV_PATH)) {
   ecobase_by_fgname <- ecobase_raw[, .(
     PB_ecobase = mean(PB, na.rm = TRUE),
     QB_ecobase = mean(QB, na.rm = TRUE),
-    n_ecobase_models = uniqueN(EwE_model[!is.na(PB) | !is.na(QB)])
+    n_ecobase_models = uniqueN(EwE_model[!is.na(PB) | !is.na(QB)]),
+    ## one "Model (authors, year)" entry per contributing model,
+    ## semicolon-separated - so the Ecobase sheet's PB_ecobase/QB_ecobase
+    ## average is directly traceable to what it's an average OF, not
+    ## just how many models it came from. Deduplicated on the model/
+    ## authors/year combination itself (not just EwE_model) in case the
+    ## same model name appears with genuinely different author/year
+    ## metadata across rows.
+    References = paste(
+      unique(sprintf("%s (%s, %s)",
+                     fifelse(is.na(EwE_model), "unknown model", EwE_model),
+                     fifelse(is.na(authors), "authors unknown", authors),
+                     fifelse(is.na(year), "year unknown", year))),
+      collapse = "; ")
   ), by = FG_name]
   
   fg_weighted_ecobase <- merge(fg_weighted, ecobase_by_fgname, by = "FG_name", all.x = TRUE)
@@ -2050,6 +2063,16 @@ fwrite(reference_table, file.path(out_dir, "species_parameter_references.csv"))
 message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
         " rows - which study/locality/year backs each species' growth,",
         " length-weight, and maturity parameters)")
+
+## Same table, added to the shared workbook (same file PB_QB and
+## Ecobase sheets live in) as "References" - so a parameter's source
+## study is one sheet-tab away from the value itself, not only
+## available as a separate CSV. Species-level only (growth/length-
+## weight/maturity provenance) - EcoBase's own FG-level literature
+## citations already live in their own "Ecobase" sheet (model/year/
+## authors columns), a different grain that doesn't merge cleanly
+## into this species-level table.
+upsert_workbook_sheets(list(References = reference_table), ECOPATH_WORKBOOK_PATH)
 
 ## =================================================================
 ## Load the full FG reference (FGnum -> FGname) once, used both by the
