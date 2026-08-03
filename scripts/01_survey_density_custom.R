@@ -70,7 +70,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
 ## sheets. Everything else - pcloud_dir, git_dir, the picker fallback
 ## wording, the fallback order - matches exactly.
 ## =================================================================
-if (tolower(Sys.info()[["user"]]) == "daniel") {
+if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   out_dir <- file.path("/Users/daniel/Work/iMARES/WMed EwE Model/output", AREA_NAME)
   pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
   git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"

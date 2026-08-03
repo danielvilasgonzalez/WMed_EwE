@@ -48,7 +48,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 ## =================================================================
 ## STEP 1: Configuration
 ## =================================================================
-if (tolower(Sys.info()[["user"]]) == "daniel") {
+if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
   pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
   git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
