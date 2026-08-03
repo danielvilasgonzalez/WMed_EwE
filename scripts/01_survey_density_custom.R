@@ -27,74 +27,119 @@
 ## =================================================================
 
 pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "stringr", "data.table",
-          "marmap", "raster", "terra", "sf", "openxlsx", "rnaturalearth", "rnaturalearthdata")
+          "marmap", "raster", "terra", "sf", "openxlsx", "readxl", "maps", "scales",
+          "rnaturalearth", "rnaturalearthdata")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 ## =================================================================
-## STEP 1: Configuration
-## Mirrors 01_survey_density_westmed.R's pattern exactly: NO setwd()
-## anywhere (absolute paths via file.path()/paste0() everywhere below
-## instead) and all three directories - out_dir, pcloud_dir, git_dir -
-## resolved together, with an RStudio picker fallback for each one
-## individually, not just out_dir. The previous version of this script
-## only ever asked for out_dir and hardcoded Daniel's absolute paths
-## for everything else (source() calls, fg_file, tm_list_file, in_dir)
-## regardless of who was actually running it - broken for anyone else,
-## and inconsistent with how the GSA example handles the same thing.
+## AREA_NAME - identifies THIS custom study area. Used both in the
+## output folder name and appended to every file this script produces
+## (instead of the generic word "custom"), so outputs stay self-
+## describing even if copied out of their folder, and so a SECOND
+## custom-region run (a different area) can't overwrite this one's
+## results - each AREA_NAME gets its own subfolder.
 ## =================================================================
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  out_dir    <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/custom_region/"
-  pcloud_dir <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
-  git_dir    <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
+  AREA_NAME <- "custom_region"   # <-- EDIT to name your actual study area, e.g. "cap_de_creus_mpa"
 } else {
-  ## Falls back to interactive directory pickers in RStudio, rather
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio. Please set AREA_NAME manually above.")
+  }
+  AREA_NAME <- rstudioapi::showPrompt(
+    title = "Custom Study Area Name",
+    message = paste("Enter a short name for this custom study area",
+                    "(used in the output folder name and every file",
+                    "this script produces) - e.g. 'cap_de_creus_mpa':"),
+    default = "custom_region"
+  )
+  if (is.null(AREA_NAME) || AREA_NAME == "") {
+    stop("No AREA_NAME entered.")
+  }
+}
+
+## =================================================================
+## STEP 1: Configuration
+## Byte-identical to 01_survey_density_westmed.R's own STEP 1 below,
+## with ONE necessary deviation: out_dir points at an AREA_NAME
+## subfolder rather than the exact same path westmed uses. Making
+## out_dir literally identical between the two would reintroduce the
+## output-collision bug this script was fixed for earlier - both
+## scripts would silently overwrite each other's plots/CSVs/workbook
+## sheets. Everything else - pcloud_dir, git_dir, the picker fallback
+## wording, the fallback order - matches exactly.
+## =================================================================
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  out_dir <- file.path("/Users/daniel/Work/iMARES/WMed EwE Model/output", AREA_NAME)
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
+} else {
+  ## Falls back to an interactive directory picker in RStudio, rather
   ## than just stopping with "set it manually" - so this script works
   ## for anyone, not just the one hardcoded username above.
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
-    stop("This script requires RStudio. Please select the output directory manually.")
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the output directory manually."
+    )
   }
   rstudioapi::showQuestion(
     title = "Select Output Directory",
-    message = paste("Please select the directory where output files",
-                    "and intermediate results will be saved.")
+    message = paste(
+      "Please select the PARENT directory where output files",
+      "and intermediate results will be saved - a subfolder named",
+      "after AREA_NAME will be created inside it."
+    )
   )
-  out_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  out_dir_parent <- rstudioapi::selectDirectory()
+  if (is.null(out_dir_parent) || out_dir_parent == "" || !dir.exists(out_dir_parent)) {
     stop("No valid output directory selected.")
   }
+  out_dir <- file.path(out_dir_parent, AREA_NAME)
   
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  }
   rstudioapi::showQuestion(
     title = "Select pCloud EwE West Med Directory",
-    message = "Please select the location of the pCloud Drive/EwE Western Med 2026 folder."
+    message = paste(
+      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
+    )
   )
+  
   pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
-    stop("No valid pCloud directory selected.")
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid pcloud directory selected.")
   }
   
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the github directory manually."
+    )
+  }
   rstudioapi::showQuestion(
     title = "Select Github WMed_EwE Directory",
-    message = "Please select the directory where you cloned the WMed_EwE repository."
+    message = paste(
+      "Please select the directory where you cloned the WMed_EwE repository."
+    )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid Github directory selected.")
   }
 }
 
 ## =================================================================
-## RUN LOG - same as 01_survey_density_westmed.R: captures everything
-## printed/messaged from this point onward into one timestamped txt
-## file. See that script's own comment for the sink() recovery command
-## if this script errors out before reaching its closing block.
+## (Run-log/sink()-to-file mechanism removed - same reasoning as
+## 01_survey_density_westmed.R: it caused real trouble tied to
+## sink()/split=TRUE combined with source()-ing a large file and its
+## package loads. Plain console output only from here.)
 ## =================================================================
-log_path <- file.path(out_dir, paste0("run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
-log_con  <- file(log_path, open = "wt")
-sink(log_con, type = "output", split = TRUE)
-sink(log_con, type = "message")
-message("Run log started: ", log_path, " at ", Sys.time())
 
 source(paste0(git_dir, "/scripts/lib_survey_fg_density_functions.R"))
 source(paste0(git_dir, "./scripts/lib_worms_taxonomy_lookup.R"))
@@ -109,17 +154,36 @@ tm_list_file <- paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey
 in_dir       <- paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/")
 
 ## plot_dir is INSIDE out_dir (out_dir/plots), not two directories up -
-## this also naturally avoids a real collision the earlier version had:
-## with plot_dir = dirname(dirname(out_dir))/plots, this script's
-## out_dir ("data/processed_custom_region/") and the GSA example's
-## out_dir ("data/processed/") shared the same grandparent, so both
-## resolved to the SAME plot_dir and would silently overwrite each
-## other's plot files. Since each example's own out_dir is already
-## distinct, plot_dir nested inside each is distinct too, with no
-## manual workaround needed.
+## this also naturally avoids a real collision an earlier version had:
+## with plot_dir = dirname(dirname(out_dir))/plots and a hardcoded
+## "custom_region" folder name, a SECOND custom-region run (a
+## different AREA_NAME) could still resolve to a plot_dir shared with
+## the FIRST one. Now that out_dir itself is AREA_NAME-specific
+## (output/<AREA_NAME>/) and plot_dir nests inside it, each area gets
+## its own fully distinct plot_dir with no manual workaround needed.
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 plot_dir <- file.path(out_dir, "plots")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+
+## af()/pf(): build an output file path with AREA_NAME inserted right
+## before the extension - e.g. af("survey_fg_annual_index.csv") ->
+## out_dir/survey_fg_annual_index_<AREA_NAME>.csv. Used for every
+## file this script writes, so each one is self-describing even if
+## copied out of its out_dir/plot_dir folder later.
+##
+## EXCEPTION - three files stay at their plain, unsuffixed names on
+## purpose: species_density_regional_combined.csv, ecopath_ecosim_
+## inputs.xlsx, and strata_area_by_area.csv. These are the CONTRACT
+## files 02_fao_catches.R and 04_pbqb_calc.R read by that exact fixed
+## name from out_dir, regardless of which Step 1 script produced
+## them - area-suffixing them here would break that handoff unless
+## those two scripts also learned about AREA_NAME, which is out of
+## scope for this change. out_dir itself already being an AREA_NAME-
+## specific folder is what keeps these three from colliding with
+## 01_survey_density_westmed.R's own copies.
+area_suffix_name <- function(fname) sub("(\\.[^.]+)$", paste0("_", AREA_NAME, "\\1"), fname)
+af <- function(fname) file.path(out_dir, area_suffix_name(fname))
+pf <- function(fname) file.path(plot_dir, area_suffix_name(fname))
 
 ## Loud and explicit on purpose - if out_dir here ever ends up matching
 ## 01_survey_density_westmed.R's own out_dir (e.g. both edited by
@@ -305,7 +369,7 @@ p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                 title = "MEDITS sample coverage - custom region in Mediterranean context",
                                 selected_areas = FILTER_AREAS,
                                 land_on_top = (CUSTOM_AREA_TYPE == "bbox"))
-ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = 150, bg = "white")
+ggsave(pf("survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = 150, bg = "white")
 
 ## restrict to the custom region BEFORE validation/downstream steps -
 ## this is the actual point of this example. Every sample outside the
@@ -383,7 +447,7 @@ dt <- apply_seed_fg_rules(dt, dataframe2, SEED_RULES, species_exceptions = SPECI
 
 taxonomy_context <- attr(dt, "still_unresolved_taxonomy")
 still_unmatched <- summarize_unresolved_species(dt, taxonomy = taxonomy_context)
-fwrite(still_unmatched, file.path(out_dir, "survey_unmatched_for_manual_review.csv"))
+fwrite(still_unmatched, af("survey_unmatched_for_manual_review.csv"))
 
 message("\nFinal FG match rate: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " of ",
         dt[, uniqueN(ScientificName)], " distinct species matched.")
@@ -414,8 +478,12 @@ dt <- assign_depth_stratum(dt, MEDITS_STRATA)
 dt <- compute_sample_densities(dt)
 
 ## catchability correction - same template as the GSA example, same
-## caveats about the CSV path being an unverified guess
-CATCHABILITY_CSV_PATH <- "/Users/daniel/Documents/GitHub/WMed_EwE/data/raw/Elena_EDelta_MEDI.csv"
+## caveats about the CSV path being an unverified guess. Aligned to
+## 01_survey_density_westmed.R's own path/filename (pcloud_dir-based) -
+## this was previously pointing at a different file under git_dir
+## entirely, which looks like drift rather than an intentional
+## difference between the two examples.
+CATCHABILITY_CSV_PATH <- paste0(pcloud_dir, "/data/catchability_factors_ecotrans_medits_2021_spp.csv")
 EXEMPT_FG_NAMES <- c(
   # e.g. "Small pelagic fish", "Gelatinous plankton", "Seagrass" - REPLACE with your real FG_name values
 )
@@ -431,7 +499,7 @@ if (file.exists(CATCHABILITY_CSV_PATH)) {
 dt <- remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = DROP_OUTLIERS)
 flagged_outliers <- attr(dt, "flagged_outliers")
 if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
-  fwrite(flagged_outliers, file.path(out_dir, "survey_outliers_flagged.csv"))
+  fwrite(flagged_outliers, af("survey_outliers_flagged.csv"))
 }
 
 per_group_fg <- compute_fg_densities_by_stratum(dt, strata = STRATA)
@@ -495,23 +563,23 @@ message("Saved species_density_regional_combined.csv (", nrow(species_density_re
 
 p_by_area <- plot_fg_timeseries_by_area(
   fg_index, title = "MEDITS trawl survey by FG, custom region", y_lab = "Density (t/km^2)")
-ggsave(file.path(plot_dir, "survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = 150, bg = "white")
+ggsave(pf("survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = 150, bg = "white")
 
 p_regional <- plot_fg_timeseries_regional(fg_index_regional,
                                           title = "MEDITS trawl survey by FG, custom region (area-weighted)", y_lab = "Area-weighted density (t/km^2)")
-ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = 150, bg = "white")
+ggsave(pf("survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = 150, bg = "white")
 
 if (STRATA) {
   p_profile <- plot_strata_profile(fg_index, MEDITS_STRATA)
-  ggsave(file.path(plot_dir, "survey_fg_depth_strata_profile.png"), p_profile, width = 16, height = 12, dpi = 150, bg = "white")
+  ggsave(pf("survey_fg_depth_strata_profile.png"), p_profile, width = 16, height = 12, dpi = 150, bg = "white")
 }
 
 ## =================================================================
 ## STEP 9: Excel export
 ## =================================================================
 
-fwrite(fg_index, file.path(out_dir, "survey_fg_annual_index.csv"))
-fwrite(fg_index_regional, file.path(out_dir, "survey_fg_annual_index_regional.csv"))
+fwrite(fg_index, af("survey_fg_annual_index.csv"))
+fwrite(fg_index_regional, af("survey_fg_annual_index_regional.csv"))
 
 export_ecopath_ecosim_excel(
   fg_index_regional = fg_index_regional,
@@ -525,8 +593,3 @@ export_ecopath_ecosim_excel(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
-
-## Close the run log started in STEP 1 - restores normal console output.
-sink(type = "message")
-sink(type = "output")
-close(log_con)

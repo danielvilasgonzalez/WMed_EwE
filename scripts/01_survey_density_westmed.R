@@ -34,7 +34,8 @@
 ## =================================================================
 
 pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "stringr", "data.table",
-          "marmap", "raster", "terra", "sf", "openxlsx", "rnaturalearth", "rnaturalearthdata")
+          "marmap", "raster", "terra", "sf", "openxlsx", "readxl", "maps", "scales",
+          "rnaturalearth", "rnaturalearthdata")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
@@ -105,32 +106,16 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
 }
 
 ## =================================================================
-## RUN LOG - capture everything printed/messaged from this point
-## onward (every print()/cat()/summary() output, plus every message())
-## into one timestamped txt file - a full record of this run.
+## (Run-log/sink()-to-file mechanism removed - it caused two separate
+## rounds of real trouble: first sink(type="message") silently dropping
+## messages AND errors from the console, then a suspected hang tied to
+## sink(type="output", split=TRUE) combined with source()-ing this
+## script's large shared-library file and its package loads. A saved
+## log file isn't worth that fragility - plain console output only
+## from here. If you want a log later, RStudio's own console history
+## or a manual `Rscript this_file.R > log.txt 2>&1` from the command
+## line are simpler, better-tested ways to get one.)
 ## =================================================================
-log_path <- file.path(out_dir, paste0("run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"))
-log_con  <- file(log_path, open = "wt")
-
-## stdout: print(), cat(), summary(), etc. - split=TRUE keeps this ALSO
-## visible in the console while writing a copy to the file.
-sink(log_con, type = "output", split = TRUE)
-
-## stderr: message() calls (used constantly throughout this pipeline
-## for progress/diagnostics). sink(type="message") has no split option,
-## so from here on these go to the log file ONLY and stop appearing in
-## the R console for the rest of this run - open the log file (or tail
-## it in another editor) if you want to watch progress live.
-sink(log_con, type = "message")
-
-message("Run log started: ", log_path, " at ", Sys.time())
-
-## SAFETY NOTE: if this script errors out or is interrupted (Ctrl+C/Esc)
-## before reaching the closing block at the very end, the console stays
-## silently redirected to log_con. If output/messages stop appearing as
-## expected, run this manually to restore the console:
-##   while (sink.number(type = "message") > 0) sink(type = "message")
-##   while (sink.number(type = "output")  > 0) sink(type = "output")
 
 #call functions
 source(paste0(git_dir,"/scripts/lib_survey_fg_density_functions.R"))
@@ -1000,17 +985,4 @@ export_ecopath_ecosim_excel(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
-
-## =================================================================
-## STEP 11: close the run log
-## =================================================================
 message("Run finished: ", Sys.time())
-
-## release message sink BEFORE output sink - releasing output first
-## would leave message() output silently diverted to a connection the
-## console no longer tracks as active.
-sink(type = "message")
-sink(type = "output")
-close(log_con)
-
-message("Full run log saved to: ", log_path)

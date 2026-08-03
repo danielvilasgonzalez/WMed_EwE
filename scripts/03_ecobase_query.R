@@ -30,14 +30,17 @@ library(httr)
 library(xml2)
 library(data.table)
 
-#output folder
+## =================================================================
+## STEP 1: Configuration
+## =================================================================
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/"
-  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
-  if (!dir.exists(plot_dir)) {
-    dir.create(plot_dir)
-  }
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
+  ## Falls back to an interactive directory picker in RStudio, rather
+  ## than just stopping with "set it manually" - so this script works
+  ## for anyone, not just the one hardcoded username above.
   if (!requireNamespace("rstudioapi", quietly = TRUE) ||
       !rstudioapi::isAvailable()) {
     stop(
@@ -55,17 +58,49 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
-  ## Note: unlike the hardcoded "daniel" path above (which ends in "/"),
-  ## rstudioapi::selectDirectory() returns a path with NO trailing
-  ## slash - every fwrite() below uses file.path(out_dir, "...") rather
-  ## than paste0(out_dir, "...") specifically so this works correctly
-  ## either way, instead of silently concatenating a folder name and a
-  ## filename together with no separator for anyone using this picker.
-  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
-  if (!dir.exists(plot_dir)) {
-    dir.create(plot_dir)
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select pCloud EwE West Med Directory",
+    message = paste(
+      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  )
+  
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid pcloud directory selected.")
+  }
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the github directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Github WMed_EwE Directory",
+    message = paste(
+      "Please select the directory where you cloned the WMed_EwE repository."
+    )
+  )
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid Github directory selected.")
   }
 }
+
+## pcloud_dir/git_dir aren't currently used by this script specifically
+## (it's self-contained - queries the EcoBase API directly, doesn't
+## read pCloud data or source any lib_ script) - resolved anyway for
+## consistency with the other three pipeline scripts, and so they're
+## available if a future version needs either (e.g. matching group
+## names against your own fg reference in pcloud_dir).
 
 #ecobase info
 ECOBASE_LIST_URL   <- "http://sirs.agrocampus-ouest.fr/EcoBase/php/webser/soap-client_3.php"

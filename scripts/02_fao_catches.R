@@ -25,70 +25,81 @@
 ## =================================================================
 
 ## =================================================================
-## STEP 0: Configuration - directories and user options
-## Standardized with 01_survey_density_westmed.R's pattern: absolute
-## directory variables used via file.path() everywhere below, NO
-## setwd() call at all. (fig_WMed_basemap.R uses the other pattern - setwd()
-## then relative "./..." paths - but that's exactly the shape of bug
-## that produced the earlier "sh: ./WMed: No such file or directory"
-## crash here: a relative path silently depends on the working
-## directory being exactly right, with no local warning if it isn't.
-## Absolute paths sidestep that class of bug entirely, so this script
-## follows 01_survey_density_westmed.R's approach instead.)
-##
-## Known users get hardcoded paths; anyone else gets an interactive
-## RStudio directory picker per folder, rather than requiring a manual
-## path edit before the script will even run.
+## STEP 1: Configuration
 ## =================================================================
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  base_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model"
-  git_dir  <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
-} else if (tolower(Sys.info()[["user"]]) == "danie") {
-  ## PLACEHOLDER - base_dir matches fig_WMed_basemap.R's known Windows path;
-  ## git_dir's Windows equivalent hasn't been confirmed anywhere yet
-  ## (01_survey_density_westmed.R only ever hardcodes "daniel"'s Mac
-  ## paths) - update this once you know the real clone location.
-  base_dir <- "C:/Users/danie/Desktop/iMARES/WMed EwE Model"
-  git_dir  <- "C:/Users/danie/Documents/GitHub/WMed_EwE/"
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
-  ## Falls back to interactive directory pickers in RStudio, rather
+  ## Falls back to an interactive directory picker in RStudio, rather
   ## than just stopping with "set it manually" - so this script works
-  ## for anyone, not just the two hardcoded usernames above.
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
-    stop("This script requires RStudio to select directories interactively -",
-         " or add your username's paths to the if/else block above.")
+  ## for anyone, not just the one hardcoded username above.
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the output directory manually."
+    )
   }
   rstudioapi::showQuestion(
-    title = "Select WMed EwE Model Directory",
-    message = "Please select the 'WMed EwE Model' project folder."
+    title = "Select Output Directory",
+    message = paste(
+      "Please select the directory where output files",
+      "and intermediate results will be saved."
+    )
   )
-  base_dir <- rstudioapi::selectDirectory()
-  if (is.null(base_dir) || base_dir == "" || !dir.exists(base_dir)) {
-    stop("No valid WMed EwE Model directory selected.")
+  out_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid output directory selected.")
   }
   
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  }
   rstudioapi::showQuestion(
-    title = "Select GitHub WMed_EwE Directory",
-    message = "Please select the directory where you cloned the WMed_EwE repository."
+    title = "Select pCloud EwE West Med Directory",
+    message = paste(
+      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  )
+  
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid pcloud directory selected.")
+  }
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the github directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Github WMed_EwE Directory",
+    message = paste(
+      "Please select the directory where you cloned the WMed_EwE repository."
+    )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
-    stop("No valid GitHub WMed_EwE directory selected.")
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid Github directory selected.")
   }
 }
 
-## kept as BASE_DIR (upper case) below since the rest of this script -
-## the DATASETS registry especially - already refers to it that way;
-## only the RIGHT-HAND SIDE changed (now an absolute path resolved
-## above, not a relative "./WMed EwE Model" that depended on setwd())
-BASE_DIR <- base_dir
-if (!dir.exists(BASE_DIR)) {
-  stop("BASE_DIR ('", BASE_DIR, "') does not exist - check the path for your",
-       " username in the if/else block above, or the folder you picked.")
-}
-
-library(data.table)
-library(ggplot2)
+## =================================================================
+## Package loading - same pattern as 01_survey_density_westmed.R:
+## one list, auto-installs anything missing, loads everything. This
+## also covers the rfishbase common_names() lookup used later in the
+## inline FG-matching pipeline (previously loaded separately, mid-
+## script) and stringr (previously only loaded there too).
+## =================================================================
+pkgs <- c("data.table", "ggplot2", "stringr", "rfishbase", "readxl", "openxlsx")
+new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+if (length(new_pkgs) > 0) install.packages(new_pkgs)
+invisible(lapply(pkgs, library, character.only = TRUE))
 
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))
 
@@ -98,12 +109,37 @@ source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))
 ## sheet, or the two sheets end up describing different time periods
 ## under the same base-year label.
 YEAR_ECOPATH <- 1994:1996
-ECOPATH_WORKBOOK_PATH <- file.path(BASE_DIR, "output", "ecopath_ecosim_inputs.xlsx")
+ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+
+## plot_dir nested inside out_dir, same convention as
+## 01_survey_density_westmed.R - everything this script produces lands
+## somewhere under out_dir, nothing written to a separate location.
+plot_dir <- file.path(out_dir, "plots")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 START_YEAR <- 1995
 TOP_N_SPECIES <- 20
-OUT_DIR <- file.path(BASE_DIR, "data", "processed")
-if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
+
+## =================================================================
+## RAW DATA SUBPATHS - confirmed against the actual files on disk
+## (via `find`/`file.exists()` checks, see chat history) rather than
+## guessed. GFCM_2025's capture/reference CSVs are confirmed under
+## git_dir/data/raw/ - genuinely git-versioned, not synced via pCloud.
+## FG_WMed.xlsx is confirmed under pcloud_dir/data/, matching
+## 01_survey_density_westmed.R's own fg_file convention - there may be
+## a second copy under git_dir too (unconfirmed either way), so if the
+## two ever drift out of sync, whichever script ran would silently use
+## a different FG reference than the other - worth checking if that
+## becomes relevant.
+##
+## FAO_2020_DATA_SUBDIR is UNCONFIRMED - only GFCM_2025 has been
+## verified on disk. DATASET_VERSION below defaults to GFCM_2025, so
+## this doesn't block anything right now, but expect the same kind of
+## "file not found" error if you switch DATASET_VERSION to "FAO_2020"
+## before confirming its actual location the same way.
+GFCM_2025_DATA_SUBDIR  <- "data/raw/FI_Regional_2025.1.0"
+FAO_2020_DATA_SUBDIR   <- "data/raw/FAO-GFCM_catches"
+FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 
 ## Forces file= interpretation (bypasses fread's input-must-be-guessed
 ## heuristic entirely - the actual fix for the shell-command fallback,
@@ -114,7 +150,8 @@ if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
 safe_fread <- function(path, label = path) {
   if (!file.exists(path)) {
     stop("File not found for '", label, "': '", path, "'",
-         " - check BASE_DIR/data_dir above match this file's actual location.")
+         " - check pcloud_dir/git_dir and the *_DATA_SUBDIR constants above",
+         " match this file's actual location.")
   }
   fread(file = path)
 }
@@ -125,12 +162,17 @@ DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
 ## Dataset registry - one entry per source, all config in one place.
 ## Adding a new dataset version means adding ONE entry here, not
 ## touching six separate processing blocks.
+##
+## GFCM_2025's data_dir (capture/reference CSVs) is under git_dir
+## (confirmed on disk); fg_file is under pcloud_dir (confirmed on
+## disk, matches 01_survey_density_westmed.R). FAO_2020's are still
+## under pcloud_dir but UNCONFIRMED.
 ## =================================================================
 
 DATASETS <- list(
   GFCM_2025 = list(
     format = "gfcm_regional",
-    data_dir = file.path(BASE_DIR, "data/raw/FAO-GFCM_catches/FI_Regional_2025.1.0"),
+    data_dir = file.path(git_dir, GFCM_2025_DATA_SUBDIR),
     capture_file   = "GFCM_Capture_Quantity.csv",
     species_file   = "CL_FI_SPECIES_GROUPS.csv",
     countries_file = "CL_FI_COUNTRY_GROUPS.csv",
@@ -138,11 +180,11 @@ DATASETS <- list(
     area_code_col  = "DIVISION.CODE",     # column in capture data to filter on
     area_join_col  = "Code",              # matching column in the area reference file
     area_filter_values = c("37.1.1", "37.1.2", "37.1.3"),
-    fg_file = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
+    fg_file = file.path(pcloud_dir, FG_REFERENCE_SUBPATH)
   ),
   # FAO_2026 = list(
   #   format = "gfcm_regional",   # same processing shape as GFCM_2025
-  #   data_dir = file.path(BASE_DIR, "data/Capture_2026.1.0"),
+  #   data_dir = file.path(pcloud_dir, "data/Capture_2026.1.0"),
   #   capture_file   = "Capture_Quantity.csv",
   #   species_file   = "CL_FI_SPECIES_GROUPS.csv",
   #   countries_file = "CL_FI_COUNTRY_GROUPS.csv",
@@ -153,12 +195,12 @@ DATASETS <- list(
   #   ## finer 37.1.x subdivisions GFCM's own regional database has -
   #   ## filtering to "37" here reflects that limitation explicitly
   #   area_filter_values = c("37"),
-  #   fg_file = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
+  #   fg_file = file.path(pcloud_dir, "data/FG_WMed.xlsx")
   # ),
   FAO_2020 = list(
     format = "legacy_excel",
-    catch_file = file.path(BASE_DIR, "data/raw/FAO-GFCM_catches/FAO-GFCM-CapturepProduction-1970_2023.xlsx"),
-    fg_file    = file.path(BASE_DIR, "data/raw/FG_WMed.xlsx")
+    catch_file = file.path(pcloud_dir, FAO_2020_DATA_SUBDIR, "FAO-GFCM-CapturepProduction-1970_2023.xlsx"),
+    fg_file    = file.path(pcloud_dir, FG_REFERENCE_SUBPATH)
   )
 )
 
@@ -315,11 +357,11 @@ print(p_species)
 ## Export
 ## =================================================================
 
-fwrite(unmatched_species, file.path(OUT_DIR, "unmatched_species_FG_assignment.csv"))
-fwrite(ts_data$species_ts, file.path(OUT_DIR, "westmed_species_timeseries.csv"))
+fwrite(unmatched_species, file.path(out_dir, "unmatched_species_FG_assignment.csv"))
+fwrite(ts_data$species_ts, file.path(out_dir, "westmed_species_timeseries.csv"))
 
-ggsave(file.path(OUT_DIR, "country_catch_timeseries.png"), p_country, width = 12, height = 8, dpi = 300)
-ggsave(file.path(OUT_DIR, "species_catch_timeseries.png"), p_species, width = 14, height = 10, dpi = 300)
+ggsave(file.path(plot_dir, "country_catch_timeseries.png"), p_country, width = 12, height = 8, dpi = 300)
+ggsave(file.path(plot_dir, "species_catch_timeseries.png"), p_species, width = 14, height = 10, dpi = 300)
 
 message("Analysis completed.")
 
@@ -351,10 +393,8 @@ message("Analysis completed.")
 ## across multiple species/FGs.
 ## =================================================================
 
-library(data.table)
-library(stringr)
-if (!requireNamespace("rfishbase", quietly = TRUE)) install.packages("rfishbase")
-library(rfishbase)
+## data.table/stringr/rfishbase already loaded at the top of this
+## script - no need to reload them here mid-pipeline.
 
 setDT(unmatched_species)
 setDT(fg)
@@ -477,18 +517,18 @@ if (uniqueN(exact_resolved$ambiguous$Species) > 0) {
 remaining <- remaining[!Species %in% exact_matches$Species]
 
 find_or_download_fao_species <- function() {
-  ## searches BASE_DIR recursively - this is very likely already
+  ## searches pcloud_dir recursively - this is very likely already
   ## present there anyway, since GFCM_2025's own species_file
   ## (CL_FI_SPECIES_GROUPS.csv) is the same reference file - only
   ## downloads a fresh copy if genuinely not found anywhere under
-  ## BASE_DIR. Absolute path search/download, not "." (ambient working
+  ## pcloud_dir. Absolute path search/download, not "." (ambient working
   ## directory) - relying on "." here would have the same class of bug
   ## the setwd()-removal above was meant to eliminate.
-  found <- list.files(BASE_DIR, pattern = "CL_FI_SPECIES_GROUPS.csv$",
+  found <- list.files(pcloud_dir, pattern = "CL_FI_SPECIES_GROUPS.csv$",
                       recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
   if (length(found) > 0) return(found[1])
   url <- "https://data.apps.fao.org/catalog/dataset/b70c52c1-475f-4951-a8ac-de44016abd9b/resource/2c0f936d-6c36-4715-9c7f-fa5a70c00249/download/cl_fi_species_groups.csv"
-  destfile <- file.path(OUT_DIR, "CL_FI_SPECIES_GROUPS.csv")
+  destfile <- file.path(out_dir, "CL_FI_SPECIES_GROUPS.csv")
   download.file(url, destfile = destfile, mode = "wb", method = "libcurl")
   destfile
 }
@@ -660,8 +700,8 @@ ambiguity_notes <- rbindlist(list(
 output <- merge(resolved_final, ambiguity_notes, by = "Species", all.x = TRUE)
 setorder(output, status, -Catch)
 
-fwrite(output, file.path(OUT_DIR, "species_fg_matched.csv"))
-message("\nSaved full results to ", file.path(OUT_DIR, "species_fg_matched.csv"), " (", nrow(output), " rows) -",
+fwrite(output, file.path(out_dir, "species_fg_matched.csv"))
+message("\nSaved full results to ", file.path(out_dir, "species_fg_matched.csv"), " (", nrow(output), " rows) -",
         " open in Excel to review/correct 'unresolved' rows, or anything you want to double-check.")
 
 ## =================================================================
@@ -704,7 +744,7 @@ message("Catch value matched to an FG: ", round(catch_matched_value, 1), " of ",
 ## include discards. Treat fg_catch_timeseries.csv as a landings-only
 ## lower bound on total removals until a discard-inclusive source
 ## (e.g. STECF FDI, GFCM DCRF discard tables) is added and combined in.
-fwrite(fg_catch_timeseries, file.path(OUT_DIR, paste0("fg_catch_timeseries_", DATASET_VERSION, ".csv")))
+fwrite(fg_catch_timeseries, file.path(out_dir, paste0("fg_catch_timeseries_", DATASET_VERSION, ".csv")))
 message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_timeseries), " rows,",
         " Year x FG_num x FG_name x Catch_t) - this is a LANDINGS-ONLY figure from ", DATASET_VERSION,
         ", not confirmed to include discards. Kept as an audit/intermediate CSV; the actual",
@@ -730,12 +770,15 @@ message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_t
 ## so Catches and F are consistent with each other too, not just with
 ## Biomass.
 ## =================================================================
-strata_area_path <- file.path(BASE_DIR, "output", "strata_area_by_area.csv")
+## strata_area_by_area.csv is written by 01_survey_density_westmed.R into
+## its own out_dir - since this script now uses the SAME canonical out_dir
+## (Step 1 above), no separate BASE_DIR-based guess is needed anymore.
+strata_area_path <- file.path(out_dir, "strata_area_by_area.csv")
 if (!file.exists(strata_area_path)) {
   stop("strata_area_by_area.csv not found at '", strata_area_path, "' - needed to convert",
        " fg_catch_timeseries's raw total tonnes into a t/km^2 density matching Biomass's",
        " units in the Ecopath sheet. Run 01_survey_density_westmed.R first (Step 6 writes",
-       " this file), or check BASE_DIR matches where it actually saved it.")
+       " this file), or check out_dir matches where it actually saved it.")
 }
 area_total_km2 <- fread(strata_area_path)[, sum(area_km2, na.rm = TRUE)]
 message("Study area for the Catches density conversion: ", round(area_total_km2, 1), " km^2",

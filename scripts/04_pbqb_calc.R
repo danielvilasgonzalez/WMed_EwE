@@ -30,22 +30,32 @@
 ## fetched automatically from FishBase + SeaLifeBase.
 ## =================================================================
 
-library(data.table)
-library(stringr)
-library(ggplot2)
-if (!requireNamespace("progress", quietly = TRUE)) install.packages("progress")
-library(progress)
-if (!requireNamespace("rfishbase", quietly = TRUE)) install.packages("rfishbase")
-library(rfishbase)
+## =================================================================
+## Package loading - same pattern as 01_survey_density_westmed.R for
+## the plain CRAN packages this script always needs. rfishbase is
+## deliberately NOT in this list - see the version-compatibility
+## check right below, which exists specifically because a naive
+## install.packages("rfishbase") installs a broken pre-4.0 CRAN
+## version. patchwork (used later for combining plots) is included
+## here now too, rather than being loaded separately mid-script.
+## =================================================================
+pkgs <- c("data.table", "stringr", "ggplot2", "progress", "patchwork",
+          "readxl", "openxlsx", "worrms", "purrr")
+new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+if (length(new_pkgs) > 0) install.packages(new_pkgs)
+invisible(lapply(pkgs, library, character.only = TRUE))
 
-#output folder
+## =================================================================
+## STEP 1: Configuration
+## =================================================================
 if (tolower(Sys.info()[["user"]]) == "daniel") {
-  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/"
-  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
-  if (!dir.exists(plot_dir)) {
-    dir.create(plot_dir)
-  }
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
+  ## Falls back to an interactive directory picker in RStudio, rather
+  ## than just stopping with "set it manually" - so this script works
+  ## for anyone, not just the one hardcoded username above.
   if (!requireNamespace("rstudioapi", quietly = TRUE) ||
       !rstudioapi::isAvailable()) {
     stop(
@@ -63,11 +73,48 @@ if (tolower(Sys.info()[["user"]]) == "daniel") {
   if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid output directory selected.")
   }
-  plot_dir <- paste0(dirname(dirname(out_dir)),'/plots')
-  if (!dir.exists(plot_dir)) {
-    dir.create(plot_dir)
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select pCloud EwE West Med Directory",
+    message = paste(
+      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
+    )
+  )
+  
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid pcloud directory selected.")
+  }
+  
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the github directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Github WMed_EwE Directory",
+    message = paste(
+      "Please select the directory where you cloned the WMed_EwE repository."
+    )
+  )
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid Github directory selected.")
   }
 }
+
+## plot_dir nested inside out_dir, same convention as
+## 01_survey_density_westmed.R - everything this script produces lands
+## somewhere under out_dir, nothing written to a separate location.
+plot_dir <- file.path(out_dir, "plots")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## =================================================================
 ## rfishbase/duckdbfs compatibility check - catches, at the very start,
@@ -200,16 +247,18 @@ message(strrep("=", 70))
 ##             available/up to date.
 SPECIES_DF_SOURCE <- "survey"
 
-SURVEY_OUT_DIR   <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
-SURVEY_DENSITY_CSV <- file.path(SURVEY_OUT_DIR, "species_density_regional_combined.csv")
+## SURVEY_OUT_DIR removed - it duplicated out_dir from STEP 1 above
+## (both pointed at the same ".../WMed EwE Model/output/" folder).
+## out_dir is used directly everywhere below instead.
+SURVEY_DENSITY_CSV <- file.path(out_dir, "species_density_regional_combined.csv")
 
 ## Same shared workbook 01_survey_density_westmed.R and 02_fao_catches.R
 ## write to (order-independent - this can run before, after, or
 ## between those two). add_pbqb_to_ecopath_workbook() is defined in
 ## lib_survey_fg_density_functions.R, sourced here since this script
 ## doesn't otherwise need it.
-source("/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_survey_fg_density_functions.R")
-ECOPATH_WORKBOOK_PATH <- file.path(SURVEY_OUT_DIR, "ecopath_ecosim_inputs.xlsx")
+source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))
+ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 ## Must match YEAR_ECOPATH in 01_survey_density_westmed.R exactly - this is
 ## what defines the Biomass snapshot species_df's density values (and
 ## therefore fg_weighted's Biomass_FG below, and ecopath_ready's
@@ -220,14 +269,14 @@ ECOPATH_WORKBOOK_PATH <- file.path(SURVEY_OUT_DIR, "ecopath_ecosim_inputs.xlsx")
 YEAR_ECOPATH <- 1994:1996
 
 if (SPECIES_DF_SOURCE == "survey") {
-  source('/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_build_species_df_from_survey.R')
+  source(file.path(git_dir, "scripts/lib_build_species_df_from_survey.R"))
   species_df <- build_species_df_from_survey(
     survey_csv_path    = SURVEY_DENSITY_CSV,
     year_ecopath_range = YEAR_ECOPATH,
-    out_rds_path        = paste0(out_dir, "/survey_species_df.rds")
+    out_rds_path        = file.path(out_dir, "survey_species_df.rds")
   )
 } else {
-  SPECIES_DF_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/test_species_df.rds"
+  SPECIES_DF_PATH <- file.path(out_dir, "test_species_df.rds")
   message("SPECIES_DF_SOURCE = 'test' - using placeholder test data, NOT the real",
           " survey pipeline output. Set SPECIES_DF_SOURCE <- 'survey' for real runs.")
   species_df <- readRDS(SPECIES_DF_PATH)
@@ -274,7 +323,9 @@ YIELD_SOURCE <- "none"
 ## yet. Point this at the real file once you have one, and confirm the
 ## required_cols list inside attach_yield_from_landings() matches its
 ## actual column names before trusting the output.
-LANDINGS_CSV_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/raw/landings_by_species_gsa_year.csv"
+## Raw/reference data - lives under pcloud_dir, same convention as
+## 01_survey_density_westmed.R's own fg_file/tm_list_file.
+LANDINGS_CSV_PATH <- file.path(pcloud_dir, "data/landings_by_species_gsa_year.csv")
 
 ## area_lookup_csv_path expects strata_area_by_area.csv - written by
 ## 01_survey_density_westmed.R's compute_strata_area_by_area() cache
@@ -369,7 +420,7 @@ attach_yield_from_landings <- function(species_df, landings_csv_path, area_looku
 if (YIELD_SOURCE == "landings_csv") {
   species_df <- attach_yield_from_landings(
     species_df, LANDINGS_CSV_PATH,
-    file.path(SURVEY_OUT_DIR, "strata_area_by_area.csv"),
+    file.path(out_dir, "strata_area_by_area.csv"),
     YEAR_ECOPATH
   )
 } else {
@@ -414,12 +465,15 @@ FG_YIELD_SOURCE <- "none"
 
 ## Filename must match DATASET_VERSION set in 02_fao_catches.R - default
 ## here assumes its default ("GFCM_2025"); update both if that changes.
-FG_CATCH_CSV_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/processed/fg_catch_timeseries_GFCM_2025.csv"
+## 02_fao_catches.R writes this into its own out_dir - the SAME
+## canonical out_dir this script uses (Step 1 above), so no separate
+## path guess is needed.
+FG_CATCH_CSV_PATH <- file.path(out_dir, "fg_catch_timeseries_GFCM_2025.csv")
 
 species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
 
 if (FG_YIELD_SOURCE == "fg_catch_csv") {
-  area_lookup_path <- file.path(SURVEY_OUT_DIR, "strata_area_by_area.csv")
+  area_lookup_path <- file.path(out_dir, "strata_area_by_area.csv")
   
   if (!file.exists(FG_CATCH_CSV_PATH)) {
     message("FG_YIELD_SOURCE = 'fg_catch_csv' but no file found at '", FG_CATCH_CSV_PATH,
@@ -482,7 +536,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv") {
 ## more robust than relying on Class string-matching alone.
 ## =================================================================
 
-source('/Users/daniel/Documents/GitHub/WMed_EwE/scripts/lib_worms_taxonomy_lookup.R')
+source(file.path(git_dir, "scripts/lib_worms_taxonomy_lookup.R"))
 
 taxonomy <- as.data.table(worms_taxonomy_lookup(sp_list))[
   , .(Species = original_name, Genus = genus, Family = family, Order = order, Class = class, Phylum = phylum)
@@ -518,9 +572,21 @@ if (length(unresolved) > 0) {
           " attempting synonym -> accepted-name resolution via WoRMS.")
   
   resolve_via_accepted_name <- function(sp) {
+    ## Strip trailing "spp."/"sp." the SAME way worms_taxonomy_lookup()'s
+    ## main batch lookup already does - without this, a genus-level
+    ## placeholder like "Sepiola spp." gets queried LITERALLY, which
+    ## WoRMS's API always rejects (204 No Content, not a real taxon
+    ## name) - guaranteed failure every time, and worse, it means these
+    ## entries never actually get classified at all, just silently
+    ## fall through to the "invertebrate" default below. Querying the
+    ## bare genus instead ("Sepiola") can actually succeed and return
+    ## real Class/Family/Order/Phylum - which is all dispatch_group
+    ## classification needs anyway, species-level resolution isn't
+    ## required for that.
+    query_term <- str_trim(str_remove(sp, "\\s+spp?\\.?$"))
     Sys.sleep(1)  # space out requests in case WoRMS's API is rate-sensitive
-    rec <- tryCatch(worrms::wm_records_names(sp, marine_only = FALSE)[[1]], error = function(e) {
-      message("  WoRMS lookup failed for '", sp, "': ", conditionMessage(e))
+    rec <- tryCatch(worrms::wm_records_names(query_term, marine_only = FALSE)[[1]], error = function(e) {
+      message("  WoRMS lookup failed for '", sp, "' (queried as '", query_term, "'): ", conditionMessage(e))
       NULL
     })
     if (is.null(rec) || nrow(rec) == 0) return(NULL)
@@ -1632,7 +1698,7 @@ message("\nTop invertebrate species by biomass - worth a manual Brey (2012) cros
         " accurate than the Tumbiolo & Downing/Gascuel fallback used here, but isn't",
         " automatable (no accessible weights or R package):")
 print(brey_candidates[, .(Species, FG, Biomass, PB, PB_method)])
-fwrite(brey_candidates, paste0(out_dir,"/invertebrates_for_brey_manual_check.csv"))
+fwrite(brey_candidates, file.path(out_dir, "invertebrates_for_brey_manual_check.csv"))
 
 message("\n=== Species-level PB/QB - which method was CHOSEN for FG weighting ===")
 print(results[, .N, by = PB_method])
@@ -1728,9 +1794,9 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
 ## Export
 ## =================================================================
 
-fwrite(results, paste0(out_dir,"/species_pb_qb_by_taxon_group.csv"))
-fwrite(fg_weighted, paste0(out_dir,"/fg_pb_qb_weighted.csv"))
-fwrite(phyto_flagged, paste0(out_dir,"/phytoplankton_needs_separate_method.csv"))
+fwrite(results, file.path(out_dir, "species_pb_qb_by_taxon_group.csv"))
+fwrite(fg_weighted, file.path(out_dir, "fg_pb_qb_weighted.csv"))
+fwrite(phyto_flagged, file.path(out_dir, "phytoplankton_needs_separate_method.csv"))
 
 ## =================================================================
 ## Supplement with EcoBase literature values (03_ecobase_query.R output)
@@ -1744,7 +1810,7 @@ fwrite(phyto_flagged, paste0(out_dir,"/phytoplankton_needs_separate_method.csv")
 ## averaged across all matching EcoBase models per FG_name first, so
 ## one FG doesn't get weighted toward whichever model happened to have
 ## the most rows.
-ECOBASE_CSV_PATH <- paste0(out_dir, "/ecobase_literature_pb_qb_simple.csv")
+ECOBASE_CSV_PATH <- file.path(out_dir, "ecobase_literature_pb_qb_simple.csv")
 
 if (file.exists(ECOBASE_CSV_PATH)) {
   ecobase_raw <- fread(ECOBASE_CSV_PATH)
@@ -1801,7 +1867,7 @@ if (file.exists(ECOBASE_CSV_PATH)) {
           " PB_FG_filled/QB_FG_filled are what's recommended for the Ecopath basic input",
           " where an empirical estimate wasn't available.")
   
-  fwrite(fg_weighted_ecobase, paste0(out_dir, "/fg_pb_qb_weighted_with_ecobase.csv"))
+  fwrite(fg_weighted_ecobase, file.path(out_dir, "fg_pb_qb_weighted_with_ecobase.csv"))
   message("Saved fg_pb_qb_weighted_with_ecobase.csv.")
   
   ## Dedicated Ecobase sheet in the shared workbook - the raw per-FG
@@ -1871,7 +1937,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
           " matched at all stay M-only - if one of those is commercially fished, check",
           " species_fg_matched.csv for an 'unresolved' status or a naming mismatch.")
   
-  fwrite(fg_weighted, paste0(out_dir, "/fg_pb_qb_weighted_with_F.csv"))
+  fwrite(fg_weighted, file.path(out_dir, "fg_pb_qb_weighted_with_F.csv"))
   message("Saved fg_pb_qb_weighted_with_F.csv.")
 } else {
   message("\nFG_YIELD_SOURCE = 'none' (or catch data wasn't found earlier) - fg_weighted's",
@@ -1934,7 +2000,7 @@ p_pb <- ggplot(fish_pb_long, aes(x = method, y = PB)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
   labs(title = "P/B method comparison - fish species", x = NULL, y = expression(P/B~(year^-1)))
 
-ggsave(paste0(plot_dir,"/fish_PB_methods_comparison.png"), p_pb, width = 12, height = 9, dpi = 150)
+ggsave(file.path(plot_dir, "fish_PB_methods_comparison.png"), p_pb, width = 12, height = 9, dpi = 150)
 
 ## --- QB methods ---------------------------------------------------------
 
@@ -1960,7 +2026,7 @@ p_qb <- ggplot(fish_qb_long, aes(x = method, y = QB)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
   labs(title = "Q/B method comparison - fish species", x = NULL, y = expression(Q/B~(year^-1)))
 
-ggsave(paste0(plot_dir,"/fish_QB_methods_comparison.png"), p_qb, width = 12, height = 9, dpi = 150)
+ggsave(file.path(plot_dir, "fish_QB_methods_comparison.png"), p_qb, width = 12, height = 9, dpi = 150)
 
 print(p_pb)
 print(p_qb)
@@ -1980,7 +2046,7 @@ reference_table <- merge(reference_table, species_df[, .(Species, dispatch_group
 setcolorder(reference_table, c("Species", "dispatch_group", "parameter_type", "Locality", "Year", "Reference"))
 setorder(reference_table, Species, parameter_type)
 
-fwrite(reference_table, paste0(out_dir,"/species_parameter_references.csv"))
+fwrite(reference_table, file.path(out_dir, "species_parameter_references.csv"))
 message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
         " rows - which study/locality/year backs each species' growth,",
         " length-weight, and maturity parameters)")
@@ -1991,7 +2057,7 @@ message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
 ## Ecopath CSV export later.
 ## =================================================================
 
-FG_REFERENCE_PATH <- "/Users/daniel/Work/iMARES/WMed EwE Model/data/raw/FG_WMed.xlsx"
+FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed.xlsx")
 
 fg_ref_unique <- NULL
 if (file.exists(FG_REFERENCE_PATH)) {
@@ -2050,8 +2116,7 @@ if (file.exists(FG_REFERENCE_PATH)) {
 ## QB shown side by side via patchwork for both.
 ## =================================================================
 
-if (!requireNamespace("patchwork", quietly = TRUE)) install.packages("patchwork")
-library(patchwork)
+## patchwork already loaded at the top of this script.
 
 ## --- Species-level: melt EVERY method column across ALL groups, not
 ## just fish - dynamically detected by column name pattern rather than
@@ -2352,7 +2417,7 @@ if (n_missing > 0) {
   print(ecopath_ready[is.na(PB_FG) | (is.na(QB_FG) & !is_primary_producer), .(FG_num, FG_name)])
 }
 
-fwrite(ecopath_final, paste0(out_dir,"/ecopath_ready_PB_QB.csv"), quote = "auto")
+fwrite(ecopath_final, file.path(out_dir, "ecopath_ready_PB_QB.csv"), quote = "auto")
 message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_final), " FG rows,",
         " FG_num ", min(ecopath_ready$FG_num), "-", max(ecopath_ready$FG_num), ") -",
         " formatted to match Ecopath's real Basic Input structure",

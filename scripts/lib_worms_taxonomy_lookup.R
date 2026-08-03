@@ -51,7 +51,16 @@ worms_taxonomy_lookup <- function(names_vector) {
   chunk_size <- 50
   chunks <- split(search_terms, ceiling(seq_along(search_terms) / chunk_size))
   
-  raw_results <- map(chunks, function(chunk) {
+  ## Namespaced explicitly (purrr::map, not bare map()) - deliberately
+  ## NOT left unqualified: the "maps" package (used elsewhere in this
+  ## pipeline for basemap plotting) ALSO exports a function called
+  ## map(), with a completely different signature (map(database, ...)
+  ## for drawing geographic maps, vs purrr's map(list, function) for
+  ## list iteration). Whichever of the two was attached most recently
+  ## wins an unqualified call - fragile and silently wrong when it
+  ## picks maps::map() instead, which is exactly what happened here
+  ## once "maps" was added to the calling script's package list.
+  raw_results <- purrr::map(chunks, function(chunk) {
     tryCatch(
       wm_records_names(chunk, marine_only = FALSE),
       error = function(e) {
@@ -67,7 +76,7 @@ worms_taxonomy_lookup <- function(names_vector) {
   })
   raw_results <- purrr::list_flatten(raw_results)
   
-  taxonomy_lookup <- map2_dfr(raw_results, search_terms, function(res, term) {
+  taxonomy_lookup <- purrr::map2_dfr(raw_results, search_terms, function(res, term) {
     if (is.null(res) || nrow(res) == 0) {
       return(tibble(
         search_term = term, AphiaID = NA_integer_, matched_name = NA_character_,
