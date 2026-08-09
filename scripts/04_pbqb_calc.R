@@ -48,7 +48,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 ## =================================================================
 ## STEP 1: Configuration
 ## =================================================================
-if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
+if (tolower(Sys.info()[["user"]]) == "daniel") {
   out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
   pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
   git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
@@ -690,17 +690,126 @@ select_best_rows <- function(dt) {
 ## provenance output table.
 ## =================================================================
 
-extract_provenance <- function(best_dt, param_type) {
+extract_provenance <- function(best_dt, param_type, refno_candidates = c("RefNo", "MainRefNo", "Ref_no")) {
   if (nrow(best_dt) == 0) return(data.table(Species = character()))
   loc_col  <- intersect(c("Locality", "Country", "Loc"), names(best_dt))[1]
   year_col <- intersect(c("Year", "YearStart"), names(best_dt))[1]
-  ref_col  <- intersect(c("Author", "Authors", "Ref", "Reference", "RefID"), names(best_dt))[1]
+  
+  ## FishBase/SeaLifeBase do NOT embed a citation string directly in
+  ## popgrowth()/poplw()/maturity() - per FishBase's own REFERENCES
+  ## table documentation (fishbase.org/manual), every data table
+  ## stores a Ref-style column pointing into a SEPARATE references()
+  ## table (Author/Year/Title columns), by RDB design. CONFIRMED live:
+  ## popgrowth()'s actual column is "PopGrowthRef" - none of the
+  ## originally-guessed "RefNo"/"MainRefNo"/"Ref_no"/"Author"/"Ref"/
+  ## "Reference"/"RefID" names exist there at all, which is why
+  ## Reference came back NA for every row with no error raised.
+  ##
+  ## Each FishBase population-dynamics table apparently has SEVERAL
+  ## Ref-style columns for different sub-measurements within the same
+  ## row (popgrowth() alone has PopGrowthRef, tmaxRef, MRef,
+  ## unsexedRef, DataSourceRef) - refno_candidates lets the caller
+  ## specify which one is actually right for this param_type, since
+  ## that can't be guessed generically from inside this function.
+  refno_col <- intersect(refno_candidates, names(best_dt))[1]
+  
+  ## Fallback: if none of the caller's explicit candidates exist,
+  ## auto-detect any *Ref-style column that ISN'T already known to be
+  ## a narrow per-subfield reference (tmax/M/unsexed/temperature all
+  ## have their own dedicated Ref column that would misattribute the
+  ## citation if used as the general one). Not guaranteed correct -
+  ## flagged explicitly either way so it's visible which path was taken.
+  used_fallback <- FALSE
+  if (is.na(refno_col)) {
+    ref_like_cols <- grep("Ref$", names(best_dt), value = TRUE)
+    ref_like_cols <- setdiff(ref_like_cols, c("tmaxRef", "MRef", "unsexedRef", "TempRef", "DataSourceRef"))
+    if (length(ref_like_cols) > 0) {
+      refno_col <- ref_like_cols[1]
+      used_fallback <- TRUE
+    }
+  }
+  
+  citation <- rep(NA_character_, nrow(best_dt))
+  if (is.na(refno_col)) {
+    message("  NOTE: no usable Ref-style column found for '", param_type, "' - checked",
+            " explicit candidates (", paste(refno_candidates, collapse = ", "), ") and",
+            " auto-fallback found none either. All *Ref-style columns present: ",
+            paste(grep("Ref$", names(best_dt), value = TRUE), collapse = ", "),
+            ". Full column list: ", paste(names(best_dt), collapse = ", "),
+            ". Reference stays NA for these rows.")
+  } else {
+    if (used_fallback) {
+      message("  '", param_type, "': explicit refno_candidates not found - auto-fell back to",
+              " '", refno_col, "' (other *Ref-style columns seen: ",
+              paste(grep("Ref$", names(best_dt), value = TRUE), collapse = ", "),
+              ") - verify this is actually the right one for this parameter type,",
+              " not a narrower per-subfield reference.")
+    }
+    ref_nos <- suppressWarnings(as.integer(best_dt[[refno_col]]))
+    ## Unconditional diagnostic - printed EVERY time refno_col is found,
+    ## not just on failure, since a column that exists but is entirely
+    ## NA (or has some other unexpected content) would otherwise fail
+    ## SILENTLY further down (the old `if (length(idx) == 0) next` had
+    ## no message attached to it at all) and look identical to success
+    ## from the console output alone.
+    message("  '", param_type, "': found refno_col = '", refno_col, "', ",
+            sum(!is.na(ref_nos)), " of ", length(ref_nos), " values are non-NA integers.",
+            " Sample raw values: ", paste(utils::head(best_dt[[refno_col]], 5), collapse = ", "))
+    
+    ## RefNo numbering is independent between FishBase and SeaLifeBase -
+    ## the same integer can point to a DIFFERENT, unrelated reference
+    ## in each, so this has to query each server's references() table
+    ## separately using the .fetch_server tag from fetch_both(), not
+    ## just assume everything is FishBase.
+    servers <- if (".fetch_server" %in% names(best_dt)) best_dt$.fetch_server else rep("fishbase", nrow(best_dt))
+    
+    for (srv in unique(stats::na.omit(servers))) {
+      idx <- which(servers == srv & !is.na(ref_nos))
+      if (length(idx) == 0) {
+        message("  '", param_type, "' (server = ", srv, "): 0 rows have a usable (non-NA)",
+                " ", refno_col, " value - skipping this server, Reference stays NA for",
+                " its rows.")
+        next
+      }
+      valid_ref_nos <- unique(ref_nos[idx])
+      
+      ref_meta <- tryCatch(
+        as.data.table(rfishbase::references(codes = valid_ref_nos, server = srv,
+                                            fields = c("RefNo", "Author", "Year", "Title"))),
+        error = function(e) {
+          message("  rfishbase::references() lookup failed for '", param_type, "' (server = ",
+                  srv, "): ", conditionMessage(e))
+          NULL
+        }
+      )
+      if (is.null(ref_meta) || nrow(ref_meta) == 0) {
+        message("  rfishbase::references() returned no rows for '", param_type, "' (server = ",
+                srv, ", ", length(valid_ref_nos), " RefNo(s) queried) - Reference stays NA for these.",
+                " Queried codes sample: ", paste(utils::head(valid_ref_nos, 5), collapse = ", "))
+        next
+      }
+      message("  '", param_type, "' (server = ", srv, "): rfishbase::references() returned ",
+              nrow(ref_meta), " row(s) for ", length(valid_ref_nos), " queried RefNo(s).")
+      
+      ref_meta[, citation_str := paste0(
+        fifelse(is.na(Author) | Author == "", "Unknown author", Author),
+        " (", fifelse(is.na(Year) | Year == "", "n.d.", as.character(Year)), ")",
+        fifelse(is.na(Title) | Title == "", "", paste0(" - ", Title))
+      )]
+      citation_lookup <- setNames(ref_meta$citation_str, as.character(ref_meta$RefNo))
+      citation[idx] <- unname(citation_lookup[as.character(ref_nos[idx])])
+    }
+  }
+  
+  message("  '", param_type, "': ", sum(!is.na(citation)), " of ", length(citation),
+          " rows ended up with a resolved Reference.")
+  
   best_dt[, .(
     Species,
     parameter_type = param_type,
     Locality  = if (!is.na(loc_col)) get(loc_col) else NA_character_,
     Year      = if (!is.na(year_col)) get(year_col) else NA_real_,
-    Reference = if (!is.na(ref_col)) as.character(get(ref_col)) else NA_character_
+    Reference = citation
   )]
 }
 
@@ -931,6 +1040,12 @@ fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
             " calls to isolate which species is causing it...")
     fb <- fetch_per_species(fun, sp_list, "fishbase")
   }
+  ## .fetch_server tracks which database each row came from - needed
+  ## downstream because RefNo numbering is independent between
+  ## FishBase and SeaLifeBase (the same integer can point to a
+  ## DIFFERENT, unrelated reference in each), so resolving a citation
+  ## requires knowing which server's references() table to query.
+  if (nrow(fb) > 0) fb[, .fetch_server := "fishbase"]
   
   if (fishbase_only) return(fb)
   
@@ -939,6 +1054,7 @@ fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
     message("Batch fetch (sealifebase) returned nothing - falling back to per-species calls...")
     slb <- fetch_per_species(fun, sp_list, "sealifebase")
   }
+  if (nrow(slb) > 0) slb[, .fetch_server := "sealifebase"]
   
   rbindlist(list(fb, slb), fill = TRUE)
 }
@@ -986,7 +1102,8 @@ growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
 
 ## Capture WHERE this selected record came from (Locality/Year), not
 ## just the numeric values - needed for the reference/provenance table
-growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)")
+growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)",
+                                        refno_candidates = c("PopGrowthRef", "RefNo", "MainRefNo"))
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
@@ -997,7 +1114,8 @@ lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
   a_lw = if ("a" %in% names(lw_best)) a else NA_real_,
   b_lw = if ("b" %in% names(lw_best)) b else NA_real_
 )] else data.table(Species = character())
-lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)")
+lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)",
+                                    refno_candidates = c("LWRef", "PopLWRef", "LengthWeightRef", "RefNo", "MainRefNo"))
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b")))
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
@@ -1010,7 +1128,8 @@ maturity_traits <- if (nrow(maturity_best) > 0) maturity_best[, .(
   Lm   = if (!is.na(lm_col)) get(lm_col) else NA_real_,
   Tmat = if (!is.na(tmat_col)) get(tmat_col) else NA_real_
 )] else data.table(Species = character())
-maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)")
+maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)",
+                                          refno_candidates = c("MaturityRef", "MatRef", "RefNo", "MainRefNo"))
 
 message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(lm_col), "NONE FOUND", lm_col), ")")
@@ -1831,9 +1950,9 @@ if (file.exists(ECOBASE_CSV_PATH)) {
     ## metadata across rows.
     References = paste(
       unique(sprintf("%s (%s, %s)",
-                     fifelse(is.na(EwE_model), "unknown model", EwE_model),
-                     fifelse(is.na(authors), "authors unknown", authors),
-                     fifelse(is.na(year), "year unknown", year))),
+                     fifelse(is.na(EwE_model), "unknown model", as.character(EwE_model)),
+                     fifelse(is.na(authors), "authors unknown", as.character(authors)),
+                     fifelse(is.na(year), "year unknown", as.character(year)))),
       collapse = "; ")
   ), by = FG_name]
   
@@ -2312,7 +2431,7 @@ build_fg_label <- function(dt, label = "") {
     message("    Still missing a name for FG numbers: ", paste(sort(unique(dt[is.na(FG_name), FG_num])), collapse = ", "))
   }
   
-  dt[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), FG_num)]
+  dt[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), as.character(FG_num))]
   dt
 }
 fg_pb_by_method <- build_fg_label(fg_pb_by_method, "PB")
