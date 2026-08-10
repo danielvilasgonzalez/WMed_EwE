@@ -592,4 +592,232 @@ export_ecopath_ecosim_excel(
   species_taxonomy = species_taxonomy
 )
 
+## =================================================================
+## STEP 10: Complete FG_spp_Ecopath / FG_lookup sheets.
+##
+## FG_spp_Ecopath includes EVERY species from the UNION of:
+##   (a) dataframe2 (the literal reference catalog, fg_wmed_95), and
+##   (b) species_density_regional (species actually observed and
+##       matched to an FG this run - including taxa resolved via
+##       taxonomy fallback/seed rules in Steps 3-4 that were never
+##       individually listed by name in dataframe2 to begin with).
+## Taking the union (not dataframe2 alone) matters: an earlier version
+## of this step used dataframe2 alone and ended up with FEWER species
+## than FG_spp_Ecosim, because fallback-matched taxa are only in (b),
+## not (a). Using (a) alone would silently drop them again.
+##
+## Species with NO observed density in the YEAR_ECOPATH base years
+## (either never observed at all, or observed only in other years)
+## get Density = 0 and prop_sp_fg = 0 - by request, not NA and not
+## dropped, so every FG-master species has a numeric value Ecopath can
+## read directly.
+## =================================================================
+all_species_fg <- unique(species_density_regional[, .(FG_num, FG_name, Species = ScientificName)])
+fg_master_species <- unique(dataframe2[, .(FG_num, FG_name, Species = ScientificName)])
+full_species_fg <- unique(rbindlist(list(all_species_fg, fg_master_species)), by = "Species")
+
+## --- base-year Density + within-FG proportion, zero-filled -------------
+density_in_base_years <- species_density_regional[
+  Year %in% YEAR_ECOPATH, .(Density = mean(mean_density, na.rm = TRUE)),
+  by = .(FG_num, FG_name, Species = ScientificName)]
+FG_spp_Ecopath <- merge(full_species_fg, density_in_base_years,
+                        by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
+
+n_zero_density <- FG_spp_Ecopath[is.na(Density), .N]
+if (n_zero_density > 0) {
+  message(n_zero_density, " of ", nrow(FG_spp_Ecopath), " species have no observed density in the ",
+          min(YEAR_ECOPATH), "-", max(YEAR_ECOPATH), " Ecopath base years (never observed, or ",
+          "observed only in other years) - Density and prop_sp_fg set to 0 for these.")
+}
+FG_spp_Ecopath[is.na(Density), Density := 0]
+
+FG_spp_Ecopath[, fg_total_density := sum(Density, na.rm = TRUE), by = FG_num]
+FG_spp_Ecopath[, prop_sp_fg := ifelse(fg_total_density > 0, Density / fg_total_density, 0)]
+FG_spp_Ecopath[, fg_total_density := NULL]
+
+## --- taxonomy columns (Genus/Family/Order/Class/Phylum) ----------------
+if (!is.null(species_taxonomy)) {
+  n_before_tax <- nrow(FG_spp_Ecopath)
+  FG_spp_Ecopath <- merge(FG_spp_Ecopath, species_taxonomy, by.x = "Species", by.y = "ScientificName", all.x = TRUE)
+  n_missing_tax <- FG_spp_Ecopath[is.na(Genus) & is.na(Family) & is.na(Class), .N]
+  if (n_missing_tax > 0) {
+    message(n_missing_tax, " of ", n_before_tax, " species in FG_spp_Ecopath have no taxonomy match",
+            " in species_taxonomy - taxonomy columns left blank for these:")
+    print(FG_spp_Ecopath[is.na(Genus) & is.na(Family) & is.na(Class), .(Species)])
+  }
+} else {
+  message("species_taxonomy not available - FG_spp_Ecopath will have no taxonomy columns.")
+}
+
+## --- defensive check: every FG_num/FG_name from dataframe2 present? ----
+## Should already be guaranteed since full_species_fg is built from
+## dataframe2 itself (every FG has at least one catalog species/
+## pseudo-species row, e.g. "Detritus"/"Discards") - kept as an
+## explicit check rather than a silent assumption.
+full_fg_list <- unique(dataframe2[, .(FG_num, FG_name)])
+fg_missing <- full_fg_list[!FG_num %in% unique(FG_spp_Ecopath$FG_num)]
+if (nrow(fg_missing) > 0) {
+  warning(nrow(fg_missing), " FG(s) from dataframe2 have NO species at all (not even a catalog",
+          " entry) and are missing from FG_spp_Ecopath - added as a placeholder row: ",
+          paste0(fg_missing$FG_num, ": ", fg_missing$FG_name, collapse = "; "))
+  FG_spp_Ecopath <- rbindlist(list(FG_spp_Ecopath, fg_missing), fill = TRUE)
+  FG_spp_Ecopath[is.na(Density), Density := 0]
+  FG_spp_Ecopath[is.na(prop_sp_fg), prop_sp_fg := 0]
+}
+
+## --- enforce column order: FG_num, FG_name, Species first -------------
+## The taxonomy merge above joins on "Species" (by.x/by.y), which
+## data.table puts first in the result - pushing FG_num/FG_name behind
+## it. Reset explicitly rather than relying on merge()'s column-order
+## side effect, since that's implementation detail, not a guarantee.
+setcolorder(FG_spp_Ecopath, c("FG_num", "FG_name", "Species",
+                              setdiff(names(FG_spp_Ecopath), c("FG_num", "FG_name", "Species"))))
+
+setorder(FG_spp_Ecopath, FG_num, -prop_sp_fg)
+
+FG_lookup <- unique(dataframe2[, .(FG_num, FG_name)])
+setorder(FG_lookup, FG_num)
+
+message("FG_spp_Ecopath: ", nrow(FG_spp_Ecopath), " species total (", n_zero_density,
+        " with Density/prop_sp_fg = 0). FG_lookup: ", nrow(FG_lookup), " unique FGs.")
+
+upsert_workbook_sheets(
+  sheets = list(
+    FG_spp_Ecopath = FG_spp_Ecopath,
+    FG_lookup      = FG_lookup
+  ),
+  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+)
+
+## =================================================================
+## STEP 11: traits_ewe sheet - species-level life-history/ecology
+## traits (Organism, Ecology, Occurrence status, Biomass/Catch
+## contribution, IUCN status, Exploitation status, Vulnerability
+## index, Mean/Max length, Mean weight, Mean life span), read from
+## fg_file's own "traits_ewe" sheet and reconciled against dataframe2
+## before being written into ecopath_ecosim_inputs.xlsx.
+##
+## fg_file's traits_ewe sheet alternates: a "N: Group Name" header row
+## (blank index column) followed by one data row per species in that
+## FG - the index column on species rows is a running species ID, NOT
+## the FG number; the FG number only exists in the header row's text
+## above it. This reads that structure directly and fills the FG
+## number/name DOWN from each header row onto the species rows below
+## it (the same thing a human does visually reading the merged-
+## looking layout in Excel), stopping at the next header row.
+## =================================================================
+fill_down <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) == 0) return(x)
+  rep_idx <- findInterval(seq_along(x), idx)
+  out <- x[idx][pmax(rep_idx, 1)]
+  out[rep_idx == 0] <- NA
+  out
+}
+
+traits_raw <- as.data.table(readxl::read_excel(fg_file, sheet = "traits_ewe", col_names = TRUE))
+setnames(traits_raw, 1, "row_index")
+setnames(traits_raw, "Species", "Species_col")
+
+is_header_row <- is.na(traits_raw$row_index) &
+  str_detect(traits_raw$Species_col, "^\\d+:\\s*")
+if (sum(is_header_row) == 0) {
+  stop("No FG header rows (pattern 'N: Group name') found in traits_ewe - the sheet ",
+       "layout may have changed. Check fg_file's traits_ewe sheet by eye before proceeding.")
+}
+
+header_num  <- rep(NA_real_, nrow(traits_raw))
+header_name <- rep(NA_character_, nrow(traits_raw))
+header_num[is_header_row]  <- as.numeric(str_match(traits_raw$Species_col[is_header_row], "^(\\d+):")[, 2])
+header_name[is_header_row] <- trimws(sub("^\\d+:\\s*", "", traits_raw$Species_col[is_header_row]))
+
+traits_raw[, FG_num_traits_sheet  := fill_down(header_num)]
+traits_raw[, FG_name_traits_sheet := fill_down(header_name)]
+
+## column names cleaned up for downstream use - original header text
+## (with its "(?)" unit uncertainty markers) kept in a comment here
+## rather than silently asserting units that weren't confirmed:
+##   Organism, Ecology, "Occurrence status", "Biomass contribution",
+##   "Catch contribution", "IUCN conservation status",
+##   "Exploitation status", "Vulnerability index (?)",
+##   "Mean length (?)", "Max length (?)", "Mean weight (?)",
+##   "Mean life span (year)"
+old_trait_names <- c("Organism", "Ecology", "Occurrence status", "Biomass contribution",
+                     "Catch contribution", "IUCN conservation status", "Exploitation status",
+                     "Vulnerability index (?)", "Mean length (?)", "Max length (?)",
+                     "Mean weight (?)", "Mean life span (year)")
+new_trait_names <- c("Organism", "Ecology", "Occurrence_status", "Biomass_contribution",
+                     "Catch_contribution", "IUCN_conservation_status", "Exploitation_status",
+                     "Vulnerability_index", "Mean_length", "Max_length",
+                     "Mean_weight", "Mean_lifespan_years")
+missing_trait_cols <- setdiff(old_trait_names, names(traits_raw))
+if (length(missing_trait_cols) > 0) {
+  stop("traits_ewe is missing expected trait column(s): ", paste(missing_trait_cols, collapse = ", "),
+       " - the sheet layout may have changed since this step was written.")
+}
+setnames(traits_raw, old_trait_names, new_trait_names)
+
+species_traits <- traits_raw[!is.na(row_index)]
+species_traits[, ScientificName := trimws(Species_col)]
+species_traits <- species_traits[, c("ScientificName", "FG_num_traits_sheet", "FG_name_traits_sheet",
+                                     new_trait_names), with = FALSE]
+
+dupe_traits_species <- species_traits[, .N, by = ScientificName][N > 1, ScientificName]
+if (length(dupe_traits_species) > 0) {
+  warning(length(dupe_traits_species), " species appear MORE THAN ONCE in traits_ewe - ",
+          "keeping the first occurrence of each, review the sheet for duplicates: ",
+          paste(dupe_traits_species, collapse = ", "))
+  species_traits <- unique(species_traits, by = "ScientificName")
+}
+
+## --- reconcile against dataframe2 (authoritative species/FG master) ----
+traits_reconciled <- merge(dataframe2, species_traits, by = "ScientificName", all = TRUE)
+
+not_in_master <- traits_reconciled[is.na(FG_num), ScientificName]
+if (length(not_in_master) > 0) {
+  warning(length(not_in_master), " species have a traits_ewe row but are NOT in dataframe2/",
+          "fg_wmed_95 (FG master) - likely a naming variant (e.g. 'Bivalvia' vs 'Bivalvia sp.') ",
+          "rather than a genuinely new species. Kept in the output, flagged in_fg_master = FALSE, ",
+          "NOT auto-matched to a master name since guessing wrong here would silently mix two ",
+          "different species' trait rows:\n  ", paste(not_in_master, collapse = ", "))
+}
+
+missing_traits <- traits_reconciled[!is.na(FG_num) & is.na(FG_num_traits_sheet), ScientificName]
+non_living_fgs <- c("Detritus", "Discards")
+missing_traits_living <- setdiff(missing_traits, non_living_fgs)
+if (length(missing_traits_living) > 0) {
+  warning(length(missing_traits_living), " species are in the FG master but have NO traits_ewe ",
+          "row (missing_traits = TRUE in the output, not silently dropped): ",
+          paste(missing_traits_living, collapse = ", "))
+}
+if (length(intersect(missing_traits, non_living_fgs)) > 0) {
+  message(length(intersect(missing_traits, non_living_fgs)), " non-living FG placeholder(s) (",
+          paste(intersect(missing_traits, non_living_fgs), collapse = ", "),
+          ") have no traits_ewe row, as expected.")
+}
+
+fg_num_mismatch <- traits_reconciled[
+  !is.na(FG_num) & !is.na(FG_num_traits_sheet) & FG_num != FG_num_traits_sheet,
+  .(ScientificName, FG_num, FG_name, FG_num_traits_sheet, FG_name_traits_sheet)
+]
+if (nrow(fg_num_mismatch) > 0) {
+  warning(nrow(fg_num_mismatch), " species have a DIFFERENT FG_num in traits_ewe than in the FG ",
+          "master (dataframe2's FG_num is used in the output) - worth reconciling by hand:")
+  print(fg_num_mismatch)
+}
+
+traits_reconciled[, in_fg_master := !is.na(FG_num)]
+traits_reconciled[, missing_traits := is.na(FG_num_traits_sheet)]
+traits_reconciled[, c("FG_num_traits_sheet", "FG_name_traits_sheet") := NULL]
+setorder(traits_reconciled, FG_num, ScientificName, na.last = TRUE)
+
+message("traits_ewe reconciled: ", nrow(traits_reconciled), " species total (",
+        sum(!traits_reconciled$missing_traits), " with traits, ",
+        sum(traits_reconciled$missing_traits), " missing traits).")
+
+upsert_workbook_sheets(
+  sheets = list(traits_ewe = traits_reconciled),
+  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+)
+
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
