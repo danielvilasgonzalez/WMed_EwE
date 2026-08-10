@@ -1212,5 +1212,31 @@ upsert_workbook_sheets(
   out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 )
 
+## =================================================================
+## STEP 13: fix sheet names/order in ecopath_ecosim_inputs.xlsx.
+##
+## Safe to run from EVERY script that touches this workbook, in any
+## order - finalize_workbook_sheet_order() skips target sheets that
+## don't exist yet (e.g. Catches_Ecopath/Catches_Ecosim from
+## 02_fao_catches.R, PB_QB from 04_pbqb_calc.R, Ecobase/References from
+## wherever those come from, if they haven't run yet) and appends any
+## sheet it doesn't recognize rather than dropping it - so whichever
+## script runs LAST naturally leaves the workbook in the right order,
+## same order-independent design as upsert_workbook_sheets() itself.
+## Add this same block to 02_fao_catches.R and 04_pbqb_calc.R too so
+## the order stays correct no matter which one actually runs last.
+## =================================================================
+finalize_workbook_sheet_order(
+  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
+  rename_map = c(
+    FG_lookup  = "FG",
+    References = "PB_QB_References_"
+  ),
+  target_order = c(
+    "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "Ecobase",
+    "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim", "Catches_Ecosim"
+  )
+)
+
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())

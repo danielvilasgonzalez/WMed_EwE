@@ -62,8 +62,8 @@ extract_out_dir <- function(script_path) {
   gsub('.*out_dir\\s*<-\\s*"([^"]+)".*', '\\1', match_line)
 }
 
-gsa_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_westmed.R"
-custom_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/medits_example_custom.R"
+gsa_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/01_survey_density_westmed.R"
+custom_script_path <- "/Users/daniel/Documents/GitHub/WMed_EwE/scripts/01_survey_density_custom.R"
 
 gsa_out_dir <- extract_out_dir(gsa_script_path)
 custom_out_dir <- extract_out_dir(custom_script_path)
@@ -124,14 +124,14 @@ safe_include_graphics <- function(path, script_hint) {
 
 ## Overview
 
-This document explains the methodology behind `survey_fg_density_functions.R`, a generalized function library for converting fishery-independent survey data (biomass/density by species, haul, year, area, stratum) into a Functional Group (FG) density index suitable as Ecopath/Ecosim input.
+This document explains the methodology behind `lib_survey_fg_density_functions.R`, a generalized function library for converting fishery-independent survey data (biomass/density by species, haul, year, area, stratum) into a Functional Group (FG) density index suitable as Ecopath/Ecosim input.
 
 Unlike the original, MEDITS-specific `medbs_full_pipeline_with_fg.R` script this document previously covered, the pipeline is now split into two layers:
 
-1. **A shared, survey-agnostic function library** (`survey_fg_density_functions.R`) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.
+1. **A shared, survey-agnostic function library** (`lib_survey_fg_density_functions.R`) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.
 2. **Survey-specific example scripts** that read a particular survey's raw files, reshape them into the library's standardized input format, and call the shared functions. Two examples are covered here:
-   - `medits_example_westmed.R` - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.
-   - `medits_example_custom.R` - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.
+   - `01_survey_density_westmed.R` - MEDITS bottom-trawl data, study area defined by the official GFCM GSA (Geographical Sub-Area) polygons.
+   - `01_survey_density_custom.R` - the same MEDITS data, but with the study area defined by a custom boundary (a simple bounding box, or any other shapefile) instead of GSA polygons - useful when the same underlying survey needs to support a different EwE model with its own footprint.
 
 Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) that aren't available at render time. To reproduce the actual numbers, run the source `.R` scripts directly. (The exceptions are the figure-copying setup chunk above and the `safe_include_graphics()` calls below, which only need the plot files to already exist on disk - and degrade to a clear placeholder message, rather than failing the whole render, if a given example script hasn't been run yet.)
 
@@ -300,7 +300,7 @@ FILTER_AREAS <- 1:11
 #| echo: false
 #| fig-cap: "Sample coverage by GSA. selected_areas highlights the GSAs actually in scope (FILTER_AREAS) with a bold black outline - the outer contour of their union, not the internal lines between them."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "01_survey_density_westmed.R")
 ```
 
 ### Approach B - a custom boundary (bounding box or arbitrary shapefile)
@@ -341,7 +341,7 @@ A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it 
 #| echo: false
 #| fig-cap: "Sample coverage within a custom bounding-box region, independent of GSA lines entirely."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "custom_survey_sample_coverage_map.png"), "medits_example_custom.R")
+safe_include_graphics(file.path("figures", "custom_survey_sample_coverage_map.png"), "01_survey_density_custom.R")
 ```
 
 With only one custom area, `AreaID` is set to `1` for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever `AreaID`/`area_shp` combination they're given, never assuming GSA-specific structure.
@@ -453,7 +453,7 @@ fg_index <- weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_
 #| echo: false
 #| fig-cap: "Density index by Functional Group and area, strata-weighted (per-area version - see @sec-regional for the region-wide aggregate used in Ecopath/Ecosim inputs)."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_density_timeseries.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_fg_density_timeseries.png"), "01_survey_density_westmed.R")
 ```
 
 ## Region-wide aggregation (across areas) {#sec-regional}
@@ -477,7 +477,7 @@ This is the version used for Ecopath/Ecosim-facing outputs - the per-area index 
 #| echo: false
 #| fig-cap: "Region-wide, area-weighted density index by Functional Group."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_density_timeseries_regional.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_fg_density_timeseries_regional.png"), "01_survey_density_westmed.R")
 ```
 
 For the custom-region example (@sec-area-definition, Approach B), this step is mathematically a formality with only one area in scope - `weight_by_area()` still runs the same formula, it just sums over one area's worth of cells, so the result is identical to the per-area index above. It's kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.
@@ -501,7 +501,7 @@ If the pipeline is working correctly, FGs known to live in deep water should sho
 #| echo: false
 #| fig-cap: "Depth-strata density profile by Functional Group."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_fg_depth_strata_profile.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_fg_depth_strata_profile.png"), "01_survey_density_westmed.R")
 ```
 
 ## Sample coverage map
@@ -527,7 +527,7 @@ This does more than plot points - it performs concrete geometric checks and repo
 #| echo: false
 #| fig-cap: "Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area."
 #| out-width: "100%"
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "01_survey_density_westmed.R")
 ```
 
 `by_year = TRUE` produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year's samples overlaid on top of it can make a real gap look fine.
@@ -539,7 +539,7 @@ safe_include_graphics(file.path("figures", "survey_sample_coverage_map.png"), "m
 #| fig-cap: "Sample coverage faceted by year."
 #| out-width: "100%"
 #| fig-width: 16
-safe_include_graphics(file.path("figures", "survey_sample_coverage_map_by_year.png"), "medits_example_westmed.R")
+safe_include_graphics(file.path("figures", "survey_sample_coverage_map_by_year.png"), "01_survey_density_westmed.R")
 ```
 
 ---
@@ -553,21 +553,132 @@ safe_include_graphics(file.path("figures", "survey_sample_coverage_map_by_year.p
 | `survey_unmatched_for_manual_review.csv` | Species still unmatched after every FG-matching stage, with mean biomass, appearance count, and taxonomy |
 | `survey_outliers_flagged.csv` | Sample-level observations flagged as statistical outliers, with a `was_dropped` column |
 | `strata_area_by_area.csv` | Cached bathymetry-derived stratum area proportions per area |
-| `ecopath_ecosim_inputs.xlsx` | Four-sheet Ecopath/Ecosim input workbook (below) |
+| `ecopath_ecosim_inputs.xlsx` | Shared, multi-script Ecopath/Ecosim input workbook (below) |
 
-### `ecopath_ecosim_inputs.xlsx` sheets
+### `ecopath_ecosim_inputs.xlsx`
 
-| Sheet | Content |
-|---|---|
-| `FG_spp_Ecopath` | Species-level density, `prop_sp_fg` (each species' share of its FG's total density), and taxonomy, averaged over `year_ecopath` - the base-year snapshot for Ecopath initialization and for computing a biomass-weighted PB/QB across an FG's constituent species |
-| `Ecopath` | FG-level biomass for the base year and the `year_ecopath` average - **every FG in the reference table gets a row**, even one with zero observed biomass in the base years specifically (blank, not simply absent) |
-| `Ecosim` | FG-level relative biomass time series across the full `ts_years` range, in Ecosim's wide import format |
-| `FG_spp_Ecosim` | Species-level density, averaged across the *full* `ts_years` range (not just the base years) - no `Year` column, since this is each species' overall long-term average rather than a per-year breakdown. The difference from `FG_spp_Ecopath` is purely the time window averaged over |
+This workbook is built up **across four different scripts**, not just this one - `01_survey_density_westmed.R`/`01_survey_density_custom.R` (biomass/density sheets, this document), `02_fao_catches.R` (catch sheets), `04_pbqb_calc.R` (PB/QB), plus whatever produces the EcoBase/reference sheets. Each script's `upsert_workbook_sheets()` call only ever adds or replaces *its own* named sheets - it never touches or reorders anyone else's, so the scripts can be run in any order, repeatedly, without one clobbering another's work.
+
+Because of that, final sheet **order** isn't something any single script controls - it's fixed up in one last step, `finalize_workbook_sheet_order()`, called at the end of both `01_survey_density_westmed.R` and `01_survey_density_custom.R` (and, once written, the equivalent point in `02_fao_catches.R`/`04_pbqb_calc.R` too). It renames a couple of sheets and reorders the whole workbook to a fixed target layout, skipping any target sheet that hasn't been created yet and keeping - never dropping - anything unexpected it finds. Whichever of the four scripts happens to run *last* leaves the workbook in the correct final state.
+
+**Final sheet order:**
+
+| # | Sheet | Written by | Content |
+|---|---|---|---|
+| 1 | `FG` *(renamed from `FG_lookup`)* | `01_survey_density_*.R` | Every unique FG_num/FG_name pair from the FG reference table |
+| 2 | `Ecopath` | `01_survey_density_*.R` | FG-level biomass for the base year and the `year_ecopath` average |
+| 3 | `Catches_Ecopath` | `02_fao_catches.R` | FG-level catch, base-year snapshot, mirroring `Ecopath`'s shape |
+| 4 | `FG_spp_Ecopath` | `01_survey_density_*.R` | Species-level density, `prop_sp_fg`, and taxonomy for the base-year window (see below) |
+| 5 | `PB_QB` | `04_pbqb_calc.R` | Production/biomass and consumption/biomass by FG |
+| 6 | `Ecobase` | *(external source)* | EcoBase-derived reference values |
+| 7 | `PB_QB_References_` *(renamed from `References`)* | `04_pbqb_calc.R` | FishBase/SeaLifeBase reference citations backing the PB/QB estimates |
+| 8 | `traits_ewe` | `01_survey_density_*.R` | Species-level life-history/ecology traits, reconciled against the FG reference table (see below) |
+| 9 | `Ecosim` | `01_survey_density_*.R` | FG-level relative biomass time series across the full `ts_years` range |
+| 10 | `FG_spp_Ecosim` | `01_survey_density_*.R` | Species-level density, averaged across the *full* `ts_years` range |
+| 11 | `Catches_Ecosim` | `02_fao_catches.R` | FG-level catch time series, mirroring `Ecosim`'s shape |
 
 ::: {.callout-note}
-### Every FG and every matched species gets a row, even with no data
-Earlier versions of the FG_spp/Ecopath sheets were built by filtering to `year_ecopath` *before* constructing the row list, which silently dropped any species (or, for the Ecopath sheet, any entire FG) with no observations in that specific base-year window - even when they were correctly matched and had real data for other years. The sheets are now built from the full reference lists (every matched species, every FG in `dataframe2`) with the relevant density left-joined in, so "no data for this period" and "doesn't belong to this FG" are no longer collapsed into the same "row is absent" symptom.
+### `FG_spp_Ecopath`: every species, zero-filled rather than blank or absent
+`FG_spp_Ecopath`'s species list is the **union** of the FG reference table (`dataframe2`) and every species actually observed and FG-matched this run (`species_density_regional[_combined]`) - taking the union, not the reference table alone, matters because taxonomy-fallback/seed-rule matches (@sec-fg-matching, Stages 3-4) can resolve a species to an FG without that species ever having been individually listed in the reference table by name. Using the reference table alone would silently drop those.
+
+A species with no observed density in the `year_ecopath` base years - whether never observed at all, or only observed in other years - gets `Density = 0` and `prop_sp_fg = 0`, not `NA` and not a missing row. Taxonomy columns (`Genus`/`Family`/`Order`/`Class`/`Phylum`) are merged in from `species_taxonomy` for every species, observed or not. `FG_num`, `FG_name`, `Species` are always the first three columns.
 :::
+
+```{r}
+#| label: fg-spp-ecopath-build
+## Union of the reference catalog and everything actually observed/matched -
+## NOT the reference catalog alone (see callout above for why that matters)
+all_species_fg <- unique(species_density_regional_combined[, .(FG_num, FG_name, Species = ScientificName)])
+fg_master_species <- unique(dataframe2[, .(FG_num, FG_name, Species = ScientificName)])
+full_species_fg <- unique(rbindlist(list(all_species_fg, fg_master_species)), by = "Species")
+
+## base-year Density + within-FG proportion, zero-filled rather than NA
+density_in_base_years <- species_density_regional_combined[
+  Year %in% YEAR_ECOPATH, .(Density = mean(mean_density, na.rm = TRUE)),
+  by = .(FG_num, FG_name, Species = ScientificName)]
+FG_spp_Ecopath <- merge(full_species_fg, density_in_base_years,
+                        by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
+FG_spp_Ecopath[is.na(Density), Density := 0]
+FG_spp_Ecopath[, fg_total_density := sum(Density, na.rm = TRUE), by = FG_num]
+FG_spp_Ecopath[, prop_sp_fg := ifelse(fg_total_density > 0, Density / fg_total_density, 0)]
+FG_spp_Ecopath[, fg_total_density := NULL]
+
+## taxonomy merged in for every species, observed or not
+FG_spp_Ecopath <- merge(FG_spp_Ecopath, species_taxonomy, by.x = "Species", by.y = "ScientificName", all.x = TRUE)
+
+## defensive check: every dataframe2 FG present, even with zero species/biomass
+full_fg_list <- unique(dataframe2[, .(FG_num, FG_name)])
+fg_missing <- full_fg_list[!FG_num %in% unique(FG_spp_Ecopath$FG_num)]
+if (nrow(fg_missing) > 0) {
+  FG_spp_Ecopath <- rbindlist(list(FG_spp_Ecopath, fg_missing), fill = TRUE)
+  FG_spp_Ecopath[is.na(Density), Density := 0]
+  FG_spp_Ecopath[is.na(prop_sp_fg), prop_sp_fg := 0]
+}
+
+## FG_num, FG_name, Species always first - merge()'s own column-order
+## side effect isn't relied on
+setcolorder(FG_spp_Ecopath, c("FG_num", "FG_name", "Species",
+                              setdiff(names(FG_spp_Ecopath), c("FG_num", "FG_name", "Species"))))
+setorder(FG_spp_Ecopath, FG_num, -prop_sp_fg)
+```
+
+::: {.callout-note}
+### `traits_ewe`: read from the FG reference workbook, not built from scratch
+The FG reference file (`FG_WMed.xlsx`) already has its own `traits_ewe` sheet - species-level Organism/Ecology/Occurrence/Biomass & Catch contribution/IUCN/Exploitation/Vulnerability/Mean & Max length/Mean weight/Mean life span, laid out as alternating "`N: Group Name`" header rows followed by one row per species in that FG. This is parsed directly (the FG number/name is filled DOWN from each header row onto the species rows beneath it) and reconciled against `dataframe2`, the same species/FG master used everywhere else: species with no traits row are flagged (`missing_traits = TRUE`), species with a traits row not matching any master species by name are kept but flagged (`in_fg_master = FALSE`, most often a naming variant like "Bivalvia" vs. "Bivalvia sp." rather than a genuinely new species), and any FG-number disagreement between the two sources is printed rather than silently resolved either way.
+:::
+
+```{r}
+#| label: traits-ewe-parse
+## the index column on species rows is a running species ID, NOT the FG
+## number - the FG number only exists in the "N: Group Name" header
+## row's text above it, so it's filled DOWN onto the species rows below
+fill_down <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) == 0) return(x)
+  rep_idx <- findInterval(seq_along(x), idx)
+  out <- x[idx][pmax(rep_idx, 1)]
+  out[rep_idx == 0] <- NA
+  out
+}
+
+traits_raw <- as.data.table(readxl::read_excel(fg_file, sheet = "traits_ewe", col_names = TRUE))
+setnames(traits_raw, 1, "row_index")
+is_header_row <- is.na(traits_raw$row_index) & str_detect(traits_raw$Species, "^\\d+:\\s*")
+header_num  <- rep(NA_real_, nrow(traits_raw))
+header_num[is_header_row] <- as.numeric(str_match(traits_raw$Species[is_header_row], "^(\\d+):")[, 2])
+traits_raw[, FG_num_traits_sheet := fill_down(header_num)]
+
+species_traits <- traits_raw[!is.na(row_index)]
+species_traits[, ScientificName := trimws(Species)]
+
+## reconcile against dataframe2 - flag gaps in either direction rather
+## than silently guessing at a naming-variant match
+traits_reconciled <- merge(dataframe2, species_traits, by = "ScientificName", all = TRUE)
+traits_reconciled[, in_fg_master := !is.na(FG_num)]
+traits_reconciled[, missing_traits := is.na(FG_num_traits_sheet)]
+```
+
+::: {.callout-note}
+### Sheet order and renames are fixed up in one final step
+`upsert_workbook_sheets()` (used by every script that writes to this workbook) is deliberately order-independent - it only ever adds/replaces its own named sheets, never reorders the workbook. Final sheet order is instead set explicitly, once, by `finalize_workbook_sheet_order()`, called at the end of `01_survey_density_westmed.R`/`01_survey_density_custom.R` (and, once added, the equivalent point in `02_fao_catches.R`/`04_pbqb_calc.R`):
+:::
+
+```{r}
+#| label: finalize-sheet-order
+finalize_workbook_sheet_order(
+  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
+  rename_map = c(
+    FG_lookup  = "FG",
+    References = "PB_QB_References_"
+  ),
+  target_order = c(
+    "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "Ecobase",
+    "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim", "Catches_Ecosim"
+  )
+)
+```
+
+Sheets already renamed to their target name are matched as-is; a target sheet that doesn't exist yet (e.g. `PB_QB` before `04_pbqb_calc.R` has run) is skipped with a message, not an error, and anything in the workbook that isn't in `target_order` is kept and appended at the end rather than dropped - so this is safe to call from every script, in any order, and whichever one runs *last* leaves the workbook correctly ordered.
 
 ::: {.callout-warning}
 ### On the Ecosim time-series format
@@ -575,8 +686,46 @@ Unlike the Ecopath sheet format (checked directly against a real exported file f
 :::
 
 ::: {.callout-note}
-### On PB/QB
-This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density. `FG_spp_Ecopath`'s `prop_sp_fg` column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.
+### `PB_QB`: added from `04_pbqb_calc.R`'s own FG-level table
+This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (`04_pbqb_calc.R`) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. `FG_spp_Ecopath`'s `prop_sp_fg` column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.
+
+The actual sheet-writing step, from `lib_survey_fg_density_functions.R`:
+
+```{r}
+#| label: pbqb-sheet
+#| code-fold: false
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
+  required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
+  missing_cols <- setdiff(required_cols, names(fg_weighted))
+  if (length(missing_cols) > 0) {
+    stop("add_pbqb_to_ecopath_workbook(): fg_weighted is missing required column(s): ",
+         paste(missing_cols, collapse = ", "))
+  }
+
+  ## carried through IF present, but not required - different
+  ## 04_pbqb_calc.R runs may or may not have gone through the
+  ## EcoBase-fill or FG-level-F steps
+  optional_cols <- intersect(
+    c("Biomass_FG", "n_species_with_PB", "n_species_with_QB", "n_species_total",
+      "biomass_coverage_PB", "biomass_coverage_QB", "n_species_with_F",
+      "PB_FG_before_F", "F_FG", "PB_source", "QB_source"),
+    names(fg_weighted)
+  )
+  pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
+  setnames(pbqb_sheet, "FG", "FG_num")
+  setorder(pbqb_sheet, FG_num)
+
+  upsert_workbook_sheets(list(PB_QB = pbqb_sheet), out_path)
+  invisible(pbqb_sheet)
+}
+```
+
+`fg_weighted` is `04_pbqb_calc.R`'s own FG-level aggregation - only `FG`, `FG_name`, `PB_FG`, `QB_FG` are required; everything else (biomass coverage, species counts, F-adjustment audit columns) is carried through automatically if present, so the sheet's exact column set can vary slightly depending on which optional steps that run went through, without needing this function to know about them in advance.
+:::
+
+::: {.callout-important}
+### `Ecobase` - not yet documented here
+Unlike `PB_QB` above, this document doesn't have real code to show for how the `Ecobase` sheet gets built - whichever script produces it isn't part of what this methodology document currently covers, and the comment in `lib_survey_fg_density_functions.R` only mentions it in passing ("*whether a given `04_pbqb_calc.R` run has gone through the EcoBase-fill step*"), without the actual source. Rather than guess at a plausible-looking implementation, this section is left as a placeholder - fill it in once that script's actual source is available to document against.
 :::
 
 

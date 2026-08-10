@@ -1587,7 +1587,7 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
                 " to plain st_union(), which may still show minor seam artifacts.")
         unioned
       })
-      p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 1.3)
+      p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 0.8)
     }
   }
   
@@ -1640,15 +1640,23 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
               " below - separate from the projection/bad-data diagnostic above, since a point can be",
               " a perfectly valid coordinate in a real, neighboring GSA and still be outside this",
               " particular analysis's scope.")
-      p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area), size = 0.6, alpha = 0.3) +
+      ## shape = 4 (an "x" cross) for BOTH categories - color is what
+      ## distinguishes inside/outside here, not shape. Fixed as a
+      ## constant param rather than mapped via aes() specifically so
+      ## every point renders the same symbol regardless of category;
+      ## only scale_color_manual varies by in_study_area. stroke
+      ## bumped slightly above ggplot's default (0.5) since a thin
+      ## cross at size=0.6 can otherwise read as barely-there.
+      p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area),
+                       shape = 4, size = 0.6, stroke = 0.7, alpha = 0.3) +
         scale_color_manual(name = NULL, values = c("Inside study area" = "black", "Outside study area" = "red3")) +
         ## legend symbols shown larger and fully opaque than the actual
         ## map points (which stay small/semi-transparent to reduce
         ## overplotting clutter with many samples) - purely a legend-
         ## readability fix, the plotted points themselves are unaffected
-        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1, shape = 4, stroke = 1)))
     } else {
-      p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.15, color = "black")
+      p <- p + geom_sf(data = sample_pts_sf, shape = 4, size = 0.6, stroke = 0.7, alpha = 0.15, color = "black")
     }
     message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
             if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
@@ -1847,6 +1855,96 @@ upsert_workbook_sheets <- function(sheets, out_path) {
   
   openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
   message("Saved '", out_path, "' (sheets now: ", paste(names(wb), collapse = ", "), ")")
+  invisible(wb)
+}
+
+## =================================================================
+## finalize_workbook_sheet_order()
+##
+## Fixes sheet NAMES and ORDER in ecopath_ecosim_inputs.xlsx to a
+## fixed target layout. Run this LAST, after every upstream script
+## that writes to the workbook (01_survey_density_*.R, 02_fao_catches.R,
+## 04_pbqb_calc.R, and whatever writes Ecobase) has already run -
+## upsert_workbook_sheets() itself is order-independent (each script
+## just adds/replaces its own sheets wherever the workbook happens to
+## be), so nothing upstream ever needs to know about final order.
+##
+## rename_map: named character vector, c(old_name = new_name). Applied
+## BEFORE reordering, so target_order should use the NEW names.
+## target_order: character vector of sheet names in the desired final
+## order (using the NEW names, post-rename).
+##
+## Sheets in target_order that don't exist in the workbook are skipped
+## with a message (not an error) - upstream scripts run at different
+## times, so not every sheet is guaranteed to exist yet.
+## Sheets that exist in the workbook but are NOT in target_order are
+## kept and appended at the end, in their original relative order -
+## never silently dropped, just flagged with a warning so an
+## unexpected/forgotten sheet doesn't slip by unnoticed.
+## =================================================================
+finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), target_order) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("openxlsx is required to finalize sheet order for '", out_path, "'.")
+  }
+  if (!file.exists(out_path)) {
+    stop("finalize_workbook_sheet_order(): workbook not found at '", out_path, "' - ",
+         "run the upstream export scripts first.")
+  }
+  
+  wb <- openxlsx::loadWorkbook(out_path)
+  current_names <- names(wb)
+  message("finalize_workbook_sheet_order(): workbook currently has ", length(current_names),
+          " sheet(s): ", paste(current_names, collapse = ", "))
+  
+  ## --- renames ------------------------------------------------------------
+  if (length(rename_map) > 0) {
+    missing_to_rename <- setdiff(names(rename_map), current_names)
+    if (length(missing_to_rename) > 0) {
+      message("finalize_workbook_sheet_order(): rename requested for sheet(s) not present",
+              " (skipped): ", paste(missing_to_rename, collapse = ", "))
+    }
+    for (old_nm in intersect(names(rename_map), current_names)) {
+      new_nm <- rename_map[[old_nm]]
+      if (new_nm %in% setdiff(names(wb), old_nm)) {
+        stop("finalize_workbook_sheet_order(): can't rename '", old_nm, "' to '", new_nm,
+             "' - a DIFFERENT sheet already has that name. Resolve the name collision by hand.")
+      }
+      openxlsx::renameWorksheet(wb, sheet = old_nm, newName = new_nm)
+      message("Renamed sheet '", old_nm, "' -> '", new_nm, "'")
+    }
+  }
+  
+  ## --- reorder --------------------------------------------------------------
+  current_names <- names(wb)  # re-read post-rename
+  dupe_targets <- target_order[duplicated(target_order)]
+  if (length(dupe_targets) > 0) {
+    warning("finalize_workbook_sheet_order(): target_order has duplicate name(s) - using only",
+            " the FIRST occurrence of each, extras dropped from the ordering request (a sheet",
+            " can only appear once in a workbook): ", paste(unique(dupe_targets), collapse = ", "))
+    target_order <- unique(target_order)
+  }
+  
+  target_present <- intersect(target_order, current_names)
+  target_missing <- setdiff(target_order, current_names)
+  if (length(target_missing) > 0) {
+    message("finalize_workbook_sheet_order(): target sheet(s) not in the workbook yet (skipped,",
+            " re-run this after the script that creates them has run): ",
+            paste(target_missing, collapse = ", "))
+  }
+  
+  extra_sheets <- setdiff(current_names, target_order)
+  if (length(extra_sheets) > 0) {
+    warning("finalize_workbook_sheet_order(): sheet(s) in the workbook but NOT in target_order -",
+            " kept, appended at the end rather than dropped: ", paste(extra_sheets, collapse = ", "))
+  }
+  
+  final_order_names <- c(target_present, extra_sheets)
+  new_position_of_current_index <- match(final_order_names, current_names)
+  openxlsx::worksheetOrder(wb) <- new_position_of_current_index
+  
+  openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
+  message("finalize_workbook_sheet_order(): saved '", out_path, "' - final sheet order: ",
+          paste(names(wb), collapse = ", "))
   invisible(wb)
 }
 
