@@ -1544,6 +1544,24 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
       axis.text = element_text(color = "black", face = "plain")
     )
   
+  ## A gradient FILL is meaningless with only a single polygon (the
+  ## custom-region bounding-box case) - one feature, one value, so the
+  ## whole box just renders as one flat color with no visual gradation
+  ## at all, unlike the westmed GSA case where 11 differently-shaded
+  ## polygons genuinely show relative coverage. When there's only one
+  ## area, print the actual sample count as a text label on the map
+  ## instead of relying on a fill scale that can't convey anything
+  ## with a single value.
+  n_distinct_areas <- length(unique(area_shp_plot[[area_id_col]]))
+  if (n_distinct_areas == 1) {
+    message("Only one area in area_shp_plot (the custom-region case) - the fill gradient can't",
+            " show meaningful variation with a single polygon, so the sample count is also",
+            " printed directly on the map as a text label.")
+    centroid_pts <- suppressWarnings(sf::st_centroid(area_shp_plot))
+    p <- p + geom_sf_text(data = centroid_pts, aes(label = paste0(n_samples, " samples")),
+                          color = "grey15", fontface = "bold", size = 4.5)
+  }
+  
   ## land_on_top handling moved to AFTER the selected-area contour
   ## block below - land needs to sit on top of the contour too, not
   ## just the intensity fill, so it's drawn last (right before the
@@ -1644,19 +1662,24 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
       ## distinguishes inside/outside here, not shape. Fixed as a
       ## constant param rather than mapped via aes() specifically so
       ## every point renders the same symbol regardless of category;
-      ## only scale_color_manual varies by in_study_area. stroke
-      ## bumped slightly above ggplot's default (0.5) since a thin
-      ## cross at size=0.6 can otherwise read as barely-there.
+      ## only scale_color_manual varies by in_study_area. size/stroke
+      ## sit between two failure modes: too small (0.6/0.7, the
+      ## original) and an "x" is indistinguishable from a dot; too
+      ## opaque and hundreds of overlapping points blend into a solid
+      ## haze regardless of shape. alpha does more work than size here
+      ## for reducing overplotting clutter specifically - dropped
+      ## further (0.4 -> 0.25) while keeping size/stroke just large
+      ## enough that individual crosses still read as crosses.
       p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area),
-                       shape = 4, size = 0.6, stroke = 0.7, alpha = 0.3) +
+                       shape = 4, size = 0.9, stroke = 0.8, alpha = 0.25) +
         scale_color_manual(name = NULL, values = c("Inside study area" = "black", "Outside study area" = "red3")) +
         ## legend symbols shown larger and fully opaque than the actual
         ## map points (which stay small/semi-transparent to reduce
         ## overplotting clutter with many samples) - purely a legend-
         ## readability fix, the plotted points themselves are unaffected
-        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1, shape = 4, stroke = 1)))
+        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1, shape = 4, stroke = 1.3)))
     } else {
-      p <- p + geom_sf(data = sample_pts_sf, shape = 4, size = 0.6, stroke = 0.7, alpha = 0.15, color = "black")
+      p <- p + geom_sf(data = sample_pts_sf, shape = 4, size = 0.9, stroke = 0.8, alpha = 0.12, color = "black")
     }
     message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
             if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
