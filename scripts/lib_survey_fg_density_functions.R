@@ -1929,8 +1929,19 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
     for (old_nm in intersect(names(rename_map), current_names)) {
       new_nm <- rename_map[[old_nm]]
       if (new_nm %in% setdiff(names(wb), old_nm)) {
-        stop("finalize_workbook_sheet_order(): can't rename '", old_nm, "' to '", new_nm,
-             "' - a DIFFERENT sheet already has that name. Resolve the name collision by hand.")
+        ## This is expected on a RE-run, not a genuine conflict: an earlier
+        ## call to this same function already renamed old_nm -> new_nm, and
+        ## since then an upstream script re-ran upsert_workbook_sheets() and
+        ## wrote fresh data back under old_nm again (upsert always writes to
+        ## the pre-rename literal name - it has no way to know a previous
+        ## finalize_workbook_sheet_order() call already renamed it). So
+        ## new_nm here is STALE data from the previous run, and old_nm is
+        ## this run's current data - old_nm wins. Drop the stale new_nm
+        ## sheet, then proceed with the rename as normal.
+        message("finalize_workbook_sheet_order(): '", new_nm, "' already exists (leftover from",
+                " a previous rename) while '", old_nm, "' has fresh data from this run - replacing",
+                " the stale '", new_nm, "' with '", old_nm, "''s current content rather than erroring.")
+        openxlsx::removeWorksheet(wb, new_nm)
       }
       openxlsx::renameWorksheet(wb, sheet = old_nm, newName = new_nm)
       message("Renamed sheet '", old_nm, "' -> '", new_nm, "'")
