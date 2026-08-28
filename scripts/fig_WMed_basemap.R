@@ -22,11 +22,37 @@ if (!requireNamespace("rnaturalearthhires", quietly = TRUE)) {
 
 ## --- 1. Download & unzip official GFCM GSA shapefile ---------------------
 
-setwd('/Users/daniel/Work/iMARES/')
 
+if (tolower(Sys.info()[["user"]]) == "daniel") {
+  setwd('/Users/daniel/Work/iMARES/WMed EwE Model')
+} else if (tolower(Sys.info()[["user"]]) == "danie") {
+  setwd('C:/Users/danie/Desktop/iMARES/WMed EwE Model')
+} else {
+  ## Falls back to an interactive directory picker in RStudio, rather
+  ## than just stopping with "set it manually" - so this script works
+  ## for anyone, not just the one hardcoded username above.
+  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
+      !rstudioapi::isAvailable()) {
+    stop(
+      "This script requires RStudio. Please select the working directory manually."
+    )
+  }
+  rstudioapi::showQuestion(
+    title = "Select Working Directory",
+    message = paste(
+      "Please set the working directory."
+    )
+  )
+  out_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+    stop("No valid working directory selected.")
+  }
+}
+
+dir.create("/shapefiles/", recursive = TRUE, showWarnings = FALSE)
 zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-zip_file <- "./WMed EwE Model/shapefiles/GFCM_GSA.zip"
-shp_dir  <- "./WMed EwE Model/shapefiles/GFCM_GSA_shp"
+zip_file <- "./shapefiles/GFCM_GSA.zip"
+shp_dir  <- "./shapefiles/GFCM_GSA_shp"
 
 if (!dir.exists(shp_dir)) {
   if (!file.exists(zip_file)) {
@@ -186,8 +212,14 @@ sicily_divide <- st_sfc(
 )
 
 ## --- 6. Basemap (coastline) ------------------------------------------------
-
-coast <- ne_countries(scale = 10, returnclass = "sf")
+#if error, then lower resolution
+coast <- tryCatch(
+  ne_countries(scale = 10, returnclass = "sf"),
+  error = function(e) {
+    message("High-resolution coastline unavailable. Falling back to medium resolution.")
+    ne_countries(scale = 50, returnclass = "sf")
+  }
+)
 
 ## --- 7. Clean Western Mediterranean outer contour -------------------------
 ## Union all GSAs, rasterize + re-polygonize to dissolve internal GSA
@@ -246,6 +278,6 @@ p <- ggplot() +
 
 print(p)
 
-if (!dir.exists("plots")) dir.create("plots")
-ggsave("plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 300)
-message("Map saved to plots/westmed_gsa_map.png")
+dir.create("./output/plots", recursive = TRUE, showWarnings = FALSE)
+ggsave("./output/plots/westmed_gsa_map.png", p, width = 10, height = 8, dpi = 300)
+message("Map saved to output/plots/westmed_gsa_map.png")

@@ -1,5 +1,11 @@
 ## =================================================================
-## survey_fg_density_functions.R
+## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
+## sourced automatically by the numbered pipeline scripts (01-04) -
+## do not run this directly, it has no top-level driver code of its own.
+## =================================================================
+
+## =================================================================
+## lib_survey_fg_density_functions.R
 ##
 ## Generalized, survey-agnostic functions for converting a fishery-
 ## independent survey (biomass/abundance by species, haul/station,
@@ -307,7 +313,7 @@ match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
 fetch_taxonomy_worms <- function(species_names) {
   if (!exists("worms_taxonomy_lookup")) {
     stop("worms_taxonomy_lookup() not found - source() the same",
-         " worms_taxonomy_lookup.R used elsewhere in this project first.")
+         " lib_worms_taxonomy_lookup.R used elsewhere in this project first.")
   }
   raw <- worms_taxonomy_lookup(species_names)
   as.data.table(raw)[, .(ScientificName = original_name, Genus = genus, Family = family,
@@ -741,6 +747,27 @@ compute_sample_densities <- function(dt) {
   dt
 }
 
+
+## Shared dedup guard - collapses duplicate key entries in an external
+## lookup table (species_q/genus_q/broad_q) to one row per key (mean q)
+## BEFORE merging into dt. Left un-deduped, a merge() where the
+## right-hand table has duplicate keys fans out multiplicatively against
+## every dt row sharing that key - the actual cause of a "Join
+## results in ... rows" cartesian error. Warns loudly since a duplicate
+## entry is almost always a real data issue in catchability_table (e.g.
+## the same taxon name entered twice with different q values), not
+## something to average away silently without being seen.
+dedupe_lookup <- function(lookup_dt, key_col, source_label) {
+  dup_keys <- lookup_dt[, .N, by = key_col][N > 1][[key_col]]
+  if (length(dup_keys) == 0) return(lookup_dt)
+  message("WARNING: catchability_table has ", length(dup_keys), " duplicate ",
+          source_label, " entry name(s) - averaging their q values",
+          " (check catchability_table for these names directly, this is",
+          " likely a data-entry duplicate in the CSV):")
+  print(lookup_dt[get(key_col) %in% dup_keys][order(get(key_col))])
+  lookup_dt[, .(q = mean(q, na.rm = TRUE)), by = key_col]
+}
+
 ## =================================================================
 ## Catchability correction - trawl surveys don't catch 100% of what's
 ## actually in the swept area (some individuals escape under/over/
@@ -842,8 +869,17 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
           paste(names(table(ct$level)), table(ct$level), sep = "=", collapse = ", "))
   
   species_q <- ct[level == "species", .(ScientificName = match_value, q)]
+  species_q <- dedupe_lookup(species_q, "ScientificName", "species-level")
+  
   genus_q   <- ct[level == "genus",   .(Genus = match_value, q)]
+  genus_q   <- dedupe_lookup(genus_q, "Genus", "genus-level")
+  
   broad_q   <- ct[level == "broad_rank", .(match_value, q)]
+  ## broad_q is deliberately NOT deduped here - its key column is still
+  ## the generic "match_value" and hasn't been filtered down to just the
+  ## rank(s) actually present in dt yet. Deduping happens per-rank
+  ## inside apply_explicit_at_rank() below, right before that rank's
+  ## merge, once broad_q has been subset to that rank's actual values.
   
   dt[, q_resolved := NA_real_]
   dt[, match_level := NA_character_]
@@ -884,6 +920,14 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
     apply_explicit_at_rank <- function(dt, rank_col) {
       rank_q <- broad_q[match_value %in% unique(dt[[rank_col]])]
       if (nrow(rank_q) == 0) return(dt)
+      ## dedup BEFORE the merge - broad_q can legitimately contain
+      ## entries for ranks other than rank_col too, so dedup only after
+      ## subsetting down to this rank's actual matching names, not on
+      ## the full broad_q up front (which could falsely flag two
+      ## different-rank entries that happen to share a match_value as
+      ## "duplicates" of each other).
+      rank_q <- dedupe_lookup(rank_q, "match_value", paste0(rank_col, "-level"))
+      
       setnames(rank_q, "match_value", rank_col)
       dt <- merge(dt, rank_q, by = rank_col, all.x = TRUE, suffixes = c("", paste0("_", tolower(rank_col))))
       dt[is.na(q_resolved) & !is.na(q), `:=`(q_resolved = q, match_level = paste0(rank_col, " (explicit entry)"))]
@@ -959,7 +1003,6 @@ apply_catchability_correction <- function(dt, catchability_table, default_q = 1,
           " (species-specific where available, default_q = ", default_q, " otherwise).")
   dt
 }
-
 ## =================================================================
 ## Sample-level outlier removal - operates on individual (Sample,
 ## Species) observations, BEFORE any aggregation into FG/area sums, so
@@ -1256,6 +1299,52 @@ weight_by_area <- function(fg_index_stratified) {
 }
 
 ## =================================================================
+## CV-log weight for Ecosim's "Weight" row - approximates CV.log from
+## fn.survey_to_ecosim_ts()'s Monte-Carlo-simulated abundance index:
+## there, CV.log = sd(log(index+1)) / mean(log(index+1)) per year,
+## averaged across years per FG, drawn from a delta-GLM/LSmeans
+## simulated distribution. This pipeline doesn't fit that same model,
+## so this is a SIMPLER, DIRECT analog: CV.log computed straight from
+## whatever replicate observations exist at that survey's finest
+## resolution for a given FG/year (MEDITS: per-haul density; MEDIAS:
+## per-country/GSA density), log1p-transformed to match the reference's
+## log(x+1) treatment, then averaged across years. It captures the same
+## idea (higher variability -> lower confidence -> higher CV -> less
+## weight in Ecosim) but is NOT a reproduction of the simulated CI
+## width the reference computes.
+##
+## value_dt: any data.table with FG_num, FG_name, Year, and a numeric
+## value_col holding one observation per replicate (a haul's density,
+## a GSA's density, etc.) - NOT already aggregated to one row per
+## FG/Year, since the within-year spread across replicates is exactly
+## what's being measured.
+## min_replicates: years with fewer than this many replicate
+## observations for a given FG have no meaningful spread to compute a
+## CV from - excluded from that FG's across-year average rather than
+## contributing an NA/Inf.
+## =================================================================
+compute_cv_log_by_fg <- function(value_dt, value_col, min_replicates = 2) {
+  value_dt <- copy(value_dt)
+  value_dt[, log_value := log1p(get(value_col))]
+  
+  cv_by_year <- value_dt[
+    , .(cv_log = sd(log_value, na.rm = TRUE) / mean(log_value, na.rm = TRUE), n = .N),
+    by = .(FG_num, FG_name, Year)
+  ]
+  n_excluded <- cv_by_year[n < min_replicates, .N]
+  if (n_excluded > 0) {
+    message(n_excluded, " FG/Year combination(s) had fewer than ", min_replicates,
+            " replicate observation(s) - excluded from that FG's CV.log average",
+            " (no meaningful spread to measure from a single observation).")
+  }
+  cv_by_year <- cv_by_year[n >= min_replicates & is.finite(cv_log)]
+  
+  cv_by_fg <- cv_by_year[, .(cv_log = mean(cv_log, na.rm = TRUE), n_years = .N), by = .(FG_num, FG_name)]
+  message("CV.log computed for ", nrow(cv_by_fg), " FG(s), averaged across years.")
+  cv_by_fg
+}
+
+## =================================================================
 ## Study area / sample coverage map - study area polygons colored by
 ## sampling intensity (total distinct samples per area), with
 ## individual sample locations overlaid as points if Lat/Lon are
@@ -1455,6 +1544,24 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
       axis.text = element_text(color = "black", face = "plain")
     )
   
+  ## A gradient FILL is meaningless with only a single polygon (the
+  ## custom-region bounding-box case) - one feature, one value, so the
+  ## whole box just renders as one flat color with no visual gradation
+  ## at all, unlike the westmed GSA case where 11 differently-shaded
+  ## polygons genuinely show relative coverage. When there's only one
+  ## area, print the actual sample count as a text label on the map
+  ## instead of relying on a fill scale that can't convey anything
+  ## with a single value.
+  n_distinct_areas <- length(unique(area_shp_plot[[area_id_col]]))
+  if (n_distinct_areas == 1) {
+    message("Only one area in area_shp_plot (the custom-region case) - the fill gradient can't",
+            " show meaningful variation with a single polygon, so the sample count is also",
+            " printed directly on the map as a text label.")
+    centroid_pts <- suppressWarnings(sf::st_centroid(area_shp_plot))
+    p <- p + geom_sf_text(data = centroid_pts, aes(label = paste0(n_samples, " samples")),
+                          color = "grey15", fontface = "bold", size = 4.5)
+  }
+  
   ## land_on_top handling moved to AFTER the selected-area contour
   ## block below - land needs to sit on top of the contour too, not
   ## just the intensity fill, so it's drawn last (right before the
@@ -1498,7 +1605,7 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
                 " to plain st_union(), which may still show minor seam artifacts.")
         unioned
       })
-      p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 1.3)
+      p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 0.8)
     }
   }
   
@@ -1551,15 +1658,28 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
               " below - separate from the projection/bad-data diagnostic above, since a point can be",
               " a perfectly valid coordinate in a real, neighboring GSA and still be outside this",
               " particular analysis's scope.")
-      p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area), size = 0.6, alpha = 0.3) +
+      ## shape = 4 (an "x" cross) for BOTH categories - color is what
+      ## distinguishes inside/outside here, not shape. Fixed as a
+      ## constant param rather than mapped via aes() specifically so
+      ## every point renders the same symbol regardless of category;
+      ## only scale_color_manual varies by in_study_area. size/stroke
+      ## sit between two failure modes: too small (0.6/0.7, the
+      ## original) and an "x" is indistinguishable from a dot; too
+      ## opaque and hundreds of overlapping points blend into a solid
+      ## haze regardless of shape. alpha does more work than size here
+      ## for reducing overplotting clutter specifically - dropped
+      ## further (0.4 -> 0.25) while keeping size/stroke just large
+      ## enough that individual crosses still read as crosses.
+      p <- p + geom_sf(data = sample_pts_sf, aes(color = in_study_area),
+                       shape = 4, size = 0.9, stroke = 0.8, alpha = 0.25) +
         scale_color_manual(name = NULL, values = c("Inside study area" = "black", "Outside study area" = "red3")) +
         ## legend symbols shown larger and fully opaque than the actual
         ## map points (which stay small/semi-transparent to reduce
         ## overplotting clutter with many samples) - purely a legend-
         ## readability fix, the plotted points themselves are unaffected
-        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+        guides(color = guide_legend(override.aes = list(size = 3, alpha = 1, shape = 4, stroke = 1.3)))
     } else {
-      p <- p + geom_sf(data = sample_pts_sf, size = 0.6, alpha = 0.15, color = "black")
+      p <- p + geom_sf(data = sample_pts_sf, shape = 4, size = 0.9, stroke = 0.8, alpha = 0.12, color = "black")
     }
     message("Plotted ", nrow(sample_pts_dt), " distinct sample location(s)",
             if (by_year) paste0(" across ", uniqueN(sample_pts_dt$Year), " year(s)") else "", ".")
@@ -1697,6 +1817,175 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
 ## =================================================================
 ## STEP 9: Output Excel file (Ecopath/Ecosim-ready workbook)
 ## =================================================================
+## =================================================================
+## upsert_workbook_sheets() / read_existing_ts_years()
+##
+## Shared building block for progressively assembling ONE workbook
+## (output/ecopath_ecosim_inputs.xlsx) from THREE independent scripts
+## that can run in ANY order - 01_survey_density_westmed.R (Biomass:
+## FG_spp_Ecopath/Ecopath/Ecosim/FG_spp_Ecosim), 02_fao_catches.R
+## (Catches_Ecopath/Catches_Ecosim), 04_pbqb_calc.R (PB_QB). None of them
+## needs to run before/after the others, and none of them should be
+## able to silently erase what another one already wrote.
+##
+## This replaces the previous approach (export_ecopath_ecosim_excel()
+## calling openxlsx::write.xlsx() directly), which unconditionally
+## overwrote the ENTIRE file - if 02_fao_catches.R ran first and wrote
+## Catches_Ecopath/Catches_Ecosim, then 01_survey_density_westmed.R ran
+## and called write.xlsx(), it would have silently wiped those two
+## sheets out. upsert_workbook_sheets() loads the existing file if
+## there is one and only touches the sheet names it's given.
+##
+##   sheets   - named list of data.frames/data.tables; each name
+##              becomes a sheet name. A sheet that already exists in
+##              the workbook under that name is REPLACED (safe to
+##              re-run the same script repeatedly); any OTHER,
+##              differently-named sheet already present is always
+##              left untouched.
+##   out_path - path to the shared workbook
+## =================================================================
+upsert_workbook_sheets <- function(sheets, out_path) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("openxlsx is required to write/append to '", out_path, "'.")
+  }
+  if (is.null(names(sheets)) || any(names(sheets) == "")) {
+    stop("upsert_workbook_sheets(): every element of `sheets` needs a name",
+         " (used as the sheet name) - got: ", paste(names(sheets), collapse = ", "))
+  }
+  
+  if (file.exists(out_path)) {
+    wb <- openxlsx::loadWorkbook(out_path)
+    message("Found existing workbook at '", out_path, "' (sheets: ",
+            paste(openxlsx::getSheetNames(out_path), collapse = ", "), ") - adding/replacing: ",
+            paste(names(sheets), collapse = ", "), ". Other sheets left untouched.")
+  } else {
+    wb <- openxlsx::createWorkbook()
+    if (!dir.exists(dirname(out_path))) dir.create(dirname(out_path), recursive = TRUE)
+    message("No existing workbook at '", out_path, "' - creating a NEW one with ONLY: ",
+            paste(names(sheets), collapse = ", "), ". Sheets from the OTHER pipeline",
+            " scripts (survey/catches/PB-QB, whichever haven't run against this exact",
+            " path yet) will be missing until they are.")
+  }
+  
+  for (nm in names(sheets)) {
+    if (nm %in% names(wb)) {
+      openxlsx::removeWorksheet(wb, nm)
+      message("Sheet '", nm, "' already existed in the workbook - replaced.")
+    }
+    openxlsx::addWorksheet(wb, nm)
+    openxlsx::writeData(wb, nm, sheets[[nm]], colNames = TRUE)
+  }
+  
+  openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
+  message("Saved '", out_path, "' (sheets now: ", paste(names(wb), collapse = ", "), ")")
+  invisible(wb)
+}
+
+## =================================================================
+## finalize_workbook_sheet_order()
+##
+## Fixes sheet NAMES and ORDER in ecopath_ecosim_inputs.xlsx to a
+## fixed target layout. Run this LAST, after every upstream script
+## that writes to the workbook (01_survey_density_*.R, 02_fao_catches.R,
+## 04_pbqb_calc.R, and whatever writes Ecobase) has already run -
+## upsert_workbook_sheets() itself is order-independent (each script
+## just adds/replaces its own sheets wherever the workbook happens to
+## be), so nothing upstream ever needs to know about final order.
+##
+## rename_map: named character vector, c(old_name = new_name). Applied
+## BEFORE reordering, so target_order should use the NEW names.
+## target_order: character vector of sheet names in the desired final
+## order (using the NEW names, post-rename).
+##
+## Sheets in target_order that don't exist in the workbook are skipped
+## with a message (not an error) - upstream scripts run at different
+## times, so not every sheet is guaranteed to exist yet.
+## Sheets that exist in the workbook but are NOT in target_order are
+## kept and appended at the end, in their original relative order -
+## never silently dropped, just flagged with a warning so an
+## unexpected/forgotten sheet doesn't slip by unnoticed.
+## =================================================================
+finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), target_order) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("openxlsx is required to finalize sheet order for '", out_path, "'.")
+  }
+  if (!file.exists(out_path)) {
+    stop("finalize_workbook_sheet_order(): workbook not found at '", out_path, "' - ",
+         "run the upstream export scripts first.")
+  }
+  
+  wb <- openxlsx::loadWorkbook(out_path)
+  current_names <- names(wb)
+  message("finalize_workbook_sheet_order(): workbook currently has ", length(current_names),
+          " sheet(s): ", paste(current_names, collapse = ", "))
+  
+  ## --- renames ------------------------------------------------------------
+  if (length(rename_map) > 0) {
+    missing_to_rename <- setdiff(names(rename_map), current_names)
+    if (length(missing_to_rename) > 0) {
+      message("finalize_workbook_sheet_order(): rename requested for sheet(s) not present",
+              " (skipped): ", paste(missing_to_rename, collapse = ", "))
+    }
+    for (old_nm in intersect(names(rename_map), current_names)) {
+      new_nm <- rename_map[[old_nm]]
+      if (new_nm %in% setdiff(names(wb), old_nm)) {
+        stop("finalize_workbook_sheet_order(): can't rename '", old_nm, "' to '", new_nm,
+             "' - a DIFFERENT sheet already has that name. Resolve the name collision by hand.")
+      }
+      openxlsx::renameWorksheet(wb, sheet = old_nm, newName = new_nm)
+      message("Renamed sheet '", old_nm, "' -> '", new_nm, "'")
+    }
+  }
+  
+  ## --- reorder --------------------------------------------------------------
+  current_names <- names(wb)  # re-read post-rename
+  dupe_targets <- target_order[duplicated(target_order)]
+  if (length(dupe_targets) > 0) {
+    warning("finalize_workbook_sheet_order(): target_order has duplicate name(s) - using only",
+            " the FIRST occurrence of each, extras dropped from the ordering request (a sheet",
+            " can only appear once in a workbook): ", paste(unique(dupe_targets), collapse = ", "))
+    target_order <- unique(target_order)
+  }
+  
+  target_present <- intersect(target_order, current_names)
+  target_missing <- setdiff(target_order, current_names)
+  if (length(target_missing) > 0) {
+    message("finalize_workbook_sheet_order(): target sheet(s) not in the workbook yet (skipped,",
+            " re-run this after the script that creates them has run): ",
+            paste(target_missing, collapse = ", "))
+  }
+  
+  extra_sheets <- setdiff(current_names, target_order)
+  if (length(extra_sheets) > 0) {
+    warning("finalize_workbook_sheet_order(): sheet(s) in the workbook but NOT in target_order -",
+            " kept, appended at the end rather than dropped: ", paste(extra_sheets, collapse = ", "))
+  }
+  
+  final_order_names <- c(target_present, extra_sheets)
+  new_position_of_current_index <- match(final_order_names, current_names)
+  openxlsx::worksheetOrder(wb) <- new_position_of_current_index
+  
+  openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
+  message("finalize_workbook_sheet_order(): saved '", out_path, "' - final sheet order: ",
+          paste(names(wb), collapse = ", "))
+  invisible(wb)
+}
+
+## Lets a sheet-writer match ITS year-row range to another sheet
+## already in the workbook (e.g. Catches_Ecosim matching Ecosim's
+## years) WITHOUT requiring that other sheet to have been written
+## first - if it isn't there yet, this just returns NULL and the
+## caller falls back to deriving its own range, order-independently.
+read_existing_ts_years <- function(out_path, sheet_name) {
+  if (!file.exists(out_path)) return(NULL)
+  if (!(sheet_name %in% openxlsx::getSheetNames(out_path))) return(NULL)
+  existing <- openxlsx::read.xlsx(out_path, sheet = sheet_name)
+  year_rows <- suppressWarnings(as.numeric(existing[[1]]))
+  ts_years <- sort(year_rows[!is.na(year_rows)])
+  if (length(ts_years) == 0) return(NULL)
+  ts_years
+}
+
 ## Generalized from the MEDITS pipeline's 3-sheet workbook (FG_spp,
 ## Ecopath, Ecosim). year_ecopath and ts_years are the function
 ## attributes specified up top.
@@ -1706,10 +1995,12 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
 ## here, carried over as-is. See the original pipeline's own note: if
 ## an actual Ecosim-exported CSV becomes available for cross-checking,
 ## verify this format against it directly.
-
 export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
                                         n_samples_by_area_year, dataframe2, year_ecopath = 1994:1996,
-                                        ts_years = NULL, out_path, species_taxonomy = NULL) {
+                                        ts_years = NULL, out_path, species_taxonomy = NULL,
+                                        extra_sheets = NULL,
+                                        fg_cv_log = NULL,        ## data.table(FG_num, cv_log) for the Weight row
+                                        normalize_ts = TRUE) {   ## TRUE = rescale to reference index (first value = 1); FALSE = raw density
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
   
   ## Validate expected columns upfront, by name, so a mismatch (e.g. a
@@ -1800,7 +2091,8 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## year_ecopath (e.g. nothing in that FG was caught during the base
   ## years specifically) still needs a row for Ecopath model-building,
   ## just with blank biomass rather than being silently absent from the
-  ## whole sheet.
+  ## whole sheet. NOT rescaled by normalize_ts - it's a single base-year
+  ## snapshot, not a time series, so "first value = 1" doesn't apply.
   base_year <- year_ecopath[1]
   ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
   ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
@@ -1819,21 +2111,65 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   }
   
   ## --- Ecosim sheet -----------------------------------------------------------
-  ## Also built from full_fg_list for the same reason - every FG gets a
-  ## column, even one with no data at all across the whole time series
-  ## (its column will just be all-blank/all-zero depending on
-  ## years_with_effort, same logic as before).
   if (is.null(ts_years)) {
     ts_years <- min(fg_index_regional$Year, na.rm = TRUE):max(fg_index_regional$Year, na.rm = TRUE)
   }
   years_with_effort <- sort(unique(n_samples_by_area_year[Year %in% ts_years, Year]))
   
+  ## Rescales each FG's time series to a REFERENCE INDEX when
+  ## normalize_ts=TRUE: the first non-NA value in the series becomes 1,
+  ## every other value expressed relative to it - matches the "Scaling:
+  ## relative" metadata row literally, rather than leaving raw absolute
+  ## density under a "relative" label. If ts_years' actual first
+  ## calendar year has no survey effort (NA), the reference is taken
+  ## from the first year that DOES have a value instead - flagged
+  ## explicitly, since it means "first row = 1" in the output isn't
+  ## literally ts_years[1] in that case. When normalize_ts=FALSE, the
+  ## raw density (whatever unit fg_index_regional is in) is returned
+  ## unchanged.
   build_ts_column <- function(fg_num) {
     vals <- fg_index_regional[FG_num == fg_num, .(Year, mean_density)]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
-    vals[order(Year), mean_density]
+    vals <- vals[order(Year)]
+    
+    if (!normalize_ts) return(vals$mean_density)
+    
+    first_valid_idx <- which(!is.na(vals$mean_density))[1]
+    if (is.na(first_valid_idx)) {
+      message("FG ", fg_num, ": no non-NA values across the whole time series - column left blank.")
+      return(vals$mean_density)
+    }
+    ref_value <- vals$mean_density[first_valid_idx]
+    ref_year  <- vals$Year[first_valid_idx]
+    if (ref_year != ts_years[1]) {
+      message("FG ", fg_num, ": relative-scaling reference is year ", ref_year,
+              " (first year WITH data), not the series' first year ", ts_years[1],
+              " (no survey effort that year).")
+    }
+    if (is.na(ref_value) || ref_value == 0) {
+      message("WARNING: FG ", fg_num, "'s reference value (year ", ref_year, ") is ",
+              ifelse(is.na(ref_value), "NA", "zero"), " - cannot rescale to a relative index,",
+              " leaving this column as raw density instead.")
+      return(vals$mean_density)
+    }
+    vals$mean_density / ref_value
+  }
+  
+  ## Weight row: CV.log per FG if fg_cv_log was provided (see
+  ## compute_cv_log_by_fg()), else "1" (the old placeholder) with an
+  ## explicit per-FG warning so a missing weight is visible rather than
+  ## silently defaulting.
+  get_weight <- function(fg_num) {
+    if (is.null(fg_cv_log)) return("1")
+    w <- fg_cv_log[FG_num == fg_num, cv_log]
+    if (length(w) == 0 || is.na(w)) {
+      message("FG ", fg_num, ": no CV.log available - Weight defaults to 1",
+              " (check whether this FG had enough replicate observations).")
+      return("1")
+    }
+    as.character(round(w, 4))
   }
   
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
@@ -1841,22 +2177,15 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   for (i in seq_len(nrow(full_fg_list))) {
     fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
     ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))
-    col <- c(ts_name, "Biomass (relative)", "reference", "relative", "1",
+    col <- c(ts_name, "Biomass (relative)", "reference", "relative", get_weight(fg_num),
              paste0(fg_num, ": ", fg_name), "", "Annual", as.character(build_ts_column(fg_num)))
     ecosim_sheet[, (paste0("fg_", fg_num)) := col]
   }
   
   ## --- FG_spp_Ecosim sheet -----------------------------------------------------
-  ## Species-level (not FG-level) mean density across the FULL ts_years
-  ## range - one row per species, no Year column, since this is the
-  ## species' overall average over the whole time series, not a
-  ## per-year breakdown. The key difference from FG_spp_Ecopath is the
-  ## time window averaged over: FG_spp_Ecopath uses just year_ecopath
-  ## (the base-year snapshot for Ecopath initialization), this uses the
-  ## full ts_years range (the long-term average across the whole survey
-  ## period). Same "always a row, blank if no data at all" principle as
-  ## FG_spp_Ecopath - a species with genuinely zero observations across
-  ## the whole ts_years range still gets a row, just with blank density.
+  ## Species-level mean density across the FULL ts_years range - one row
+  ## per species, no Year column, since this is the species' overall
+  ## average over the whole time series, not a per-year breakdown.
   species_mean_ts <- species_density_regional[Year %in% ts_years,
                                               .(Density = mean(mean_density, na.rm = TRUE)),
                                               by = .(FG_num, FG_name, Species = ScientificName)]
@@ -1866,7 +2195,204 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
                           Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
-  openxlsx::write.xlsx(sheets_to_write, file = out_path, colNames = TRUE)
-  message("Saved: ", out_path, " (sheets: ", paste(names(sheets_to_write), collapse = ", "), ")")
+  
+  ## extra_sheets: named list of additional data.tables/data.frames to
+  ## include in the SAME workbook/write call - appended here rather
+  ## than requiring a separate loadWorkbook()/saveWorkbook() round-trip
+  ## after this function already wrote the file.
+  if (!is.null(extra_sheets)) {
+    dup_names <- intersect(names(extra_sheets), names(sheets_to_write))
+    if (length(dup_names) > 0) {
+      stop("export_ecopath_ecosim_excel(): extra_sheets name(s) collide with",
+           " built-in sheet names: ", paste(dup_names, collapse = ", "))
+    }
+    sheets_to_write <- c(sheets_to_write, extra_sheets)
+  }
+  
+  upsert_workbook_sheets(sheets_to_write, out_path)
   invisible(sheets_to_write)
+}
+
+## =================================================================
+## add_catches_to_ecopath_workbook()
+##
+## Formats an FG-level catch time series (Year x FG_num x FG_name x
+## Catch_t - e.g. from a catch/landings pipeline like 02_fao_catches.R)
+## as two more sheets in the SAME shape as export_ecopath_ecosim_excel()
+## above, and adds them to the SAME workbook - Catches_Ecopath next to
+## Ecopath, Catches_Ecosim next to Ecosim - rather than as a separate
+## standalone catches file.
+##
+## If out_path already exists (e.g. export_ecopath_ecosim_excel() has
+## already been run against it), this loads it, matches Catches_Ecosim's
+## year rows to whatever Ecosim's already are, and adds/replaces just
+## these two sheets - the rest of the workbook is untouched. If it
+## doesn't exist yet, creates a new workbook with ONLY these two sheets,
+## flagged explicitly since the Biomass-side sheets are still missing.
+##
+## Catches_Ecopath mirrors the Ecopath sheet exactly: one row per FG
+## (every FG in fg_lookup, not just ones with matched catch), a
+## base-year snapshot column, and a year_ecopath-range average column -
+## named Catch_<year>/Catch_<start>_<end> instead of Biomass_<...>.
+##
+## Catches_Ecosim mirrors the Ecosim sheet's meta-row + year-row shape,
+## but is NOT rescaled to a first-year=1 reference the way
+## build_ts_column() rescales biomass above - EwE drives Ecosim with
+## the catch series in ABSOLUTE units (t/km^2/year), so Type/Scaling
+## are "Catches"/"absolute" rather than "Biomass (relative)"/"relative".
+## Missing Year x FG combinations stay NA (unknown), never filled with
+## 0 - catch data being absent for a species/FG/year isn't the same
+## claim as a confirmed zero catch that year.
+##
+##   fg_catch      - data.table: Year, FG_num, FG_name, Catch_t
+##   fg_lookup     - data.table: FG_num, FG_name for EVERY FG in the
+##                   scheme (same reference used elsewhere in the
+##                   pipeline) - needed so zero-catch FGs still get a
+##                   blank row instead of being silently absent
+##   out_path      - path to output/ecopath_ecosim_inputs.xlsx (or
+##                   wherever export_ecopath_ecosim_excel() wrote to)
+##   year_ecopath  - MUST match the year_ecopath used to build the
+##                   Ecopath sheet in the same workbook, or Catches_
+##                   Ecopath's snapshot describes a different period
+##                   than Biomass's
+##   ts_years      - optional; if NULL and an Ecosim sheet already
+##                   exists in the workbook, its year rows are reused
+##                   so both Ecosim sheets line up. Otherwise derived
+##                   from fg_catch's own Year range.
+## =================================================================
+## area_km2: total study area (km^2) to convert fg_catch's Catch_t
+## (RAW TOTAL TONNES landed across the whole region - see
+## 02_fao_catches.R, MEASURE == "Q_tlw") into a density, t/km^2/year -
+## the same units Biomass_<year> in the Ecopath sheet is already in.
+## Without this conversion, Catches_Ecopath/Catches_Ecosim would be off
+## by a factor of the whole study area (tens of thousands of km^2) versus
+## Biomass, which breaks Ecopath's mass balance (Ecotrophic Efficiency
+## is computed from Biomass and Catches together, in the same units).
+add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL) {
+  
+  if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
+    stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
+         " Catch_t is a RAW TOTAL (tonnes landed across the whole region), not a density,",
+         " and needs to be divided by the study area to match Biomass's t/km^2 units in",
+         " the Ecopath sheet. Pass the same total area used elsewhere in the pipeline",
+         " (e.g. sum(area_km2) from strata_area_by_area.csv).")
+  }
+  
+  ## convert once, up front - everything below (Catches_Ecopath AND
+  ## Catches_Ecosim) reads Catch_t_km2, never the raw Catch_t
+  fg_catch <- copy(fg_catch)
+  fg_catch[, Catch_t_km2 := Catch_t / area_km2]
+  message("Converted fg_catch's raw total tonnes to a density using area_km2 = ",
+          round(area_km2, 1), " km^2 (t/km^2/year, matching Biomass's units in the",
+          " Ecopath sheet) - e.g. total catch of ", round(fg_catch[1, Catch_t], 1),
+          " t for FG ", fg_catch[1, FG_num], " in ", fg_catch[1, Year], " becomes ",
+          signif(fg_catch[1, Catch_t_km2], 4), " t/km^2.")
+  
+  full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])[order(FG_num)]
+  
+  if (is.null(ts_years)) {
+    ts_years <- read_existing_ts_years(out_path, "Ecosim")
+    if (!is.null(ts_years)) {
+      message("ts_years taken from the existing Ecosim sheet: ",
+              min(ts_years), "-", max(ts_years), " (", length(ts_years), " years) -",
+              " keeps Catches_Ecosim's year rows lined up with it, order-independently",
+              " of whether Ecosim was written before or after this.")
+    } else {
+      ts_years <- min(fg_catch$Year, na.rm = TRUE):max(fg_catch$Year, na.rm = TRUE)
+      message("No existing Ecosim sheet found to match years against yet - ts_years",
+              " derived from fg_catch's own range instead: ", min(ts_years), "-",
+              max(ts_years), ". If Ecosim gets added to this workbook LATER with a",
+              " different range, re-run this function afterward to pick it up.")
+    }
+  }
+  
+  ## --- Catches_Ecopath ---------------------------------------------------
+  base_year <- year_ecopath[1]
+  catch_base <- fg_catch[Year == base_year, .(FG_num, Catch_baseyear = Catch_t_km2)]
+  catch_avg  <- fg_catch[Year %in% year_ecopath,
+                         .(Catch_avg = mean(Catch_t_km2, na.rm = TRUE)), by = FG_num]
+  catches_ecopath <- merge(full_fg_list, catch_base, by = "FG_num", all.x = TRUE)
+  catches_ecopath <- merge(catches_ecopath, catch_avg, by = "FG_num", all.x = TRUE)
+  range_col <- paste0("Catch_", min(year_ecopath), "_", max(year_ecopath))
+  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(paste0("Catch_", base_year), range_col))
+  setorder(catches_ecopath, FG_num)
+  
+  n_fg_no_catch <- catches_ecopath[is.na(get(range_col)), .N]
+  if (n_fg_no_catch > 0) {
+    message(n_fg_no_catch, " of ", nrow(catches_ecopath), " FG(s) have no catch data in ",
+            min(year_ecopath), "-", max(year_ecopath), " - included with a blank catch value,",
+            " NOT assumed zero (genuinely unfished and simply unmatched/unresolved look",
+            " identical here):")
+    print(catches_ecopath[is.na(get(range_col)), .(FG_num, FG_name)])
+  }
+  
+  ## --- Catches_Ecosim ------------------------------------------------------
+  meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+  catches_ecosim <- data.table(` ` = c(meta_labels, as.character(ts_years)))
+  
+  build_catch_ts_column <- function(fg_num) {
+    vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
+    full_years <- data.table(Year = ts_years)
+    vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
+    vals[order(Year)]$Catch_t_km2
+  }
+  
+  for (i in seq_len(nrow(full_fg_list))) {
+    fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
+    ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
+    col <- c(ts_name, "Catches", "reference", "absolute", "1",
+             paste0(fg_num, ": ", fg_name), "", "Annual",
+             as.character(build_catch_ts_column(fg_num)))
+    catches_ecosim[, (paste0("fg_", fg_num)) := col]
+  }
+  
+  upsert_workbook_sheets(
+    list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim),
+    out_path
+  )
+  
+  invisible(list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim))
+}
+
+## =================================================================
+## add_pbqb_to_ecopath_workbook()
+##
+## Adds 04_pbqb_calc.R's FG-level PB/QB estimates as one more sheet -
+## "PB_QB" - in the SAME shared workbook as the Biomass sheets
+## (01_survey_density_westmed.R) and Catches sheets (02_fao_catches.R),
+## via the same order-independent upsert_workbook_sheets() both of
+## those use. This can be run before, after, or between those two -
+## no dependency on either having run first.
+##
+##   fg_weighted - 04_pbqb_calc.R's FG-level table. Requires FG, FG_name,
+##                 PB_FG, QB_FG at minimum. A handful of other columns
+##                 (Biomass_FG, F_FG, PB_source, QB_source, etc.) are
+##                 carried through as extra audit-trail columns IF
+##                 present, but aren't required - different 04_pbqb_calc.R
+##                 runs may or may not have gone through the EcoBase-fill
+##                 or FG-level-F steps.
+##   out_path    - path to output/ecopath_ecosim_inputs.xlsx
+## =================================================================
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
+  required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
+  missing_cols <- setdiff(required_cols, names(fg_weighted))
+  if (length(missing_cols) > 0) {
+    stop("add_pbqb_to_ecopath_workbook(): fg_weighted is missing required column(s): ",
+         paste(missing_cols, collapse = ", "), " - check it's the table produced",
+         " further up in 04_pbqb_calc.R (after the FG-level aggregation step), not",
+         " something else.")
+  }
+  
+  optional_cols <- intersect(
+    c("Biomass_FG", "n_species_with_PB", "n_species_with_QB", "n_species_total",
+      "biomass_coverage_PB", "biomass_coverage_QB", "n_species_with_F",
+      "PB_FG_before_F", "F_FG", "PB_source", "QB_source"),
+    names(fg_weighted)
+  )
+  pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
+  setnames(pbqb_sheet, "FG", "FG_num")
+  setorder(pbqb_sheet, FG_num)
+  
+  upsert_workbook_sheets(list(PB_QB = pbqb_sheet), out_path)
+  invisible(pbqb_sheet)
 }
