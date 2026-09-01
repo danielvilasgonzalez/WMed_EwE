@@ -1283,6 +1283,14 @@ Because of that, final sheet **order** isn't something any single script control
 A species with no observed density in the `year_ecopath` base years - whether never observed at all, or only observed in other years - gets `Density = 0` and `prop_sp_fg = 0`, not `NA` and not a missing row. Taxonomy columns (`Genus`/`Family`/`Order`/`Class`/`Phylum`) are merged in from `species_taxonomy` for every species, observed or not. `FG_num`, `FG_name`, `Species` are always the first three columns.
 :::
 
+::: {.callout-note}
+### `PB_QB_spp` scaffold: written here too, so it exists after Step 1 alone
+
+`export_ecopath_ecosim_excel()` also writes a **scaffold** `PB_QB_spp` sheet - reusing the same `Species`/`FG_num`/`Density`/`prop_sp_fg` this function already computes for `FG_spp_Ecopath` above, renamed to `PB_QB_spp`'s own convention (`Density` &rarr; `Biomass`, `prop_sp_fg` &rarr; `prop_biomass_FG`), with `PB`, `prop_biomass_PB`, `QB`, `prop_biomass_QB` all left `NA` and a `Note` column explaining why. This function has no PB/QB computation of its own - that's entirely `04_pbqb_calc.R`'s job, from life-history parameters, not survey density - so the scaffold's numbers are genuinely blank, not estimated. What it fixes is that `PB_QB_spp` previously only appeared in the workbook once Step 4 had run; now the sheet's *structure* - which species, which FG, what share of the FG's biomass - shows up after Step 1 alone.
+
+Guarded against clobbering: before writing the scaffold, this function checks whether `out_path` already has a `PB_QB_spp` sheet with real (non-`NA`) `PB` values - i.e. Step 4 has already run against this exact workbook - and skips the scaffold entirely if so. `upsert_workbook_sheets()`'s normal replace-by-name behavior means Step 4, when it does run, always overwrites whatever `PB_QB_spp` it finds (scaffold or real) with the full sheet - no special-casing needed on that side.
+:::
+
 ```{r}
 #| label: fg-spp-ecopath-build
 ## Union of the reference catalog and everything actually observed/matched -
@@ -1544,6 +1552,8 @@ This only splits catch *after the fact* - it doesn't source fleet/gear data itse
 ::: {.callout-note}
 ### `PB_QB`/`PB_QB_spp`: added from `04_pbqb_calc.R`'s own tables
 This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (`04_pbqb_calc.R`) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. `FG_spp_Ecopath`'s `prop_sp_fg` column is what connects the two on the Biomass side: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG. `add_pbqb_to_ecopath_workbook()` writes the equivalent connection on the PB/QB side, in `PB_QB_spp`.
+
+`PB_QB_spp` no longer needs Step 4 to have run just for the sheet to *exist*, though. `export_ecopath_ecosim_excel()` (Step 1 - see the scaffold callout further below) now writes a **scaffold** version of `PB_QB_spp` - Species/FG_num/Biomass/`prop_biomass_FG` only, PB/QB left blank - reusing exactly the species/FG/proportion data it already computes for `FG_spp_Ecopath`. Running Step 4 afterward replaces that scaffold with the real thing (PB, QB, and their own proportions) automatically, since `upsert_workbook_sheets()` always fully replaces a same-named sheet. Re-running Step 1 *after* Step 4 does NOT go back to a blank scaffold - it checks whether `PB_QB_spp` already has real (non-`NA`) PB values first, and leaves it alone if so.
 
 The actual sheet-writing step, from `lib_survey_fg_density_functions.R`:
 

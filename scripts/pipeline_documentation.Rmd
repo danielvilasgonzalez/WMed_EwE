@@ -211,14 +211,14 @@ plot of any survey data or model output (same diagram style as
 %%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
 flowchart LR
     A1["Step 1a/1b&lt;br/&gt;01_survey_density_*.R"] --> B1["species_density_regional_combined.csv&lt;br/&gt;strata_area_by_area.csv"]
-    B1 --> C1["xlsx: FG_spp_Ecopath, Ecopath,&lt;br/&gt;Ecosim, FG_spp_Ecosim, FG, traits_ewe"]
+    B1 --> C1["xlsx: FG_spp_Ecopath, Ecopath,&lt;br/&gt;Ecosim, FG_spp_Ecosim, FG, traits_ewe,&lt;br/&gt;PB_QB_spp (scaffold)"]
     B1 --> A2["Step 2&lt;br/&gt;02_fao_catches.R"]
     A2 --> C2["xlsx: Catches_Ecopath,&lt;br/&gt;Catches_Ecosim"]
     A3["Step 3 (independent)&lt;br/&gt;03_ecobase_query.R"] --> B3["ecobase_literature_pb_qb_simple.csv&lt;br/&gt;(optional)"]
     B1 --> A4["Step 4 (run last)&lt;br/&gt;04_pbqb_calc.R"]
     B3 -.-> A4
     A2 -.-> A4
-    A4 --> C4["xlsx: PB_QB, PB_QB_spp, Ecobase, References"]
+    A4 --> C4["xlsx: PB_QB, PB_QB_spp (real,&lt;br/&gt;replaces scaffold), Ecobase, References"]
     C1 --> F["finalize_workbook_sheet_order()&lt;br/&gt;rename + reorder"]
     C2 --> F
     C4 --> F
@@ -500,7 +500,21 @@ safe_include_graphics(
 8. **Excel export (Step 10)** — `survey_fg_annual_index.csv`,
    `survey_fg_annual_index_regional_combined.csv`, then
    `export_ecopath_ecosim_excel()` writes sheets `FG_spp_Ecopath`, `Ecopath`,
-   `Ecosim`, `FG_spp_Ecosim` into `ecopath_ecosim_inputs.xlsx`.
+   `Ecosim`, `FG_spp_Ecosim` into `ecopath_ecosim_inputs.xlsx`. **Also writes
+   a `PB_QB_spp` scaffold** — reusing `FG_spp_Ecopath`'s own `Species`/
+   `FG_num`/`Density`/`prop_sp_fg` (renamed to `PB_QB_spp`'s convention:
+   `Biomass`, `prop_biomass_FG`), with `PB`/`prop_biomass_PB`/`QB`/
+   `prop_biomass_QB` all blank and a `Note` column — so `PB_QB_spp` exists in
+   the workbook after this script alone, without needing `04_pbqb_calc.R`
+   (Step 4) to have run first. This function has no PB/QB computation of its
+   own (that's entirely Step 4's, from life-history parameters, not survey
+   density), so the scaffold's numbers are genuinely blank, not estimated.
+   Running Step 4 afterward replaces the scaffold with the real sheet
+   automatically (`upsert_workbook_sheets()` always fully replaces a
+   same-named sheet). Guarded against clobbering the other way: if
+   `PB_QB_spp` already has real (non-`NA`) `PB` values — i.e. Step 4 already
+   ran against this exact workbook — re-running this script leaves it
+   untouched rather than overwriting it with a blank scaffold again.
 9. **Complete `FG_spp_Ecopath`/`FG_lookup` (Step 11)** — union of observed +
    reference-catalog species, zero-fill species with no base-year density,
    attach taxonomy, defensive check for FGs with no species at all. Written
@@ -522,7 +536,8 @@ safe_include_graphics(
   `survey_fg_annual_index_regional_combined.csv`.
 * **Workbook** `ecopath_ecosim_inputs.xlsx`, sheets written/updated:
   `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim`, `FG_lookup`
-  (renamed to `FG`), `traits_ewe`.
+  (renamed to `FG`), `traits_ewe`, and `PB_QB_spp` (scaffold, unless it
+  already has real data from `04_pbqb_calc.R`).
 
 ---
 
@@ -1038,7 +1053,12 @@ safe_include_graphics(
     compute. This is the sheet to check *which* species and *how much*
     of each FG's biomass a given `PB_FG`/`QB_FG` number was built from —
     without it, that detail only existed outside the workbook, in
-    `species_pb_qb_by_taxon_group.csv`). A separate `upsert_workbook_sheets()`
+    `species_pb_qb_by_taxon_group.csv`). If `01_survey_density_*.R` already
+    wrote a `PB_QB_spp` **scaffold** into this workbook (Species/FG_num/
+    Biomass/`prop_biomass_FG` only, no real PB/QB yet), this call replaces
+    it wholesale with the full sheet — `upsert_workbook_sheets()` always
+    fully overwrites a same-named sheet, so no separate merge step is
+    needed. A separate `upsert_workbook_sheets()`
     call writes sheet **`References`** (later renamed `PB_QB_References_`
     by `finalize_workbook_sheet_order()`, run from Script 1).
 12. **Diagnostic plots** — per-method PB/QB comparison plots for fish, plus
@@ -1138,7 +1158,7 @@ flowchart LR
 |---|---|
 | `upsert_workbook_sheets(sheets, out_path)` | Adds/replaces the named sheets in `out_path`, **leaves every other sheet untouched**. Creates the workbook if it doesn't exist yet. Safe to call repeatedly, from any script, in any order. |
 | `read_existing_ts_years(out_path, sheet_name)` | Reads year values from column 1 of an existing sheet, e.g. to keep `Catches_Ecosim`'s years aligned with an already-written `Ecosim` sheet |
-| `export_ecopath_ecosim_excel(fg_index_regional, species_density_regional, n_samples_by_area_year, dataframe2, year_ecopath, ts_years, out_path, species_taxonomy = NULL, fg_cv_log = NULL, normalize_ts = TRUE)` | Writes `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim` |
+| `export_ecopath_ecosim_excel(fg_index_regional, species_density_regional, n_samples_by_area_year, dataframe2, year_ecopath, ts_years, out_path, species_taxonomy = NULL, fg_cv_log = NULL, normalize_ts = TRUE)` | Writes `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim`, and a `PB_QB_spp` scaffold (Species/FG_num/Biomass/`prop_biomass_FG` only, PB/QB blank) unless `PB_QB_spp` already has real PB values from `04_pbqb_calc.R` |
 | `add_catches_to_ecopath_workbook(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL, fleet_structure = NULL)` | Converts raw catch tonnes to t/km² density; writes `Catches_Ecopath`, `Catches_Ecosim`. `fleet_structure` (optional `FG_num`/`Fleet`/`prop_catch` table) splits catch by fleet and also writes `Fleet_Structure`; left `NULL`, output is unchanged (single implicit fleet, no `Fleet_Structure` sheet) |
 | `add_pbqb_to_ecopath_workbook(fg_weighted, out_path, species_pb_qb = NULL)` | Writes `PB_QB` (FG-level). If `species_pb_qb` (04_pbqb_calc.R's species-level `results` table) is also passed, writes `PB_QB_spp` too — one row per species, with `prop_biomass_FG`/`prop_biomass_PB`/`prop_biomass_QB` |
 | `finalize_workbook_sheet_order(out_path, rename_map, target_order)` | **Run last.** Renames `FG_lookup`→`FG` and `References`→`PB_QB_References_`, then reorders every sheet to `target_order`. Sheets not yet present are skipped with a message (not an error); sheets present but not in `target_order` are kept, appended at the end, with a warning. *(As of the latest patch, if a rename target is already occupied by a stale sheet from an earlier run, that stale sheet is replaced rather than raising an error — see the "Known issue" note below.)* |
@@ -1175,7 +1195,7 @@ script's own final call):
 3. `Catches_Ecopath`
 4. `FG_spp_Ecopath`
 5. `PB_QB`
-6. `PB_QB_spp`
+6. `PB_QB_spp` (written as a scaffold by Step 1 if Step 4 hasn't run yet — see "Excel workbook functions" below)
 7. `Ecobase`
 8. `PB_QB_References_` (renamed from `References`)
 9. `traits_ewe`

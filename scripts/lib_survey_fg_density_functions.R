@@ -2006,6 +2006,17 @@ read_existing_ts_years <- function(out_path, sheet_name) {
 ## here, carried over as-is. See the original pipeline's own note: if
 ## an actual Ecosim-exported CSV becomes available for cross-checking,
 ## verify this format against it directly.
+##
+## Also writes a PB_QB_spp SCAFFOLD (Species/FG_num/Biomass/
+## prop_biomass_FG only, PB/QB left NA) so that sheet exists after this
+## function alone - i.e. after running just 01_survey_density_westmed.R/
+## 01_survey_density_custom.R, without needing 04_pbqb_calc.R (Step 4)
+## to have run first. Real PB/QB values still only come from Step 4 -
+## this function has no PB/QB computation of its own - but the sheet's
+## STRUCTURE (which species, which FG, what share of the FG's biomass)
+## no longer requires Step 4 just to appear. If PB_QB_spp already has
+## real (non-NA) PB values from a prior Step 4 run, this scaffold is
+## skipped so re-running Step 1 never overwrites Step 4's real numbers.
 export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
                                         n_samples_by_area_year, dataframe2, year_ecopath = 1994:1996,
                                         ts_years = NULL, out_path, species_taxonomy = NULL,
@@ -2206,7 +2217,56 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
                           Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
-  
+
+  ## --- PB_QB_spp scaffold (species x FG list, no PB/QB yet) --------------
+  ## Written here so the PB_QB_spp sheet EXISTS after Step 1 alone, not
+  ## only once 04_pbqb_calc.R (Step 4) has run - Step 1 has no PB/QB
+  ## computation of its own (that's entirely Step 4's job: life-history-
+  ## based estimates from FishBase/SeaLifeBase - growth, mortality,
+  ## trophic level - not derivable from survey density), so this
+  ## scaffold only carries what Step 1 DOES already know: which species
+  ## make up each FG and their biomass share (the same Species/FG_num/
+  ## Biomass/proportion as fg_spp_sheet above, renamed to PB_QB_spp's own
+  ## column convention: Density -> Biomass, prop_sp_fg -> prop_biomass_FG).
+  ## PB/QB and their own proportion columns are left blank (NA) until
+  ## Step 4 fills them in for real.
+  ##
+  ## Guarded against clobbering: if PB_QB_spp already exists in out_path
+  ## WITH real (non-NA) PB values - i.e. 04_pbqb_calc.R has already run
+  ## against this exact workbook - this scaffold is skipped entirely, so
+  ## re-running Step 1 (e.g. to refresh biomass after new survey data)
+  ## never wipes Step 4's real numbers back to blank. Step 4 itself
+  ## always fully replaces whatever PB_QB_spp it finds (scaffold or not)
+  ## via add_pbqb_to_ecopath_workbook()/upsert_workbook_sheets() - no
+  ## special-casing needed on that side.
+  pbqb_spp_has_real_data <- FALSE
+  if (file.exists(out_path) && "PB_QB_spp" %in% openxlsx::getSheetNames(out_path)) {
+    existing_pbqb_spp <- tryCatch(openxlsx::read.xlsx(out_path, sheet = "PB_QB_spp"),
+                                  error = function(e) NULL)
+    if (!is.null(existing_pbqb_spp) && "PB" %in% names(existing_pbqb_spp) &&
+        any(!is.na(existing_pbqb_spp$PB))) {
+      pbqb_spp_has_real_data <- TRUE
+    }
+  }
+
+  if (!pbqb_spp_has_real_data) {
+    pbqb_spp_scaffold <- fg_spp_sheet[, .(FG_num, FG_name, Species,
+                                          Biomass = Density, prop_biomass_FG = prop_sp_fg)]
+    pbqb_spp_scaffold[, `:=`(PB = NA_real_, prop_biomass_PB = NA_real_,
+                             QB = NA_real_, prop_biomass_QB = NA_real_,
+                             Note = "PB/QB not yet computed - run 04_pbqb_calc.R (Step 4) to fill in")]
+    setorder(pbqb_spp_scaffold, FG_num, -Biomass)
+    sheets_to_write$PB_QB_spp <- pbqb_spp_scaffold
+    message("PB_QB_spp written as a SCAFFOLD (Species/FG_num/Biomass/prop_biomass_FG only -",
+            " PB/QB left blank) since Step 4 (04_pbqb_calc.R) hasn't run against this workbook",
+            " yet. Run 04_pbqb_calc.R afterward to fill in real PB/QB values - it replaces this",
+            " scaffold with the full sheet automatically, no extra step needed here.")
+  } else {
+    message("PB_QB_spp already has real PB/QB data (04_pbqb_calc.R has already run against",
+            " this workbook) - leaving it untouched rather than overwriting it with a blank",
+            " scaffold.")
+  }
+
   ## extra_sheets: named list of additional data.tables/data.frames to
   ## include in the SAME workbook/write call - appended here rather
   ## than requiring a separate loadWorkbook()/saveWorkbook() round-trip
