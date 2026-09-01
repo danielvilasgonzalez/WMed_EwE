@@ -491,7 +491,27 @@ if (FG_YIELD_SOURCE == "fg_catch_csv") {
     ## 01_survey_density_westmed.R - summed here as one region-wide total,
     ## same as how Biomass is a region-wide density everywhere else.
     area_total_km2 <- fread(area_lookup_path)[, sum(area_km2, na.rm = TRUE)]
-    
+
+    ## KNOWN, UNRESOLVED MISMATCH (same root cause as 02_fao_catches.R's own
+    ## flag on this): fg_catch_timeseries_*.csv is filtered by GFCM Division
+    ## (37.1.1-37.1.3), which per GFCM's own GSA-to-Division table covers
+    ## GSA 1-11 PLUS GSA 12 (Northern Tunisia); area_total_km2 above is
+    ## summed from strata_area_by_area.csv, which only covers 01_survey_
+    ## density_westmed.R's FILTER_AREAS (GSA 1-11, GSA 12 NOT included).
+    ## So Yield_FG's numerator (Catch_t) includes some landings from outside
+    ## the area its own denominator (area_total_km2) represents - Yield_FG,
+    ## and therefore Fmort_FG and the fish PB it feeds into calc_fish(),
+    ## is a SLIGHT OVERESTIMATE for FGs disproportionately caught in GSA 12/
+    ## Division 37.1.3, not a fixable bug (GFCM's Division-resolution catch
+    ## reporting can't isolate GSA 12's specific share to subtract it out).
+    ## Retargeting this pipeline to a different region: re-derive the
+    ## Division/GSA correspondence for that region and re-check whether the
+    ## same kind of boundary mismatch applies there too.
+    message("NOTE: fg_catch_timeseries's Division-based filter (37.1.1-37.1.3) covers GSA 1-11",
+            " PLUS GSA 12, which FILTER_AREAS (area_total_km2's basis) does NOT include - Yield_FG",
+            " (and the Fmort_FG/PB it feeds) is therefore a slight OVERESTIMATE relative to Biomass's",
+            " area, same root cause as 02_fao_catches.R's own Catches_Ecopath/Ecosim sheets.")
+
     fg_catch_in_range <- fg_catch[Year %in% YEAR_ECOPATH]
     message("FG catch data: ", nrow(fg_catch_in_range), " of ", nrow(fg_catch), " rows fall",
             " within YEAR_ECOPATH (", paste(range(YEAR_ECOPATH), collapse = "-"), ").",
@@ -1541,6 +1561,29 @@ calc_fish <- function(out) {
   ## level F always takes priority when present. Applies identically
   ## on top of whichever M source, since Z = M+F regardless of how M
   ## was obtained.
+  ##
+  ## NOT IMPLEMENTED, worth flagging explicitly: neither Fmort_species
+  ## nor Fmort_FG is disaggregated by fishing fleet, gear, or GSA-level
+  ## effort - both are a single Yield/Biomass ratio lumped across the
+  ## WHOLE region and ALL gears/fleets that landed that species/FG.
+  ## Neither GFCM_Capture_Quantity.csv (what 02_fao_catches.R actually
+  ## reads - Country x Species x Division x Year only) nor the
+  ## landings_by_species_gsa_year.csv placeholder above (ScientificName x
+  ## Year x AreaID x catch_t) carries a fleet or gear column - there is
+  ## currently NOTHING in this pipeline that could compute a fleet- or
+  ## gear-specific F even if a real landings file were plugged in.
+  ## GFCM DOES define exactly this kind of disaggregation for its own
+  ## stock assessments - "Operational Units" (fleet segment x ISSCFG gear
+  ## code x GSA), collected via the DCRF's Task 2 (Catch), Task 4
+  ## (Fleet) and Task 5 (Effort), plus the Regional Fleet Register - but
+  ## that OU-level data is a genuinely different GFCM product than the
+  ## STATLANT-derived capture-production file this pipeline reads, is
+  ## submitted by national correspondents, and isn't confirmed to have
+  ## the same kind of open bulk-download this script's current source
+  ## does. Adding real fleet/gear resolution here means sourcing THAT
+  ## data (via GFCM's DCRF/SAC channels, or STECF's FDI database for the
+  ## EU-flagged portion of the fleet specifically), not something
+  ## derivable from GFCM_Capture_Quantity.csv itself.
   out[, Fmort_species := Yield / Biomass]
   out[, Fmort := fifelse(!is.na(Fmort_species), Fmort_species, Fmort_FG)]
   out[, Fmort_source := fifelse(!is.na(Fmort_species), "species (Y/B)",
@@ -2080,7 +2123,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
 }
 
 ## =================================================================
-## Add PB_QB to output/ecopath_ecosim_inputs.xlsx
+## Add PB_QB (+ PB_QB_spp) to output/ecopath_ecosim_inputs.xlsx
 ##
 ## Same shared workbook 01_survey_density_westmed.R (Biomass sheets) and
 ## 02_fao_catches.R (Catches sheets) write to, via the same order-
@@ -2088,8 +2131,19 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
 ## two scripts. fg_weighted here reflects whichever of the EcoBase-fill
 ## and FG-level-F steps above actually ran (or neither), so re-running
 ## this after changing either toggle updates the PB_QB sheet in place.
+##
+## `results` (species-level, built earlier by the calc_fish()/calc_
+## mammal()/calc_seabird()/calc_invertebrate() dispatch and rbindlist'd
+## above) is passed as species_pb_qb so the workbook also gets a
+## PB_QB_spp sheet - one row per species, with the proportion of each
+## FG's biomass it represents - rather than PB_QB's FG-level rollup
+## being the only place PB/QB shows up in the workbook. Without this,
+## the only place to see which species (and how much of each FG) went
+## into PB_FG/QB_FG is species_pb_qb_by_taxon_group.csv, outside the
+## workbook entirely.
 ## =================================================================
-add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKBOOK_PATH)
+add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKBOOK_PATH,
+                             species_pb_qb = results)
 
 ## =================================================================
 ## Method comparison plots - fish only, since that's the group with

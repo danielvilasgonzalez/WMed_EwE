@@ -2375,16 +2375,30 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
 ## those use. This can be run before, after, or between those two -
 ## no dependency on either having run first.
 ##
-##   fg_weighted - 04_pbqb_calc.R's FG-level table. Requires FG, FG_name,
-##                 PB_FG, QB_FG at minimum. A handful of other columns
-##                 (Biomass_FG, F_FG, PB_source, QB_source, etc.) are
-##                 carried through as extra audit-trail columns IF
-##                 present, but aren't required - different 04_pbqb_calc.R
-##                 runs may or may not have gone through the EcoBase-fill
-##                 or FG-level-F steps.
-##   out_path    - path to output/ecopath_ecosim_inputs.xlsx
+##   fg_weighted    - 04_pbqb_calc.R's FG-level table. Requires FG, FG_name,
+##                     PB_FG, QB_FG at minimum. A handful of other columns
+##                     (Biomass_FG, F_FG, PB_source, QB_source, etc.) are
+##                     carried through as extra audit-trail columns IF
+##                     present, but aren't required - different 04_pbqb_calc.R
+##                     runs may or may not have gone through the EcoBase-fill
+##                     or FG-level-F steps.
+##   out_path       - path to output/ecopath_ecosim_inputs.xlsx
+##   species_pb_qb  - OPTIONAL. 04_pbqb_calc.R's own species-level `results`
+##                     table (the one written to
+##                     species_pb_qb_by_taxon_group.csv) - every species that
+##                     went into computing PB_FG/QB_FG above, not just the
+##                     FG-level rollup. Requires FG, Species, Biomass, PB, QB
+##                     at minimum; FG_name/dispatch_group/PB_method/QB_method/
+##                     Fmort/Fmort_source are carried through if present.
+##                     When supplied, this also writes a "PB_QB_spp" sheet -
+##                     one row per species, mirroring FG_spp_Ecopath's shape,
+##                     WITH a proportion column so it's actually possible to
+##                     see which species (and how much of each FG's biomass)
+##                     PB_FG/QB_FG were computed from - not just the FG-level
+##                     final number. Omit this argument (or pass NULL) to
+##                     write PB_QB only, same as before this argument existed.
 ## =================================================================
-add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL) {
   required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
   missing_cols <- setdiff(required_cols, names(fg_weighted))
   if (length(missing_cols) > 0) {
@@ -2393,7 +2407,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
          " further up in 04_pbqb_calc.R (after the FG-level aggregation step), not",
          " something else.")
   }
-  
+
   optional_cols <- intersect(
     c("Biomass_FG", "n_species_with_PB", "n_species_with_QB", "n_species_total",
       "biomass_coverage_PB", "biomass_coverage_QB", "n_species_with_F",
@@ -2403,7 +2417,75 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
   pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
   setnames(pbqb_sheet, "FG", "FG_num")
   setorder(pbqb_sheet, FG_num)
-  
-  upsert_workbook_sheets(list(PB_QB = pbqb_sheet), out_path)
-  invisible(pbqb_sheet)
+
+  sheets <- list(PB_QB = pbqb_sheet)
+
+  if (is.null(species_pb_qb)) {
+    message("add_pbqb_to_ecopath_workbook(): no species_pb_qb table passed - PB_QB stays",
+            " FG-level only (one row per FG), same as before this argument existed. Pass",
+            " 04_pbqb_calc.R's own species-level `results` table as species_pb_qb to ALSO",
+            " write a PB_QB_spp sheet - one row per species that went into each FG's",
+            " PB_FG/QB_FG, with its weighting proportion - rather than only the FG-level",
+            " rollup.")
+  } else {
+    required_spp_cols <- c("FG", "Species", "Biomass", "PB", "QB")
+    missing_spp_cols <- setdiff(required_spp_cols, names(species_pb_qb))
+    if (length(missing_spp_cols) > 0) {
+      stop("add_pbqb_to_ecopath_workbook(): species_pb_qb is missing required column(s): ",
+           paste(missing_spp_cols, collapse = ", "), " - check it's 04_pbqb_calc.R's own",
+           " `results` table (species-level, after PB/QB dispatch), not fg_weighted or",
+           " something else.")
+    }
+
+    spp <- copy(as.data.table(species_pb_qb))
+
+    ## Three different "share of the FG" proportions, because PB_FG and
+    ## QB_FG are each their OWN biomass-weighted mean over a DIFFERENT
+    ## subset of species (whichever ones have a non-NA PB, resp. QB) -
+    ## a single generic proportion column would silently misrepresent
+    ## one or the other. All three are computed the same way fg_weighted's
+    ## own PB_FG/QB_FG were: weight = Biomass / sum(Biomass) within the
+    ## relevant group, so prop_biomass_PB summed within an FG reproduces
+    ## exactly the weights PB_FG = sum(Biomass*PB)/sum(Biomass[!is.na(PB)])
+    ## used, species by species.
+    ##
+    ##   prop_biomass_FG - this species' share of the FG's TOTAL biomass
+    ##                      (every species in the FG, whether or not PB/QB
+    ##                      succeeded) - general reference, same convention
+    ##                      as FG_spp_Ecopath's own prop_sp_fg column.
+    ##   prop_biomass_PB - this species' actual weight inside PB_FG's own
+    ##                      biomass-weighted average - NA for a species
+    ##                      whose own PB is NA (it contributed nothing to
+    ##                      PB_FG, regardless of its Biomass).
+    ##   prop_biomass_QB - same idea, for QB_FG.
+    spp[, Biomass_FG_total    := sum(Biomass, na.rm = TRUE), by = FG]
+    spp[, prop_biomass_FG     := ifelse(Biomass_FG_total > 0, Biomass / Biomass_FG_total, NA_real_)]
+    spp[, Biomass_FG_PB_total := sum(Biomass[!is.na(PB)], na.rm = TRUE), by = FG]
+    spp[, prop_biomass_PB     := ifelse(!is.na(PB) & Biomass_FG_PB_total > 0,
+                                        Biomass / Biomass_FG_PB_total, NA_real_)]
+    spp[, Biomass_FG_QB_total := sum(Biomass[!is.na(QB)], na.rm = TRUE), by = FG]
+    spp[, prop_biomass_QB     := ifelse(!is.na(QB) & Biomass_FG_QB_total > 0,
+                                        Biomass / Biomass_FG_QB_total, NA_real_)]
+
+    spp_optional_cols <- intersect(
+      c("FG_name", "dispatch_group", "PB_method", "QB_method", "Fmort", "Fmort_source"),
+      names(spp)
+    )
+    spp_sheet <- spp[, c("FG", "Species", spp_optional_cols, "Biomass", "prop_biomass_FG",
+                         "PB", "prop_biomass_PB", "QB", "prop_biomass_QB"), with = FALSE]
+    setnames(spp_sheet, "FG", "FG_num")
+    setorder(spp_sheet, FG_num, -Biomass)
+
+    n_species_no_pb_qb <- spp_sheet[is.na(PB) & is.na(QB), .N]
+    message("add_pbqb_to_ecopath_workbook(): PB_QB_spp sheet built - ", nrow(spp_sheet),
+            " species across ", uniqueN(spp_sheet$FG_num), " FG(s). ", n_species_no_pb_qb,
+            " species have neither a PB nor a QB value (still listed, for biomass-coverage",
+            " context, but prop_biomass_PB/prop_biomass_QB are both NA for these - they did",
+            " not contribute to PB_FG/QB_FG).")
+
+    sheets$PB_QB_spp <- spp_sheet
+  }
+
+  upsert_workbook_sheets(sheets, out_path)
+  invisible(sheets)
 }

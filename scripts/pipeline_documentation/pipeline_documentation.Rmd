@@ -14,28 +14,9 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(eval = FALSE, echo = TRUE, tidy = "styler")
-# figure chunks below override eval/echo individually so this document can
-# show real pipeline output when it's available; everything else in the
-# document stays non-executed (this is documentation, not a live report).
-
-# safe_include_graphics(): shows the real figure if it's been copied into
-# figures/ next to this .Rmd (see "Populating the real figures" below);
-# otherwise prints a plain placeholder message instead of erroring, so this
-# document always knits cleanly whether or not the pipeline has been run
-# yet against the real WestMed EwE pCloud drive data.
-safe_include_graphics <- function(path, script, out_dir_note) {
-  if (file.exists(path)) {
-    knitr::include_graphics(path)
-  } else {
-    cat(
-      "*Figure not yet available.* Run **", script, "**",
-      " against the real WestMed EwE pCloud drive data, then copy\n`",
-      out_dir_note, "`\ninto a `figures/` folder next to this `.Rmd` ",
-      "(as `", basename(path), "`) and re-knit.",
-      sep = ""
-    )
-  }
-}
+# figure chunks below override eval/echo individually so the illustrative
+# PNGs actually render when this document is knitted; everything else in
+# the document stays non-executed (this is documentation, not a live report)
 ```
 
 ```{css, echo=FALSE}
@@ -70,21 +51,7 @@ pre, code {
   overflow-x: auto;
   max-width: 100%;
 }
-/* mermaid diagrams (see medbs_pipeline_methodology.qmd for the same look):
-   don't let the pre-wrap rule above touch them - mermaid.js replaces the
-   div's contents with an SVG at render time */
-div.mermaid {
-  overflow-x: auto;
-  max-width: 100%;
-  text-align: center;
-}
 ```
-
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js"></script>
-<script>
-  mermaid.initialize({ startOnLoad: true, theme: "neutral",
-                        flowchart: { padding: 20, nodeSpacing: 60, rankSpacing: 90 } });
-</script>
 
 # Purpose of this document
 
@@ -159,81 +126,14 @@ documentation was written without direct access to the WestMed EwE pCloud
 drive's actual data files. The **column-reference tables** throughout are
 not guesses — they list exactly the column names each script's own code
 reads (`select()`/`merge()`/`setnames()` calls, etc.), so they're accurate
-regardless of the actual data values. The **figures**, however, are the
-pipeline's own real output and only appear once you've generated them — see
-[Populating the real figures] below.
-
-## Populating the real figures
-
-Several sections below embed a figure via a small `safe_include_graphics()`
-helper (defined in this document's setup chunk). Each one checks for a file
-under `figures/` (a folder that must sit next to this `.Rmd`) and shows the
-real image if present, or a plain "not yet available" message with the
-exact script/output path to copy from if not — so this document always
-knits cleanly either way. To populate them for real:
-
-1. Run the relevant script (named in each placeholder message) against the
-   real WestMed EwE pCloud drive data.
-2. Copy the named `.png` from that script's `<out_dir>/plots/` into a
-   `figures/` folder next to this `.Rmd`, keeping the same filename.
-3. Re-knit.
-
-Four **other** diagrams in this document (the pipeline flow, the
-FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon
-dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**,
-in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams
-(same `flowchart LR` layout, the same gray/purple/teal/coral
-`classDef` palette). They show the code's own logic — which function
-calls which, which sheet gets written by what, which fallback branch runs
-when — built directly from the script and library contents described
-here, not from any survey or model output. Because they're plain text
-(Mermaid syntax rendered in-browser via `mermaid.js`, loaded from a CDN
-in this document's setup), they contain no data values and no image
-files to go missing — unlike the four `safe_include_graphics()`
-placeholders above, they always render, with or without an internet
-connection to the pCloud drive. They do need an internet connection *to
-the Mermaid CDN* at view time (not render time) to draw the SVG in the
-browser; if you'd rather they render standalone with no external
-dependency, `rmarkdown::html_document(self_contained = TRUE)` still
-inlines the two `<script>` tags below the CSS chunk, so this only
-matters if that CDN is unreachable from wherever the HTML is opened.
+regardless of the actual data values. The **example figures**, by contrast,
+are built from fabricated numbers purely to show each plot's structure
+(chart type, axes, faceting) — they are explicitly labeled "illustrative
+example" / "synthetic data" and should not be read as real survey results.
+Once run against the real pCloud data, every script produces the actual
+plots and CSVs at the paths listed in each section's Outputs.
 
 # Pipeline overview
-
-The diagram below is a schematic of the actual script/function call
-structure documented in this document — which script produces which
-intermediate file, and which workbook sheets each one writes. It is not a
-plot of any survey data or model output (same diagram style as
-`medbs_pipeline_methodology.qmd`'s "Pipeline flow" section).
-
-```{=html}
-<div class="mermaid">
-%%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
-flowchart LR
-    A1["Step 1a/1b&lt;br/&gt;01_survey_density_*.R"] --> B1["species_density_regional_combined.csv&lt;br/&gt;strata_area_by_area.csv"]
-    B1 --> C1["xlsx: FG_spp_Ecopath, Ecopath,&lt;br/&gt;Ecosim, FG_spp_Ecosim, FG, traits_ewe"]
-    B1 --> A2["Step 2&lt;br/&gt;02_fao_catches.R"]
-    A2 --> C2["xlsx: Catches_Ecopath,&lt;br/&gt;Catches_Ecosim"]
-    A3["Step 3 (independent)&lt;br/&gt;03_ecobase_query.R"] --> B3["ecobase_literature_pb_qb_simple.csv&lt;br/&gt;(optional)"]
-    B1 --> A4["Step 4 (run last)&lt;br/&gt;04_pbqb_calc.R"]
-    B3 -.-> A4
-    A2 -.-> A4
-    A4 --> C4["xlsx: PB_QB, PB_QB_spp, Ecobase, References"]
-    C1 --> F["finalize_workbook_sheet_order()&lt;br/&gt;rename + reorder"]
-    C2 --> F
-    C4 --> F
-    F --> O["output/ecopath_ecosim_inputs.xlsx"]
-
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-    classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-    class A1,A2,A3,A4 purple
-    class B1,B3 gray
-    class C1,C2,C4 teal
-    class F,O coral
-</div>
-```
 
 **Step 1 — pick ONE:**
 
@@ -266,8 +166,8 @@ flowchart LR
   Step 2's `fg_catch_timeseries_*.csv` and Step 3's
   `ecobase_literature_pb_qb_simple.csv`)
 
-&#8595; produces sheets `PB_QB`, `PB_QB_spp`, `Ecobase`, `References` (renamed
-to `PB_QB_References_`).
+&#8595; produces sheets `PB_QB`, `Ecobase`, `References` (renamed to
+`PB_QB_References_`).
 
 **Finally**, `finalize_workbook_sheet_order()` — called from whichever
 script runs last — reorders every sheet into the final layout:
@@ -422,12 +322,8 @@ optional):
 | `species` | `ScientificName` | Species scientific name |
 | `q_FACTOR` | `q` | Catchability correction factor |
 
-```{r sample-coverage-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_sample_map() output — MEDITS sample coverage by area."}
-safe_include_graphics(
-  "figures/survey_sample_coverage_map.png",
-  script = "01_survey_density_westmed.R (or 01_survey_density_custom.R)",
-  out_dir_note = "<out_dir>/plots/survey_sample_coverage_map.png"
-)
+```{r sample-coverage-fig, echo=FALSE, eval=TRUE, out.width="100%", fig.cap="plot_sample_map() output — illustrative example only (synthetic points/boundaries; the real map is built from actual MEDITS sample coordinates and the GFCM GSA shapefile or custom boundary)."}
+knitr::include_graphics("figures/sample_coverage_map_example.png")
 ```
 
 ## Processing steps
@@ -465,20 +361,12 @@ safe_include_graphics(
    `survey_fg_density_timeseries_regional.png`,
    `survey_fg_depth_strata_profile.png`.
 
-   ```{r fg-timeseries-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_fg_timeseries_by_area() output — MEDITS trawl survey density by FG and area (strata-weighted)."}
-   safe_include_graphics(
-     "figures/survey_fg_density_timeseries.png",
-     script = "01_survey_density_westmed.R (or 01_survey_density_custom.R)",
-     out_dir_note = "<out_dir>/plots/survey_fg_density_timeseries.png"
-   )
+   ```{r fg-timeseries-fig, echo=FALSE, eval=TRUE, out.width="100%", fig.cap="plot_fg_timeseries_by_area()/plot_fg_timeseries_regional() output — illustrative example only (synthetic Functional Groups/values; the real plot facets by every FG in your own FG scheme)."}
+   knitr::include_graphics("figures/fg_density_timeseries_example.png")
    ```
 
-   ```{r strata-profile-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_strata_profile() output — raw per-sample density across depth strata, by FG."}
-   safe_include_graphics(
-     "figures/survey_fg_depth_strata_profile.png",
-     script = "01_survey_density_westmed.R (or 01_survey_density_custom.R)",
-     out_dir_note = "<out_dir>/plots/survey_fg_depth_strata_profile.png"
-   )
+   ```{r strata-profile-fig, echo=FALSE, eval=TRUE, out.width="100%", fig.cap="plot_strata_profile() output — illustrative example only (synthetic depth-density profiles for three schematic FGs)."}
+   knitr::include_graphics("figures/depth_strata_profile_example.png")
    ```
 7. **MEDIAS acoustic survey (Step 9, sub-steps 9a–9g)** — load and collapse
    raw abundance/biomass records, map species codes via ASFIS, match to FG
@@ -691,27 +579,6 @@ source):
    (GFCM's Division-resolution reporting can't isolate GSA 12's specific
    contribution to subtract it out).
 
-**Not implemented — no fleet or gear disaggregation anywhere in this
-script.** `GFCM_Capture_Quantity.csv` (the actual, confirmed source above)
-resolves only to Country × Species × Division × Year — this is GFCM's
-STATLANT-derived aggregate capture-production product, not its
-Operational-Unit-level data. GFCM *does* collect catch/effort broken down
-by **Operational Unit** (fleet segment × ISSCFG gear code × GSA), via the
-DCRF's Task 2 (Catch)/Task 4 (Fleet)/Task 5 (Effort) and the Regional
-Fleet Register, submitted by national correspondents — but that's a
-genuinely different GFCM product from this file, and isn't confirmed to
-have the same kind of open bulk-download `GFCM_Capture_Quantity.csv` does
-(it feeds GFCM's own stock-assessment working groups rather than being
-published as an open dataset the way STATLANT capture-production is).
-Getting real fleet/gear resolution into this pipeline means sourcing that
-Operational-Unit data through GFCM's DCRF/SAC channels, or — for the
-EU-flagged portion of the fleet specifically — STECF's FDI (Fisheries
-Dependent Information) database, which is the same source already
-flagged elsewhere in this pipeline as the likely next step for a
-discard-inclusive catch figure. Neither is currently plugged in anywhere;
-`04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG` (below) inherit this same
-limitation, since they're computed downstream of this file.
-
 ## Outputs
 
 * **CSVs:** `unmatched_species_FG_assignment.csv`,
@@ -868,12 +735,8 @@ this is ever wired up):
 | `AreaID` | GSA number |
 | `catch_t` | Landed catch, tonnes |
 
-```{r pbqb-comparison-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="fish_PB_methods_comparison.png — all 6 fish PB/M methods per species, chosen method highlighted."}
-safe_include_graphics(
-  "figures/fish_PB_methods_comparison.png",
-  script = "04_pbqb_calc.R",
-  out_dir_note = "<out_dir>/plots/fish_PB_methods_comparison.png"
-)
+```{r pbqb-comparison-fig, echo=FALSE, eval=TRUE, out.width="100%", fig.cap="fish_PB_methods_comparison.png — illustrative example only (synthetic species/values; the real plot compares all 6 fish PB/M methods for every fish species in your own species_df, with the chosen method highlighted)."}
+knitr::include_graphics("figures/pbqb_methods_comparison_example.png")
 ```
 
 ## Processing steps
@@ -891,26 +754,6 @@ safe_include_graphics(
      enabled) — computed as `Yield_FG / Biomass_FG` per FG, applied to fish
      PB inside `calc_fish()` as a **fallback** when species-level Yield is
      absent (species-level always takes priority when both exist).
-     **Known, unresolved caveat (same root cause as `Catches_Ecopath`/
-     `Catches_Ecosim` below):** `Yield_FG`'s denominator (`area_total_km2`,
-     summed from `strata_area_by_area.csv`) is the *survey's* GSA-filtered
-     area, while its numerator (`fg_catch_timeseries_*.csv`'s `Catch_t`) is
-     filtered by GFCM Division, which for the Western Med example covers
-     GSA 1–11 **plus** GSA 12 — so `Yield_FG`, and therefore `Fmort_FG` and
-     the fish PB it feeds, is a **slight overestimate** wherever this path
-     is enabled. Not fixable from this side (GFCM's catch data can't be
-     split below Division resolution); see the same caveat under
-     [Script 2 — `02_fao_catches.R`] for the full explanation.
-     **Also not implemented — no fleet or gear disaggregation:** both
-     `Fmort_species` (path A, inactive) and `Fmort_FG` (path B) are a
-     single Yield/Biomass ratio lumped across the whole region and every
-     gear/fleet that landed that species/FG — neither the
-     `landings_by_species_gsa_year.csv` placeholder schema nor
-     `fg_catch_timeseries_*.csv` carries a fleet or gear column, so
-     there's nothing here that could produce a fleet- or gear-specific F
-     even once a real landings file is plugged in. See the matching note
-     under [Script 2 — `02_fao_catches.R`] for what a real fix would
-     require (GFCM's Operational-Unit data or STECF's FDI database).
 4. **Taxonomic classification** — `worms_taxonomy_lookup()` for every species
    in `species_df`, dispatch-classified into `fish` / `mammal` / `seabird` /
    `phytoplankton` / `invertebrate` (default) by WoRMS Class, with a
@@ -928,39 +771,7 @@ safe_include_graphics(
    general Gascuel formulas plus raw-trait identity mappings), an **external**
    FishBase/SeaLifeBase donor lookup — querying other species sharing the
    same taxonomic rank, not limited to species already in `species_df`.
-7. **Taxon-specific PB/QB calculation** (dispatch by group) — the diagram
-   below shows the actual dispatch and method-cascade logic:
-
-   ```{=html}
-   <div class="mermaid">
-   %%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
-   flowchart LR
-       T["worms_taxonomy_lookup()&lt;br/&gt;WoRMS Class"] --> F["calc_fish()&lt;br/&gt;PB: 6 M methods + Fmort&lt;br/&gt;QB: 4 methods"]
-       T --> M["calc_mammal()&lt;br/&gt;PB: Siler surv. to Gascuel&lt;br/&gt;QB: Innes&amp;Trites to Q/P=3"]
-       T --> S["calc_seabird()&lt;br/&gt;PB: Gascuel only&lt;br/&gt;QB: Nilsson-Nilsson (no Q/P=3)"]
-       T --> I["calc_invertebrate() (default)&lt;br/&gt;PB: Tumbiolo/Brey to Gascuel&lt;br/&gt;QB: Q/P=3 only"]
-       F --> D["fill_by_taxonomic_proximity()&lt;br/&gt;local then external donors"]
-       M --> D
-       S --> D
-       I --> D
-       D --> AGG["FG-level aggregation&lt;br/&gt;biomass-weighted mean"]
-       AGG --> OUT["Ecobase merge -&gt; PB_QB,&lt;br/&gt;PB_QB_spp, Ecobase, References"]
-
-       classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-       classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-       classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-       classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-       class T gray
-       class F,M,S,I purple
-       class D teal
-       class AGG,OUT coral
-   </div>
-   ```
-
-   *Phytoplankton is flagged by `worms_taxonomy_lookup()` but not computed
-   (needs separate production-sampling data, out of scope for this
-   pipeline) — not shown above.*
-
+7. **Taxon-specific PB/QB calculation** (dispatch by group):
    * `calc_fish()` — PB from 6 independent M methods (Pauly 1980, FishLife,
      Gascuel 2008, Hoenig 1983, Then et al. 2015, Alverson & Carney 1975) +
      Fmort; QB from 4 methods (Palomares & Pauly 1998 Eq.27/Eq.26, Christensen
@@ -989,21 +800,9 @@ safe_include_graphics(
     seabird/invertebrate FGs), to avoid double-counting against fish's own
     species-level Fmort.
 11. **Workbook write** — `add_pbqb_to_ecopath_workbook()` writes sheet
-    **`PB_QB`** (one row per FG — the biomass-weighted rollup), and, since
-    `results` (the species-level table) is passed in as its
-    `species_pb_qb` argument, also writes sheet **`PB_QB_spp`** (one row
-    per species, mirroring `FG_spp_Ecopath`'s shape — every species that
-    went into computing `PB_FG`/`QB_FG`, with three proportion columns:
-    `prop_biomass_FG` — share of the FG's total biomass, regardless of
-    whether that species got a PB/QB; `prop_biomass_PB`/`prop_biomass_QB`
-    — that species' actual weight inside `PB_FG`'s/`QB_FG`'s own
-    biomass-weighted mean, `NA` if that species' own PB/QB didn't
-    compute. This is the sheet to check *which* species and *how much*
-    of each FG's biomass a given `PB_FG`/`QB_FG` number was built from —
-    without it, that detail only existed outside the workbook, in
-    `species_pb_qb_by_taxon_group.csv`). A separate `upsert_workbook_sheets()`
-    call writes sheet **`References`** (later renamed `PB_QB_References_`
-    by `finalize_workbook_sheet_order()`, run from Script 1).
+    **`PB_QB`**; a separate `upsert_workbook_sheets()` call writes sheet
+    **`References`** (later renamed `PB_QB_References_` by
+    `finalize_workbook_sheet_order()`, run from Script 1).
 12. **Diagnostic plots** — per-method PB/QB comparison plots for fish, plus
     paginated species-level and FG-level PB/QB comparison plots across every
     dispatch group (auto-paginated when a plot would exceed `ggsave`'s
@@ -1024,7 +823,7 @@ safe_include_graphics(
   `fish_QB_methods_comparison.png`,
   `species_PB_QB_comparison[_pageN].png`, `FG_PB_QB_comparison[_pageN].png`.
 * **Workbook** `ecopath_ecosim_inputs.xlsx`, sheets written: `PB_QB`,
-  `PB_QB_spp`, `Ecobase`, `References` (renamed `PB_QB_References_`).
+  `Ecobase`, `References` (renamed `PB_QB_References_`).
 
 ---
 
@@ -1034,29 +833,6 @@ Sourced by all four numbered scripts; has **no top-level driver code** of its
 own — every symbol below is a function definition only.
 
 ## FG-matching functions
-
-Every observed species runs through this cascade, in order, until it
-resolves to a Functional Group or falls through to manual review — the
-diagram shows the actual fallback order implemented in the code below
-(same style as `medbs_pipeline_methodology.qmd`'s `@sec-fg-matching`
-diagram; each stage only attempts species the previous one left
-unmatched).
-
-```{=html}
-<div class="mermaid">
-%%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
-flowchart LR
-    A1["match_species_to_fg()&lt;br/&gt;direct ScientificName match"] --> A2["match_nominate_subspecies_fg()&lt;br/&gt;strip repeated trinomial word, retry"]
-    A2 --> A3["apply_seed_fg_rules()&lt;br/&gt;manual rules, zero-reference FGs"]
-    A3 --> A4["fallback_match_fg_by_taxonomy()&lt;br/&gt;Genus to Phylum, exactly-one-FG rule"]
-    A4 --> A5["summarize_unresolved_species()&lt;br/&gt;manual review"]
-
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    class A1,A2,A3,A4 purple
-    class A5 gray
-</div>
-```
 
 | Function | Purpose | Returns |
 |---|---|---|
@@ -1103,32 +879,8 @@ flowchart LR
 | `read_existing_ts_years(out_path, sheet_name)` | Reads year values from column 1 of an existing sheet, e.g. to keep `Catches_Ecosim`'s years aligned with an already-written `Ecosim` sheet |
 | `export_ecopath_ecosim_excel(fg_index_regional, species_density_regional, n_samples_by_area_year, dataframe2, year_ecopath, ts_years, out_path, species_taxonomy = NULL, fg_cv_log = NULL, normalize_ts = TRUE)` | Writes `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim` |
 | `add_catches_to_ecopath_workbook(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL)` | Converts raw catch tonnes to t/km² density; writes `Catches_Ecopath`, `Catches_Ecosim` |
-| `add_pbqb_to_ecopath_workbook(fg_weighted, out_path, species_pb_qb = NULL)` | Writes `PB_QB` (FG-level). If `species_pb_qb` (04_pbqb_calc.R's species-level `results` table) is also passed, writes `PB_QB_spp` too — one row per species, with `prop_biomass_FG`/`prop_biomass_PB`/`prop_biomass_QB` |
+| `add_pbqb_to_ecopath_workbook(fg_weighted, out_path)` | Writes `PB_QB` |
 | `finalize_workbook_sheet_order(out_path, rename_map, target_order)` | **Run last.** Renames `FG_lookup`→`FG` and `References`→`PB_QB_References_`, then reorders every sheet to `target_order`. Sheets not yet present are skipped with a message (not an error); sheets present but not in `target_order` are kept, appended at the end, with a warning. *(As of the latest patch, if a rename target is already occupied by a stale sheet from an earlier run, that stale sheet is replaced rather than raising an error — see the "Known issue" note below.)* |
-
-The diagram below shows which script/function writes which sheet into the
-one shared workbook, and how `finalize_workbook_sheet_order()` renames and
-reorders it at the end.
-
-```{=html}
-<div class="mermaid">
-%%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
-flowchart LR
-    S1["Step 1a/1b&lt;br/&gt;export_ecopath_ecosim_excel()"] --> W["ecopath_ecosim_inputs.xlsx&lt;br/&gt;(shared workbook)"]
-    S2["Step 2&lt;br/&gt;add_catches_to_ecopath_workbook()"] --> W
-    S4a["Step 4&lt;br/&gt;add_pbqb_to_ecopath_workbook()"] --> W
-    S4b["Step 4&lt;br/&gt;upsert_workbook_sheets()&lt;br/&gt;(Ecobase, References)"] --> W
-    W --> F["finalize_workbook_sheet_order()&lt;br/&gt;rename + reorder, run last"]
-    F --> O["output/ecopath_ecosim_inputs.xlsx&lt;br/&gt;(final, ordered)"]
-
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-    class S1,S2,S4a,S4b purple
-    class W gray
-    class F,O coral
-</div>
-```
 
 **Final target sheet order** (`target_order` used in every numbered
 script's own final call):
@@ -1138,13 +890,12 @@ script's own final call):
 3. `Catches_Ecopath`
 4. `FG_spp_Ecopath`
 5. `PB_QB`
-6. `PB_QB_spp`
-7. `Ecobase`
-8. `PB_QB_References_` (renamed from `References`)
-9. `traits_ewe`
-10. `Ecosim`
-11. `FG_spp_Ecosim`
-12. `Catches_Ecosim`
+6. `Ecobase`
+7. `PB_QB_References_` (renamed from `References`)
+8. `traits_ewe`
+9. `Ecosim`
+10. `FG_spp_Ecosim`
+11. `Catches_Ecosim`
 
 ### Known issue with `finalize_workbook_sheet_order()` reruns
 

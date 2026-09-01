@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Daniel Vilas">
-<meta name="dcterms.date" content="2026-08-28">
+<meta name="dcterms.date" content="2026-08-31">
 
 <title>Survey-to-FG Density Pipeline: Methodology</title>
 <style>
@@ -190,7 +190,7 @@ window.Quarto = {
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">August 28, 2026</p>
+      <p class="date">August 31, 2026</p>
     </div>
   </div>
   
@@ -1066,17 +1066,17 @@ Figure&nbsp;4: Sample coverage by GSA. selected_areas highlights the GSAs actual
 </div>
 </div>
 <div class="cell">
-<div class="cell-output-display">
-<div id="fig-custom-coverage" class="quarto-float quarto-figure quarto-figure-center anchored">
+<div id="fig-custom-coverage" class="cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
 <figure class="quarto-float quarto-float-fig figure">
 <div aria-describedby="fig-custom-coverage-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<img src="figures/custom_survey_sample_coverage_map.png" class="img-fluid figure-img" style="width:100.0%">
+<blockquote class="blockquote">
+<p><strong>Figure not yet available</strong> - <code>figures/custom_survey_sample_coverage_map.png</code> doesn’t exist yet. Run <code>01_survey_density_custom.R</code> first, then re-render this document.</p>
+</blockquote>
 </div>
 <figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-custom-coverage-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Figure&nbsp;5: Sample coverage within a custom bounding-box region, independent of GSA lines entirely.
 </figcaption>
 </figure>
-</div>
 </div>
 </div>
 <p>With only one custom area, <code>AreaID</code> is set to <code>1</code> for every retained sample - there’s no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever <code>AreaID</code>/<code>area_shp</code> combination they’re given, never assuming GSA-specific structure.</p>
@@ -1460,10 +1460,10 @@ Figure&nbsp;10: Sample coverage faceted by year.
 <h3 data-number="12.1" class="anchored" data-anchor-id="download-the-actual-outputs"><span class="header-section-number">12.1</span> Download the actual outputs</h3>
 <p>These are real files, copied from each script’s own <code>out_dir</code> at render time (never a placeholder or a stale leftover - the copy step above always overwrites) - if a given example script hasn’t been run yet, its links below say so plainly instead of silently pointing at nothing.</p>
 <p><strong>GSA-based run (<code>01_survey_density_westmed.R</code>):</strong></p>
-<p><a href="downloads/ecopath_ecosim_inputs.xlsx">ecopath_ecosim_inputs.xlsx</a>{download} (268.9 KB)</p>
-<p><a href="downloads/survey_fg_annual_index.csv">survey_fg_annual_index.csv</a>{download} (592.2 KB)</p>
+<p><a href="downloads/ecopath_ecosim_inputs.xlsx">ecopath_ecosim_inputs.xlsx</a>{download} (266.7 KB)</p>
+<p><a href="downloads/survey_fg_annual_index.csv">survey_fg_annual_index.csv</a>{download} (592.3 KB)</p>
 <p><a href="downloads/survey_fg_annual_index_regional.csv">survey_fg_annual_index_regional.csv</a>{download} (92.4 KB)</p>
-<p><a href="downloads/survey_unmatched_for_manual_review.csv">survey_unmatched_for_manual_review.csv</a>{download} (10.6 KB)</p>
+<p><a href="downloads/survey_unmatched_for_manual_review.csv">survey_unmatched_for_manual_review.csv</a>{download} (10.5 KB)</p>
 <p><a href="downloads/survey_outliers_flagged.csv">survey_outliers_flagged.csv</a>{download} (162.8 KB)</p>
 <p><a href="downloads/strata_area_by_area.csv">strata_area_by_area.csv</a>{download} (1.4 KB)</p>
 <p><strong>Custom-region run (<code>01_survey_density_custom.R</code>):</strong></p>
@@ -1807,6 +1807,21 @@ Figure&nbsp;10: Sample coverage faceted by year.
 <li><strong><code>Catches_Ecosim</code> is deliberately NOT rescaled to a first-year=1 index</strong> the way the Biomass-side <code>Ecosim</code> sheet is (<a href="#sec-configure" class="quarto-xref">Section&nbsp;3</a>’s <code>NORMALIZE_TS</code> doesn’t apply here) - EwE expects the catch time series in absolute units (<code>Scaling = "absolute"</code>, not <code>"relative"</code>), since catch removals need to be real tonnage for Ecosim’s mass-balance to work, not an index.</li>
 <li><strong>Missing Year×FG catch data stays blank, never filled with 0</strong> - an FG with no matched catch record for a given year is a data gap, not a claim that nothing was caught. <code>year_ecopath</code>/<code>ts_years</code> are matched against whatever <code>Ecopath</code>/<code>Ecosim</code> sheets already exist in the shared workbook (order-independent, same as everything else in <a href="#sec-configure" class="quarto-xref">Section&nbsp;3</a>) - so <code>02_fao_catches.R</code> doesn’t need to run before or after <code>01_survey_density_*.R</code> specifically, just consistently against the same <code>year_ecopath</code>.</li>
 </ul>
+</div>
+</div>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Warning</span>Known, unresolved: catch-area mismatch (GSA 12)
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>area_km2</code> above is <code>sum(area_km2)</code> from <code>strata_area_by_area.csv</code> - i.e.&nbsp;the <em>survey’s</em> study area (<code>01_survey_density_westmed.R</code>’s <code>FILTER_AREAS</code>, GSA 1-11 for the Western Med example). But <code>02_fao_catches.R</code> filters raw catch by <strong>GFCM Division</strong> (<code>37.1.1</code>-<code>37.1.3</code>), not by GSA - and per GFCM’s own GSA-to-Division crosswalk, those three divisions cover GSA 1-11 <strong>plus</strong> GSA 12 (Northern Tunisia), which <code>FILTER_AREAS</code> does not include.</p>
+<p>So <code>fg_catch</code>’s <code>Catch_t</code> (the numerator) reflects a slightly larger area than <code>area_km2</code> (the denominator) represents - <code>Catches_Ecopath</code>/<code>Catches_Ecosim</code> density is therefore a <strong>slight overestimate</strong> relative to <code>Ecopath</code>/<code>Ecosim</code>’s own Biomass density, not an underestimate. The same mismatch propagates into <code>04_pbqb_calc.R</code>’s FG-level <code>Yield_FG</code>/<code>Fmort_FG</code> step, since it divides the same <code>fg_catch_timeseries_*.csv</code> by the same GSA-only area total.</p>
+<p>This isn’t a fixable bug as things stand: GFCM’s capture statistics are reported at Division resolution, not GSA resolution, so GSA 12’s specific contribution to <code>Catch_t</code> can’t be isolated and subtracted out. It’s likely small in practice (Tunisia’s share of Division 37.1.3’s total catch), but hasn’t been quantified. Retargeting this pipeline to a different region means re-deriving that region’s own Division/GSA correspondence and checking whether the same kind of boundary mismatch applies there.</p>
 </div>
 </div>
 <div class="callout callout-style-default callout-note callout-titled">
@@ -3901,154 +3916,164 @@ Figure&nbsp;10: Sample coverage faceted by year.
 <span id="cb32-1532"><a href="#cb32-1532" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Missing Year×FG catch data stays blank, never filled with 0** - an FG with no matched catch record for a given year is a data gap, not a claim that nothing was caught. <span class="in">`year_ecopath`</span>/<span class="in">`ts_years`</span> are matched against whatever <span class="in">`Ecopath`</span>/<span class="in">`Ecosim`</span> sheets already exist in the shared workbook (order-independent, same as everything else in @sec-configure) - so <span class="in">`02_fao_catches.R`</span> doesn't need to run before or after <span class="in">`01_survey_density_*.R`</span> specifically, just consistently against the same <span class="in">`year_ecopath`</span>.</span>
 <span id="cb32-1533"><a href="#cb32-1533" aria-hidden="true" tabindex="-1"></a>:::</span>
 <span id="cb32-1534"><a href="#cb32-1534" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1535"><a href="#cb32-1535" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
-<span id="cb32-1536"><a href="#cb32-1536" aria-hidden="true" tabindex="-1"></a><span class="fu">### `PB_QB`: added from `04_pbqb_calc.R`'s own FG-level table</span></span>
-<span id="cb32-1537"><a href="#cb32-1537" aria-hidden="true" tabindex="-1"></a>This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (<span class="in">`04_pbqb_calc.R`</span>) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. <span class="in">`FG_spp_Ecopath`</span>'s <span class="in">`prop_sp_fg`</span> column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.</span>
-<span id="cb32-1538"><a href="#cb32-1538" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1539"><a href="#cb32-1539" aria-hidden="true" tabindex="-1"></a>The actual sheet-writing step, from <span class="in">`lib_survey_fg_density_functions.R`</span>:</span>
-<span id="cb32-1540"><a href="#cb32-1540" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1543"><a href="#cb32-1543" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
-<span id="cb32-1544"><a href="#cb32-1544" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: pbqb-sheet</span></span>
-<span id="cb32-1545"><a href="#cb32-1545" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
-<span id="cb32-1546"><a href="#cb32-1546" aria-hidden="true" tabindex="-1"></a>add_pbqb_to_ecopath_workbook <span class="ot">&lt;-</span> <span class="cf">function</span>(fg_weighted, out_path) {</span>
-<span id="cb32-1547"><a href="#cb32-1547" aria-hidden="true" tabindex="-1"></a>  required_cols <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"FG"</span>, <span class="st">"FG_name"</span>, <span class="st">"PB_FG"</span>, <span class="st">"QB_FG"</span>)</span>
-<span id="cb32-1548"><a href="#cb32-1548" aria-hidden="true" tabindex="-1"></a>  missing_cols <span class="ot">&lt;-</span> <span class="fu">setdiff</span>(required_cols, <span class="fu">names</span>(fg_weighted))</span>
-<span id="cb32-1549"><a href="#cb32-1549" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">length</span>(missing_cols) <span class="sc">&gt;</span> <span class="dv">0</span>) {</span>
-<span id="cb32-1550"><a href="#cb32-1550" aria-hidden="true" tabindex="-1"></a>    <span class="fu">stop</span>(<span class="st">"add_pbqb_to_ecopath_workbook(): fg_weighted is missing required column(s): "</span>,</span>
-<span id="cb32-1551"><a href="#cb32-1551" aria-hidden="true" tabindex="-1"></a>         <span class="fu">paste</span>(missing_cols, <span class="at">collapse =</span> <span class="st">", "</span>))</span>
-<span id="cb32-1552"><a href="#cb32-1552" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb32-1553"><a href="#cb32-1553" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1554"><a href="#cb32-1554" aria-hidden="true" tabindex="-1"></a>  <span class="do">## carried through IF present, but not required - different</span></span>
-<span id="cb32-1555"><a href="#cb32-1555" aria-hidden="true" tabindex="-1"></a>  <span class="do">## 04_pbqb_calc.R runs may or may not have gone through the</span></span>
-<span id="cb32-1556"><a href="#cb32-1556" aria-hidden="true" tabindex="-1"></a>  <span class="do">## EcoBase-fill or FG-level-F steps</span></span>
-<span id="cb32-1557"><a href="#cb32-1557" aria-hidden="true" tabindex="-1"></a>  optional_cols <span class="ot">&lt;-</span> <span class="fu">intersect</span>(</span>
-<span id="cb32-1558"><a href="#cb32-1558" aria-hidden="true" tabindex="-1"></a>    <span class="fu">c</span>(<span class="st">"Biomass_FG"</span>, <span class="st">"n_species_with_PB"</span>, <span class="st">"n_species_with_QB"</span>, <span class="st">"n_species_total"</span>,</span>
-<span id="cb32-1559"><a href="#cb32-1559" aria-hidden="true" tabindex="-1"></a>      <span class="st">"biomass_coverage_PB"</span>, <span class="st">"biomass_coverage_QB"</span>, <span class="st">"n_species_with_F"</span>,</span>
-<span id="cb32-1560"><a href="#cb32-1560" aria-hidden="true" tabindex="-1"></a>      <span class="st">"PB_FG_before_F"</span>, <span class="st">"F_FG"</span>, <span class="st">"PB_source"</span>, <span class="st">"QB_source"</span>),</span>
-<span id="cb32-1561"><a href="#cb32-1561" aria-hidden="true" tabindex="-1"></a>    <span class="fu">names</span>(fg_weighted)</span>
-<span id="cb32-1562"><a href="#cb32-1562" aria-hidden="true" tabindex="-1"></a>  )</span>
-<span id="cb32-1563"><a href="#cb32-1563" aria-hidden="true" tabindex="-1"></a>  pbqb_sheet <span class="ot">&lt;-</span> fg_weighted[, <span class="fu">c</span>(<span class="st">"FG"</span>, <span class="st">"FG_name"</span>, <span class="st">"PB_FG"</span>, <span class="st">"QB_FG"</span>, optional_cols), with <span class="ot">=</span> <span class="cn">FALSE</span>]</span>
-<span id="cb32-1564"><a href="#cb32-1564" aria-hidden="true" tabindex="-1"></a>  <span class="fu">setnames</span>(pbqb_sheet, <span class="st">"FG"</span>, <span class="st">"FG_num"</span>)</span>
-<span id="cb32-1565"><a href="#cb32-1565" aria-hidden="true" tabindex="-1"></a>  <span class="fu">setorder</span>(pbqb_sheet, FG_num)</span>
-<span id="cb32-1566"><a href="#cb32-1566" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1567"><a href="#cb32-1567" aria-hidden="true" tabindex="-1"></a>  <span class="fu">upsert_workbook_sheets</span>(<span class="fu">list</span>(<span class="at">PB_QB =</span> pbqb_sheet), out_path)</span>
-<span id="cb32-1568"><a href="#cb32-1568" aria-hidden="true" tabindex="-1"></a>  <span class="fu">invisible</span>(pbqb_sheet)</span>
-<span id="cb32-1569"><a href="#cb32-1569" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb32-1570"><a href="#cb32-1570" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb32-1571"><a href="#cb32-1571" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1572"><a href="#cb32-1572" aria-hidden="true" tabindex="-1"></a><span class="in">`fg_weighted`</span> is <span class="in">`04_pbqb_calc.R`</span>'s own FG-level aggregation - only <span class="in">`FG`</span>, <span class="in">`FG_name`</span>, <span class="in">`PB_FG`</span>, <span class="in">`QB_FG`</span> are required; everything else (biomass coverage, species counts, F-adjustment audit columns) is carried through automatically if present, so the sheet's exact column set can vary slightly depending on which optional steps that run went through, without needing this function to know about them in advance.</span>
-<span id="cb32-1573"><a href="#cb32-1573" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb32-1574"><a href="#cb32-1574" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1575"><a href="#cb32-1575" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
-<span id="cb32-1576"><a href="#cb32-1576" aria-hidden="true" tabindex="-1"></a><span class="fu">### `Ecobase`: two scripts, not one - literature compilation, then merge/gap-fill</span></span>
-<span id="cb32-1577"><a href="#cb32-1577" aria-hidden="true" tabindex="-1"></a><span class="in">`03_ecobase_query.R`</span> and <span class="in">`04_pbqb_calc.R`</span> split this into two genuinely separate concerns. <span class="in">`03_ecobase_query.R`</span> is entirely standalone - it queries <span class="co">[</span><span class="ot">EcoBase</span><span class="co">](https://ecobase.ecopath.org/)</span>'s public SOAP/XML web service for PB/QB/Biomass values from **other published Ecopath models**, with no dependency on this pipeline's own data at all, and produces one CSV (<span class="in">`ecobase_literature_pb_qb_simple.csv`</span>). It never touches <span class="in">`ecopath_ecosim_inputs.xlsx`</span>. <span class="in">`04_pbqb_calc.R`</span> is what actually writes the <span class="in">`Ecobase`</span> sheet - it optionally reads that CSV (skipped entirely if it doesn't exist yet), matches literature values to this model's own FGs, and uses them two ways: to fill PB/QB gaps in the <span class="in">`PB_QB`</span> sheet where the empirical method produced nothing, and as a separate, unfilled <span class="in">`Ecobase`</span> sheet for direct comparison/audit.</span>
-<span id="cb32-1578"><a href="#cb32-1578" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb32-1579"><a href="#cb32-1579" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1580"><a href="#cb32-1580" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
-<span id="cb32-1581"><a href="#cb32-1581" aria-hidden="true" tabindex="-1"></a><span class="fu">### Not verified against the live service</span></span>
-<span id="cb32-1582"><a href="#cb32-1582" aria-hidden="true" tabindex="-1"></a><span class="in">`03_ecobase_query.R`</span>'s own header comment is explicit about this: *"NOT TESTED against the live service from this session - I don't have network access to sirs.agrocampus-ouest.fr or ecobase.ecopath.org from my own sandbox, so this needs to be verified by actually running it."* The script prints the raw XML structure and several diagnostic messages specifically so a real run either confirms the parsing assumptions below or surfaces exactly where they're wrong - carried over here rather than smoothed into unqualified documentation.</span>
+<span id="cb32-1535"><a href="#cb32-1535" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
+<span id="cb32-1536"><a href="#cb32-1536" aria-hidden="true" tabindex="-1"></a><span class="fu">## Known, unresolved: catch-area mismatch (GSA 12)</span></span>
+<span id="cb32-1537"><a href="#cb32-1537" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1538"><a href="#cb32-1538" aria-hidden="true" tabindex="-1"></a><span class="in">`area_km2`</span> above is <span class="in">`sum(area_km2)`</span> from <span class="in">`strata_area_by_area.csv`</span> - i.e. the *survey's* study area (`01_survey_density_westmed.R`'s `FILTER_AREAS`, GSA 1-11 for the Western Med example). But `02_fao_catches.R` filters raw catch by **GFCM Division** (`37.1.1`-`37.1.3`), not by GSA - and per GFCM's own GSA-to-Division crosswalk, those three divisions cover GSA 1-11 **plus** GSA 12 (Northern Tunisia), which <span class="in">`FILTER_AREAS`</span> does not include.</span>
+<span id="cb32-1539"><a href="#cb32-1539" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1540"><a href="#cb32-1540" aria-hidden="true" tabindex="-1"></a>So <span class="in">`fg_catch`</span>'s <span class="in">`Catch_t`</span> (the numerator) reflects a slightly larger area than <span class="in">`area_km2`</span> (the denominator) represents - <span class="in">`Catches_Ecopath`</span>/<span class="in">`Catches_Ecosim`</span> density is therefore a **slight overestimate** relative to <span class="in">`Ecopath`</span>/<span class="in">`Ecosim`</span>'s own Biomass density, not an underestimate. The same mismatch propagates into <span class="in">`04_pbqb_calc.R`</span>'s FG-level <span class="in">`Yield_FG`</span>/<span class="in">`Fmort_FG`</span> step, since it divides the same <span class="in">`fg_catch_timeseries_*.csv`</span> by the same GSA-only area total.</span>
+<span id="cb32-1541"><a href="#cb32-1541" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1542"><a href="#cb32-1542" aria-hidden="true" tabindex="-1"></a>This isn't a fixable bug as things stand: GFCM's capture statistics are reported at Division resolution, not GSA resolution, so GSA 12's specific contribution to <span class="in">`Catch_t`</span> can't be isolated and subtracted out. It's likely small in practice (Tunisia's share of Division 37.1.3's total catch), but hasn't been quantified. Retargeting this pipeline to a different region means re-deriving that region's own Division/GSA correspondence and checking whether the same kind of boundary mismatch applies there.</span>
+<span id="cb32-1543"><a href="#cb32-1543" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb32-1544"><a href="#cb32-1544" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1545"><a href="#cb32-1545" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb32-1546"><a href="#cb32-1546" aria-hidden="true" tabindex="-1"></a><span class="fu">### `PB_QB`: added from `04_pbqb_calc.R`'s own FG-level table</span></span>
+<span id="cb32-1547"><a href="#cb32-1547" aria-hidden="true" tabindex="-1"></a>This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (<span class="in">`04_pbqb_calc.R`</span>) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. <span class="in">`FG_spp_Ecopath`</span>'s <span class="in">`prop_sp_fg`</span> column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.</span>
+<span id="cb32-1548"><a href="#cb32-1548" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1549"><a href="#cb32-1549" aria-hidden="true" tabindex="-1"></a>The actual sheet-writing step, from <span class="in">`lib_survey_fg_density_functions.R`</span>:</span>
+<span id="cb32-1550"><a href="#cb32-1550" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1553"><a href="#cb32-1553" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb32-1554"><a href="#cb32-1554" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: pbqb-sheet</span></span>
+<span id="cb32-1555"><a href="#cb32-1555" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
+<span id="cb32-1556"><a href="#cb32-1556" aria-hidden="true" tabindex="-1"></a>add_pbqb_to_ecopath_workbook <span class="ot">&lt;-</span> <span class="cf">function</span>(fg_weighted, out_path) {</span>
+<span id="cb32-1557"><a href="#cb32-1557" aria-hidden="true" tabindex="-1"></a>  required_cols <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"FG"</span>, <span class="st">"FG_name"</span>, <span class="st">"PB_FG"</span>, <span class="st">"QB_FG"</span>)</span>
+<span id="cb32-1558"><a href="#cb32-1558" aria-hidden="true" tabindex="-1"></a>  missing_cols <span class="ot">&lt;-</span> <span class="fu">setdiff</span>(required_cols, <span class="fu">names</span>(fg_weighted))</span>
+<span id="cb32-1559"><a href="#cb32-1559" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">length</span>(missing_cols) <span class="sc">&gt;</span> <span class="dv">0</span>) {</span>
+<span id="cb32-1560"><a href="#cb32-1560" aria-hidden="true" tabindex="-1"></a>    <span class="fu">stop</span>(<span class="st">"add_pbqb_to_ecopath_workbook(): fg_weighted is missing required column(s): "</span>,</span>
+<span id="cb32-1561"><a href="#cb32-1561" aria-hidden="true" tabindex="-1"></a>         <span class="fu">paste</span>(missing_cols, <span class="at">collapse =</span> <span class="st">", "</span>))</span>
+<span id="cb32-1562"><a href="#cb32-1562" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb32-1563"><a href="#cb32-1563" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1564"><a href="#cb32-1564" aria-hidden="true" tabindex="-1"></a>  <span class="do">## carried through IF present, but not required - different</span></span>
+<span id="cb32-1565"><a href="#cb32-1565" aria-hidden="true" tabindex="-1"></a>  <span class="do">## 04_pbqb_calc.R runs may or may not have gone through the</span></span>
+<span id="cb32-1566"><a href="#cb32-1566" aria-hidden="true" tabindex="-1"></a>  <span class="do">## EcoBase-fill or FG-level-F steps</span></span>
+<span id="cb32-1567"><a href="#cb32-1567" aria-hidden="true" tabindex="-1"></a>  optional_cols <span class="ot">&lt;-</span> <span class="fu">intersect</span>(</span>
+<span id="cb32-1568"><a href="#cb32-1568" aria-hidden="true" tabindex="-1"></a>    <span class="fu">c</span>(<span class="st">"Biomass_FG"</span>, <span class="st">"n_species_with_PB"</span>, <span class="st">"n_species_with_QB"</span>, <span class="st">"n_species_total"</span>,</span>
+<span id="cb32-1569"><a href="#cb32-1569" aria-hidden="true" tabindex="-1"></a>      <span class="st">"biomass_coverage_PB"</span>, <span class="st">"biomass_coverage_QB"</span>, <span class="st">"n_species_with_F"</span>,</span>
+<span id="cb32-1570"><a href="#cb32-1570" aria-hidden="true" tabindex="-1"></a>      <span class="st">"PB_FG_before_F"</span>, <span class="st">"F_FG"</span>, <span class="st">"PB_source"</span>, <span class="st">"QB_source"</span>),</span>
+<span id="cb32-1571"><a href="#cb32-1571" aria-hidden="true" tabindex="-1"></a>    <span class="fu">names</span>(fg_weighted)</span>
+<span id="cb32-1572"><a href="#cb32-1572" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb32-1573"><a href="#cb32-1573" aria-hidden="true" tabindex="-1"></a>  pbqb_sheet <span class="ot">&lt;-</span> fg_weighted[, <span class="fu">c</span>(<span class="st">"FG"</span>, <span class="st">"FG_name"</span>, <span class="st">"PB_FG"</span>, <span class="st">"QB_FG"</span>, optional_cols), with <span class="ot">=</span> <span class="cn">FALSE</span>]</span>
+<span id="cb32-1574"><a href="#cb32-1574" aria-hidden="true" tabindex="-1"></a>  <span class="fu">setnames</span>(pbqb_sheet, <span class="st">"FG"</span>, <span class="st">"FG_num"</span>)</span>
+<span id="cb32-1575"><a href="#cb32-1575" aria-hidden="true" tabindex="-1"></a>  <span class="fu">setorder</span>(pbqb_sheet, FG_num)</span>
+<span id="cb32-1576"><a href="#cb32-1576" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1577"><a href="#cb32-1577" aria-hidden="true" tabindex="-1"></a>  <span class="fu">upsert_workbook_sheets</span>(<span class="fu">list</span>(<span class="at">PB_QB =</span> pbqb_sheet), out_path)</span>
+<span id="cb32-1578"><a href="#cb32-1578" aria-hidden="true" tabindex="-1"></a>  <span class="fu">invisible</span>(pbqb_sheet)</span>
+<span id="cb32-1579"><a href="#cb32-1579" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb32-1580"><a href="#cb32-1580" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb32-1581"><a href="#cb32-1581" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1582"><a href="#cb32-1582" aria-hidden="true" tabindex="-1"></a><span class="in">`fg_weighted`</span> is <span class="in">`04_pbqb_calc.R`</span>'s own FG-level aggregation - only <span class="in">`FG`</span>, <span class="in">`FG_name`</span>, <span class="in">`PB_FG`</span>, <span class="in">`QB_FG`</span> are required; everything else (biomass coverage, species counts, F-adjustment audit columns) is carried through automatically if present, so the sheet's exact column set can vary slightly depending on which optional steps that run went through, without needing this function to know about them in advance.</span>
 <span id="cb32-1583"><a href="#cb32-1583" aria-hidden="true" tabindex="-1"></a>:::</span>
 <span id="cb32-1584"><a href="#cb32-1584" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1585"><a href="#cb32-1585" aria-hidden="true" tabindex="-1"></a><span class="fu">### Step 3 - compiling literature values (`03_ecobase_query.R`)</span></span>
-<span id="cb32-1586"><a href="#cb32-1586" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1587"><a href="#cb32-1587" aria-hidden="true" tabindex="-1"></a>Rather than keyword-matching country/ecosystem name text fields (fragile - depends entirely on how a given model's authors happened to write it), models are filtered to the Mediterranean using each model's own <span class="in">`geographic_extent`</span> bounding box:</span>
-<span id="cb32-1588"><a href="#cb32-1588" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1591"><a href="#cb32-1591" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
-<span id="cb32-1592"><a href="#cb32-1592" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-geo-filter</span></span>
-<span id="cb32-1593"><a href="#cb32-1593" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
-<span id="cb32-1594"><a href="#cb32-1594" aria-hidden="true" tabindex="-1"></a>parse_geo_box <span class="ot">&lt;-</span> <span class="cf">function</span>(box_str) {</span>
-<span id="cb32-1595"><a href="#cb32-1595" aria-hidden="true" tabindex="-1"></a>  <span class="do">## geographic_extent format: "BOX(lon1 lat1,lon2 lat2)"</span></span>
-<span id="cb32-1596"><a href="#cb32-1596" aria-hidden="true" tabindex="-1"></a>  m <span class="ot">&lt;-</span> <span class="fu">regmatches</span>(box_str, <span class="fu">regexec</span>(<span class="st">"BOX</span><span class="sc">\\</span><span class="st">(([-0-9.]+) ([-0-9.]+),([-0-9.]+) ([-0-9.]+)</span><span class="sc">\\</span><span class="st">)"</span>, box_str))[[<span class="dv">1</span>]]</span>
-<span id="cb32-1597"><a href="#cb32-1597" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">length</span>(m) <span class="sc">!=</span> <span class="dv">5</span>) <span class="fu">return</span>(<span class="fu">c</span>(<span class="at">lon_min =</span> <span class="cn">NA_real_</span>, <span class="at">lat_min =</span> <span class="cn">NA_real_</span>, <span class="at">lon_max =</span> <span class="cn">NA_real_</span>, <span class="at">lat_max =</span> <span class="cn">NA_real_</span>))</span>
-<span id="cb32-1598"><a href="#cb32-1598" aria-hidden="true" tabindex="-1"></a>  lons <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">c</span>(m[<span class="dv">2</span>], m[<span class="dv">4</span>])); lats <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">c</span>(m[<span class="dv">3</span>], m[<span class="dv">5</span>]))</span>
-<span id="cb32-1599"><a href="#cb32-1599" aria-hidden="true" tabindex="-1"></a>  <span class="fu">c</span>(<span class="at">lon_min =</span> <span class="fu">min</span>(lons), <span class="at">lat_min =</span> <span class="fu">min</span>(lats), <span class="at">lon_max =</span> <span class="fu">max</span>(lons), <span class="at">lat_max =</span> <span class="fu">max</span>(lats))</span>
-<span id="cb32-1600"><a href="#cb32-1600" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb32-1601"><a href="#cb32-1601" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1602"><a href="#cb32-1602" aria-hidden="true" tabindex="-1"></a>box_overlaps <span class="ot">&lt;-</span> <span class="cf">function</span>(lon_min, lat_min, lon_max, lat_max,</span>
-<span id="cb32-1603"><a href="#cb32-1603" aria-hidden="true" tabindex="-1"></a>                         ref_lon_min, ref_lat_min, ref_lon_max, ref_lat_max) {</span>
-<span id="cb32-1604"><a href="#cb32-1604" aria-hidden="true" tabindex="-1"></a>  lon_min <span class="sc">&lt;=</span> ref_lon_max <span class="sc">&amp;</span> lon_max <span class="sc">&gt;=</span> ref_lon_min <span class="sc">&amp;</span> lat_min <span class="sc">&lt;=</span> ref_lat_max <span class="sc">&amp;</span> lat_max <span class="sc">&gt;=</span> ref_lat_min</span>
-<span id="cb32-1605"><a href="#cb32-1605" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb32-1606"><a href="#cb32-1606" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1607"><a href="#cb32-1607" aria-hidden="true" tabindex="-1"></a>MED_LON_MIN <span class="ot">&lt;-</span> <span class="sc">-</span><span class="dv">6</span>; MED_LON_MAX <span class="ot">&lt;-</span> <span class="dv">36</span>; MED_LAT_MIN <span class="ot">&lt;-</span> <span class="dv">30</span>; MED_LAT_MAX <span class="ot">&lt;-</span> <span class="dv">46</span>   <span class="co"># full Mediterranean, Gibraltar to the Levant</span></span>
-<span id="cb32-1608"><a href="#cb32-1608" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1609"><a href="#cb32-1609" aria-hidden="true" tabindex="-1"></a>model_list[, in_mediterranean <span class="sc">:</span><span class="er">=</span> <span class="fu">box_overlaps</span>(lon_min, lat_min, lon_max, lat_max,</span>
-<span id="cb32-1610"><a href="#cb32-1610" aria-hidden="true" tabindex="-1"></a>                                              MED_LON_MIN, MED_LAT_MIN, MED_LON_MAX, MED_LAT_MAX)]</span>
-<span id="cb32-1611"><a href="#cb32-1611" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb32-1612"><a href="#cb32-1612" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1613"><a href="#cb32-1613" aria-hidden="true" tabindex="-1"></a>::: {.callout-tip}</span>
-<span id="cb32-1614"><a href="#cb32-1614" aria-hidden="true" tabindex="-1"></a><span class="fu">### Verified against real sample data, not just written and assumed correct</span></span>
-<span id="cb32-1615"><a href="#cb32-1615" aria-hidden="true" tabindex="-1"></a>The script's own comment confirms this logic was checked against real <span class="in">`geographic_extent`</span> values before being trusted: an Aegean Sea entry correctly flagged <span class="in">`TRUE`</span>; Alaska/PNG/Bering/Antarctica/Florida entries correctly flagged <span class="in">`FALSE`</span>. The bounding box used covers the *entire* Mediterranean (Gibraltar to the Levant), not just the Western Med this pipeline otherwise focuses on - narrowing it is a one-line change (<span class="in">`MED_LON_MIN`</span>/etc.) if only Western Med models are wanted.</span>
-<span id="cb32-1616"><a href="#cb32-1616" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb32-1617"><a href="#cb32-1617" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1618"><a href="#cb32-1618" aria-hidden="true" tabindex="-1"></a>A second filter matters just as much as the geographic one: EcoBase's own <span class="in">`dissemination_allow`</span> flag distinguishes models that are *listed with metadata* from ones whose actual input data is *downloadable* - per EcoBase's own site, only about 233 of ~500 listed models qualify. The script's comment is candid about this being a fix for a real earlier problem, not a defensive gesture written in on spec:</span>
-<span id="cb32-1619"><a href="#cb32-1619" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1620"><a href="#cb32-1620" aria-hidden="true" tabindex="-1"></a><span class="at">&gt; *"This was MISSING here previously - every Mediterranean model was being attempted regardless, including ones EcoBase itself flags as not actually available. That's almost certainly why input fetching kept coming back empty: most attempted models were metadata-only to begin with, not a parsing bug on this end."*</span></span>
-<span id="cb32-1621"><a href="#cb32-1621" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1622"><a href="#cb32-1622" aria-hidden="true" tabindex="-1"></a>Only models passing both filters get queried for actual input values. For every model that geographically matches but has no usable data - either flagged metadata-only, or attempted but failed for a specific reason - <span class="in">`ecobase_models_without_data.csv`</span> records which and why, rather than those models just silently vanishing from the output.</span>
-<span id="cb32-1623"><a href="#cb32-1623" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1624"><a href="#cb32-1624" aria-hidden="true" tabindex="-1"></a>The final per-FG summary handles Ecopath's own missing-data sentinel explicitly:</span>
-<span id="cb32-1625"><a href="#cb32-1625" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1628"><a href="#cb32-1628" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
-<span id="cb32-1629"><a href="#cb32-1629" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-sentinel</span></span>
-<span id="cb32-1630"><a href="#cb32-1630" aria-hidden="true" tabindex="-1"></a><span class="do">## -9999 is Ecopath's own convention for "not provided/unknown" - confirmed</span></span>
-<span id="cb32-1631"><a href="#cb32-1631" aria-hidden="true" tabindex="-1"></a><span class="do">## by cross-checking b_hab_area_input='false' correlating with a literal</span></span>
-<span id="cb32-1632"><a href="#cb32-1632" aria-hidden="true" tabindex="-1"></a><span class="do">## -9999 biomass_habitat_area value in a real raw response. Converted to NA,</span></span>
-<span id="cb32-1633"><a href="#cb32-1633" aria-hidden="true" tabindex="-1"></a><span class="do">## not left as a number that would otherwise look like a real (and wildly</span></span>
-<span id="cb32-1634"><a href="#cb32-1634" aria-hidden="true" tabindex="-1"></a><span class="do">## implausible) PB/QB value.</span></span>
-<span id="cb32-1635"><a href="#cb32-1635" aria-hidden="true" tabindex="-1"></a>pb_qb_simple[PB <span class="sc">==</span> <span class="sc">-</span><span class="dv">9999</span>, PB <span class="sc">:</span><span class="er">=</span> <span class="cn">NA_real_</span>]</span>
-<span id="cb32-1636"><a href="#cb32-1636" aria-hidden="true" tabindex="-1"></a>pb_qb_simple[QB <span class="sc">==</span> <span class="sc">-</span><span class="dv">9999</span>, QB <span class="sc">:</span><span class="er">=</span> <span class="cn">NA_real_</span>]</span>
-<span id="cb32-1637"><a href="#cb32-1637" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb32-1638"><a href="#cb32-1638" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1639"><a href="#cb32-1639" aria-hidden="true" tabindex="-1"></a><span class="fu">### Step 4 - merging into this model (`04_pbqb_calc.R`)</span></span>
-<span id="cb32-1640"><a href="#cb32-1640" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1641"><a href="#cb32-1641" aria-hidden="true" tabindex="-1"></a><span class="in">`04_pbqb_calc.R`</span> loads <span class="in">`ecobase_literature_pb_qb_simple.csv`</span> if present (skipped, not an error, if <span class="in">`03_ecobase_query.R`</span> hasn't been run yet) and matches it to this model's own FGs **by `FG_name` text**, not <span class="in">`FG_num`</span> - EcoBase has no concept of this pipeline's own FG numbering, only whatever group names each published model's own authors used, so this is explicitly a text match that can miss real matches on wording differences, not a guaranteed join:</span>
-<span id="cb32-1642"><a href="#cb32-1642" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1645"><a href="#cb32-1645" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
-<span id="cb32-1646"><a href="#cb32-1646" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-merge</span></span>
-<span id="cb32-1647"><a href="#cb32-1647" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
-<span id="cb32-1648"><a href="#cb32-1648" aria-hidden="true" tabindex="-1"></a>ecobase_by_fgname <span class="ot">&lt;-</span> ecobase_raw[, .(</span>
-<span id="cb32-1649"><a href="#cb32-1649" aria-hidden="true" tabindex="-1"></a>  <span class="at">PB_ecobase =</span> <span class="fu">mean</span>(PB, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
-<span id="cb32-1650"><a href="#cb32-1650" aria-hidden="true" tabindex="-1"></a>  <span class="at">QB_ecobase =</span> <span class="fu">mean</span>(QB, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
-<span id="cb32-1651"><a href="#cb32-1651" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_ecobase_models =</span> <span class="fu">uniqueN</span>(EwE_model[<span class="sc">!</span><span class="fu">is.na</span>(PB) <span class="sc">|</span> <span class="sc">!</span><span class="fu">is.na</span>(QB)]),</span>
-<span id="cb32-1652"><a href="#cb32-1652" aria-hidden="true" tabindex="-1"></a>  <span class="at">References =</span> <span class="fu">paste</span>(</span>
-<span id="cb32-1653"><a href="#cb32-1653" aria-hidden="true" tabindex="-1"></a>    <span class="fu">unique</span>(<span class="fu">sprintf</span>(<span class="st">"%s (%s, %s)"</span>,</span>
-<span id="cb32-1654"><a href="#cb32-1654" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(EwE_model), <span class="st">"unknown model"</span>, <span class="fu">as.character</span>(EwE_model)),</span>
-<span id="cb32-1655"><a href="#cb32-1655" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(authors), <span class="st">"authors unknown"</span>, <span class="fu">as.character</span>(authors)),</span>
-<span id="cb32-1656"><a href="#cb32-1656" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(year), <span class="st">"year unknown"</span>, <span class="fu">as.character</span>(year)))),</span>
-<span id="cb32-1657"><a href="#cb32-1657" aria-hidden="true" tabindex="-1"></a>    <span class="at">collapse =</span> <span class="st">"; "</span>)</span>
-<span id="cb32-1658"><a href="#cb32-1658" aria-hidden="true" tabindex="-1"></a>), by <span class="ot">=</span> FG_name]</span>
-<span id="cb32-1659"><a href="#cb32-1659" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1660"><a href="#cb32-1660" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase <span class="ot">&lt;-</span> <span class="fu">merge</span>(fg_weighted, ecobase_by_fgname, <span class="at">by =</span> <span class="st">"FG_name"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
-<span id="cb32-1661"><a href="#cb32-1661" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1662"><a href="#cb32-1662" aria-hidden="true" tabindex="-1"></a><span class="do">## &gt;2x difference between empirical and literature values is flagged for</span></span>
-<span id="cb32-1663"><a href="#cb32-1663" aria-hidden="true" tabindex="-1"></a><span class="do">## manual review, not treated as automatically wrong in either direction -</span></span>
-<span id="cb32-1664"><a href="#cb32-1664" aria-hidden="true" tabindex="-1"></a><span class="do">## real ecosystems genuinely differ from each other</span></span>
-<span id="cb32-1665"><a href="#cb32-1665" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_ratio <span class="sc">:</span><span class="er">=</span> PB_FG <span class="sc">/</span> PB_ecobase]</span>
-<span id="cb32-1666"><a href="#cb32-1666" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_diverges <span class="sc">:</span><span class="er">=</span> <span class="sc">!</span><span class="fu">is.na</span>(PB_ratio) <span class="sc">&amp;</span> (PB_ratio <span class="sc">&gt;</span> <span class="dv">2</span> <span class="sc">|</span> PB_ratio <span class="sc">&lt;</span> <span class="fl">0.5</span>)]</span>
-<span id="cb32-1667"><a href="#cb32-1667" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1668"><a href="#cb32-1668" aria-hidden="true" tabindex="-1"></a><span class="do">## Gap-fill ONLY where the empirical method produced nothing - never</span></span>
-<span id="cb32-1669"><a href="#cb32-1669" aria-hidden="true" tabindex="-1"></a><span class="do">## overwrites an existing empirical estimate, since fg_weighted's own</span></span>
-<span id="cb32-1670"><a href="#cb32-1670" aria-hidden="true" tabindex="-1"></a><span class="do">## biomass-weighted species-level calculation is more directly tied to</span></span>
-<span id="cb32-1671"><a href="#cb32-1671" aria-hidden="true" tabindex="-1"></a><span class="do">## THIS model's own species composition than a borrowed literature value</span></span>
-<span id="cb32-1672"><a href="#cb32-1672" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_FG_filled <span class="sc">:</span><span class="er">=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(PB_FG), PB_ecobase, PB_FG)]</span>
-<span id="cb32-1673"><a href="#cb32-1673" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_source <span class="sc">:</span><span class="er">=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(PB_FG), <span class="st">"EcoBase (literature)"</span>, <span class="st">"empirical"</span>)]</span>
-<span id="cb32-1674"><a href="#cb32-1674" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1675"><a href="#cb32-1675" aria-hidden="true" tabindex="-1"></a><span class="do">## dedicated Ecobase sheet: raw per-FG literature values on their own,</span></span>
-<span id="cb32-1676"><a href="#cb32-1676" aria-hidden="true" tabindex="-1"></a><span class="do">## for audit/comparison - separate from PB_QB's gap-filled result, which</span></span>
-<span id="cb32-1677"><a href="#cb32-1677" aria-hidden="true" tabindex="-1"></a><span class="do">## only shows where EcoBase was actually USED, not every FG it has a value for</span></span>
-<span id="cb32-1678"><a href="#cb32-1678" aria-hidden="true" tabindex="-1"></a>ecobase_sheet <span class="ot">&lt;-</span> <span class="fu">merge</span>(fg_name_lookup, ecobase_by_fgname, <span class="at">by =</span> <span class="st">"FG_name"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
-<span id="cb32-1679"><a href="#cb32-1679" aria-hidden="true" tabindex="-1"></a><span class="fu">setnames</span>(ecobase_sheet, <span class="st">"FG"</span>, <span class="st">"FG_num"</span>)</span>
-<span id="cb32-1680"><a href="#cb32-1680" aria-hidden="true" tabindex="-1"></a><span class="fu">upsert_workbook_sheets</span>(<span class="fu">list</span>(<span class="at">Ecobase =</span> ecobase_sheet), ECOPATH_WORKBOOK_PATH)</span>
-<span id="cb32-1681"><a href="#cb32-1681" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb32-1682"><a href="#cb32-1682" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1683"><a href="#cb32-1683" aria-hidden="true" tabindex="-1"></a>Multiple literature models matching the same <span class="in">`FG_name`</span> are **averaged together first**, so one FG's <span class="in">`PB_ecobase`</span>/<span class="in">`QB_ecobase`</span> doesn't skew toward whichever published model happened to contribute the most matching rows - and the <span class="in">`References`</span> column keeps every contributing model traceable (<span class="in">`"Model (authors, year)"`</span>, semicolon-separated), so the average is never just an unattributed number.</span>
+<span id="cb32-1585"><a href="#cb32-1585" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb32-1586"><a href="#cb32-1586" aria-hidden="true" tabindex="-1"></a><span class="fu">### `Ecobase`: two scripts, not one - literature compilation, then merge/gap-fill</span></span>
+<span id="cb32-1587"><a href="#cb32-1587" aria-hidden="true" tabindex="-1"></a><span class="in">`03_ecobase_query.R`</span> and <span class="in">`04_pbqb_calc.R`</span> split this into two genuinely separate concerns. <span class="in">`03_ecobase_query.R`</span> is entirely standalone - it queries <span class="co">[</span><span class="ot">EcoBase</span><span class="co">](https://ecobase.ecopath.org/)</span>'s public SOAP/XML web service for PB/QB/Biomass values from **other published Ecopath models**, with no dependency on this pipeline's own data at all, and produces one CSV (<span class="in">`ecobase_literature_pb_qb_simple.csv`</span>). It never touches <span class="in">`ecopath_ecosim_inputs.xlsx`</span>. <span class="in">`04_pbqb_calc.R`</span> is what actually writes the <span class="in">`Ecobase`</span> sheet - it optionally reads that CSV (skipped entirely if it doesn't exist yet), matches literature values to this model's own FGs, and uses them two ways: to fill PB/QB gaps in the <span class="in">`PB_QB`</span> sheet where the empirical method produced nothing, and as a separate, unfilled <span class="in">`Ecobase`</span> sheet for direct comparison/audit.</span>
+<span id="cb32-1588"><a href="#cb32-1588" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb32-1589"><a href="#cb32-1589" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1590"><a href="#cb32-1590" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
+<span id="cb32-1591"><a href="#cb32-1591" aria-hidden="true" tabindex="-1"></a><span class="fu">### Not verified against the live service</span></span>
+<span id="cb32-1592"><a href="#cb32-1592" aria-hidden="true" tabindex="-1"></a><span class="in">`03_ecobase_query.R`</span>'s own header comment is explicit about this: *"NOT TESTED against the live service from this session - I don't have network access to sirs.agrocampus-ouest.fr or ecobase.ecopath.org from my own sandbox, so this needs to be verified by actually running it."* The script prints the raw XML structure and several diagnostic messages specifically so a real run either confirms the parsing assumptions below or surfaces exactly where they're wrong - carried over here rather than smoothed into unqualified documentation.</span>
+<span id="cb32-1593"><a href="#cb32-1593" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb32-1594"><a href="#cb32-1594" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1595"><a href="#cb32-1595" aria-hidden="true" tabindex="-1"></a><span class="fu">### Step 3 - compiling literature values (`03_ecobase_query.R`)</span></span>
+<span id="cb32-1596"><a href="#cb32-1596" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1597"><a href="#cb32-1597" aria-hidden="true" tabindex="-1"></a>Rather than keyword-matching country/ecosystem name text fields (fragile - depends entirely on how a given model's authors happened to write it), models are filtered to the Mediterranean using each model's own <span class="in">`geographic_extent`</span> bounding box:</span>
+<span id="cb32-1598"><a href="#cb32-1598" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1601"><a href="#cb32-1601" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb32-1602"><a href="#cb32-1602" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-geo-filter</span></span>
+<span id="cb32-1603"><a href="#cb32-1603" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
+<span id="cb32-1604"><a href="#cb32-1604" aria-hidden="true" tabindex="-1"></a>parse_geo_box <span class="ot">&lt;-</span> <span class="cf">function</span>(box_str) {</span>
+<span id="cb32-1605"><a href="#cb32-1605" aria-hidden="true" tabindex="-1"></a>  <span class="do">## geographic_extent format: "BOX(lon1 lat1,lon2 lat2)"</span></span>
+<span id="cb32-1606"><a href="#cb32-1606" aria-hidden="true" tabindex="-1"></a>  m <span class="ot">&lt;-</span> <span class="fu">regmatches</span>(box_str, <span class="fu">regexec</span>(<span class="st">"BOX</span><span class="sc">\\</span><span class="st">(([-0-9.]+) ([-0-9.]+),([-0-9.]+) ([-0-9.]+)</span><span class="sc">\\</span><span class="st">)"</span>, box_str))[[<span class="dv">1</span>]]</span>
+<span id="cb32-1607"><a href="#cb32-1607" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">length</span>(m) <span class="sc">!=</span> <span class="dv">5</span>) <span class="fu">return</span>(<span class="fu">c</span>(<span class="at">lon_min =</span> <span class="cn">NA_real_</span>, <span class="at">lat_min =</span> <span class="cn">NA_real_</span>, <span class="at">lon_max =</span> <span class="cn">NA_real_</span>, <span class="at">lat_max =</span> <span class="cn">NA_real_</span>))</span>
+<span id="cb32-1608"><a href="#cb32-1608" aria-hidden="true" tabindex="-1"></a>  lons <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">c</span>(m[<span class="dv">2</span>], m[<span class="dv">4</span>])); lats <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">c</span>(m[<span class="dv">3</span>], m[<span class="dv">5</span>]))</span>
+<span id="cb32-1609"><a href="#cb32-1609" aria-hidden="true" tabindex="-1"></a>  <span class="fu">c</span>(<span class="at">lon_min =</span> <span class="fu">min</span>(lons), <span class="at">lat_min =</span> <span class="fu">min</span>(lats), <span class="at">lon_max =</span> <span class="fu">max</span>(lons), <span class="at">lat_max =</span> <span class="fu">max</span>(lats))</span>
+<span id="cb32-1610"><a href="#cb32-1610" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb32-1611"><a href="#cb32-1611" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1612"><a href="#cb32-1612" aria-hidden="true" tabindex="-1"></a>box_overlaps <span class="ot">&lt;-</span> <span class="cf">function</span>(lon_min, lat_min, lon_max, lat_max,</span>
+<span id="cb32-1613"><a href="#cb32-1613" aria-hidden="true" tabindex="-1"></a>                         ref_lon_min, ref_lat_min, ref_lon_max, ref_lat_max) {</span>
+<span id="cb32-1614"><a href="#cb32-1614" aria-hidden="true" tabindex="-1"></a>  lon_min <span class="sc">&lt;=</span> ref_lon_max <span class="sc">&amp;</span> lon_max <span class="sc">&gt;=</span> ref_lon_min <span class="sc">&amp;</span> lat_min <span class="sc">&lt;=</span> ref_lat_max <span class="sc">&amp;</span> lat_max <span class="sc">&gt;=</span> ref_lat_min</span>
+<span id="cb32-1615"><a href="#cb32-1615" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb32-1616"><a href="#cb32-1616" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1617"><a href="#cb32-1617" aria-hidden="true" tabindex="-1"></a>MED_LON_MIN <span class="ot">&lt;-</span> <span class="sc">-</span><span class="dv">6</span>; MED_LON_MAX <span class="ot">&lt;-</span> <span class="dv">36</span>; MED_LAT_MIN <span class="ot">&lt;-</span> <span class="dv">30</span>; MED_LAT_MAX <span class="ot">&lt;-</span> <span class="dv">46</span>   <span class="co"># full Mediterranean, Gibraltar to the Levant</span></span>
+<span id="cb32-1618"><a href="#cb32-1618" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1619"><a href="#cb32-1619" aria-hidden="true" tabindex="-1"></a>model_list[, in_mediterranean <span class="sc">:</span><span class="er">=</span> <span class="fu">box_overlaps</span>(lon_min, lat_min, lon_max, lat_max,</span>
+<span id="cb32-1620"><a href="#cb32-1620" aria-hidden="true" tabindex="-1"></a>                                              MED_LON_MIN, MED_LAT_MIN, MED_LON_MAX, MED_LAT_MAX)]</span>
+<span id="cb32-1621"><a href="#cb32-1621" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb32-1622"><a href="#cb32-1622" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1623"><a href="#cb32-1623" aria-hidden="true" tabindex="-1"></a>::: {.callout-tip}</span>
+<span id="cb32-1624"><a href="#cb32-1624" aria-hidden="true" tabindex="-1"></a><span class="fu">### Verified against real sample data, not just written and assumed correct</span></span>
+<span id="cb32-1625"><a href="#cb32-1625" aria-hidden="true" tabindex="-1"></a>The script's own comment confirms this logic was checked against real <span class="in">`geographic_extent`</span> values before being trusted: an Aegean Sea entry correctly flagged <span class="in">`TRUE`</span>; Alaska/PNG/Bering/Antarctica/Florida entries correctly flagged <span class="in">`FALSE`</span>. The bounding box used covers the *entire* Mediterranean (Gibraltar to the Levant), not just the Western Med this pipeline otherwise focuses on - narrowing it is a one-line change (<span class="in">`MED_LON_MIN`</span>/etc.) if only Western Med models are wanted.</span>
+<span id="cb32-1626"><a href="#cb32-1626" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb32-1627"><a href="#cb32-1627" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1628"><a href="#cb32-1628" aria-hidden="true" tabindex="-1"></a>A second filter matters just as much as the geographic one: EcoBase's own <span class="in">`dissemination_allow`</span> flag distinguishes models that are *listed with metadata* from ones whose actual input data is *downloadable* - per EcoBase's own site, only about 233 of ~500 listed models qualify. The script's comment is candid about this being a fix for a real earlier problem, not a defensive gesture written in on spec:</span>
+<span id="cb32-1629"><a href="#cb32-1629" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1630"><a href="#cb32-1630" aria-hidden="true" tabindex="-1"></a><span class="at">&gt; *"This was MISSING here previously - every Mediterranean model was being attempted regardless, including ones EcoBase itself flags as not actually available. That's almost certainly why input fetching kept coming back empty: most attempted models were metadata-only to begin with, not a parsing bug on this end."*</span></span>
+<span id="cb32-1631"><a href="#cb32-1631" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1632"><a href="#cb32-1632" aria-hidden="true" tabindex="-1"></a>Only models passing both filters get queried for actual input values. For every model that geographically matches but has no usable data - either flagged metadata-only, or attempted but failed for a specific reason - <span class="in">`ecobase_models_without_data.csv`</span> records which and why, rather than those models just silently vanishing from the output.</span>
+<span id="cb32-1633"><a href="#cb32-1633" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1634"><a href="#cb32-1634" aria-hidden="true" tabindex="-1"></a>The final per-FG summary handles Ecopath's own missing-data sentinel explicitly:</span>
+<span id="cb32-1635"><a href="#cb32-1635" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1638"><a href="#cb32-1638" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb32-1639"><a href="#cb32-1639" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-sentinel</span></span>
+<span id="cb32-1640"><a href="#cb32-1640" aria-hidden="true" tabindex="-1"></a><span class="do">## -9999 is Ecopath's own convention for "not provided/unknown" - confirmed</span></span>
+<span id="cb32-1641"><a href="#cb32-1641" aria-hidden="true" tabindex="-1"></a><span class="do">## by cross-checking b_hab_area_input='false' correlating with a literal</span></span>
+<span id="cb32-1642"><a href="#cb32-1642" aria-hidden="true" tabindex="-1"></a><span class="do">## -9999 biomass_habitat_area value in a real raw response. Converted to NA,</span></span>
+<span id="cb32-1643"><a href="#cb32-1643" aria-hidden="true" tabindex="-1"></a><span class="do">## not left as a number that would otherwise look like a real (and wildly</span></span>
+<span id="cb32-1644"><a href="#cb32-1644" aria-hidden="true" tabindex="-1"></a><span class="do">## implausible) PB/QB value.</span></span>
+<span id="cb32-1645"><a href="#cb32-1645" aria-hidden="true" tabindex="-1"></a>pb_qb_simple[PB <span class="sc">==</span> <span class="sc">-</span><span class="dv">9999</span>, PB <span class="sc">:</span><span class="er">=</span> <span class="cn">NA_real_</span>]</span>
+<span id="cb32-1646"><a href="#cb32-1646" aria-hidden="true" tabindex="-1"></a>pb_qb_simple[QB <span class="sc">==</span> <span class="sc">-</span><span class="dv">9999</span>, QB <span class="sc">:</span><span class="er">=</span> <span class="cn">NA_real_</span>]</span>
+<span id="cb32-1647"><a href="#cb32-1647" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb32-1648"><a href="#cb32-1648" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1649"><a href="#cb32-1649" aria-hidden="true" tabindex="-1"></a><span class="fu">### Step 4 - merging into this model (`04_pbqb_calc.R`)</span></span>
+<span id="cb32-1650"><a href="#cb32-1650" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1651"><a href="#cb32-1651" aria-hidden="true" tabindex="-1"></a><span class="in">`04_pbqb_calc.R`</span> loads <span class="in">`ecobase_literature_pb_qb_simple.csv`</span> if present (skipped, not an error, if <span class="in">`03_ecobase_query.R`</span> hasn't been run yet) and matches it to this model's own FGs **by `FG_name` text**, not <span class="in">`FG_num`</span> - EcoBase has no concept of this pipeline's own FG numbering, only whatever group names each published model's own authors used, so this is explicitly a text match that can miss real matches on wording differences, not a guaranteed join:</span>
+<span id="cb32-1652"><a href="#cb32-1652" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1655"><a href="#cb32-1655" aria-hidden="true" tabindex="-1"></a><span class="in">```{r}</span></span>
+<span id="cb32-1656"><a href="#cb32-1656" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: ecobase-merge</span></span>
+<span id="cb32-1657"><a href="#cb32-1657" aria-hidden="true" tabindex="-1"></a><span class="co">#| code-fold: false</span></span>
+<span id="cb32-1658"><a href="#cb32-1658" aria-hidden="true" tabindex="-1"></a>ecobase_by_fgname <span class="ot">&lt;-</span> ecobase_raw[, .(</span>
+<span id="cb32-1659"><a href="#cb32-1659" aria-hidden="true" tabindex="-1"></a>  <span class="at">PB_ecobase =</span> <span class="fu">mean</span>(PB, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb32-1660"><a href="#cb32-1660" aria-hidden="true" tabindex="-1"></a>  <span class="at">QB_ecobase =</span> <span class="fu">mean</span>(QB, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb32-1661"><a href="#cb32-1661" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_ecobase_models =</span> <span class="fu">uniqueN</span>(EwE_model[<span class="sc">!</span><span class="fu">is.na</span>(PB) <span class="sc">|</span> <span class="sc">!</span><span class="fu">is.na</span>(QB)]),</span>
+<span id="cb32-1662"><a href="#cb32-1662" aria-hidden="true" tabindex="-1"></a>  <span class="at">References =</span> <span class="fu">paste</span>(</span>
+<span id="cb32-1663"><a href="#cb32-1663" aria-hidden="true" tabindex="-1"></a>    <span class="fu">unique</span>(<span class="fu">sprintf</span>(<span class="st">"%s (%s, %s)"</span>,</span>
+<span id="cb32-1664"><a href="#cb32-1664" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(EwE_model), <span class="st">"unknown model"</span>, <span class="fu">as.character</span>(EwE_model)),</span>
+<span id="cb32-1665"><a href="#cb32-1665" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(authors), <span class="st">"authors unknown"</span>, <span class="fu">as.character</span>(authors)),</span>
+<span id="cb32-1666"><a href="#cb32-1666" aria-hidden="true" tabindex="-1"></a>                   <span class="fu">fifelse</span>(<span class="fu">is.na</span>(year), <span class="st">"year unknown"</span>, <span class="fu">as.character</span>(year)))),</span>
+<span id="cb32-1667"><a href="#cb32-1667" aria-hidden="true" tabindex="-1"></a>    <span class="at">collapse =</span> <span class="st">"; "</span>)</span>
+<span id="cb32-1668"><a href="#cb32-1668" aria-hidden="true" tabindex="-1"></a>), by <span class="ot">=</span> FG_name]</span>
+<span id="cb32-1669"><a href="#cb32-1669" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1670"><a href="#cb32-1670" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase <span class="ot">&lt;-</span> <span class="fu">merge</span>(fg_weighted, ecobase_by_fgname, <span class="at">by =</span> <span class="st">"FG_name"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb32-1671"><a href="#cb32-1671" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1672"><a href="#cb32-1672" aria-hidden="true" tabindex="-1"></a><span class="do">## &gt;2x difference between empirical and literature values is flagged for</span></span>
+<span id="cb32-1673"><a href="#cb32-1673" aria-hidden="true" tabindex="-1"></a><span class="do">## manual review, not treated as automatically wrong in either direction -</span></span>
+<span id="cb32-1674"><a href="#cb32-1674" aria-hidden="true" tabindex="-1"></a><span class="do">## real ecosystems genuinely differ from each other</span></span>
+<span id="cb32-1675"><a href="#cb32-1675" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_ratio <span class="sc">:</span><span class="er">=</span> PB_FG <span class="sc">/</span> PB_ecobase]</span>
+<span id="cb32-1676"><a href="#cb32-1676" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_diverges <span class="sc">:</span><span class="er">=</span> <span class="sc">!</span><span class="fu">is.na</span>(PB_ratio) <span class="sc">&amp;</span> (PB_ratio <span class="sc">&gt;</span> <span class="dv">2</span> <span class="sc">|</span> PB_ratio <span class="sc">&lt;</span> <span class="fl">0.5</span>)]</span>
+<span id="cb32-1677"><a href="#cb32-1677" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1678"><a href="#cb32-1678" aria-hidden="true" tabindex="-1"></a><span class="do">## Gap-fill ONLY where the empirical method produced nothing - never</span></span>
+<span id="cb32-1679"><a href="#cb32-1679" aria-hidden="true" tabindex="-1"></a><span class="do">## overwrites an existing empirical estimate, since fg_weighted's own</span></span>
+<span id="cb32-1680"><a href="#cb32-1680" aria-hidden="true" tabindex="-1"></a><span class="do">## biomass-weighted species-level calculation is more directly tied to</span></span>
+<span id="cb32-1681"><a href="#cb32-1681" aria-hidden="true" tabindex="-1"></a><span class="do">## THIS model's own species composition than a borrowed literature value</span></span>
+<span id="cb32-1682"><a href="#cb32-1682" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_FG_filled <span class="sc">:</span><span class="er">=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(PB_FG), PB_ecobase, PB_FG)]</span>
+<span id="cb32-1683"><a href="#cb32-1683" aria-hidden="true" tabindex="-1"></a>fg_weighted_ecobase[, PB_source <span class="sc">:</span><span class="er">=</span> <span class="fu">fifelse</span>(<span class="fu">is.na</span>(PB_FG), <span class="st">"EcoBase (literature)"</span>, <span class="st">"empirical"</span>)]</span>
 <span id="cb32-1684"><a href="#cb32-1684" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1685"><a href="#cb32-1685" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
-<span id="cb32-1686"><a href="#cb32-1686" aria-hidden="true" tabindex="-1"></a><span class="fu">### `PB_QB`'s values are the gap-filled version, not the pure empirical estimate</span></span>
-<span id="cb32-1687"><a href="#cb32-1687" aria-hidden="true" tabindex="-1"></a>After this merge, <span class="in">`fg_weighted`</span> (what actually becomes the <span class="in">`PB_QB`</span> sheet documented above) is reassigned to use <span class="in">`PB_FG_filled`</span>/<span class="in">`QB_FG_filled`</span> rather than the original <span class="in">`PB_FG`</span>/<span class="in">`QB_FG`</span> - so an FG with no empirical estimate at all still gets a usable value in <span class="in">`PB_QB`</span> if EcoBase had one, rather than being left blank. <span class="in">`PB_source`</span>/<span class="in">`QB_source`</span> (carried through as the optional audit columns @-referenced in <span class="in">`add_pbqb_to_ecopath_workbook()`</span> above) record which case applies for each FG. The **unfilled** literature values on their own live in the separate <span class="in">`Ecobase`</span> sheet - the two sheets answer different questions ("what should I use" vs. "what does the literature say, independent of what I used").</span>
-<span id="cb32-1688"><a href="#cb32-1688" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb32-1689"><a href="#cb32-1689" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-1690"><a href="#cb32-1690" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1685"><a href="#cb32-1685" aria-hidden="true" tabindex="-1"></a><span class="do">## dedicated Ecobase sheet: raw per-FG literature values on their own,</span></span>
+<span id="cb32-1686"><a href="#cb32-1686" aria-hidden="true" tabindex="-1"></a><span class="do">## for audit/comparison - separate from PB_QB's gap-filled result, which</span></span>
+<span id="cb32-1687"><a href="#cb32-1687" aria-hidden="true" tabindex="-1"></a><span class="do">## only shows where EcoBase was actually USED, not every FG it has a value for</span></span>
+<span id="cb32-1688"><a href="#cb32-1688" aria-hidden="true" tabindex="-1"></a>ecobase_sheet <span class="ot">&lt;-</span> <span class="fu">merge</span>(fg_name_lookup, ecobase_by_fgname, <span class="at">by =</span> <span class="st">"FG_name"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb32-1689"><a href="#cb32-1689" aria-hidden="true" tabindex="-1"></a><span class="fu">setnames</span>(ecobase_sheet, <span class="st">"FG"</span>, <span class="st">"FG_num"</span>)</span>
+<span id="cb32-1690"><a href="#cb32-1690" aria-hidden="true" tabindex="-1"></a><span class="fu">upsert_workbook_sheets</span>(<span class="fu">list</span>(<span class="at">Ecobase =</span> ecobase_sheet), ECOPATH_WORKBOOK_PATH)</span>
+<span id="cb32-1691"><a href="#cb32-1691" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb32-1692"><a href="#cb32-1692" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1693"><a href="#cb32-1693" aria-hidden="true" tabindex="-1"></a>Multiple literature models matching the same <span class="in">`FG_name`</span> are **averaged together first**, so one FG's <span class="in">`PB_ecobase`</span>/<span class="in">`QB_ecobase`</span> doesn't skew toward whichever published model happened to contribute the most matching rows - and the <span class="in">`References`</span> column keeps every contributing model traceable (<span class="in">`"Model (authors, year)"`</span>, semicolon-separated), so the average is never just an unattributed number.</span>
+<span id="cb32-1694"><a href="#cb32-1694" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1695"><a href="#cb32-1695" aria-hidden="true" tabindex="-1"></a>::: {.callout-note}</span>
+<span id="cb32-1696"><a href="#cb32-1696" aria-hidden="true" tabindex="-1"></a><span class="fu">### `PB_QB`'s values are the gap-filled version, not the pure empirical estimate</span></span>
+<span id="cb32-1697"><a href="#cb32-1697" aria-hidden="true" tabindex="-1"></a>After this merge, <span class="in">`fg_weighted`</span> (what actually becomes the <span class="in">`PB_QB`</span> sheet documented above) is reassigned to use <span class="in">`PB_FG_filled`</span>/<span class="in">`QB_FG_filled`</span> rather than the original <span class="in">`PB_FG`</span>/<span class="in">`QB_FG`</span> - so an FG with no empirical estimate at all still gets a usable value in <span class="in">`PB_QB`</span> if EcoBase had one, rather than being left blank. <span class="in">`PB_source`</span>/<span class="in">`QB_source`</span> (carried through as the optional audit columns @-referenced in <span class="in">`add_pbqb_to_ecopath_workbook()`</span> above) record which case applies for each FG. The **unfilled** literature values on their own live in the separate <span class="in">`Ecobase`</span> sheet - the two sheets answer different questions ("what should I use" vs. "what does the literature say, independent of what I used").</span>
+<span id="cb32-1698"><a href="#cb32-1698" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb32-1699"><a href="#cb32-1699" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-1700"><a href="#cb32-1700" aria-hidden="true" tabindex="-1"></a></span>
 </code></pre></div><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></div>
 </div></div></div></div></div>
 </div> <!-- /content -->

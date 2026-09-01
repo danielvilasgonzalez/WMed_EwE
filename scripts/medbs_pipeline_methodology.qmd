@@ -1267,12 +1267,13 @@ Because of that, final sheet **order** isn't something any single script control
 | 3 | `Catches_Ecopath` | `02_fao_catches.R` | FG-level catch, base-year snapshot, mirroring `Ecopath`'s shape |
 | 4 | `FG_spp_Ecopath` | `01_survey_density_*.R` | Species-level density, `prop_sp_fg`, and taxonomy for the base-year window (see below) |
 | 5 | `PB_QB` | `04_pbqb_calc.R` | Production/biomass and consumption/biomass by FG |
-| 6 | `Ecobase` | *(external source)* | EcoBase-derived reference values |
-| 7 | `PB_QB_References_` *(renamed from `References`)* | `04_pbqb_calc.R` | FishBase/SeaLifeBase reference citations backing the PB/QB estimates |
-| 8 | `traits_ewe` | `01_survey_density_*.R` | Species-level life-history/ecology traits, reconciled against the FG reference table (see below) |
-| 9 | `Ecosim` | `01_survey_density_*.R` | FG-level relative biomass time series across the full `ts_years` range |
-| 10 | `FG_spp_Ecosim` | `01_survey_density_*.R` | Species-level density, averaged across the *full* `ts_years` range |
-| 11 | `Catches_Ecosim` | `02_fao_catches.R` | FG-level catch time series, mirroring `Ecosim`'s shape |
+| 6 | `PB_QB_spp` | `04_pbqb_calc.R` | Species-level PB/QB and biomass-weighting proportions behind each FG's `PB_QB` row (see below) |
+| 7 | `Ecobase` | *(external source)* | EcoBase-derived reference values |
+| 8 | `PB_QB_References_` *(renamed from `References`)* | `04_pbqb_calc.R` | FishBase/SeaLifeBase reference citations backing the PB/QB estimates |
+| 9 | `traits_ewe` | `01_survey_density_*.R` | Species-level life-history/ecology traits, reconciled against the FG reference table (see below) |
+| 10 | `Ecosim` | `01_survey_density_*.R` | FG-level relative biomass time series across the full `ts_years` range |
+| 11 | `FG_spp_Ecosim` | `01_survey_density_*.R` | Species-level density, averaged across the *full* `ts_years` range |
+| 12 | `Catches_Ecosim` | `02_fao_catches.R` | FG-level catch time series, mirroring `Ecosim`'s shape |
 
 ::: {.callout-note}
 ### `FG_spp_Ecopath`: every species, zero-filled rather than blank or absent
@@ -1369,8 +1370,9 @@ finalize_workbook_sheet_order(
     References = "PB_QB_References_"
   ),
   target_order = c(
-    "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "Ecobase",
-    "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim", "Catches_Ecosim"
+    "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
+    "Ecobase", "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
+    "Catches_Ecosim"
   )
 )
 ```
@@ -1458,16 +1460,34 @@ Three things worth knowing about how this behaves:
 - **Missing Year×FG catch data stays blank, never filled with 0** - an FG with no matched catch record for a given year is a data gap, not a claim that nothing was caught. `year_ecopath`/`ts_years` are matched against whatever `Ecopath`/`Ecosim` sheets already exist in the shared workbook (order-independent, same as everything else in @sec-configure) - so `02_fao_catches.R` doesn't need to run before or after `01_survey_density_*.R` specifically, just consistently against the same `year_ecopath`.
 :::
 
+::: {.callout-warning}
+## Known, unresolved: catch-area mismatch (GSA 12)
+
+`area_km2` above is `sum(area_km2)` from `strata_area_by_area.csv` - i.e. the *survey's* study area (`01_survey_density_westmed.R`'s `FILTER_AREAS`, GSA 1-11 for the Western Med example). But `02_fao_catches.R` filters raw catch by **GFCM Division** (`37.1.1`-`37.1.3`), not by GSA - and per GFCM's own GSA-to-Division crosswalk, those three divisions cover GSA 1-11 **plus** GSA 12 (Northern Tunisia), which `FILTER_AREAS` does not include.
+
+So `fg_catch`'s `Catch_t` (the numerator) reflects a slightly larger area than `area_km2` (the denominator) represents - `Catches_Ecopath`/`Catches_Ecosim` density is therefore a **slight overestimate** relative to `Ecopath`/`Ecosim`'s own Biomass density, not an underestimate. The same mismatch propagates into `04_pbqb_calc.R`'s FG-level `Yield_FG`/`Fmort_FG` step, since it divides the same `fg_catch_timeseries_*.csv` by the same GSA-only area total.
+
+This isn't a fixable bug as things stand: GFCM's capture statistics are reported at Division resolution, not GSA resolution, so GSA 12's specific contribution to `Catch_t` can't be isolated and subtracted out. It's likely small in practice (Tunisia's share of Division 37.1.3's total catch), but hasn't been quantified. Retargeting this pipeline to a different region means re-deriving that region's own Division/GSA correspondence and checking whether the same kind of boundary mismatch applies there.
+:::
+
 ::: {.callout-note}
-### `PB_QB`: added from `04_pbqb_calc.R`'s own FG-level table
-This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (`04_pbqb_calc.R`) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. `FG_spp_Ecopath`'s `prop_sp_fg` column is what connects the two: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG.
+## Not implemented: no fishing-fleet or gear disaggregation
+
+`GFCM_Capture_Quantity.csv` - the file `02_fao_catches.R` actually reads - resolves only to Country × Species × Division × Year. This is GFCM's STATLANT-derived aggregate capture-production product; it carries no fleet, gear, or GSA-level effort dimension at all, so every downstream number in this pipeline (`fg_catch_timeseries_*.csv`, `Catches_Ecopath`/`Catches_Ecosim`, and `04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG`) is a single total lumped across the whole region and every gear/fleet that landed that species or FG.
+
+GFCM does define exactly this kind of disaggregation for its own stock assessments: an **Operational Unit** (fleet segment × ISSCFG gear code × GSA), collected through the DCRF's Task 2 (Catch), Task 4 (Fleet), and Task 5 (Effort), plus the Regional Fleet Register, submitted by national correspondents. That's a genuinely different GFCM data product from the STATLANT capture-production file this pipeline uses, and it isn't confirmed to have the same kind of open bulk-download - it feeds GFCM's own Stock Assessment (SAC/subregional working group) process rather than being published as an open dataset the way capture-production is. Getting real fleet/gear resolution into this pipeline means going through GFCM's DCRF/SAC channels for Operational-Unit data, or, for the EU-flagged portion of the fleet specifically, STECF's FDI (Fisheries Dependent Information) database - the same source already noted elsewhere in this pipeline as the likely next step for a discard-inclusive catch figure.
+:::
+
+::: {.callout-note}
+### `PB_QB`/`PB_QB_spp`: added from `04_pbqb_calc.R`'s own tables
+This pipeline produces **density/biomass** only. Production/biomass (PB) and consumption/biomass (QB) come from a separate, species-level pipeline (`04_pbqb_calc.R`) that estimates them from life-history parameters (growth, mortality, trophic level) rather than survey density, then aggregates to FG level. `FG_spp_Ecopath`'s `prop_sp_fg` column is what connects the two on the Biomass side: a biomass-weighted PB/QB for an FG needs exactly this - which species make it up, in what proportion, and enough taxonomy to run a species-level PB/QB method before rolling up to the FG. `add_pbqb_to_ecopath_workbook()` writes the equivalent connection on the PB/QB side, in `PB_QB_spp`.
 
 The actual sheet-writing step, from `lib_survey_fg_density_functions.R`:
 
 ```{r}
 #| label: pbqb-sheet
 #| code-fold: false
-add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL) {
   required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
   missing_cols <- setdiff(required_cols, names(fg_weighted))
   if (length(missing_cols) > 0) {
@@ -1488,12 +1508,41 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path) {
   setnames(pbqb_sheet, "FG", "FG_num")
   setorder(pbqb_sheet, FG_num)
 
-  upsert_workbook_sheets(list(PB_QB = pbqb_sheet), out_path)
-  invisible(pbqb_sheet)
+  sheets <- list(PB_QB = pbqb_sheet)
+
+  if (!is.null(species_pb_qb)) {
+    spp <- copy(as.data.table(species_pb_qb))
+    ## Three DIFFERENT proportions, because PB_FG and QB_FG are each
+    ## their own biomass-weighted mean over a DIFFERENT subset of
+    ## species (whichever have a non-NA PB, resp. QB)
+    spp[, Biomass_FG_total    := sum(Biomass, na.rm = TRUE), by = FG]
+    spp[, prop_biomass_FG     := ifelse(Biomass_FG_total > 0, Biomass / Biomass_FG_total, NA_real_)]
+    spp[, Biomass_FG_PB_total := sum(Biomass[!is.na(PB)], na.rm = TRUE), by = FG]
+    spp[, prop_biomass_PB     := ifelse(!is.na(PB) & Biomass_FG_PB_total > 0,
+                                        Biomass / Biomass_FG_PB_total, NA_real_)]
+    spp[, Biomass_FG_QB_total := sum(Biomass[!is.na(QB)], na.rm = TRUE), by = FG]
+    spp[, prop_biomass_QB     := ifelse(!is.na(QB) & Biomass_FG_QB_total > 0,
+                                        Biomass / Biomass_FG_QB_total, NA_real_)]
+
+    spp_optional_cols <- intersect(
+      c("FG_name", "dispatch_group", "PB_method", "QB_method", "Fmort", "Fmort_source"),
+      names(spp)
+    )
+    spp_sheet <- spp[, c("FG", "Species", spp_optional_cols, "Biomass", "prop_biomass_FG",
+                         "PB", "prop_biomass_PB", "QB", "prop_biomass_QB"), with = FALSE]
+    setnames(spp_sheet, "FG", "FG_num")
+    setorder(spp_sheet, FG_num, -Biomass)
+    sheets$PB_QB_spp <- spp_sheet
+  }
+
+  upsert_workbook_sheets(sheets, out_path)
+  invisible(sheets)
 }
 ```
 
 `fg_weighted` is `04_pbqb_calc.R`'s own FG-level aggregation - only `FG`, `FG_name`, `PB_FG`, `QB_FG` are required; everything else (biomass coverage, species counts, F-adjustment audit columns) is carried through automatically if present, so the sheet's exact column set can vary slightly depending on which optional steps that run went through, without needing this function to know about them in advance.
+
+`species_pb_qb` (04_pbqb_calc.R passes its own species-level `results` table here - the same one written to `species_pb_qb_by_taxon_group.csv`) is optional, but when supplied it writes the `PB_QB_spp` sheet: one row per species, mirroring `FG_spp_Ecopath`'s shape - which species make up each FG, and how much of that FG's biomass each one represents. Three separate proportion columns, not one, because `PB_FG` and `QB_FG` are each a biomass-weighted mean over a *different* subset of species (only the ones with a non-NA PB, resp. QB) - `prop_biomass_PB` is `NA` for a species whose own PB didn't compute, even if it has plenty of biomass and a perfectly good `prop_biomass_FG`. Summing `prop_biomass_PB` within an FG reproduces exactly the weights `PB_FG`'s own `sum(Biomass*PB)/sum(Biomass[!is.na(PB)])` used, species by species - so `PB_QB_spp` is a genuine audit trail for `PB_QB`'s FG-level numbers, not just a species list alongside them.
 :::
 
 ::: {.callout-note}
