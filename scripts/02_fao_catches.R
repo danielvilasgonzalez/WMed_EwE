@@ -141,6 +141,30 @@ GFCM_2025_DATA_SUBDIR  <- "data/raw/FI_Regional_2025.1.0"
 FAO_2020_DATA_SUBDIR   <- "data/raw/FAO-GFCM_catches"
 FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 
+## =================================================================
+## OPTIONAL: fleet structure. Leave NULL (default) to keep this
+## pipeline single-fleet, exactly as before this option existed - see
+## the "Decision: single fleet for now, multi-fleet planned" notes
+## elsewhere in this script and in lib_survey_fg_density_functions.R's
+## add_catches_to_ecopath_workbook().
+##
+## To split catches across real fleets/gears once that data is
+## available (e.g. from GFCM Operational Units or STECF FDI - neither
+## is read by this script itself, so that data has to come from
+## somewhere else and be assembled into this shape by hand or by
+## another script), set FLEET_STRUCTURE_PATH to a CSV with columns
+## FG_num, Fleet, prop_catch - the share (0-1) of each FG's total
+## catch attributed to each fleet, e.g.:
+##   FG_num,Fleet,prop_catch
+##   3,Trawl,0.7
+##   3,Small-scale,0.3
+##   5,Trawl,1.0
+## FGs not listed default to a single implicit "Fleet_1" (see
+## add_catches_to_ecopath_workbook()'s own header comment for the
+## full behavior) - so a PARTIAL fleet_structure (only the FGs you
+## actually have a fleet split for) is fine, not an error.
+FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(git_dir, "data/fleet_structure.csv")
+
 ## Forces file= interpretation (bypasses fread's input-must-be-guessed
 ## heuristic entirely - the actual fix for the shell-command fallback,
 ## per the fread() warning's own pointer to NEWS item 5 for v1.11.6),
@@ -167,6 +191,37 @@ DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
 ## (confirmed on disk); fg_file is under pcloud_dir (confirmed on
 ## disk, matches 01_survey_density_westmed.R). FAO_2020's are still
 ## under pcloud_dir but UNCONFIRMED.
+##
+## NOT IMPLEMENTED, worth flagging explicitly: GFCM_Capture_Quantity.csv
+## (this pipeline's actual, confirmed catch source) resolves only to
+## Country x Species x Division x Year - no fleet, gear, or GSA-level
+## effort dimension at all, since it's GFCM's STATLANT-derived aggregate
+## capture-production product, not its Operational-Unit-level (fleet
+## segment x ISSCFG gear code x GSA) data. GFCM DOES collect that finer
+## breakdown, via the DCRF's Task 2 (Catch)/Task 4 (Fleet)/Task 5
+## (Effort) and the Regional Fleet Register, submitted by national
+## correspondents - but it's a genuinely different GFCM product from
+## this file, and isn't confirmed to have the same kind of open bulk-
+## download this file does. There is nothing in this script (or in
+## 04_pbqb_calc.R's Fmort_species/Fmort_FG, which consume this file's
+## output downstream) that disaggregates catch by fleet or gear -
+## sourcing that would mean going to GFCM's DCRF/SAC channels for
+## Operational-Unit data, or STECF's FDI database for the EU-flagged
+## portion of the fleet specifically.
+##
+## SINGLE FLEET BY DEFAULT, CONFIGURABLE VIA FLEET_STRUCTURE_PATH:
+## downstream of this lack of a fleet/gear dimension in the source
+## data, this script's fg_catch output (Year x FG_num x FG_name x
+## Catch_t) is still a single combined catch series per FG - GFCM's
+## capture-quantity file itself carries no fleet/gear column to split
+## by. But add_catches_to_ecopath_workbook() (lib_survey_fg_density_
+## functions.R) now accepts an OPTIONAL fleet_structure table (FG_num,
+## Fleet, prop_catch) to split that combined catch across fleets
+## AFTER the fact, using externally-sourced proportions (e.g. derived
+## from GFCM Operational Units or STECF FDI, as above) - see
+## FLEET_STRUCTURE_PATH near the top of this script. Left at its
+## default (NULL), behavior is unchanged: single implicit fleet, no
+## Fleet column in the workbook.
 ## =================================================================
 
 DATASETS <- list(
@@ -806,10 +861,36 @@ message("NOTE: Divisions 37.1.1-37.1.3 (used to filter catch data) cover GSA 1-1
         " therefore a slight OVERESTIMATE relative to Biomass's area - GFCM's Division-",
         " level catch reporting can't isolate GSA 12's specific contribution to subtract it out.")
 
+## Optional fleet split (FLEET_STRUCTURE_PATH, set above) - NULL unless
+## a fleet_structure.csv-shaped file has been configured, in which case
+## add_catches_to_ecopath_workbook() below splits catches across fleets
+## instead of staying single-fleet. See FLEET_STRUCTURE_PATH's own
+## comment above for the expected CSV shape.
+fleet_structure <- NULL
+if (!is.null(FLEET_STRUCTURE_PATH)) {
+  if (!file.exists(FLEET_STRUCTURE_PATH)) {
+    stop("FLEET_STRUCTURE_PATH is set to '", FLEET_STRUCTURE_PATH, "' but that file doesn't",
+         " exist - either fix the path, or set FLEET_STRUCTURE_PATH <- NULL to fall back to",
+         " single-fleet.")
+  }
+  fleet_structure <- fread(FLEET_STRUCTURE_PATH)
+  required_fleet_cols <- c("FG_num", "Fleet", "prop_catch")
+  missing_fleet_cols <- setdiff(required_fleet_cols, names(fleet_structure))
+  if (length(missing_fleet_cols) > 0) {
+    stop("FLEET_STRUCTURE_PATH ('", FLEET_STRUCTURE_PATH, "') is missing required column(s): ",
+         paste(missing_fleet_cols, collapse = ", "), " - expected FG_num, Fleet, prop_catch.")
+  }
+  message("Fleet structure loaded from '", FLEET_STRUCTURE_PATH, "': ", uniqueN(fleet_structure$Fleet),
+          " fleet(s) across ", uniqueN(fleet_structure$FG_num), " FG(s). Any FG not listed here",
+          " still gets a single implicit Fleet_1 - see add_catches_to_ecopath_workbook()'s header",
+          " comment.")
+}
+
 add_catches_to_ecopath_workbook(
-  fg_catch      = fg_catch_timeseries,
-  fg_lookup     = fg_lookup,
-  out_path      = ECOPATH_WORKBOOK_PATH,
-  year_ecopath  = YEAR_ECOPATH,
-  area_km2      = area_total_km2
+  fg_catch        = fg_catch_timeseries,
+  fg_lookup       = fg_lookup,
+  out_path        = ECOPATH_WORKBOOK_PATH,
+  year_ecopath    = YEAR_ECOPATH,
+  area_km2        = area_total_km2,
+  fleet_structure = fleet_structure
 )

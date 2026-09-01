@@ -1584,6 +1584,16 @@ calc_fish <- function(out) {
   ## data (via GFCM's DCRF/SAC channels, or STECF's FDI database for the
   ## EU-flagged portion of the fleet specifically), not something
   ## derivable from GFCM_Capture_Quantity.csv itself.
+  ##
+  ## SINGLE FLEET HERE STILL, EVEN THOUGH Catches_ NOW SUPPORTS SPLITS:
+  ## Fmort/Fmort_species/Fmort_FG above/below remain a single lumped
+  ## Yield/Biomass ratio regardless of whether add_catches_to_ecopath_
+  ## workbook() (lib_survey_fg_density_functions.R, called from
+  ## 02_fao_catches.R) was given a fleet_structure - this script never
+  ## sees fleet_structure itself, and Yield/Biomass here is computed
+  ## from the same un-split fg_catch_timeseries_*.csv either way.
+  ## Fleet-specific F would need Yield split by fleet BEFORE this
+  ## ratio, not just the Catches_ sheets split after; not implemented.
   out[, Fmort_species := Yield / Biomass]
   out[, Fmort := fifelse(!is.na(Fmort_species), Fmort_species, Fmort_FG)]
   out[, Fmort_source := fifelse(!is.na(Fmort_species), "species (Y/B)",

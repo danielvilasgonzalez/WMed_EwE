@@ -1274,6 +1274,7 @@ Because of that, final sheet **order** isn't something any single script control
 | 10 | `Ecosim` | `01_survey_density_*.R` | FG-level relative biomass time series across the full `ts_years` range |
 | 11 | `FG_spp_Ecosim` | `01_survey_density_*.R` | Species-level density, averaged across the *full* `ts_years` range |
 | 12 | `Catches_Ecosim` | `02_fao_catches.R` | FG-level catch time series, mirroring `Ecosim`'s shape |
+| 13 | `Fleet_Structure` | `02_fao_catches.R` | *Optional* - only present when `fleet_structure` was supplied and resolved to more than one fleet; the `FG_num`/`Fleet`/`prop_catch` table actually used to split `Catches_Ecopath`/`Catches_Ecosim` |
 
 ::: {.callout-note}
 ### `FG_spp_Ecopath`: every species, zero-filled rather than blank or absent
@@ -1372,7 +1373,7 @@ finalize_workbook_sheet_order(
   target_order = c(
     "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
     "Ecobase", "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim"
+    "Catches_Ecosim", "Fleet_Structure"
   )
 )
 ```
@@ -1393,7 +1394,8 @@ Landings/catch data is a separate concern from survey-derived biomass density - 
 ```{r}
 #| label: catches-sheet
 #| code-fold: false
-add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL) {
+add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2,
+                                            ts_years = NULL, fleet_structure = NULL) {
 
   if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
     stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
@@ -1417,6 +1419,26 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     }
   }
 
+  ## --- Resolve fleet_structure (or the single-fleet default) -------------
+  ## fleet_structure: optional FG_num/Fleet/prop_catch table. NULL (the
+  ## default) -> every FG treated as one implicit "Fleet_1" (prop 1),
+  ## and the sheets below keep their ORIGINAL (pre-fleet) shape exactly.
+  ## Any FG missing from a supplied fleet_structure also defaults to
+  ## Fleet_1, so a partial table is fine. Once >1 distinct Fleet is
+  ## present, every FG row switches to the fleet-suffixed shape.
+  if (is.null(fleet_structure)) {
+    fleet_tbl <- data.table(FG_num = full_fg_list$FG_num, Fleet = "Fleet_1", prop_catch = 1)
+    multi_fleet <- FALSE
+  } else {
+    fleet_tbl <- copy(as.data.table(fleet_structure))[, .(FG_num, Fleet, prop_catch)]
+    missing_fg <- setdiff(full_fg_list$FG_num, fleet_tbl$FG_num)
+    if (length(missing_fg) > 0) {
+      fleet_tbl <- rbind(fleet_tbl,
+                         data.table(FG_num = missing_fg, Fleet = "Fleet_1", prop_catch = 1))
+    }
+    multi_fleet <- uniqueN(fleet_tbl$Fleet) > 1
+  }
+
   ## --- Catches_Ecopath ---------------------------------------------------
   base_year <- year_ecopath[1]
   catch_base <- fg_catch[Year == base_year, .(FG_num, Catch_baseyear = Catch_t_km2)]
@@ -1425,31 +1447,61 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   catches_ecopath <- merge(full_fg_list, catch_base, by = "FG_num", all.x = TRUE)
   catches_ecopath <- merge(catches_ecopath, catch_avg, by = "FG_num", all.x = TRUE)
   range_col <- paste0("Catch_", min(year_ecopath), "_", max(year_ecopath))
-  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(paste0("Catch_", base_year), range_col))
+  base_col <- paste0("Catch_", base_year)
+  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(base_col, range_col))
   setorder(catches_ecopath, FG_num)
+
+  if (multi_fleet) {
+    ## Split each FG's total into one column-pair per Fleet, using
+    ## fleet_tbl's prop_catch - e.g. Catch_1994_Trawl, Catch_1994_1996_Trawl
+    fleet_split <- merge(catches_ecopath[, .(FG_num, base_col_val = get(base_col), range_col_val = get(range_col))],
+                         fleet_tbl, by = "FG_num", allow.cartesian = TRUE)
+    fleet_split[, (base_col)  := base_col_val * prop_catch]
+    fleet_split[, (range_col) := range_col_val * prop_catch]
+    catches_ecopath <- full_fg_list
+    for (fl in sort(unique(fleet_tbl$Fleet))) {
+      fl_cols <- fleet_split[Fleet == fl, .(FG_num, v1 = get(base_col), v2 = get(range_col))]
+      setnames(fl_cols, c("v1", "v2"), c(paste0(base_col, "_", fl), paste0(range_col, "_", fl)))
+      catches_ecopath <- merge(catches_ecopath, fl_cols, by = "FG_num", all.x = TRUE)
+    }
+  }
 
   ## --- Catches_Ecosim ------------------------------------------------------
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   catches_ecosim <- data.table(` ` = c(meta_labels, as.character(ts_years)))
 
-  build_catch_ts_column <- function(fg_num) {
+  build_catch_ts_column <- function(fg_num, prop = 1) {
     vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
-    vals[order(Year)]$Catch_t_km2
+    vals[order(Year)]$Catch_t_km2 * prop
   }
 
-  for (i in seq_len(nrow(full_fg_list))) {
-    fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
-    ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
-    col <- c(ts_name, "Catches", "reference", "absolute", "1",
-             paste0(fg_num, ": ", fg_name), "", "Annual",
-             as.character(build_catch_ts_column(fg_num)))
-    catches_ecosim[, (paste0("fg_", fg_num)) := col]
+  if (!multi_fleet) {
+    for (i in seq_len(nrow(full_fg_list))) {
+      fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
+      ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
+      col <- c(ts_name, "Catches", "reference", "absolute", "1",
+               paste0(fg_num, ": ", fg_name), "", "Annual",
+               as.character(build_catch_ts_column(fg_num)))
+      catches_ecosim[, (paste0("fg_", fg_num)) := col]
+    }
+  } else {
+    for (i in seq_len(nrow(fleet_tbl))) {
+      fg_num <- fleet_tbl$FG_num[i]; fl <- fleet_tbl$Fleet[i]; prop <- fleet_tbl$prop_catch[i]
+      fg_name <- full_fg_list[FG_num == fg_num, FG_name]
+      ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name), "_", gsub("[^A-Za-z0-9]+", "", fl))
+      col <- c(ts_name, "Catches", "reference", "absolute", "1",
+               paste0(fg_num, ": ", fg_name, " (", fl, ")"), "", "Annual",
+               as.character(build_catch_ts_column(fg_num, prop)))
+      catches_ecosim[, (paste0("fg_", fg_num, "_", fl)) := col]
+    }
   }
 
-  upsert_workbook_sheets(list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim), out_path)
-  invisible(list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim))
+  sheets <- list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim)
+  if (multi_fleet) sheets$Fleet_Structure <- fleet_tbl
+  upsert_workbook_sheets(sheets, out_path)
+  invisible(sheets)
 }
 ```
 
@@ -1458,6 +1510,7 @@ Three things worth knowing about how this behaves:
 - **Unit conversion is mandatory, not optional.** `fg_catch$Catch_t` arrives as a raw regional total (tonnes landed across the *whole* study area) - dividing by `area_km2` up front is what makes it comparable to `Biomass`'s t/km² in the `Ecopath` sheet at all. Skip this and Catches would be off from Biomass by a factor of the entire study area (tens of thousands of km²), which silently breaks Ecopath's own mass-balance calculation (Ecotrophic Efficiency depends on Catches and Biomass being in the same units).
 - **`Catches_Ecosim` is deliberately NOT rescaled to a first-year=1 index** the way the Biomass-side `Ecosim` sheet is (@sec-configure's `NORMALIZE_TS` doesn't apply here) - EwE expects the catch time series in absolute units (`Scaling = "absolute"`, not `"relative"`), since catch removals need to be real tonnage for Ecosim's mass-balance to work, not an index.
 - **Missing Year×FG catch data stays blank, never filled with 0** - an FG with no matched catch record for a given year is a data gap, not a claim that nothing was caught. `year_ecopath`/`ts_years` are matched against whatever `Ecopath`/`Ecosim` sheets already exist in the shared workbook (order-independent, same as everything else in @sec-configure) - so `02_fao_catches.R` doesn't need to run before or after `01_survey_density_*.R` specifically, just consistently against the same `year_ecopath`.
+- **`fleet_structure` is an optional after-the-fact split, not a data source.** Left `NULL` (the default), every FG is treated as one implicit `Fleet_1` and both sheets keep their pre-fleet shape exactly. Supplying an `FG_num`/`Fleet`/`prop_catch` table splits `Catch_t_km2` by those proportions - it doesn't derive fleet shares from anywhere itself, so that table has to come from real fleet/gear data sourced elsewhere (GFCM Operational Units, STECF FDI, or a hand-built allocation - see the fleet/gear callout below).
 :::
 
 ::: {.callout-warning}
@@ -1476,6 +1529,16 @@ This isn't a fixable bug as things stand: GFCM's capture statistics are reported
 `GFCM_Capture_Quantity.csv` - the file `02_fao_catches.R` actually reads - resolves only to Country × Species × Division × Year. This is GFCM's STATLANT-derived aggregate capture-production product; it carries no fleet, gear, or GSA-level effort dimension at all, so every downstream number in this pipeline (`fg_catch_timeseries_*.csv`, `Catches_Ecopath`/`Catches_Ecosim`, and `04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG`) is a single total lumped across the whole region and every gear/fleet that landed that species or FG.
 
 GFCM does define exactly this kind of disaggregation for its own stock assessments: an **Operational Unit** (fleet segment × ISSCFG gear code × GSA), collected through the DCRF's Task 2 (Catch), Task 4 (Fleet), and Task 5 (Effort), plus the Regional Fleet Register, submitted by national correspondents. That's a genuinely different GFCM data product from the STATLANT capture-production file this pipeline uses, and it isn't confirmed to have the same kind of open bulk-download - it feeds GFCM's own Stock Assessment (SAC/subregional working group) process rather than being published as an open dataset the way capture-production is. Getting real fleet/gear resolution into this pipeline means going through GFCM's DCRF/SAC channels for Operational-Unit data, or, for the EU-flagged portion of the fleet specifically, STECF's FDI (Fisheries Dependent Information) database - the same source already noted elsewhere in this pipeline as the likely next step for a discard-inclusive catch figure.
+:::
+
+::: {.callout-note}
+## Single fleet by default; multi-fleet via an optional `fleet_structure` input
+
+`add_catches_to_ecopath_workbook()` now takes an optional `fleet_structure` argument - a table of `FG_num`, `Fleet`, `prop_catch` (the share, 0-1, of each FG's total catch attributed to each fleet). Left at its default (`NULL`), the workbook is exactly what it always was: one implicit fleet, `Catches_Ecopath`'s combined `Catch_<year>` columns, `Catches_Ecosim`'s meta-rows with no `Fleet` field, no `Fleet_Structure` sheet. `02_fao_catches.R` exposes this as `FLEET_STRUCTURE_PATH` (a config constant near the top of the script, `NULL` by default) - point it at a CSV in that `FG_num,Fleet,prop_catch` shape to split catches instead. Any FG not listed there still defaults to a single implicit `"Fleet_1"`, so a partial table (only the FGs you actually have a fleet split for) works fine.
+
+Once any FG resolves to more than one fleet, **every** FG row switches to the multi-fleet shape: `Catches_Ecopath` gets fleet-suffixed columns (`Catch_<year>_<Fleet>`), `Catches_Ecosim` gets one column-set per FG × Fleet, and the resolved fleet table is written out as its own `Fleet_Structure` sheet for traceability.
+
+This only splits catch *after the fact* - it doesn't source fleet/gear data itself (see the callout above: `GFCM_Capture_Quantity.csv` still carries no fleet/gear column), so the `fleet_structure` CSV has to be assembled from somewhere else (GFCM Operational Units, STECF FDI, or a hand-built allocation). `04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG` remain single-fleet regardless - they're computed from the same un-split `fg_catch_timeseries_*.csv` whether or not `Catches_Ecopath`/`Catches_Ecosim` end up split by fleet, since `04_pbqb_calc.R` never sees `fleet_structure`.
 :::
 
 ::: {.callout-note}

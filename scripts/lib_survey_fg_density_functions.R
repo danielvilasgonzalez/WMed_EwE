@@ -2270,6 +2270,18 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
 ##                   exists in the workbook, its year rows are reused
 ##                   so both Ecosim sheets line up. Otherwise derived
 ##                   from fg_catch's own Year range.
+##
+## SINGLE FLEET BY DEFAULT, MULTI-FLEET VIA fleet_structure (optional):
+## Catches_Ecopath/Catches_Ecosim have historically had no fleet
+## dimension at all - one combined Catch_<year> column per FG, and
+## Catches_Ecosim's meta-rows (Name, Type, Usage, Scaling, Weight,
+## Target, 2nd target, Interval) with no Fleet field. EwE's Basic Input
+## Catches table is properly indexed by FG x Fleet, and Ecosim policy
+## scenarios need fleet-specific catch/effort series, so this was a
+## known simplification. fleet_structure (below) lets a caller supply
+## a real fleet split; when omitted, behavior AND output are unchanged
+## from before this argument existed - single implicit fleet, same
+## column names, no Fleet_Structure sheet.
 ## =================================================================
 ## area_km2: total study area (km^2) to convert fg_catch's Catch_t
 ## (RAW TOTAL TONNES landed across the whole region - see
@@ -2279,8 +2291,43 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
 ## by a factor of the whole study area (tens of thousands of km^2) versus
 ## Biomass, which breaks Ecopath's mass balance (Ecotrophic Efficiency
 ## is computed from Biomass and Catches together, in the same units).
-add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL) {
-  
+##
+## fleet_structure - OPTIONAL. A data.table/data.frame with columns
+##   FG_num, Fleet, prop_catch: what share (0-1) of FG_num's total
+##   catch goes to Fleet, e.g.
+##     FG_num  Fleet          prop_catch
+##     3       Trawl          0.7
+##     3       Small-scale    0.3
+##     5       Trawl          1.0
+##   prop_catch should sum to ~1 per FG_num (checked, with a warning -
+##   not an error - if it doesn't, since a deliberately partial split,
+##   e.g. modeling only the fleets that matter and leaving the rest
+##   unallocated, is a legitimate use case too). Any FG_num present in
+##   fg_lookup but ABSENT from fleet_structure is assigned a single
+##   implicit "Fleet_1" fleet with prop_catch = 1 - i.e. every FG
+##   without an explicit split still gets its full catch, just under
+##   one default fleet, so partial fleet_structure tables (only the
+##   FGs you've actually got fleet data for) are fine.
+##
+##   Pass NULL (the default) to skip fleet splitting entirely: every FG
+##   is treated as one implicit fleet, and Catches_Ecopath/Catches_Ecosim
+##   keep their original (pre-fleet) shape exactly - no Fleet-suffixed
+##   columns, no Fleet_Structure sheet. This is what running this
+##   function has always done, so existing callers/workbooks are
+##   unaffected by fleet_structure existing as an argument.
+##
+##   Once ANY FG in fleet_structure resolves to more than one fleet,
+##   ALL FG rows switch to the multi-fleet shape (fleet-suffixed
+##   columns for Catches_Ecopath, one column-set per FG x Fleet for
+##   Catches_Ecosim) for consistency across the sheet - an FG with no
+##   real split still gets its one Fleet_1 column, just fleet-suffixed
+##   like everything else. The fleet_structure table actually used
+##   (after filling in Fleet_1 defaults) is also written out as its
+##   own Fleet_Structure sheet, so the split is traceable from the
+##   workbook alone.
+add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2,
+                                            ts_years = NULL, fleet_structure = NULL) {
+
   if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
     stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
          " Catch_t is a RAW TOTAL (tonnes landed across the whole region), not a density,",
@@ -2288,7 +2335,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
          " the Ecopath sheet. Pass the same total area used elsewhere in the pipeline",
          " (e.g. sum(area_km2) from strata_area_by_area.csv).")
   }
-  
+
   ## convert once, up front - everything below (Catches_Ecopath AND
   ## Catches_Ecosim) reads Catch_t_km2, never the raw Catch_t
   fg_catch <- copy(fg_catch)
@@ -2298,9 +2345,9 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
           " Ecopath sheet) - e.g. total catch of ", round(fg_catch[1, Catch_t], 1),
           " t for FG ", fg_catch[1, FG_num], " in ", fg_catch[1, Year], " becomes ",
           signif(fg_catch[1, Catch_t_km2], 4), " t/km^2.")
-  
+
   full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])[order(FG_num)]
-  
+
   if (is.null(ts_years)) {
     ts_years <- read_existing_ts_years(out_path, "Ecosim")
     if (!is.null(ts_years)) {
@@ -2316,7 +2363,50 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
               " different range, re-run this function afterward to pick it up.")
     }
   }
-  
+
+  ## --- Resolve fleet_structure (or the single-fleet default) -------------
+  if (is.null(fleet_structure)) {
+    fleet_tbl <- data.table(FG_num = full_fg_list$FG_num, Fleet = "Fleet_1", prop_catch = 1)
+    multi_fleet <- FALSE
+  } else {
+    fleet_tbl <- copy(as.data.table(fleet_structure))
+    required_fleet_cols <- c("FG_num", "Fleet", "prop_catch")
+    missing_fleet_cols <- setdiff(required_fleet_cols, names(fleet_tbl))
+    if (length(missing_fleet_cols) > 0) {
+      stop("add_catches_to_ecopath_workbook(): fleet_structure is missing required column(s): ",
+           paste(missing_fleet_cols, collapse = ", "), " - expected FG_num, Fleet, prop_catch",
+           " (see this function's header comment for the expected shape).")
+    }
+    fleet_tbl <- fleet_tbl[, ..required_fleet_cols]
+
+    prop_check <- fleet_tbl[, .(total_prop = sum(prop_catch, na.rm = TRUE)), by = FG_num]
+    off_fgs <- prop_check[abs(total_prop - 1) > 1e-6]
+    if (nrow(off_fgs) > 0) {
+      message("fleet_structure: ", nrow(off_fgs), " FG(s) have prop_catch NOT summing to 1",
+              " (fine if that's deliberate - e.g. only some fleets modeled for that FG -",
+              " but check it's not a typo):")
+      print(off_fgs)
+    }
+
+    missing_fg <- setdiff(full_fg_list$FG_num, fleet_tbl$FG_num)
+    if (length(missing_fg) > 0) {
+      message(length(missing_fg), " of ", nrow(full_fg_list), " FG(s) not present in",
+              " fleet_structure - defaulted to a single implicit Fleet_1 (prop_catch = 1)",
+              " each, same as if fleet_structure had been NULL for just those FGs.")
+      fleet_tbl <- rbind(fleet_tbl,
+                         data.table(FG_num = missing_fg, Fleet = "Fleet_1", prop_catch = 1))
+    }
+    multi_fleet <- uniqueN(fleet_tbl$Fleet) > 1
+    if (!multi_fleet) {
+      message("fleet_structure resolved to a single fleet ('", fleet_tbl$Fleet[1], "') across",
+              " every FG - Catches_Ecopath/Catches_Ecosim keep their original (non-fleet-",
+              "suffixed) shape. Pass more than one distinct Fleet value to switch to the",
+              " multi-fleet sheet shape.")
+    }
+  }
+  setorder(fleet_tbl, FG_num, Fleet)
+  fleet_names <- sort(unique(fleet_tbl$Fleet))
+
   ## --- Catches_Ecopath ---------------------------------------------------
   base_year <- year_ecopath[1]
   catch_base <- fg_catch[Year == base_year, .(FG_num, Catch_baseyear = Catch_t_km2)]
@@ -2325,9 +2415,10 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   catches_ecopath <- merge(full_fg_list, catch_base, by = "FG_num", all.x = TRUE)
   catches_ecopath <- merge(catches_ecopath, catch_avg, by = "FG_num", all.x = TRUE)
   range_col <- paste0("Catch_", min(year_ecopath), "_", max(year_ecopath))
-  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(paste0("Catch_", base_year), range_col))
+  base_col <- paste0("Catch_", base_year)
+  setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(base_col, range_col))
   setorder(catches_ecopath, FG_num)
-  
+
   n_fg_no_catch <- catches_ecopath[is.na(get(range_col)), .N]
   if (n_fg_no_catch > 0) {
     message(n_fg_no_catch, " of ", nrow(catches_ecopath), " FG(s) have no catch data in ",
@@ -2336,33 +2427,68 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
             " identical here):")
     print(catches_ecopath[is.na(get(range_col)), .(FG_num, FG_name)])
   }
-  
+
+  if (multi_fleet) {
+    ## Split the two total-catch columns above into one pair per Fleet,
+    ## FG x Fleet's share = FG's total x that Fleet's prop_catch. FGs
+    ## with no data for a given Fleet's share still get a (blank x
+    ## prop =) blank cell, not a fabricated zero.
+    fleet_split <- catches_ecopath[, .(FG_num, FG_name, base_col_val = get(base_col), range_col_val = get(range_col))]
+    fleet_split <- merge(fleet_split, fleet_tbl, by = "FG_num", all.x = TRUE, allow.cartesian = TRUE)
+    fleet_split[, (base_col)  := base_col_val * prop_catch]
+    fleet_split[, (range_col) := range_col_val * prop_catch]
+
+    catches_ecopath <- full_fg_list
+    for (fl in fleet_names) {
+      fl_cols <- fleet_split[Fleet == fl, .(FG_num, v_base = get(base_col), v_range = get(range_col))]
+      setnames(fl_cols, c("v_base", "v_range"), c(paste0(base_col, "_", fl), paste0(range_col, "_", fl)))
+      catches_ecopath <- merge(catches_ecopath, fl_cols, by = "FG_num", all.x = TRUE)
+    }
+    setorder(catches_ecopath, FG_num)
+  }
+
   ## --- Catches_Ecosim ------------------------------------------------------
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   catches_ecosim <- data.table(` ` = c(meta_labels, as.character(ts_years)))
-  
-  build_catch_ts_column <- function(fg_num) {
+
+  build_catch_ts_column <- function(fg_num, prop = 1) {
     vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
-    vals[order(Year)]$Catch_t_km2
+    vals[order(Year)]$Catch_t_km2 * prop
   }
-  
-  for (i in seq_len(nrow(full_fg_list))) {
-    fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
-    ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
-    col <- c(ts_name, "Catches", "reference", "absolute", "1",
-             paste0(fg_num, ": ", fg_name), "", "Annual",
-             as.character(build_catch_ts_column(fg_num)))
-    catches_ecosim[, (paste0("fg_", fg_num)) := col]
+
+  if (!multi_fleet) {
+    for (i in seq_len(nrow(full_fg_list))) {
+      fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
+      ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name))
+      col <- c(ts_name, "Catches", "reference", "absolute", "1",
+               paste0(fg_num, ": ", fg_name), "", "Annual",
+               as.character(build_catch_ts_column(fg_num)))
+      catches_ecosim[, (paste0("fg_", fg_num)) := col]
+    }
+  } else {
+    for (i in seq_len(nrow(fleet_tbl))) {
+      fg_num <- fleet_tbl$FG_num[i]; fl <- fleet_tbl$Fleet[i]; prop <- fleet_tbl$prop_catch[i]
+      fg_name <- full_fg_list[FG_num == fg_num, FG_name]
+      if (length(fg_name) == 0) next  # fleet_structure referenced an FG_num not in fg_lookup
+      ts_name <- paste0("C_", gsub("[^A-Za-z0-9]+", "", fg_name), "_", gsub("[^A-Za-z0-9]+", "", fl))
+      col <- c(ts_name, "Catches", "reference", "absolute", "1",
+               paste0(fg_num, ": ", fg_name, " (", fl, ")"), "", "Annual",
+               as.character(build_catch_ts_column(fg_num, prop)))
+      catches_ecosim[, (paste0("fg_", fg_num, "_", fl)) := col]
+    }
   }
-  
-  upsert_workbook_sheets(
-    list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim),
-    out_path
-  )
-  
-  invisible(list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim))
+
+  sheets_to_write <- list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim)
+  if (multi_fleet) {
+    sheets_to_write$Fleet_Structure <- fleet_tbl
+    message("Fleet_Structure sheet written - ", uniqueN(fleet_tbl$Fleet), " fleet(s) (",
+            paste(fleet_names, collapse = ", "), ") across ", uniqueN(fleet_tbl$FG_num), " FG(s).")
+  }
+  upsert_workbook_sheets(sheets_to_write, out_path)
+
+  invisible(sheets_to_write)
 }
 
 ## =================================================================

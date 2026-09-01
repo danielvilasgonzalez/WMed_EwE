@@ -712,6 +712,33 @@ discard-inclusive catch figure. Neither is currently plugged in anywhere;
 `04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG` (below) inherit this same
 limitation, since they're computed downstream of this file.
 
+**Single fleet by default; multi-fleet via an optional `fleet_structure`
+input.** `add_catches_to_ecopath_workbook()` (`lib_survey_fg_density_
+functions.R`) now takes an optional `fleet_structure` argument: a table of
+`FG_num`, `Fleet`, `prop_catch` (the share, 0–1, of each FG's total catch
+attributed to each fleet). Left at its default (`NULL`, and that is still
+this script's own default), the workbook is exactly what it always was —
+one implicit fleet, `Catches_Ecopath`'s combined `Catch_<year>` columns,
+`Catches_Ecosim`'s meta-rows with no `Fleet` field, no `Fleet_Structure`
+sheet. Point `FLEET_STRUCTURE_PATH` (near the top of this script) at a CSV
+in that `FG_num,Fleet,prop_catch` shape to split catches by fleet instead —
+any FG *not* listed there still defaults to a single implicit `"Fleet_1"`,
+so a partial table (only the FGs you actually have a fleet split for) is
+fine. Once any FG resolves to more than one fleet, **every** FG row in
+`Catches_Ecopath` switches to fleet-suffixed columns
+(`Catch_<year>_<Fleet>`), `Catches_Ecosim` gets one column-set per FG ×
+Fleet, and the resolved fleet table itself is written out as a new
+`Fleet_Structure` sheet for traceability.
+
+This only splits catch *after the fact* — it does not source fleet/gear
+data itself (see the "not implemented" note above: `GFCM_Capture_
+Quantity.csv` still carries no fleet/gear column), so the `fleet_structure`
+CSV has to come from somewhere else (GFCM Operational Units, STECF FDI, or
+a hand-built allocation). `04_pbqb_calc.R`'s `Fmort_species`/`Fmort_FG`
+remain unaffected either way — they're computed from the same un-split
+`fg_catch_timeseries_*.csv` regardless of whether `Catches_Ecopath`/
+`Catches_Ecosim` end up split by fleet.
+
 ## Outputs
 
 * **CSVs:** `unmatched_species_FG_assignment.csv`,
@@ -719,7 +746,8 @@ limitation, since they're computed downstream of this file.
   `fg_catch_timeseries_<DATASET_VERSION>.csv`.
 * **Plots:** `country_catch_timeseries.png`, `species_catch_timeseries.png`.
 * **Workbook** `ecopath_ecosim_inputs.xlsx`, sheets written: `Catches_Ecopath`,
-  `Catches_Ecosim`.
+  `Catches_Ecosim`, plus `Fleet_Structure` if `FLEET_STRUCTURE_PATH` was set
+  and resolved to more than one fleet.
 
 ---
 
@@ -911,6 +939,15 @@ safe_include_graphics(
      even once a real landings file is plugged in. See the matching note
      under [Script 2 — `02_fao_catches.R`] for what a real fix would
      require (GFCM's Operational-Unit data or STECF's FDI database).
+     **`Fmort` itself stays single-fleet even where `Catches_` sheets are
+     split:** unlike `Catches_Ecopath`/`Catches_Ecosim` (which can now be
+     split by fleet via `fleet_structure` — see the "Single fleet by
+     default; multi-fleet via an optional `fleet_structure` input" note
+     under [Script 2 — `02_fao_catches.R`]), this script never sees
+     `fleet_structure` and computes `Fmort_species`/`Fmort_FG` from the
+     same un-split `fg_catch_timeseries_*.csv` regardless. A genuinely
+     fleet-specific F would need Yield split by fleet *before* this ratio,
+     not just the `Catches_` sheets split after the fact.
 4. **Taxonomic classification** — `worms_taxonomy_lookup()` for every species
    in `species_df`, dispatch-classified into `fish` / `mammal` / `seabird` /
    `phytoplankton` / `invertebrate` (default) by WoRMS Class, with a
@@ -1102,7 +1139,7 @@ flowchart LR
 | `upsert_workbook_sheets(sheets, out_path)` | Adds/replaces the named sheets in `out_path`, **leaves every other sheet untouched**. Creates the workbook if it doesn't exist yet. Safe to call repeatedly, from any script, in any order. |
 | `read_existing_ts_years(out_path, sheet_name)` | Reads year values from column 1 of an existing sheet, e.g. to keep `Catches_Ecosim`'s years aligned with an already-written `Ecosim` sheet |
 | `export_ecopath_ecosim_excel(fg_index_regional, species_density_regional, n_samples_by_area_year, dataframe2, year_ecopath, ts_years, out_path, species_taxonomy = NULL, fg_cv_log = NULL, normalize_ts = TRUE)` | Writes `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim` |
-| `add_catches_to_ecopath_workbook(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL)` | Converts raw catch tonnes to t/km² density; writes `Catches_Ecopath`, `Catches_Ecosim` |
+| `add_catches_to_ecopath_workbook(fg_catch, fg_lookup, out_path, year_ecopath, area_km2, ts_years = NULL, fleet_structure = NULL)` | Converts raw catch tonnes to t/km² density; writes `Catches_Ecopath`, `Catches_Ecosim`. `fleet_structure` (optional `FG_num`/`Fleet`/`prop_catch` table) splits catch by fleet and also writes `Fleet_Structure`; left `NULL`, output is unchanged (single implicit fleet, no `Fleet_Structure` sheet) |
 | `add_pbqb_to_ecopath_workbook(fg_weighted, out_path, species_pb_qb = NULL)` | Writes `PB_QB` (FG-level). If `species_pb_qb` (04_pbqb_calc.R's species-level `results` table) is also passed, writes `PB_QB_spp` too — one row per species, with `prop_biomass_FG`/`prop_biomass_PB`/`prop_biomass_QB` |
 | `finalize_workbook_sheet_order(out_path, rename_map, target_order)` | **Run last.** Renames `FG_lookup`→`FG` and `References`→`PB_QB_References_`, then reorders every sheet to `target_order`. Sheets not yet present are skipped with a message (not an error); sheets present but not in `target_order` are kept, appended at the end, with a warning. *(As of the latest patch, if a rename target is already occupied by a stale sheet from an earlier run, that stale sheet is replaced rather than raising an error — see the "Known issue" note below.)* |
 
@@ -1145,6 +1182,7 @@ script's own final call):
 10. `Ecosim`
 11. `FG_spp_Ecosim`
 12. `Catches_Ecosim`
+13. `Fleet_Structure` — only present when `add_catches_to_ecopath_workbook()` was called with a `fleet_structure` that resolved to more than one fleet; skipped (not an error) otherwise, same as any other not-yet-present target-order sheet
 
 ### Known issue with `finalize_workbook_sheet_order()` reruns
 
