@@ -1,0 +1,1536 @@
+---
+title: "Western Mediterranean Fisheries Analysis"
+subtitle: "SAU, FAO, and FishMIP -- gear x species x region, and a 4-source comparison"
+author: "Andrea"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = TRUE, error = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath(dirname(knitr::current_input(dir = TRUE))))
+
+suppressPackageStartupMessages({
+  library(httr)
+  library(jsonlite)
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(knitr)
+})
+
+# ---- Data-source modules ---------------------------------------------------
+# One file per source (SAU, FAO, FishMIP), each responsible only for
+# loading/reshaping its own data -- no plotting, no export. This document
+# and westmed_fisheries_analysis.R (the standalone script) both source the
+# same three files and call the same functions, so the two can't drift
+# apart. Put all three in the same folder as this .Rmd.
+for (.mod in c("westmed_fisheries_analysis_source_sau.R",
+               "westmed_fisheries_analysis_source_fao.R",
+               "westmed_fisheries_analysis_source_fishmip.R")) {
+  .mod_path <- file.path(normalizePath(dirname(knitr::current_input(dir = TRUE))), .mod)
+  if (!file.exists(.mod_path)) stop("Can't find ", .mod_path, " -- put it in the same folder as this .Rmd.")
+  source(.mod_path)
+}
+rm(.mod, .mod_path)
+
+# ---------------------------------------------------------------------------
+# This document is now SELF-CONTAINED: knitting it end-to-end downloads the
+# SAU data itself (if it isn't already sitting next to this file) and then
+# produces every table and plot below in one pass -- you do not need to run
+# a separate script first. The extraction step is cached: once
+# sau_raw_combined_west_med.csv and sau_west_med_summary.xlsx exist in this
+# folder, re-knitting reuses them instantly instead of re-downloading. Set
+# FORCE_REFRESH <- TRUE below (or delete those two files) to pull fresh data.
+#
+# Needs: internet access to api.seaaroundus.org (required for Part 0/A), and
+# the 'fishstat' package (optional, for the FAO comparisons in Part B).
+# ---------------------------------------------------------------------------
+
+RAW_CSV        <- "sau_raw_combined_west_med.csv"
+SUMMARY_XLSX   <- "sau_west_med_summary.xlsx"
+FORCE_REFRESH  <- FALSE   # set TRUE to re-download even if the files above already exist
+
+# FishMIP/ISIMIP3a regional parquet extracts (Part D) -- download these from
+# the FishMIP Input Explorer and place them in this same folder. Optional:
+# if they're missing (or 'arrow' isn't installed), Part D just skips the
+# FishMIP series and still shows SAU vs FAO.
+EFFORT_PARQUET <- "effort_histsoc_1841_2017_western-mediterranean-sea.parquet"
+CATCH_PARQUET  <- "calibration_catch_histsoc_1850_2017_western-mediterranean-sea.parquet"
+
+BASE_URL <- "https://api.seaaroundus.org/api/v1/"
+UA <- httr::user_agent("sau-west-med-rmd/1.0")
+MEASURE <- "tonnage"
+
+N_TOP_SPECIES  <- 10
+N_TOP_GEARS    <- 8
+YEAR_MIN       <- 1994
+YEAR_MAX       <- 2019
+
+TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
+TARGET_ISO3 <- c(Spain = "ESP", France = "FRA", Italy = "ITA",
+                  Tunisia = "TUN", Algeria = "DZA", Morocco = "MAR")
+
+WEST_MED_EEZS <- list(
+  "12"  = list(country = "Algeria", area = "Algeria"),
+  "788" = list(country = "Tunisia", area = "Tunisia"),
+  "947" = list(country = "Morocco", area = "Morocco (Mediterranean)"),
+  "918" = list(country = "France", area = "France (Mediterranean)"),
+  "899" = list(country = "France", area = "Corsica"),
+  "380" = list(country = "Italy", area = "Italy (mainland)"),
+  "902" = list(country = "Italy", area = "Sardinia"),
+  "901" = list(country = "Italy", area = "Sicily"),
+  "962" = list(country = "Spain", area = "Spain (mainland, Med + Gulf of Cadiz)"),
+  "903" = list(country = "Spain", area = "Balearic Islands")
+)
+
+# ---- Shared plot theme & palette --------------------------------------------
+# White chart background + a validated, colorblind-safe categorical palette
+# (8 hues, ordered so adjacent pairs clear CVD-safety checks -- see the
+# accompanying data-viz reference). Used everywhere below instead of the
+# default viridis/turbo scales and grey ggplot2 background. knitr's own
+# device is also forced to a white background (dev.args) so inline plots
+# never pick up a transparent/grey panel when the document theme is dark.
+knitr::opts_chunk$set(dev.args = list(bg = "white"))
+
+WESTMED_PALETTE <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                      "#e87ba4", "#008300", "#4a3aa7", "#e34948")
+westmed_colors <- function(n) {
+  if (n <= length(WESTMED_PALETTE)) WESTMED_PALETTE[seq_len(n)] else grDevices::colorRampPalette(WESTMED_PALETTE)(n)
+}
+theme_westmed <- function(base_size = 11) {
+  ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
+      plot.background   = ggplot2::element_rect(fill = "white", color = NA),
+      panel.background  = ggplot2::element_rect(fill = "white", color = NA),
+      legend.background = ggplot2::element_rect(fill = "white", color = NA),
+      legend.key        = ggplot2::element_rect(fill = "white", color = NA),
+      strip.background  = ggplot2::element_rect(fill = "#f2f1ee", color = NA),
+      strip.text        = ggplot2::element_text(face = "bold", color = "#0b0b0b"),
+      panel.grid.major  = ggplot2::element_line(color = "#e1e0d9", linewidth = 0.3),
+      panel.grid.minor  = ggplot2::element_blank(),
+      axis.line         = ggplot2::element_line(color = "#c3c2b7", linewidth = 0.3),
+      axis.text         = ggplot2::element_text(color = "#52514e"),
+      axis.title        = ggplot2::element_text(color = "#0b0b0b"),
+      plot.title        = ggplot2::element_text(face = "bold", color = "#0b0b0b"),
+      plot.subtitle     = ggplot2::element_text(color = "#52514e"),
+      legend.position   = "bottom",
+      legend.title      = ggplot2::element_text(color = "#0b0b0b", face = "bold"),
+      legend.text       = ggplot2::element_text(color = "#52514e")
+    )
+}
+
+FAO_AREA_TITLE_PATTERN <- "mediterranean and black sea"
+
+# ---- shared helpers (same logic as sau_west_med_full.R) --------------------
+
+readr_or_base_read_csv <- function(path) {
+  if (requireNamespace("readr", quietly = TRUE)) {
+    readr::read_csv(path, show_col_types = FALSE, progress = FALSE)
+  } else {
+    utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  }
+}
+
+readr_or_base_write_csv <- function(df, path) {
+  if (requireNamespace("readr", quietly = TRUE)) {
+    readr::write_csv(df, path)
+  } else {
+    utils::write.csv(df, path, row.names = FALSE)
+  }
+}
+
+sanitize_raw_types <- function(df) {
+  if ("year" %in% names(df)) df$year <- suppressWarnings(as.integer(as.character(df$year)))
+  numeric_like <- grep("tonnes|value|catch|landed", names(df), ignore.case = TRUE, value = TRUE)
+  for (col in numeric_like) df[[col]] <- suppressWarnings(as.numeric(as.character(df[[col]])))
+  for (col in names(df)) {
+    if (is.logical(df[[col]]) && all(is.na(df[[col]]))) df[[col]] <- as.character(df[[col]])
+  }
+  df
+}
+
+get_dimension_series <- function(region_type, region_id, dimension, measure = MEASURE,
+                                  limit = 200, retries = 3) {
+  url <- sprintf("%s%s/%s/%s/?format=json&limit=%d&sciname=false&region_id=%s",
+                 BASE_URL, region_type, measure, dimension, limit, region_id)
+  resp <- NULL
+  for (attempt in seq_len(retries)) {
+    resp <- tryCatch(httr::GET(url, UA, httr::timeout(60)), error = function(e) e)
+    if (!inherits(resp, "error") && httr::status_code(resp) == 200) break
+    if (attempt == retries) {
+      message(sprintf("  ! failed %s for %s %s", dimension, region_type, region_id))
+      return(tibble())
+    }
+    Sys.sleep(2 * attempt)
+  }
+  payload <- tryCatch(
+    jsonlite::fromJSON(httr::content(resp, as = "text", encoding = "UTF-8"), simplifyVector = FALSE)$data,
+    error = function(e) list()
+  )
+  rows <- list()
+  for (series in payload) {
+    key <- series$key
+    for (pair in series$values) {
+      year <- pair[[1]]; value <- pair[[2]]
+      if (is.null(value)) next
+      if (year >= YEAR_MIN && year <= YEAR_MAX) {
+        rows[[length(rows) + 1]] <- tibble(!!dimension := key, year = as.integer(year), !!measure := as.numeric(value))
+      }
+    }
+  }
+  if (length(rows) == 0) return(tibble())
+  bind_rows(rows)
+}
+
+get_raw_extract <- function(region_type, region_id, retries = 3, timeout_s = 180) {
+  url <- sprintf("%s%s/%s/sector/?format=csv&limit=10&sciname=false&region_id=%s",
+                 BASE_URL, region_type, MEASURE, region_id)
+  resp <- NULL
+  for (attempt in seq_len(retries)) {
+    resp <- tryCatch(httr::GET(url, UA, httr::timeout(timeout_s)), error = function(e) e)
+    if (!inherits(resp, "error") && httr::status_code(resp) == 200) break
+    if (attempt == retries) {
+      status_msg <- if (inherits(resp, "error")) conditionMessage(resp) else httr::status_code(resp)
+      message(sprintf("  ! failed raw extract for %s %s (%s)", region_type, region_id, status_msg))
+      return(tibble())
+    }
+    Sys.sleep(3 * attempt)
+  }
+  zip_path <- tempfile(fileext = ".zip")
+  writeBin(httr::content(resp, as = "raw"), zip_path)
+  csv_name <- tryCatch(utils::unzip(zip_path, list = TRUE)$Name[1], error = function(e) NA)
+  if (is.na(csv_name)) { unlink(zip_path); return(tibble()) }
+  exdir <- tempfile("sau_"); dir.create(exdir)
+  utils::unzip(zip_path, files = csv_name, exdir = exdir)
+  df <- suppressWarnings(readr_or_base_read_csv(file.path(exdir, csv_name)))
+  unlink(zip_path); unlink(exdir, recursive = TRUE)
+  sanitize_raw_types(df)
+}
+
+find_fao_area <- function() {
+  resp <- httr::GET(paste0(BASE_URL, "fao/?format=json"), UA, httr::timeout(120))
+  httr::stop_for_status(resp)
+  j <- jsonlite::fromJSON(httr::content(resp, as = "text", encoding = "UTF-8"), simplifyVector = FALSE)
+  areas <- map_dfr(j$data$features, function(f) tibble(region_id = f$properties$region_id, title = f$properties$title))
+  write.csv(areas, "sau_fao_area_lookup.csv", row.names = FALSE)
+  match <- areas %>% filter(grepl(FAO_AREA_TITLE_PATTERN, title, ignore.case = TRUE))
+  if (nrow(match) == 0) {
+    message("Couldn't auto-find an FAO area matching '", FAO_AREA_TITLE_PATTERN, "'.")
+    return(NA_character_)
+  }
+  as.character(match$region_id[1])
+}
+```
+
+# What this document is
+
+This is a single, self-contained R Markdown report: knitting it (1) pulls
+Sea Around Us (SAU) reconstructed catch data for the western
+Mediterranean -- Spain, France, Italy, Tunisia, Algeria, Morocco -- broken
+down by taxon, gear, sector, country and year, (2) documents exactly what
+SAU, FAO, and FishMIP each expose, which region codes were used and why,
+and how the three relate to each other, and (3) computes and **renders
+every table and plot inline**, source by source and then together:
+
+- **Part A** -- SAU alone: top 10 species by tonnage; gear composition
+  across those species and across countries; catch over time by sector
+  and by gear, by country; full sector/gear/species share tables.
+- **Part B** -- SAU vs. FAO: a country-level (region) comparison
+  standardized for cross-country trend comparison; a SAU-total vs.
+  SAU-reported-only vs. FAO time series by region; a species-level
+  SAU vs. FAO comparison (matched top-10 species).
+- **Part C** -- FishMIP alone: nominal fishing effort (kW x days at sea)
+  by sector and by gear, and FishMIP's own reported/IUU/discards catch
+  composition, both over time by country.
+- **Part D** -- all sources together: SAU total, SAU reported-only, FAO,
+  and FishMIP (reported and total) overlaid by country, in both raw
+  tonnes and a standardized index; SAU's catch-by-gear share shown next
+  to FishMIP's effort-by-gear share.
+- **Part E** -- an executive summary table, one row per country,
+  indexing back into every section above.
+
+The extraction step (Part 0) is cached to disk (`r RAW_CSV` and
+`r SUMMARY_XLSX`): the first knit downloads from SAU's API (needs
+internet access to `api.seaaroundus.org`); every knit after that reuses
+the cached files and is fast. Delete those two files, or set
+`FORCE_REFRESH <- TRUE` in the setup chunk, to pull fresh data.
+
+The FAO comparisons (Part B) additionally need the `fishstat` package
+(`install.packages("fishstat")`), and the FishMIP sections (Part C, and
+the FishMIP columns of Part D) need the `arrow` package plus the two
+FishMIP parquet files described below -- if either is missing, those
+sections print a message and are skipped, but Part 0/A (the SAU side,
+which matters most) is unaffected either way.
+
+# The three data sources
+
+## Sea Around Us (SAU)
+
+SAU is a *reconstructed* catch database (it adjusts official landings for
+unreported, discarded, and illegal catch -- deliberately not the same
+thing as official reported statistics). Everything comes from one
+JSON/CSV API:
+
+```
+https://api.seaaroundus.org/api/v1/
+```
+
+The API is organized around **region types** (the geographic unit you're
+querying) and **dimensions** (how you want catch within that region
+broken down), combined in the URL path:
+
+```
+{BASE_URL}{region_type}/{measure}/{dimension}/?format=json&region_id={id}
+```
+
+### Region types
+
+| region_type | meaning | region_id used in this document |
+|---|---|---|
+| `eez` | Exclusive Economic Zone (a country, or a sub-unit when a country has more than one EEZ) | `962` Spain (mainland, Med + Gulf of Cadiz), `903` Balearic Islands, `918` France (Mediterranean), `899` Corsica, `380`/`902`/`901` Italy mainland/Sardinia/Sicily, `788` Tunisia, `12` Algeria, `947` Morocco (Mediterranean) |
+| `fao` | FAO Major Fishing Area | `37` = Mediterranean and Black Sea (the only Med-related one -- see below) |
+| `lme`, `me`, `rfmo`, `highseas`, `taxon`, `country`, `global` | other region types SAU exposes | not used here |
+
+The live, current list of FAO areas SAU has is written to
+`sau_fao_area_lookup.csv` every time Part 0 runs -- that file is the
+source of truth, not the table above. There's no equivalent EEZ dump
+yet; if you ever want the full EEZ list (e.g. to extend this to Greece,
+Croatia, Libya, Egypt, Turkey), a one-line addition
+(`GET {BASE_URL}eez/?format=json`) gets it.
+
+### Dimensions
+
+| dimension | what it is |
+|---|---|
+| `sector` | Industrial / Artisanal / Subsistence / Recreational |
+| `gear` | trawl, purse seine, longline, gillnet, etc. |
+| `taxon` | species/genus/family caught |
+| `country` | which country's fleet caught it (meaningful inside a non-country region like an FAO area) |
+| `commercial-group`, `functional-group`, `catch-type`, `reporting-status` | other available breakdowns, not used here |
+
+**Measures:** `tonnage` (used throughout) or `value` (landed value).
+
+### Two ways of querying
+
+1. **Dimension/JSON aggregation** (`get_dimension_series()`) -- one
+   dimension at a time, small and always reliable. Used for the
+   FAO-Area-37 country totals.
+2. **Raw row-level CSV extract** (`get_raw_extract()`) -- the same URL
+   pattern with `format=csv`, returning a ZIP with every dimension as a
+   column on one row (sector, gear, taxon, country, area, year, tonnes,
+   landed value...). This builds the full cross-tab, but only reliably at
+   EEZ scale -- the whole of FAO Area 37 (~20 countries × all years × all
+   taxa) is too large and the endpoint fails, which is why extraction is
+   done per-EEZ and concatenated rather than as one big query.
+
+## FAO (via the `fishstat` R package)
+
+`fishstat` (CRAN, mirrors github.com/sofia-taf/fishstat) ships FAO's
+official Capture Production statistics as ready-to-use R data frames.
+
+| table | key columns | purpose |
+|---|---|---|
+| `capture` | `species, year, area, country, value, measure, status` | the catch records |
+| `country` | `country, country_name, iso3, ...` | country code lookup |
+| `area` | `area, area_name, ...` | FAO area code lookup |
+| `measure` | `measure, measure_name, unit, ...` | tonnes vs. number of individuals |
+| `species` | `species, species_name, scientific, isscaap, major, ...` | species code lookup |
+
+FAO's own classification only goes down to **FAO Major Fishing Area**
+(Area 37 = "Mediterranean and Black Sea") -- there is no official FAO
+subdivision into western/central/eastern Mediterranean.
+
+## FishMIP / ISIMIP3a
+
+FishMIP (the Fisheries and Marine Ecosystem Model Intercomparison
+Project) contributes two things this report cares about, downloaded as
+pre-clipped regional parquet extracts for the "Western Mediterranean
+Sea" model region from the FishMIP Input Explorer
+(fishmip.global-ecosystem-model.cloud.edu.au):
+
+| file | what it is | why it matters here |
+|---|---|---|
+| `effort_..._western-mediterranean-sea.parquet` | nominal fishing **effort** (`nom_active`, kW x days at sea), by country, year, sector, gear, and functional group | a variable **neither SAU nor FAO expose at all** -- the only source of effort in this report |
+| `calibration_catch_..._western-mediterranean-sea.parquet` | FishMIP's own **catch** reconstruction (reported / IUU / discards), by country, year, sector, and functional group | **not independent of SAU** -- FishMIP builds this catch series *from* Sea Around Us data, repackaged at coarser functional-group resolution for model calibration. Useful as a check on FishMIP's own internal consistency (how much of its catch is IUU/discards vs. reported), not as a third independent opinion on catch level. |
+
+Both files are already clipped to one FishMIP regional polygon (`region`
+is the constant `"Western Mediterranean Sea"` for every row -- not split
+further by GSA), and both key countries by the same ISO 3166-1 numeric
+`saup` code (Algeria=12, France=250, Italy=380, Morocco=504, Spain=724,
+Tunisia=788). `sector` is spelled differently between the two files
+("Artisanal"/"Industrial" in effort, lower-case in catch) --
+`westmed_fisheries_analysis_source_fishmip.R` normalizes both to Title
+Case so they line up, and `total_catch = reported + iuu + discards`,
+verified exactly against the raw file.
+
+FishMIP is optional in this report: if the `arrow` package isn't
+installed, or the two parquet files aren't sitting next to this .Rmd,
+Part C below prints a message and is skipped, and Part D's master
+comparison still runs on SAU + FAO alone.
+
+# Why the raw extract is per-EEZ, and the Spain / Gulf of Cadiz problem
+
+SAU's EEZ list doesn't split Spain's Mediterranean coast from its Gulf of
+Cadiz (Atlantic) coast -- both sit inside EEZ `962`, and there's no
+column in the raw extract that separates them (confirmed by inspecting
+`area_name`/`area_type`, which are constant per EEZ). So Spain's numbers
+in the EEZ-based cross-tab run slightly high.
+
+FAO Major Area 37 excludes the Gulf of Cadiz by construction (that's FAO
+Area 27), so querying SAU's own `fao` region type for Area 37's `country`
+dimension gives a clean, Gulf-of-Cadiz-free country-year total -- at the
+cost of no gear/taxon breakdown (that raw extract is too large to
+retrieve, as noted above). Part 0 writes both totals side by side:
+`ByCountryYear_EEZbased` (full detail, minor Spain-only scope leak) and
+`ByCountryYear_FAOarea37` (clean, coarse).
+
+**Italy caveat, the other direction:** Area 37 covers Italy's *entire*
+Mediterranean + Black Sea coast, including the Adriatic and Ionian -- not
+just the western basin. Algeria, Tunisia, Morocco, France, and Spain have
+no Mediterranean coast outside the western basin, so Area 37 happens to
+equal "western Mediterranean" for them. For Italy it doesn't -- its
+Area-37 (and FAO comparison) figures legitimately run higher than a true
+western-Med-only number would.
+
+# Known limitations
+
+- SAU's public reconstruction currently runs 1950-2019; FAO's `fishstat`
+  runs through 2024. All comparisons here are capped at 2019.
+- SAU is a *reconstruction*; FAO is *officially reported* landings -- a
+  gap between them is not automatically an error in either one.
+- Species matching between SAU (`scientific_name`) and FAO
+  (`fishstat::species$scientific`) is done by case-insensitive,
+  whitespace-trimmed string match, since the two databases share no
+  common species code. Unmatched species are reported explicitly below,
+  never silently dropped.
+- Cite both sources: Sea Around Us
+  ([seaaroundus.org/citation-policy](https://www.seaaroundus.org/citation-policy/))
+  and FAO FishStat via
+  [github.com/sofia-taf/fishstat](https://github.com/sofia-taf/fishstat).
+
+---
+
+# Part 0: Data extraction (cached)
+
+```{r part0-extract}
+need_extract <- FORCE_REFRESH || !file.exists(RAW_CSV) || !file.exists(SUMMARY_XLSX)
+
+if (!need_extract) {
+
+  message("Using cached ", RAW_CSV, " and ", SUMMARY_XLSX,
+          " -- delete them (or set FORCE_REFRESH <- TRUE) to re-download.")
+  extraction_ok <- TRUE
+
+} else {
+
+  extraction_ok <- tryCatch({
+
+    message("Fetching raw per-EEZ extracts from SAU (this can take a minute)...")
+    raw_frames <- list()
+    for (region_id in names(WEST_MED_EEZS)) {
+      meta <- WEST_MED_EEZS[[region_id]]
+      message(sprintf("  EEZ %s (%s)", region_id, meta$area))
+      df <- get_raw_extract("eez", region_id)
+      if (nrow(df) > 0) { df$country <- meta$country; df$area <- meta$area; raw_frames[[length(raw_frames) + 1]] <- df }
+    }
+    raw_combined <- if (length(raw_frames) > 0) bind_rows(raw_frames) else tibble()
+    if (nrow(raw_combined) == 0) stop("All per-EEZ raw extracts failed -- check internet access to api.seaaroundus.org and retry.")
+
+    readr_or_base_write_csv(raw_combined, RAW_CSV)
+    message(sprintf("Saved %s (%d rows).", RAW_CSV, nrow(raw_combined)))
+
+    if ("year" %in% names(raw_combined)) raw_combined <- raw_combined %>% filter(year >= YEAR_MIN, year <= YEAR_MAX)
+
+    candidates <- list(sector = c("fishing_sector", "sector"), gear = c("gear_type", "gear"),
+                       taxon = c("common_name", "taxon_name", "scientific_name"), tonnes = c("tonnes", "catch_sum", "value"))
+    resolved <- list()
+    for (field in names(candidates)) for (opt in candidates[[field]]) if (opt %in% names(raw_combined)) { resolved[[field]] <- opt; break }
+
+    cross_tab <- if (length(resolved) == 4) {
+      raw_combined %>%
+        rename(.sector = !!resolved$sector, .gear = !!resolved$gear, .taxon = !!resolved$taxon, .tonnes = !!resolved$tonnes) %>%
+        group_by(country, area, year, sector = .sector, gear = .gear, taxon = .taxon) %>%
+        summarise(tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop")
+    } else tibble()
+
+    by_gear <- if (!is.null(resolved$gear)) raw_combined %>% rename(.gear = !!resolved$gear, .tonnes = !!resolved$tonnes) %>%
+      group_by(country, year, gear = .gear) %>% summarise(tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop") else tibble()
+    by_taxon <- if (!is.null(resolved$taxon)) raw_combined %>% rename(.taxon = !!resolved$taxon, .tonnes = !!resolved$tonnes) %>%
+      group_by(country, year, taxon = .taxon) %>% summarise(tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop") else tibble()
+    by_sector <- if (!is.null(resolved$sector)) raw_combined %>% rename(.sector = !!resolved$sector, .tonnes = !!resolved$tonnes) %>%
+      group_by(country, year, sector = .sector) %>% summarise(tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop") else tibble()
+    by_country_year_eez <- raw_combined %>% rename(.tonnes = !!resolved$tonnes) %>%
+      group_by(country, year) %>% summarise(tonnage = sum(.tonnes, na.rm = TRUE), .groups = "drop")
+
+    message("Looking up SAU's FAO area list...")
+    fao_area_id <- find_fao_area()
+    by_country_year_fao <- tibble()
+    if (!is.na(fao_area_id)) {
+      message("Fetching the 'country' dimension for FAO Area 37 (Mediterranean and Black Sea)...")
+      country_dim <- get_dimension_series("fao", fao_area_id, "country")
+      if (nrow(country_dim) > 0) by_country_year_fao <- country_dim %>% filter(country %in% TARGET_COUNTRIES)
+    }
+
+    wb <- openxlsx::createWorkbook()
+    add_sheet <- function(name, df) if (!is.null(df) && nrow(df) > 0) { openxlsx::addWorksheet(wb, name); openxlsx::writeData(wb, name, df) }
+    add_sheet("ByCountryYear_EEZbased", by_country_year_eez)
+    add_sheet("ByCountryYear_FAOarea37", by_country_year_fao)
+    add_sheet("ByCountrySectorYear", by_sector)
+    add_sheet("ByCountryGearYear", by_gear)
+    add_sheet("ByCountryTaxonYear", by_taxon)
+    add_sheet("FullCrossTab", cross_tab)
+    openxlsx::saveWorkbook(wb, SUMMARY_XLSX, overwrite = TRUE)
+    message(sprintf("Wrote %s.", SUMMARY_XLSX))
+
+    TRUE
+  }, error = function(e) {
+    message("\n! Extraction failed: ", conditionMessage(e))
+    message("  The rest of this document will show what it can from any existing cached files.")
+    FALSE
+  })
+}
+
+have_raw     <- file.exists(RAW_CSV)
+have_summary <- file.exists(SUMMARY_XLSX)
+```
+
+---
+
+# Part A: Top 10 species and gear × species × region {.tabset}
+
+```{r part-a-prep}
+# Loading and column-resolution now lives in westmed_fisheries_analysis_source_sau.R
+# (sau_load_raw()), shared with the standalone script -- this chunk just
+# calls it and reads off which optional columns were found.
+raw <- sau_load_raw(RAW_CSV, YEAR_MIN, YEAR_MAX)
+have_sector_col <- sau_has_sector(raw)
+have_report_col <- sau_has_report(raw)
+cat(sprintf("Loaded %d rows, %d-%d.\n", nrow(raw), YEAR_MIN, YEAR_MAX))
+```
+
+## Top 10 species
+
+```{r part-a-top10}
+top10 <- sau_top_species(raw, N_TOP_SPECIES)
+
+kable(top10, digits = 0, caption = paste0("Top ", N_TOP_SPECIES,
+      " species by total tonnes, all 6 countries, ", YEAR_MIN, "-", YEAR_MAX))
+```
+
+```{r part-a-top10-plot, fig.width=8, fig.height=5}
+barplot(rev(top10$total_tonnes), names.arg = rev(top10$common_name),
+        horiz = TRUE, las = 1, col = "steelblue",
+        xlab = "Total tonnes (1994-2019)", cex.names = 0.8,
+        main = "Top 10 species by total catch")
+```
+
+## Gear × species × country (summed across years)
+
+```{r part-a-gear-species}
+# sau_gear_species_country() (in the SAU module) builds the raw-top10 subset,
+# the year-level and all-years-summed tables, AND the plot-ready long table
+# (top gears kept individually, rest folded into "Other gear") in one call --
+# shared with the standalone script's Part A.
+gsc <- sau_gear_species_country(raw, top10, N_TOP_GEARS)
+raw_top10 <- gsc$raw_top10
+gear_species_country_year <- gsc$gear_species_country_year
+gear_species_country_allyears <- gsc$gear_species_country_allyears
+plot_df <- gsc$plot_df
+
+kable(head(gear_species_country_allyears, 40), digits = 0,
+      caption = "Gear x top-10-species x country, tonnes summed 1994-2019 (first 40 rows -- full table in the .xlsx export below)")
+```
+
+## Gear × species, compared across regions (plots)
+
+Two views of the same table: a heatmap (which gear catches which of the
+top species, one panel per country) and a set of within-country bar
+charts (gear composition for each top species, one panel per country) so
+you can see how the same 10 species are fished differently from country
+to country.
+
+```{r part-a-gear-species-heatmap, fig.width=10, fig.height=8}
+have_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+
+# plot_df (top gears kept individually, the rest folded into "Other gear")
+# already came out of sau_gear_species_country() in the chunk above.
+if (have_ggplot2) {
+  library(ggplot2)
+  ggplot(plot_df, aes(x = gear_grp, y = reorder(species_label, -rank), fill = tonnes)) +
+    geom_tile() +
+    facet_wrap(~country) +
+    scale_fill_gradient(name = "Tonnes", trans = "sqrt", low = "#cde2fb", high = "#0d366b") +
+    labs(title = "Gear x top-10-species tonnage, by country (region)",
+         x = "Gear", y = NULL) +
+    theme_westmed(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(face = "bold"))
+} else {
+  message("Package 'ggplot2' not installed -- showing a simpler base-R heatmap instead ",
+          "(install.packages('ggplot2') for the faceted-by-country version).")
+  agg <- plot_df %>% group_by(gear_grp, species_label) %>%
+    summarise(tonnes = sum(tonnes, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = gear_grp, values_from = tonnes, values_fill = 0)
+  mat <- as.matrix(agg[,-1]); rownames(mat) <- agg$species_label
+  par(bg = "white")
+  image(x = seq_len(ncol(mat)), y = seq_len(nrow(mat)), z = t(sqrt(mat)),
+        axes = FALSE, col = grDevices::colorRampPalette(c("#cde2fb", "#0d366b"))(20),
+        xlab = "", ylab = "", main = "Gear x top-10-species tonnage (all countries combined)")
+  axis(1, at = seq_len(ncol(mat)), labels = colnames(mat), las = 2, cex.axis = 0.7)
+  axis(2, at = seq_len(nrow(mat)), labels = rownames(mat), las = 1, cex.axis = 0.7)
+}
+```
+
+```{r part-a-gear-species-bars, fig.width=10, fig.height=8}
+if (have_ggplot2) {
+  ggplot(plot_df, aes(x = reorder(species_label, rank), y = tonnes, fill = gear_grp)) +
+    geom_col(position = "fill") +
+    coord_flip() +
+    facet_wrap(~country) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    scale_fill_manual(name = "Gear", values = westmed_colors(dplyr::n_distinct(plot_df$gear_grp))) +
+    labs(title = "Gear composition of each top-10 species, by country (region)",
+         x = NULL, y = "Share of that species' catch") +
+    theme_westmed(base_size = 10) +
+    theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+} else {
+  countries_here <- sort(unique(plot_df$country))
+  ncol_grid <- ceiling(sqrt(length(countries_here))); nrow_grid <- ceiling(length(countries_here) / ncol_grid)
+  par(mfrow = c(nrow_grid, ncol_grid), mar = c(4, 8, 3, 1), bg = "white")
+  gear_levels <- sort(unique(plot_df$gear_grp))
+  cols <- westmed_colors(length(gear_levels))
+  for (cty in countries_here) {
+    d <- plot_df %>% filter(country == cty) %>%
+      tidyr::pivot_wider(id_cols = species_label, names_from = gear_grp, values_from = tonnes,
+                          values_fill = 0) %>% arrange(species_label)
+    mat <- t(as.matrix(d[,-1])); colnames(mat) <- d$species_label
+    mat <- prop.table(mat, margin = 2)
+    barplot(mat, horiz = TRUE, las = 1, col = cols[match(rownames(mat), gear_levels)],
+            main = cty, cex.names = 0.7, xlab = "Share of species' catch")
+  }
+  plot.new()
+  legend("center", legend = gear_levels, fill = cols, bty = "n", cex = 0.8, title = "Gear")
+}
+```
+
+## Catch over time by sector and by gear, by region
+
+These use the FULL raw extract (all species, not just the top 10) so
+they show the whole fishery's composition, not just the headline
+species. Both are time series, faceted by country (region).
+
+```{r part-a-sector-ts, fig.width=10, fig.height=8, eval=have_sector_col}
+sector_ts <- sau_sector_timeseries(raw)
+
+if (have_ggplot2) {
+  ggplot(sector_ts, aes(x = year, y = tonnes, color = sector)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country, scales = "free_y") +
+    scale_color_manual(name = "Sector", values = westmed_colors(dplyr::n_distinct(sector_ts$sector))) +
+    labs(title = "SAU catch by sector over time, by country (region)",
+         x = "Year", y = "Tonnes") +
+    theme_westmed(base_size = 10) +
+    theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+} else {
+  countries_here_s <- sort(unique(sector_ts$country))
+  ncol_grid_s <- ceiling(sqrt(length(countries_here_s))); nrow_grid_s <- ceiling(length(countries_here_s) / ncol_grid_s)
+  sector_levels <- sort(unique(sector_ts$sector))
+  cols_s <- westmed_colors(length(sector_levels))
+  par(mfrow = c(nrow_grid_s, ncol_grid_s), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_s) {
+    d <- sector_ts %>% filter(country == cty)
+    plot(range(d$year), range(d$tonnes, na.rm = TRUE), type = "n", xlab = "Year", ylab = "Tonnes", main = cty)
+    for (sec in sector_levels) {
+      dd <- d %>% filter(sector == sec) %>% arrange(year)
+      lines(dd$year, dd$tonnes, col = cols_s[match(sec, sector_levels)], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = sector_levels, col = cols_s, lwd = 2, bty = "n", cex = 0.8, title = "Sector")
+  mtext("SAU catch by sector over time, by country (region)", outer = TRUE, line = -1.2, cex = 1)
+}
+```
+
+```{r part-a-gear-ts, fig.width=10, fig.height=8}
+gear_ts <- sau_gear_timeseries(raw, N_TOP_GEARS)
+
+if (have_ggplot2) {
+  ggplot(gear_ts, aes(x = year, y = tonnes, color = gear_grp)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country, scales = "free_y") +
+    scale_color_manual(name = "Gear", values = westmed_colors(dplyr::n_distinct(gear_ts$gear_grp))) +
+    labs(title = "SAU catch by gear over time, by country (region)",
+         x = "Year", y = "Tonnes") +
+    theme_westmed(base_size = 10) +
+    theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+} else {
+  countries_here_g <- sort(unique(gear_ts$country))
+  ncol_grid_g <- ceiling(sqrt(length(countries_here_g))); nrow_grid_g <- ceiling(length(countries_here_g) / ncol_grid_g)
+  gear_levels_g <- sort(unique(gear_ts$gear_grp))
+  cols_g <- westmed_colors(length(gear_levels_g))
+  par(mfrow = c(nrow_grid_g, ncol_grid_g), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_g) {
+    d <- gear_ts %>% filter(country == cty)
+    plot(range(d$year), range(d$tonnes, na.rm = TRUE), type = "n", xlab = "Year", ylab = "Tonnes", main = cty)
+    for (g in gear_levels_g) {
+      dd <- d %>% filter(gear_grp == g) %>% arrange(year)
+      lines(dd$year, dd$tonnes, col = cols_g[match(g, gear_levels_g)], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = gear_levels_g, col = cols_g, lwd = 2, bty = "n", cex = 0.8, title = "Gear")
+  mtext("SAU catch by gear over time, by country (region)", outer = TRUE, line = -1.2, cex = 1)
+}
+```
+
+## Full sector and gear summary, by country (all sectors, all gears)
+
+Unlike the time-series plots above (which lump rare gears into "Other
+gear" for readability), these tables cover **every** sector and **every**
+gear that appears in the data -- nothing truncated to a top-N list.
+
+```{r part-a-sector-summary, eval=have_sector_col}
+sector_summary <- sau_sector_summary_full(raw)
+
+kable(sector_summary, digits = 1,
+      caption = paste0("Every sector's tonnage and % share of each country's total catch, ", YEAR_MIN, "-", YEAR_MAX))
+```
+
+```{r part-a-sector-summary-plot, eval=have_sector_col, fig.width=9, fig.height=5}
+if (have_ggplot2) {
+  ggplot(sector_summary, aes(x = country, y = pct_of_country_catch, fill = sector)) +
+    geom_col(position = "stack") +
+    scale_fill_manual(name = "Sector", values = westmed_colors(dplyr::n_distinct(sector_summary$sector))) +
+    labs(title = "Sector share of total catch, by country (region)",
+         x = NULL, y = "% of country's total catch") +
+    theme_westmed(base_size = 10) +
+    theme(legend.position = "bottom")
+} else {
+  wide <- sector_summary %>% tidyr::pivot_wider(id_cols = country, names_from = sector,
+                                                 values_from = pct_of_country_catch, values_fill = 0)
+  mat <- t(as.matrix(wide[,-1])); colnames(mat) <- wide$country
+  barplot(mat, col = westmed_colors(nrow(mat)), legend.text = rownames(mat),
+          args.legend = list(x = "topright", cex = 0.7, bty = "n"),
+          ylab = "% of country's total catch", main = "Sector share of total catch, by country")
+}
+```
+
+```{r part-a-gear-summary-full}
+gear_summary_full <- sau_gear_summary_full(raw)
+
+kable(head(gear_summary_full, 40), digits = 1,
+      caption = paste0("Every gear's tonnage and % share of each country's total catch, ", YEAR_MIN, "-", YEAR_MAX,
+                        " (first 40 rows -- full table in the .xlsx export below)"))
+```
+
+## Each top species' share of its country's total catch
+
+```{r part-a-share}
+species_country_share <- sau_species_share(raw, top10) %>%
+  rename(species_tonnes = tonnes) %>%
+  arrange(rank, desc(pct_of_country_catch))
+
+kable(species_country_share, digits = 1,
+      caption = "Top-10 species' share (%) of each country's total catch")
+```
+
+## Export to Excel
+
+```{r part-a-export}
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  xlsx_path <- "sau_gear_species_region.xlsx"
+  wb <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb, "Top10Species"); openxlsx::writeData(wb, "Top10Species", top10)
+  openxlsx::addWorksheet(wb, "GearBySpeciesByCountry"); openxlsx::writeData(wb, "GearBySpeciesByCountry", gear_species_country_year)
+  openxlsx::addWorksheet(wb, "GearBySpeciesByCountry_AllYears"); openxlsx::writeData(wb, "GearBySpeciesByCountry_AllYears", gear_species_country_allyears)
+  openxlsx::addWorksheet(wb, "SpeciesByCountry_Share"); openxlsx::writeData(wb, "SpeciesByCountry_Share", species_country_share)
+  if (have_sector_col) { openxlsx::addWorksheet(wb, "SectorByCountry_Full"); openxlsx::writeData(wb, "SectorByCountry_Full", sector_summary) }
+  openxlsx::addWorksheet(wb, "GearByCountry_Full"); openxlsx::writeData(wb, "GearByCountry_Full", gear_summary_full)
+  openxlsx::saveWorkbook(wb, xlsx_path, overwrite = TRUE)
+  cat("Wrote", xlsx_path, "\n")
+} else {
+  cat("Package 'openxlsx' not installed -- skipping the .xlsx export (tables above are still in this report).\n")
+}
+```
+
+---
+
+# Part B: SAU vs. FAO comparison, by region and by species (best-effort) {.tabset}
+
+Two comparisons, both best-effort (they're skipped gracefully if
+`fishstat` isn't installed, or Part 0's `ByCountryYear_FAOarea37` sheet
+came back empty):
+
+1. **By region (country)** -- standardized, so trend shape is comparable
+   across countries of very different catch size.
+2. **SAU total vs. SAU reported-only vs. FAO, by region** -- since FAO
+   only captures reported landings while SAU's headline number also adds
+   back unreported/IUU catch, this checks whether SAU's *reported*
+   component alone tracks FAO more closely than SAU's total does.
+3. **By species** -- the same idea pushed down to all matched top-10
+   species (not a subset), using `fishstat::capture` filtered to FAO
+   Area 37. FAO does not report catch by gear at all, so the
+   species-level comparison stops at species × country × year -- it
+   cannot be extended to gear the way Part A's SAU-only analysis can.
+
+```{r part-b-check}
+# fao_available() / fao_country_year() / fao_match_species() etc. come from
+# westmed_fisheries_analysis_source_fao.R -- the FAO side of every
+# comparison below reads through that module now. The country-level
+# comparison also needs Part 0's SUMMARY_XLSX (for the Area-37-clean SAU
+# aggregation -- see the note in the next chunk); the species-level
+# comparison further down does not.
+have_fishstat <- fao_available()
+have_openxlsx <- requireNamespace("openxlsx", quietly = TRUE)
+have_summary_xlsx <- have_openxlsx && have_summary
+run_part_b <- have_fishstat
+run_part_b_region <- run_part_b && have_summary_xlsx
+if (!have_fishstat) {
+  message("Package 'fishstat' isn't installed -- run install.packages('fishstat') ",
+          "and re-knit this document for the FAO comparisons below.")
+}
+if (have_fishstat && !have_summary_xlsx) {
+  message("Can't find a usable ", SUMMARY_XLSX, " -- the country/region-level standardized ",
+          "comparison is skipped, but the species-level comparison further down does not need it.")
+}
+```
+
+## Country-level (region) comparison, standardized
+
+This is the comparison "by region" -- SAU vs FAO totals for each of the 6
+countries, both bounded to FAO Major Area 37 so the two sides are
+apples-to-apples (see "Why the raw extract is per-EEZ..." above). Two
+views:
+
+- **Raw tonnes** -- shows actual magnitude and where SAU and FAO
+  diverge the most in absolute terms.
+- **Standardized (indexed to 100 in the first shared year)** -- rescales
+  both series so trends/shapes are comparable across countries whose
+  catch sizes differ by an order of magnitude (e.g. Algeria vs. Italy);
+  useful for asking "do SAU and FAO agree on the *trend*, even if not on
+  the *level*?".
+
+```{r part-b-region-prep, eval=run_part_b_region}
+# fao_country_year() (FAO module) provides the FAO side. The SAU side here
+# deliberately uses Part 0's ByCountryYear_FAOarea37 sheet -- SAU's OWN
+# "fao" region-type query bounded to Area 37, which is Gulf-of-Cadiz-free
+# for Spain (see "Why the raw extract is per-EEZ..." above) -- rather than
+# sau_total_by_country_year(raw), which is EEZ-based and carries that
+# scope leak. This is the one place in the document where the two SAU
+# aggregations genuinely differ and the choice matters.
+fao_country <- fao_country_year(TARGET_ISO3, YEAR_MIN, YEAR_MAX) %>%
+  rename(fao_tonnes = tonnes) %>% dplyr::select(-source)
+sau_country_fao <- openxlsx::read.xlsx(SUMMARY_XLSX, sheet = "ByCountryYear_FAOarea37") %>%
+  rename(sau_tonnes = tonnage) %>%
+  mutate(year = as.integer(year))
+
+region_comparison <- full_join(fao_country, sau_country_fao, by = c("country", "year")) %>%
+  arrange(country, year) %>%
+  group_by(country) %>%
+  mutate(
+    diff = sau_tonnes - fao_tonnes,
+    pct_diff = ifelse(!is.na(fao_tonnes) & fao_tonnes != 0, 100 * diff / fao_tonnes, NA),
+    # standardize: index each series to 100 at the first year BOTH sides have data
+    first_common_year = suppressWarnings(min(year[!is.na(fao_tonnes) & !is.na(sau_tonnes)])),
+    fao_base = fao_tonnes[year == first_common_year][1],
+    sau_base = sau_tonnes[year == first_common_year][1],
+    fao_index = 100 * fao_tonnes / fao_base,
+    sau_index = 100 * sau_tonnes / sau_base
+  ) %>%
+  ungroup()
+
+kable(region_comparison %>%
+        group_by(country) %>%
+        summarise(n_years = sum(!is.na(fao_tonnes) & !is.na(sau_tonnes)),
+                  mean_fao_tonnes = mean(fao_tonnes, na.rm = TRUE),
+                  mean_sau_tonnes = mean(sau_tonnes, na.rm = TRUE),
+                  mean_pct_diff = mean(pct_diff, na.rm = TRUE),
+                  .groups = "drop"),
+      digits = 1, caption = "SAU vs FAO by country/region, FAO Area 37, raw tonnes")
+```
+
+```{r part-b-region-plot-raw, eval=run_part_b_region, fig.width=10, fig.height=7}
+countries_here <- sort(unique(region_comparison$country))
+ncol_grid <- ceiling(sqrt(length(countries_here))); nrow_grid <- ceiling(length(countries_here) / ncol_grid)
+par(mfrow = c(nrow_grid, ncol_grid), mar = c(4, 4, 3, 1), bg = "white")
+for (cty in countries_here) {
+  d <- region_comparison %>% filter(country == cty) %>% arrange(year)
+  yrange <- suppressWarnings(range(c(d$fao_tonnes, d$sau_tonnes), na.rm = TRUE))
+  plot(d$year, d$fao_tonnes, type = "l", col = "steelblue", lwd = 2,
+       ylim = yrange, xlab = "Year", ylab = "Tonnes", main = cty)
+  lines(d$year, d$sau_tonnes, col = "firebrick", lwd = 2, lty = 2)
+  legend("topleft", legend = c("FAO (Area 37)", "SAU (Area 37)"),
+         col = c("steelblue", "firebrick"), lty = c(1, 2), lwd = 2, bty = "n", cex = 0.7)
+}
+mtext("SAU vs FAO by country (region) -- raw tonnes, FAO Major Area 37", outer = TRUE, line = -1.2, cex = 1)
+```
+
+```{r part-b-region-plot-index, eval=run_part_b_region, fig.width=10, fig.height=7}
+par(mfrow = c(nrow_grid, ncol_grid), mar = c(4, 4, 3, 1), bg = "white")
+for (cty in countries_here) {
+  d <- region_comparison %>% filter(country == cty) %>% arrange(year)
+  yrange <- suppressWarnings(range(c(d$fao_index, d$sau_index), na.rm = TRUE))
+  plot(d$year, d$fao_index, type = "l", col = "steelblue", lwd = 2,
+       ylim = yrange, xlab = "Year", ylab = sprintf("Index (100 = %d)", d$first_common_year[1]),
+       main = cty)
+  lines(d$year, d$sau_index, col = "firebrick", lwd = 2, lty = 2)
+  abline(h = 100, col = "grey70", lty = 3)
+  legend("topleft", legend = c("FAO", "SAU"), col = c("steelblue", "firebrick"),
+         lty = c(1, 2), lwd = 2, bty = "n", cex = 0.7)
+}
+mtext("SAU vs FAO by country (region) -- standardized (indexed) trend comparison", outer = TRUE, line = -1.2, cex = 1)
+```
+
+## SAU total vs. SAU reported-only vs. FAO, by region (time series)
+
+FAO's official statistics only capture *reported* landings, while SAU's
+headline number is a full reconstruction that also adds back unreported,
+discarded, and illegal (IUU) catch -- so SAU's total is expected to run
+above FAO by construction, not because either side is wrong. This plot
+adds a third line, **SAU reported-only** (the subset of the raw extract
+whose `reporting_status` is "Reported"), so you can see whether SAU's
+*reported* component tracks FAO more closely than SAU's *total* does.
+
+Note this uses the EEZ-based raw extract (carrying the small Spain/Gulf
+of Cadiz scope leak described earlier), not the FAO-Area-37 query used
+above -- reporting-status detail only exists in the raw per-EEZ extract.
+
+```{r part-b-reported-ts, eval=have_report_col && run_part_b_region, fig.width=10, fig.height=7}
+# sau_total_by_country_year() / sau_reported_by_country_year() (SAU module)
+# -- the same two series Part D combines with FAO and FishMIP further down.
+sau_reported_ts <- sau_total_by_country_year(raw) %>% rename(sau_total_tonnes = tonnes) %>% dplyr::select(-source) %>%
+  full_join(sau_reported_by_country_year(raw) %>% rename(sau_reported_tonnes = tonnes) %>% dplyr::select(-source),
+            by = c("country", "year"))
+
+reported_comparison <- sau_reported_ts %>%
+  left_join(fao_country, by = c("country", "year")) %>%
+  arrange(country, year)
+
+countries_here_r <- sort(unique(reported_comparison$country))
+ncol_grid_r <- ceiling(sqrt(length(countries_here_r))); nrow_grid_r <- ceiling(length(countries_here_r) / ncol_grid_r)
+par(mfrow = c(nrow_grid_r, ncol_grid_r), mar = c(4, 4, 3, 1), bg = "white")
+for (cty in countries_here_r) {
+  d <- reported_comparison %>% filter(country == cty) %>% arrange(year)
+  yrange <- suppressWarnings(range(c(d$sau_total_tonnes, d$sau_reported_tonnes, d$fao_tonnes), na.rm = TRUE))
+  plot(d$year, d$sau_total_tonnes, type = "l", col = "firebrick", lwd = 2,
+       ylim = yrange, xlab = "Year", ylab = "Tonnes", main = cty)
+  lines(d$year, d$sau_reported_tonnes, col = "darkorange", lwd = 2, lty = 2)
+  lines(d$year, d$fao_tonnes, col = "steelblue", lwd = 2, lty = 3)
+  legend("topleft", legend = c("SAU total (EEZ-based)", "SAU reported-only (EEZ-based)", "FAO (Area 37)"),
+         col = c("firebrick", "darkorange", "steelblue"), lty = c(1, 2, 3), lwd = 2, bty = "n", cex = 0.65)
+}
+mtext("SAU total vs SAU reported-only vs FAO, by country (region)", outer = TRUE, line = -1.2, cex = 1)
+```
+
+## Matching SAU species to FAO species codes
+
+```{r part-b-match, eval=run_part_b}
+# fao_match_species() (FAO module) -- the same species-matching logic the
+# standalone script uses.
+top10_matched <- fao_match_species(top10, "scientific_name")
+
+unmatched <- top10_matched %>% filter(is.na(species)) %>%
+  dplyr::select(rank, scientific_name, common_name, total_tonnes)
+matched <- top10_matched %>% filter(!is.na(species))
+
+kable(top10_matched %>% dplyr::select(rank, scientific_name, common_name, fao_species_name),
+      caption = "Top-10 species matched to FAO scientific names (NA = unmatched)")
+```
+
+```{r part-b-unmatched-note, eval=run_part_b, results='asis'}
+if (nrow(unmatched) > 0) {
+  cat("**", nrow(unmatched), "of the top", N_TOP_SPECIES,
+      "species could not be matched to an FAO scientific name** (shown as NA above). ",
+      "They're excluded from the comparison below but remain fully present in Part A.\n\n",
+      sep = "")
+} else {
+  cat("All", N_TOP_SPECIES, "top species matched an FAO scientific name.\n\n")
+}
+```
+
+## Species × country comparison
+
+```{r part-b-compare, eval=run_part_b}
+# fao_species_country_year() (FAO module) -- same species x country x year
+# query the standalone script runs.
+fao_species <- fao_species_country_year(matched, TARGET_ISO3, YEAR_MIN, YEAR_MAX)
+
+sau_species <- raw_top10 %>%
+  group_by(country, scientific_name = .sci, year) %>%
+  summarise(sau_tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop")
+
+comparison <- full_join(fao_species, sau_species, by = c("country", "scientific_name", "year")) %>%
+  arrange(scientific_name, country, year) %>%
+  mutate(diff = sau_tonnes - fao_tonnes,
+         pct_diff = ifelse(!is.na(fao_tonnes) & fao_tonnes != 0, 100 * diff / fao_tonnes, NA))
+
+species_summary <- comparison %>%
+  filter(!is.na(fao_tonnes), !is.na(sau_tonnes)) %>%
+  group_by(scientific_name, common_name, country) %>%
+  summarise(n_years = n(),
+            mean_fao_tonnes = mean(fao_tonnes, na.rm = TRUE),
+            mean_sau_tonnes = mean(sau_tonnes, na.rm = TRUE),
+            mean_pct_diff = mean(pct_diff, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(scientific_name, country)
+
+kable(species_summary, digits = 1,
+      caption = "SAU vs FAO by species x country (mean_pct_diff: positive = SAU higher)")
+```
+
+All matched top-10 species are plotted below (not just a sample) --
+one panel per species, summed across the 6 countries. For a per-country
+breakdown of any single species, filter `comparison` (written to the
+`Comparison` sheet of the exported workbook below) by `country`.
+
+```{r part-b-plot, eval=run_part_b, fig.width=11, fig.height=10}
+species_for_plot <- unique(comparison$scientific_name)
+plot_data <- comparison
+
+if (nrow(plot_data) > 0 && length(species_for_plot) > 0) {
+  ncol_grid_sp <- ceiling(sqrt(length(species_for_plot)))
+  nrow_grid_sp <- ceiling(length(species_for_plot) / ncol_grid_sp)
+  par(mfrow = c(nrow_grid_sp, ncol_grid_sp), mar = c(4, 4, 3, 1), bg = "white")
+  for (sp in species_for_plot) {
+    d <- plot_data %>% filter(scientific_name == sp) %>%
+      group_by(year) %>%
+      summarise(fao_tonnes = sum(fao_tonnes, na.rm = TRUE),
+                sau_tonnes = sum(sau_tonnes, na.rm = TRUE), .groups = "drop") %>%
+      arrange(year)
+    common_lbl <- unique(plot_data$common_name[plot_data$scientific_name == sp])[1]
+    yrange <- suppressWarnings(range(c(d$fao_tonnes, d$sau_tonnes), na.rm = TRUE))
+    plot(d$year, d$fao_tonnes, type = "l", col = "steelblue", lwd = 2,
+         ylim = yrange, xlab = "Year", ylab = "Tonnes",
+         main = ifelse(is.na(common_lbl), sp, common_lbl), cex.main = 0.9)
+    lines(d$year, d$sau_tonnes, col = "firebrick", lwd = 2, lty = 2)
+    legend("topleft", legend = c("FAO", "SAU"), col = c("steelblue", "firebrick"),
+           lty = c(1, 2), lwd = 2, bty = "n", cex = 0.7)
+  }
+}
+```
+
+## Export to Excel
+
+```{r part-b-export, eval=run_part_b}
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  notes <- c(
+    "FAO figures: fishstat R package, Capture Quantity table, FAO Major Fishing Area 37,",
+    "tonnage-based measures only, matched species, 1994-2019.",
+    "SAU figures: per-EEZ raw extracts (Part 0 of this document), aggregated to",
+    "country x species x year.",
+    "Species matched by scientific name (case-insensitive, trimmed) -- see Unmatched_species.",
+    "FAO does not report catch by gear -- this comparison stops at species x country x year.",
+    "No true Western-Mediterranean subdivision exists in FAO's own classification --",
+    "Area 37 is the finest available and includes Italy's Adriatic and Ionian coasts.",
+    "Data vintage: fishstat runs through 2024; SAU stops at 2019. Capped at 2019 here."
+  )
+  xlsx_path <- "sau_vs_fao_species_comparison.xlsx"
+  wb <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb, "Comparison"); openxlsx::writeData(wb, "Comparison", comparison)
+  openxlsx::addWorksheet(wb, "SpeciesSummary"); openxlsx::writeData(wb, "SpeciesSummary", species_summary)
+  openxlsx::addWorksheet(wb, "Unmatched_species"); openxlsx::writeData(wb, "Unmatched_species", unmatched)
+  openxlsx::addWorksheet(wb, "Notes"); openxlsx::writeData(wb, "Notes", data.frame(note = notes), colNames = FALSE)
+  openxlsx::saveWorkbook(wb, xlsx_path, overwrite = TRUE)
+  cat("Wrote", xlsx_path, "\n")
+} else {
+  cat("Package 'openxlsx' not installed -- skipping the .xlsx export.\n")
+}
+```
+
+---
+
+# Part C: FishMIP -- effort and catch {.tabset}
+
+This is the first point in the document where FishMIP is actually loaded
+and shown on its own terms, before Part D folds it into the multi-source
+comparison. Two things, read through
+`westmed_fisheries_analysis_source_fishmip.R` (the same module the
+standalone script uses): nominal fishing **effort** (kW x days at sea --
+independent of SAU/FAO, since neither exposes an effort variable), and
+FishMIP's own **catch** reconstruction (reported/IUU/discards, built from
+SAU data at coarser functional-group resolution -- see the "FishMIP /
+ISIMIP3a" data-source note above for why that catch series is not an
+independent third opinion the way effort is).
+
+```{r part-c-check}
+have_fishmip <- fishmip_available() && file.exists(EFFORT_PARQUET) && file.exists(CATCH_PARQUET)
+if (!have_fishmip) {
+  if (!fishmip_available()) {
+    cat("Package 'arrow' isn't installed -- install.packages('arrow') to include FishMIP in this report.\n")
+  } else {
+    cat("FishMIP parquet files not found in this folder -- download them from the FishMIP Input Explorer ",
+        "(", EFFORT_PARQUET, " and ", CATCH_PARQUET, ") to include FishMIP here. ",
+        "Everything above (Parts 0-B) and the SAU-vs-FAO half of Part D still work without it.\n", sep = "")
+  }
+}
+```
+
+## Effort: nominal kW-days by sector and by gear
+
+```{r part-c-fishmip-load, eval=have_fishmip}
+fishmip_effort_d <- fishmip_load_effort(EFFORT_PARQUET, YEAR_MIN, YEAR_MAX)
+fishmip_catch_d <- fishmip_load_catch(CATCH_PARQUET, YEAR_MIN, YEAR_MAX)
+
+effort_sector_summary_c <- fishmip_effort_sector_summary(fishmip_effort_d)
+effort_gear_summary_c <- fishmip_effort_gear_summary(fishmip_effort_d)
+fishmip_effort_gear_country_year <- fishmip_effort_gear_by_country_year(fishmip_effort_d)
+
+cat(sprintf("Loaded %d effort rows and %d catch rows, %d-%d.\n",
+            nrow(fishmip_effort_d), nrow(fishmip_catch_d), YEAR_MIN, YEAR_MAX))
+```
+
+```{r part-c-effort-sector-ts, eval=have_fishmip, fig.width=10, fig.height=8}
+effort_sector_ts <- fishmip_effort_sector_timeseries(fishmip_effort_d)
+
+if (have_ggplot2) {
+  ggplot(effort_sector_ts, aes(x = year, y = nom_active, color = sector)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country, scales = "free_y") +
+    scale_color_manual(name = "Sector", values = westmed_colors(dplyr::n_distinct(effort_sector_ts$sector))) +
+    labs(title = "FishMIP nominal fishing effort by sector over time, by country",
+         subtitle = "Effort = kW x days at sea", x = "Year", y = "Nominal effort (kW-days)") +
+    theme_westmed(base_size = 10) +
+    theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+} else {
+  countries_here_es <- sort(unique(effort_sector_ts$country))
+  ncol_grid_es <- ceiling(sqrt(length(countries_here_es))); nrow_grid_es <- ceiling(length(countries_here_es) / ncol_grid_es)
+  sectors_es <- sort(unique(effort_sector_ts$sector))
+  cols_es <- westmed_colors(length(sectors_es))
+  par(mfrow = c(nrow_grid_es, ncol_grid_es), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_es) {
+    d <- effort_sector_ts %>% filter(country == cty)
+    plot(range(d$year), range(d$nom_active, na.rm = TRUE), type = "n", xlab = "Year", ylab = "Nominal effort (kW-days)", main = cty)
+    for (sec in sectors_es) {
+      dd <- d %>% filter(sector == sec) %>% arrange(year)
+      if (nrow(dd) > 0) lines(dd$year, dd$nom_active, col = cols_es[match(sec, sectors_es)], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = sectors_es, col = cols_es, lwd = 2, bty = "n", cex = 0.8, title = "Sector")
+}
+```
+
+```{r part-c-effort-gear-ts, eval=have_fishmip, fig.width=10, fig.height=8}
+effort_gear_ts <- fishmip_effort_gear_timeseries(fishmip_effort_d, N_TOP_GEARS)
+
+if (have_ggplot2) {
+  ggplot(effort_gear_ts, aes(x = year, y = nom_active, color = gear_grp)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country, scales = "free_y") +
+    scale_color_manual(name = "Gear", values = westmed_colors(dplyr::n_distinct(effort_gear_ts$gear_grp))) +
+    labs(title = "FishMIP nominal fishing effort by gear over time, by country",
+         x = "Year", y = "Nominal effort (kW-days)") +
+    theme_westmed(base_size = 10) +
+    theme(strip.text = element_text(face = "bold"), legend.position = "bottom")
+} else {
+  countries_here_eg <- sort(unique(effort_gear_ts$country))
+  ncol_grid_eg <- ceiling(sqrt(length(countries_here_eg))); nrow_grid_eg <- ceiling(length(countries_here_eg) / ncol_grid_eg)
+  gears_eg <- sort(unique(effort_gear_ts$gear_grp))
+  cols_eg <- westmed_colors(length(gears_eg))
+  par(mfrow = c(nrow_grid_eg, ncol_grid_eg), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_eg) {
+    d <- effort_gear_ts %>% filter(country == cty)
+    plot(range(d$year), range(d$nom_active, na.rm = TRUE), type = "n", xlab = "Year", ylab = "Nominal effort (kW-days)", main = cty)
+    for (g in gears_eg) {
+      dd <- d %>% filter(gear_grp == g) %>% arrange(year)
+      if (nrow(dd) > 0) lines(dd$year, dd$nom_active, col = cols_eg[match(g, gears_eg)], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = gears_eg, col = cols_eg, lwd = 2, bty = "n", cex = 0.8, title = "Gear")
+}
+```
+
+```{r part-c-effort-tables, eval=have_fishmip}
+kable(effort_sector_summary_c, digits = 1,
+      caption = paste0("FishMIP effort by sector: total kW-days and % share of each country's total effort, ",
+                        YEAR_MIN, "-", YEAR_MAX))
+kable(head(effort_gear_summary_c, 40), digits = 1,
+      caption = paste0("FishMIP effort by gear: total kW-days and % share of each country's total effort, ",
+                        YEAR_MIN, "-", YEAR_MAX, " (first 40 rows -- full table in the .xlsx export below)"))
+```
+
+## Catch: FishMIP's reported / IUU / discards composition
+
+```{r part-c-catch-summary, eval=have_fishmip}
+fishmip_catch_summary_d <- fishmip_catch_by_country_year_sector_fgroup(fishmip_catch_d)
+catch_country_summary_c <- fishmip_catch_country_summary(fishmip_catch_summary_d)
+
+kable(catch_country_summary_c, digits = 1,
+      caption = paste0("FishMIP catch composition by country: reported, IUU, discards, total, ",
+                        YEAR_MIN, "-", YEAR_MAX,
+                        " (pct_iuu_of_total / pct_discards_of_total = share of FishMIP's own total catch)"))
+```
+
+```{r part-c-catch-ts, eval=have_fishmip, fig.width=10, fig.height=8}
+catch_ts_c <- fishmip_catch_timeseries(fishmip_catch_d)
+countries_here_c <- sort(unique(catch_ts_c$country))
+ncol_grid_c <- ceiling(sqrt(length(countries_here_c))); nrow_grid_c <- ceiling(length(countries_here_c) / ncol_grid_c)
+par(mfrow = c(nrow_grid_c, ncol_grid_c), mar = c(4, 4, 3, 1), bg = "white")
+for (cty in countries_here_c) {
+  d <- catch_ts_c %>% filter(country == cty) %>% arrange(year)
+  yrange <- suppressWarnings(range(c(d$reported, d$iuu, d$discards), na.rm = TRUE))
+  plot(d$year, d$reported, type = "l", col = WESTMED_PALETTE[1], lwd = 2, ylim = yrange,
+       xlab = "Year", ylab = "Tonnes", main = cty)
+  lines(d$year, d$iuu, col = WESTMED_PALETTE[8], lwd = 2, lty = 2)
+  lines(d$year, d$discards, col = WESTMED_PALETTE[2], lwd = 2, lty = 3)
+  legend("topleft", legend = c("Reported", "IUU", "Discards"), col = WESTMED_PALETTE[c(1, 8, 2)],
+         lty = c(1, 2, 3), lwd = 2, bty = "n", cex = 0.7)
+}
+mtext("FishMIP catch composition over time, by country", outer = TRUE, line = -1.2, cex = 1)
+```
+
+```{r part-c-fishmip-master-prep, eval=have_fishmip}
+# Ready to bind_rows() into Part D's master comparison -- one row per
+# source/approach, same shape as the SAU/FAO series.
+fishmip_reported_country_year <- fishmip_reported_by_country_year(fishmip_catch_summary_d)
+fishmip_total_country_year <- fishmip_total_by_country_year(fishmip_catch_summary_d)
+```
+
+## Export to Excel
+
+```{r part-c-export, eval=have_fishmip}
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  xlsx_path_c <- "westmed_fishmip_extraction.xlsx"
+  wb_c <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb_c, "EffortBySectorSummary"); openxlsx::writeData(wb_c, "EffortBySectorSummary", effort_sector_summary_c)
+  openxlsx::addWorksheet(wb_c, "EffortByGearSummary"); openxlsx::writeData(wb_c, "EffortByGearSummary", effort_gear_summary_c)
+  openxlsx::addWorksheet(wb_c, "CatchByCountrySummary"); openxlsx::writeData(wb_c, "CatchByCountrySummary", catch_country_summary_c)
+  openxlsx::saveWorkbook(wb_c, xlsx_path_c, overwrite = TRUE)
+  cat("Wrote", xlsx_path_c, "-- FishMIP effort and catch summaries on their own.\n")
+} else {
+  cat("Package 'openxlsx' not installed -- skipping this export (tables/plots above are still in this report).\n")
+}
+```
+
+---
+
+# Part D: all sources overlaid together (SAU total, SAU reported-only, FAO, FishMIP) {.tabset}
+
+Parts A-C above looked at each source on its own terms: SAU alone, SAU
+against FAO, and FishMIP alone. This is where they all come together on
+the same axes -- the four-way, five-approach comparison also produced by
+`westmed_fisheries_analysis.R` (the standalone script): **SAU total
+(reconstructed)**, **SAU reported-only**, **FAO (Area 37, official)**, and
+**FishMIP** (its reported and total-with-IUU-and-discards variants) -- by
+country, and by gear where the underlying sources allow it.
+
+This section reuses the exact objects Part C already loaded
+(`fishmip_effort_d`, `fishmip_catch_summary_d`,
+`fishmip_reported_country_year`, `fishmip_total_country_year`,
+`fishmip_effort_gear_country_year`) and Part B already loaded
+(`fao_country`) -- nothing is re-read from disk here. If Part C skipped
+FishMIP (missing package or parquet files), this section just shows SAU
+vs. FAO instead of all four; everything above still knits fine either way.
+
+```{r part-d-fao-check}
+have_fao_for_d <- exists("run_part_b_region") && isTRUE(run_part_b_region) && exists("fao_country") &&
+  is.data.frame(fao_country) && nrow(fao_country) > 0
+```
+
+## Bringing the sources onto one table, by country and year
+
+```{r part-d-sau-prep}
+# sau_total_by_country_year() / sau_reported_by_country_year() (SAU module)
+# -- same functions Part B's reported-only section above already used.
+sau_total_country_year <- sau_total_by_country_year(raw)
+sau_reported_country_year <- sau_reported_by_country_year(raw)
+
+fao_country_year_d <- if (have_fao_for_d) {
+  fao_country %>% dplyr::select(country, year, fao_tonnes) %>% rename(tonnes = fao_tonnes) %>%
+    mutate(source = "FAO (Area 37, official)")
+} else {
+  tibble()
+}
+```
+
+```{r part-d-combine}
+if (!exists("fishmip_reported_country_year")) fishmip_reported_country_year <- tibble()
+if (!exists("fishmip_total_country_year")) fishmip_total_country_year <- tibble()
+if (!exists("fishmip_effort_gear_country_year")) fishmip_effort_gear_country_year <- tibble()
+
+master_catch_long <- bind_rows(sau_total_country_year, sau_reported_country_year,
+                                fao_country_year_d, fishmip_reported_country_year,
+                                fishmip_total_country_year) %>%
+  arrange(country, source, year)
+
+cat(sprintf("Combined master table: %d rows across %d source/approach combinations: %s\n",
+            nrow(master_catch_long), n_distinct(master_catch_long$source),
+            paste(unique(master_catch_long$source), collapse = "; ")))
+
+catch_summary_by_country_d <- master_catch_long %>%
+  group_by(country, source) %>%
+  summarise(mean_tonnes = mean(tonnes, na.rm = TRUE), n_years = n(), .groups = "drop") %>%
+  arrange(country, desc(mean_tonnes))
+
+kable(catch_summary_by_country_d, digits = 0,
+      caption = "Mean annual tonnes by country and source/approach (all years each source covers)")
+```
+
+## Country-level trends, all sources overlaid
+
+The raw-values view compares absolute tonnes (useful for seeing which
+sources run higher or lower); the standardized view indexes each series to
+100 at its own first available year, isolating whether the sources agree on
+the *trend* even where they disagree on the *level*.
+
+```{r part-d-plot-raw, fig.width=11, fig.height=9}
+if (have_ggplot2) {
+  ggplot(master_catch_long, aes(x = year, y = tonnes, color = source, linetype = source)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country, scales = "free_y") +
+    scale_color_manual(name = "Source / approach", values = westmed_colors(dplyr::n_distinct(master_catch_long$source))) +
+    labs(title = "Catch by country: SAU (total vs reported-only), FAO, FishMIP (reported vs total)",
+         x = "Year", y = "Tonnes") +
+    theme_westmed(base_size = 10) +
+    guides(color = guide_legend(nrow = 3))
+} else {
+  countries_here_d <- sort(unique(master_catch_long$country))
+  ncol_grid_d <- ceiling(sqrt(length(countries_here_d))); nrow_grid_d <- ceiling(length(countries_here_d) / ncol_grid_d)
+  sources_here_d <- unique(master_catch_long$source)
+  src_cols_d <- setNames(westmed_colors(length(sources_here_d)), sources_here_d)
+  par(mfrow = c(nrow_grid_d, ncol_grid_d), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_d) {
+    d <- master_catch_long %>% filter(country == cty)
+    plot(range(d$year), suppressWarnings(range(d$tonnes, na.rm = TRUE)), type = "n", xlab = "Year", ylab = "Tonnes", main = cty)
+    for (src in sources_here_d) {
+      dd <- d %>% filter(source == src) %>% arrange(year)
+      if (nrow(dd) > 0) lines(dd$year, dd$tonnes, col = src_cols_d[src], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = sources_here_d, col = src_cols_d, lwd = 2, bty = "n", cex = 0.7)
+}
+```
+
+```{r part-d-plot-index, fig.width=11, fig.height=9}
+master_catch_indexed <- master_catch_long %>%
+  arrange(country, source, year) %>%
+  group_by(country, source) %>%
+  mutate(base_year = min(year[!is.na(tonnes) & tonnes != 0]),
+         base_value = tonnes[year == base_year][1],
+         index = 100 * tonnes / base_value) %>%
+  ungroup()
+
+if (have_ggplot2) {
+  ggplot(master_catch_indexed, aes(x = year, y = index, color = source, linetype = source)) +
+    geom_line(linewidth = 0.9) +
+    facet_wrap(~country) +
+    geom_hline(yintercept = 100, color = "grey70", linetype = 3) +
+    scale_color_manual(name = "Source / approach", values = westmed_colors(dplyr::n_distinct(master_catch_indexed$source))) +
+    labs(title = "Standardized catch trend by country (each series indexed to 100 at its own first year)",
+         x = "Year", y = "Index (100 = first available year)") +
+    theme_westmed(base_size = 10) +
+    guides(color = guide_legend(nrow = 3))
+} else {
+  par(mfrow = c(nrow_grid_d, ncol_grid_d), mar = c(4, 4, 3, 1), bg = "white")
+  for (cty in countries_here_d) {
+    d <- master_catch_indexed %>% filter(country == cty)
+    plot(range(d$year), suppressWarnings(range(d$index, na.rm = TRUE)), type = "n", xlab = "Year", ylab = "Index", main = cty)
+    abline(h = 100, col = "grey70", lty = 3)
+    for (src in sources_here_d) {
+      dd <- d %>% filter(source == src) %>% arrange(year)
+      if (nrow(dd) > 0) lines(dd$year, dd$index, col = src_cols_d[src], lwd = 2)
+    }
+  }
+  plot.new(); legend("center", legend = sources_here_d, col = src_cols_d, lwd = 2, bty = "n", cex = 0.7)
+}
+```
+
+## By gear: SAU catch share vs. FishMIP effort share (kept side by side, not merged)
+
+**Read this carefully before comparing the two panels below.** SAU's gear
+breakdown is **catch** (tonnes) by gear. FishMIP's gear breakdown is
+**effort** (kW x days at sea) by gear -- a different metric entirely, and
+FishMIP's catch file has no gear dimension at all. So this is two separate
+% share charts, not one: useful for comparing which gears matter
+*proportionally* in each source's own terms, never for reading a number off
+one chart and comparing it to the other.
+
+```{r part-d-gear-share, eval=have_fishmip, fig.width=9, fig.height=9}
+top_gears_d <- raw %>% group_by(.gear) %>% summarise(g = sum(.tonnes, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(g)) %>% slice_head(n = 8) %>% pull(.gear)
+gear_share_sau_d <- raw %>%
+  mutate(gear_grp = ifelse(.gear %in% top_gears_d, .gear, "Other gear")) %>%
+  group_by(country, gear_grp) %>% summarise(tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop") %>%
+  group_by(country) %>% mutate(pct = 100 * tonnes / sum(tonnes)) %>% ungroup()
+
+gear_share_fishmip_d <- tibble()
+if (nrow(fishmip_effort_gear_country_year) > 0) {
+  top_gears_fm_d <- fishmip_effort_gear_country_year %>% group_by(gear) %>%
+    summarise(g = sum(nom_active, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(g)) %>% slice_head(n = 8) %>% pull(gear)
+  gear_share_fishmip_d <- fishmip_effort_gear_country_year %>%
+    mutate(gear_grp = ifelse(gear %in% top_gears_fm_d, gear, "Other gear")) %>%
+    group_by(country, gear_grp) %>% summarise(nom_active = sum(nom_active, na.rm = TRUE), .groups = "drop") %>%
+    group_by(country) %>% mutate(pct = 100 * nom_active / sum(nom_active)) %>% ungroup()
+}
+
+if (have_ggplot2) {
+  p_sau_gear <- ggplot(gear_share_sau_d, aes(x = country, y = pct, fill = gear_grp)) +
+    geom_col(position = "stack") +
+    scale_fill_manual(name = "Gear", values = westmed_colors(dplyr::n_distinct(gear_share_sau_d$gear_grp))) +
+    labs(title = "SAU: % of catch (tonnes) by gear", x = NULL, y = "% of country's catch") +
+    theme_westmed(base_size = 10)
+  print(p_sau_gear)
+  if (nrow(gear_share_fishmip_d) > 0) {
+    p_fm_gear <- ggplot(gear_share_fishmip_d, aes(x = country, y = pct, fill = gear_grp)) +
+      geom_col(position = "stack") +
+      scale_fill_manual(name = "Gear", values = westmed_colors(dplyr::n_distinct(gear_share_fishmip_d$gear_grp))) +
+      labs(title = "FishMIP: % of effort (kW-days) by gear", x = NULL, y = "% of country's effort") +
+      theme_westmed(base_size = 10)
+    print(p_fm_gear)
+  }
+} else {
+  wide_sau_d <- gear_share_sau_d %>% tidyr::pivot_wider(id_cols = country, names_from = gear_grp, values_from = pct, values_fill = 0)
+  mat_sau_d <- t(as.matrix(wide_sau_d[,-1])); colnames(mat_sau_d) <- wide_sau_d$country
+  barplot(mat_sau_d, col = westmed_colors(nrow(mat_sau_d)), legend.text = rownames(mat_sau_d),
+          args.legend = list(x = "topright", cex = 0.6, bty = "n"),
+          ylab = "%", main = "SAU: % of catch by gear")
+  if (nrow(gear_share_fishmip_d) > 0) {
+    wide_fm_d <- gear_share_fishmip_d %>% tidyr::pivot_wider(id_cols = country, names_from = gear_grp, values_from = pct, values_fill = 0)
+    mat_fm_d <- t(as.matrix(wide_fm_d[,-1])); colnames(mat_fm_d) <- wide_fm_d$country
+    barplot(mat_fm_d, col = westmed_colors(nrow(mat_fm_d)), legend.text = rownames(mat_fm_d),
+            args.legend = list(x = "topright", cex = 0.6, bty = "n"),
+            ylab = "%", main = "FishMIP: % of effort by gear")
+  }
+}
+```
+
+```{r part-d-gear-share-note, eval=!have_fishmip, results='asis'}
+cat("_(FishMIP not available yet in this session -- only the SAU side of the gear comparison would show here. ",
+    "Install the 'arrow' package and/or download the FishMIP parquet files (", EFFORT_PARQUET, ", ", CATCH_PARQUET,
+    ") into this folder, then re-knit to see both panels.)_\n", sep = "")
+```
+
+## Export to Excel
+
+```{r part-d-export}
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  xlsx_path_d <- "master_comparison_westmed.xlsx"
+  wb_d <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb_d, "CatchByCountryYear_AllSources"); openxlsx::writeData(wb_d, "CatchByCountryYear_AllSources", master_catch_long)
+  openxlsx::addWorksheet(wb_d, "CatchSummary_ByCountry"); openxlsx::writeData(wb_d, "CatchSummary_ByCountry", catch_summary_by_country_d)
+  openxlsx::addWorksheet(wb_d, "GearShare_SAU_Catch"); openxlsx::writeData(wb_d, "GearShare_SAU_Catch", gear_share_sau_d)
+  if (exists("gear_share_fishmip_d") && nrow(gear_share_fishmip_d) > 0) {
+    openxlsx::addWorksheet(wb_d, "GearShare_FishMIP_Effort"); openxlsx::writeData(wb_d, "GearShare_FishMIP_Effort", gear_share_fishmip_d)
+  }
+  openxlsx::saveWorkbook(wb_d, xlsx_path_d, overwrite = TRUE)
+  cat("Wrote", xlsx_path_d, "-- the four-source (up to five-approach) comparison, by country and by gear.\n")
+} else {
+  cat("Package 'openxlsx' not installed -- skipping this export (tables/plots above are still in this report).\n")
+}
+```
+
+Still not included here: **STECF** Fisheries Dependent Information (landings +
+discards, GSA-level, EU countries only) and **STECF Fishing Effort**
+(officially reported days-at-sea, EU countries only), and **GFCM DCRF**
+(GSA-level, all 6 countries, access currently restricted). These need real
+sample files/access to build against, the same way the FishMIP parquet
+structure had to be confirmed directly rather than guessed.
+
+---
+
+# Part E: Executive summary across all dimensions
+
+One table per country (region), pulling together every dimension covered
+above -- total SAU catch, its top sector and top gear (with each one's
+share), its top species, the SAU-vs-FAO comparison at country level, and
+(now that Part C/D have run) FishMIP's mean total catch. Use this as the
+index into the rest of the document: each row points back to the
+detailed section for that dimension.
+
+```{r part-e-summary}
+total_by_country <- raw %>% group_by(country) %>% summarise(total_tonnes = sum(.tonnes, na.rm = TRUE), .groups = "drop")
+
+top_sector_by_country <- if (have_sector_col) {
+  sector_summary %>% group_by(country) %>% slice_max(tonnes, n = 1, with_ties = FALSE) %>%
+    transmute(country, top_sector = sector, top_sector_pct = round(pct_of_country_catch, 1))
+} else {
+  tibble(country = total_by_country$country, top_sector = NA_character_, top_sector_pct = NA_real_)
+}
+
+top_gear_by_country <- gear_summary_full %>% group_by(country) %>% slice_max(tonnes, n = 1, with_ties = FALSE) %>%
+  transmute(country, top_gear = gear, top_gear_pct = round(pct_of_country_catch, 1))
+
+top_species_by_country <- species_country_share %>% group_by(country) %>% slice_max(species_tonnes, n = 1, with_ties = FALSE) %>%
+  transmute(country, top_species = common_name, top_species_pct = round(pct_of_country_catch, 1))
+
+fao_summary_by_country <- if (exists("region_comparison") && is.data.frame(region_comparison) && nrow(region_comparison) > 0) {
+  region_comparison %>%
+    filter(!is.na(fao_tonnes), !is.na(sau_tonnes)) %>%
+    group_by(country) %>%
+    summarise(mean_fao_tonnes = round(mean(fao_tonnes, na.rm = TRUE), 0),
+              mean_sau_tonnes_area37 = round(mean(sau_tonnes, na.rm = TRUE), 0),
+              mean_pct_diff_sau_vs_fao = round(mean(pct_diff, na.rm = TRUE), 1),
+              .groups = "drop")
+} else {
+  message("SAU-vs-FAO country comparison isn't available (fishstat not installed, or the FAO-Area-37 ",
+          "sheet came back empty) -- those columns will show as NA below.")
+  tibble(country = total_by_country$country, mean_fao_tonnes = NA_real_,
+         mean_sau_tonnes_area37 = NA_real_, mean_pct_diff_sau_vs_fao = NA_real_)
+}
+
+fishmip_summary_by_country <- if (exists("have_fishmip") && isTRUE(have_fishmip)) {
+  bind_rows(fishmip_reported_country_year, fishmip_total_country_year) %>%
+    group_by(country, source) %>%
+    summarise(mean_tonnes = round(mean(tonnes, na.rm = TRUE), 0), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = source, values_from = mean_tonnes)
+} else {
+  tibble(country = total_by_country$country)
+}
+
+master_summary <- total_by_country %>%
+  left_join(top_sector_by_country, by = "country") %>%
+  left_join(top_gear_by_country, by = "country") %>%
+  left_join(top_species_by_country, by = "country") %>%
+  left_join(fao_summary_by_country, by = "country") %>%
+  left_join(fishmip_summary_by_country, by = "country") %>%
+  arrange(desc(total_tonnes))
+
+kable(master_summary, digits = 1,
+      caption = paste0("Executive summary by country (region): sector, gear, species, FAO, and FishMIP, ",
+                        YEAR_MIN, "-", YEAR_MAX,
+                        " (top_sector/top_gear/top_species % = share of that country's total SAU catch; ",
+                        "mean_pct_diff_sau_vs_fao: positive = SAU higher, both bounded to FAO Area 37; ",
+                        "FishMIP columns, where present, are mean annual tonnes for that approach)"))
+```
+
+```{r part-e-export}
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  xlsx_path_e <- "sau_full_analysis_summary.xlsx"
+  wb_e <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb_e, "ExecutiveSummary"); openxlsx::writeData(wb_e, "ExecutiveSummary", master_summary)
+  openxlsx::addWorksheet(wb_e, "Top10Species"); openxlsx::writeData(wb_e, "Top10Species", top10)
+  if (have_sector_col) { openxlsx::addWorksheet(wb_e, "SectorByCountry"); openxlsx::writeData(wb_e, "SectorByCountry", sector_summary) }
+  openxlsx::addWorksheet(wb_e, "GearByCountry"); openxlsx::writeData(wb_e, "GearByCountry", gear_summary_full)
+  openxlsx::addWorksheet(wb_e, "SpeciesByCountry"); openxlsx::writeData(wb_e, "SpeciesByCountry", species_country_share)
+  if (exists("region_comparison") && is.data.frame(region_comparison) && nrow(region_comparison) > 0) {
+    openxlsx::addWorksheet(wb_e, "CountryVsFAO"); openxlsx::writeData(wb_e, "CountryVsFAO", region_comparison)
+  }
+  if (exists("species_summary") && is.data.frame(species_summary) && nrow(species_summary) > 0) {
+    openxlsx::addWorksheet(wb_e, "SpeciesVsFAO"); openxlsx::writeData(wb_e, "SpeciesVsFAO", species_summary)
+  }
+  if (exists("master_catch_long") && is.data.frame(master_catch_long) && nrow(master_catch_long) > 0) {
+    openxlsx::addWorksheet(wb_e, "AllSourcesByCountryYear"); openxlsx::writeData(wb_e, "AllSourcesByCountryYear", master_catch_long)
+  }
+  openxlsx::saveWorkbook(wb_e, xlsx_path_e, overwrite = TRUE)
+  cat("Wrote", xlsx_path_e, "-- one workbook with every dimension (sector, gear, species, country, FAO, FishMIP) together.\n")
+} else {
+  cat("Package 'openxlsx' not installed -- skipping the combined .xlsx export (tables above are still in this report).\n")
+}
+```
+
+---
+
+# Citation
+
+Sea Around Us: [seaaroundus.org/citation-policy](https://www.seaaroundus.org/citation-policy/)
+
+FAO FishStat via the `fishstat` R package: [github.com/sofia-taf/fishstat](https://github.com/sofia-taf/fishstat)
+
+FishMIP/ISIMIP3a: Novaglio, Rousseau, Watson & Blanchard (2024), [doi.org/10.48364/ISIMIP.240282](https://doi.org/10.48364/ISIMIP.240282)
+
+FAO FishStat (via the `fishstat` R package): [github.com/sofia-taf/fishstat](https://github.com/sofia-taf/fishstat)
