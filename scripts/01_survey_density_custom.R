@@ -220,19 +220,57 @@ MEDITS_STRATA <- data.table(
 ## STEP 1b: Custom area definition - the part that's genuinely
 ## different from the GSA-based example
 ## =================================================================
-## Pick ONE of the two options below by setting CUSTOM_AREA_TYPE.
+## Pick ONE of the three options below by setting CUSTOM_AREA_TYPE.
 ##
-## Either way, the result needs to be a single-row (or single-feature)
-## sf polygon with a numeric/character ID column, matching the same
-## "area_shp" shape the shared functions expect elsewhere - just with
-## exactly one area instead of GFCM's ~30. AREA_ID_COL is set to "1"
-## for everything since there's no sub-division within this custom
-## region unless you build one yourself (e.g. by cutting the boundary
-## into your own sub-zones and giving each a distinct ID).
+## Either way, the result needs to be a single-row (or single-feature,
+## or - for "gsa" with more than one GSA - multi-feature) sf polygon
+## with a numeric/character ID column, matching the same "area_shp"
+## shape the shared functions expect elsewhere. For "bbox"/"shapefile"
+## there's normally no sub-division within the custom region unless
+## you build one yourself (e.g. by cutting the boundary into your own
+## sub-zones and giving each a distinct ID); for "gsa", each selected
+## GSA keeps its own gsa_num as its area_id, exactly like the GSA-based
+## example (01_survey_density_westmed.R), just restricted to whichever
+## GSA(s) you list in CUSTOM_GSA_IDS instead of that script's fixed
+## 1:11 Western-Med range.
 
-CUSTOM_AREA_TYPE <- "bbox"   # "bbox" or "shapefile"
+CUSTOM_AREA_TYPE <- "bbox"   # "bbox", "shapefile", or "gsa"
 
-if (CUSTOM_AREA_TYPE == "bbox") {
+if (CUSTOM_AREA_TYPE == "gsa") {
+  ## Option C - one or more GFCM GSAs, picked out of the SAME shapefile
+  ## 01_survey_density_westmed.R downloads (the "GSA-based example"),
+  ## rather than the fixed 1:11 Western-Med range it uses. Use this when
+  ## your custom region IS a GSA (or a handful of them) but not the
+  ## exact 1:11 set that script hardcodes - e.g. a single GSA, or a
+  ## different regional grouping (Adriatic, Aegean, etc.). For a
+  ## boundary that ISN'T GSA-aligned at all, use "bbox" or "shapefile"
+  ## instead.
+  CUSTOM_GSA_IDS <- c(11)   # edit to the GSA number(s) you want, e.g. c(9, 10, 11)
+
+  gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
+  gsa_zip_file <- file.path(out_dir, "GFCM_GSA.zip")
+  gsa_shp_dir  <- file.path(out_dir, "GFCM_GSA_shp")
+  if (!dir.exists(gsa_shp_dir)) {
+    if (!file.exists(gsa_zip_file)) {
+      dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
+      download.file(gsa_zip_url, destfile = gsa_zip_file, mode = "wb", method = "libcurl")
+    }
+    unzip(gsa_zip_file, exdir = gsa_shp_dir)
+  }
+  gsa_shp_path <- list.files(gsa_shp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
+  gsa_shp_all <- st_read(gsa_shp_path, quiet = TRUE)
+  gsa_shp_all$gsa_num <- as.numeric(gsa_shp_all$SMU_CODE)
+  gsa_shp_all$gsa_num[gsa_shp_all$gsa_num %in% c(111, 112)] <- 11   # W/E Sardinia fix, same as the GSA-based example
+
+  area_shp <- gsa_shp_all[gsa_shp_all$gsa_num %in% CUSTOM_GSA_IDS, ]
+  if (nrow(area_shp) == 0) {
+    stop("CUSTOM_GSA_IDS (", paste(CUSTOM_GSA_IDS, collapse = ", "), ") matched no GSA in the GFCM shapefile -",
+         " check the GSA number(s) (valid range is roughly 1-30; 111/112 both map to 11, the Sardinia fix above).")
+  }
+  area_shp <- st_make_valid(area_shp)
+  area_shp$area_id <- area_shp$gsa_num   # same "area_id" convention as the bbox/shapefile branches below,
+                                          # so downstream code doesn't need to know which branch ran
+} else if (CUSTOM_AREA_TYPE == "bbox") {
   ## Option A - a simple rectangular boundary. Replace with your own
   ## region's actual coordinates (decimal degrees).
   CUSTOM_BBOX <- c(xmin = 2, xmax = 8, ymin = 38, ymax = 42)
@@ -260,7 +298,7 @@ if (CUSTOM_AREA_TYPE == "bbox") {
   ## column; if it's a single boundary, give it one explicitly
   if (!"area_id" %in% names(area_shp)) area_shp$area_id <- seq_len(nrow(area_shp))
 } else {
-  stop("CUSTOM_AREA_TYPE must be 'bbox' or 'shapefile'.")
+  stop("CUSTOM_AREA_TYPE must be 'bbox', 'shapefile', or 'gsa'.")
 }
 
 AREA_ID_COL <- "area_id"
@@ -843,7 +881,8 @@ finalize_workbook_sheet_order(
   target_order = c(
     "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
     "Ecobase", "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim", "Fleet_Structure"
+    "Catches_Ecosim", "Fleet_Structure", "Catches_by_Fleet", "Catches_by_Fleet_AllYears",
+    "Fishing_Effort_by_Fleet", "DataSources_Catch"
   )
 )
 

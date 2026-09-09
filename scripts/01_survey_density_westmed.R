@@ -1235,7 +1235,8 @@ finalize_workbook_sheet_order(
   target_order = c(
     "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
     "Ecobase", "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim", "Fleet_Structure"
+    "Catches_Ecosim", "Fleet_Structure", "Catches_by_Fleet", "Catches_by_Fleet_AllYears",
+    "Fishing_Effort_by_Fleet", "DataSources_Catch"
   )
 )
 

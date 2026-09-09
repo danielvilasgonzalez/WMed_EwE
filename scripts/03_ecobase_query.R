@@ -129,6 +129,38 @@ xml_content <- xml2::read_xml(httr::content(resp, as = "text", encoding = "UTF-8
 message("\nTop-level XML structure (inspect this if parsing below fails):")
 xml2::xml_structure(xml_content, indent = 2)
 
+## Convert one XML node's children into a single-row data.table -
+## DEFENSIVELY, because this is the actual root cause of the
+## "x has duplicated column name [comments_objectives]" error at the
+## mediterranean_models_status <- merge(...) line further down. That
+## merge() doesn't create the duplicate itself - it just happens to be
+## the first place check_duplicate_names() gets triggered. The real
+## duplicate is created HERE: if a single <model> (or, in
+## fetch_model_inputs() below, a single <group>) node has the SAME
+## child tag appearing twice - confirmed this does happen in EcoBase's
+## own XML, e.g. a repeated <comments_objectives> - then
+## setNames(as.list(...), xml_name(fields)) produces a list with two
+## elements sharing one name, and as.data.table() on that silently
+## creates a data.table with two SAME-NAMED columns (data.table allows
+## this at creation time; it's only the moment something needs unique
+## names, like merge(), that check_duplicate_names() rejects it -
+## which is why the error surfaced three functions and one rbindlist()
+## away from where the duplicate actually originates). Collapsing
+## same-named values into ONE column here (joined with "; ", nothing
+## dropped) fixes it at the source rather than working around it later
+## at every merge()/dcast()/etc. that might touch this table.
+xml_node_to_dt_row <- function(node) {
+  fields <- xml2::xml_children(node)
+  field_names <- xml2::xml_name(fields)
+  field_vals  <- xml2::xml_text(fields)
+  if (anyDuplicated(field_names) > 0) {
+    collapsed <- tapply(field_vals, field_names, paste, collapse = "; ")
+    field_names <- names(collapsed)
+    field_vals  <- as.character(collapsed)
+  }
+  as.data.table(setNames(as.list(field_vals), field_names))
+}
+
 model_nodes <- xml2::xml_find_all(xml_content, ".//model")
 message("\nFound ", length(model_nodes), " model node(s) in the response.")
 
@@ -137,11 +169,7 @@ if (length(model_nodes) == 0) {
           " above and adjust the xml_find_all() XPath to match what's actually there.")
 }
 
-model_list <- rbindlist(lapply(model_nodes, function(node) {
-  fields <- xml2::xml_children(node)
-  vals <- setNames(as.list(xml2::xml_text(fields)), xml2::xml_name(fields))
-  as.data.table(vals)
-}), fill = TRUE)
+model_list <- rbindlist(lapply(model_nodes, xml_node_to_dt_row), fill = TRUE)
 
 message("\nParsed model list - columns available:")
 print(names(model_list))
@@ -300,11 +328,12 @@ fetch_model_inputs <- function(model_id) {
     return(list(data = NULL, status = "no_group_nodes_found"))
   }
   
-  groups_dt <- rbindlist(lapply(group_nodes, function(node) {
-    fields <- xml2::xml_children(node)
-    vals <- setNames(as.list(xml2::xml_text(fields)), xml2::xml_name(fields))
-    as.data.table(vals)
-  }), fill = TRUE)
+  ## Same duplicate-tag defense as xml_node_to_dt_row() above (see that
+  ## function's own comment) - a <group> node repeating a field tag
+  ## would hit the exact same "duplicated column name" failure the
+  ## first time anything downstream needed unique names, just later
+  ## and harder to trace back to this line specifically.
+  groups_dt <- rbindlist(lapply(group_nodes, xml_node_to_dt_row), fill = TRUE)
   groups_dt[, model_id := model_id]
   list(data = groups_dt, status = "success")
 }

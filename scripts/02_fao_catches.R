@@ -26,8 +26,25 @@
 
 ## =================================================================
 ## STEP 1: Configuration
+##
+## Skips straight past all of this (no hardcoded-user check, no
+## directory pickers) when out_dir/pcloud_dir/git_dir already exist -
+## which is exactly the case when this script is auto-sourced by
+## another script (e.g. 02b_fisheries_multisource.R's own STEP 7,
+## which sources this file to regenerate a missing fg_catch_timeseries_
+## <DATASET_VERSION>.csv rather than just telling you to run it
+## yourself) that already resolved those three paths itself. Run this
+## script directly/standalone and nothing changes - the three
+## variables won't exist yet, so this falls straight through to the
+## exact same hardcoded-user-check-then-directory-picker logic as
+## before.
 ## =================================================================
-if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
+if (exists("out_dir", inherits = FALSE) && exists("pcloud_dir", inherits = FALSE) &&
+    exists("git_dir", inherits = FALSE)) {
+  message("[02_fao_catches.R] out_dir/pcloud_dir/git_dir already set (sourced from another script) -",
+          " reusing them rather than re-prompting: out_dir='", out_dir, "', pcloud_dir='", pcloud_dir,
+          "', git_dir='", git_dir, "'.")
+} else if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
   pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
   git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
@@ -67,7 +84,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   )
   
   pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
     stop("No valid pcloud directory selected.")
   }
   
@@ -84,7 +101,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
     )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
     stop("No valid Github directory selected.")
   }
 }
@@ -148,13 +165,9 @@ FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 ## elsewhere in this script and in lib_survey_fg_density_functions.R's
 ## add_catches_to_ecopath_workbook().
 ##
-## To split catches across real fleets/gears once that data is
-## available (e.g. from GFCM Operational Units or STECF FDI - neither
-## is read by this script itself, so that data has to come from
-## somewhere else and be assembled into this shape by hand or by
-## another script), set FLEET_STRUCTURE_PATH to a CSV with columns
-## FG_num, Fleet, prop_catch - the share (0-1) of each FG's total
-## catch attributed to each fleet, e.g.:
+## To split catches across real fleets/gears, set FLEET_STRUCTURE_PATH
+## to a CSV with columns FG_num, Fleet, prop_catch - the share (0-1) of
+## each FG's total catch attributed to each fleet, e.g.:
 ##   FG_num,Fleet,prop_catch
 ##   3,Trawl,0.7
 ##   3,Small-scale,0.3
@@ -163,7 +176,102 @@ FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 ## add_catches_to_ecopath_workbook()'s own header comment for the
 ## full behavior) - so a PARTIAL fleet_structure (only the FGs you
 ## actually have a fleet split for) is fine, not an error.
-FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(git_dir, "data/fleet_structure.csv")
+##
+## TWO ways to get a real fleet_structure CSV, since this script (and
+## GFCM_Capture_Quantity.csv, the source it reads) has NO gear
+## dimension of its own to split by:
+##
+##   (1) A genuinely GFCM-sourced split - GFCM Operational Units or
+##       STECF FDI (neither read by this script itself, so that data
+##       has to come from somewhere else and be assembled into this
+##       shape by hand or by another script).
+##   (2) file.path(out_dir, "fleet_structure_from_sau.csv") - written
+##       automatically by 02b_fisheries_multisource.R (run that script
+##       first, with SAU available), country x gear proportions (e.g.
+##       "Spain - bottom trawl", "France - purse seine") derived from
+##       SAU's own real fleet-level catch shares per FG, averaged over
+##       the same YEAR_ECOPATH period Catches_Ecopath uses. This is an
+##       APPROXIMATION - it borrows SAU's gear mix and applies it to
+##       THIS script's own FAO-GFCM totals, two different catch
+##       reconstructions for the same species/FG - not a real fleet-
+##       resolved FAO-GFCM figure, since FAO-GFCM has no gear data of
+##       its own to resolve directly. Stated here rather than silently
+##       absorbed; if you want the fleet split to come from the SAME
+##       reconstruction as the catch totals, use SAU's own
+##       Catches_by_Fleet sheet (written directly by
+##       02b_fisheries_multisource.R) instead of routing through here.
+FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(out_dir, "fleet_structure_from_sau.csv")
+
+## =================================================================
+## CATCHES_DATA_SOURCE: pick which source's catch feeds Catches_
+## Ecopath/Catches_Ecosim below - WITHOUT reimplementing any of
+## 02b_fisheries_multisource.R's own SAU/FishMIP/FAO-GFCM extraction
+## logic here. This only SELECTS which of that script's already-
+## written contract files to read - same "point this script at 2b's
+## own output" pattern as 04_pbqb_calc.R's FISHERIES_DATA_SOURCE
+## selector, just for THIS script's sheets instead of PB_QB's.
+##
+##   NULL (default) - unchanged: build Catches_Ecopath/Catches_Ecosim
+##                     from THIS script's own FAO-GFCM-derived
+##                     fg_catch_timeseries, computed below from
+##                     GFCM_Capture_Quantity.csv exactly as before this
+##                     option existed.
+##   "SAU" / "SAU_no_unreported" - read 02b_fisheries_multisource.R's
+##                     fg_catch_timeseries_<SOURCE>.csv for the catch
+##                     TOTAL, and its fleet_structure_from_sau.csv for
+##                     the fleet SPLIT - both come from the SAME SAU
+##                     reconstruction, so (unlike FLEET_STRUCTURE_PATH
+##                     above) this is fully self-consistent, not an
+##                     approximation grafted onto a different source's
+##                     total. Overrides FLEET_STRUCTURE_PATH when both
+##                     are set (a message says so).
+##   "FishMIP"       - read fg_catch_timeseries_FishMIP.csv (only
+##                     exists if 02b's own FISHMIP_FG_CROSSWALK_PATH
+##                     was supplied there - errors clearly if not).
+##                     FishMIP's catch side has no gear dimension at
+##                     all (only its EFFORT file does), so there's no
+##                     fleet split to auto-apply for this one -
+##                     FLEET_STRUCTURE_PATH above still applies
+##                     normally if you want to graft one on anyway.
+##   "FAO_GFCM"      - NOT valid here - 02b's own "FAO_GFCM" source IS
+##                     this script's output, passed through unchanged.
+##                     Pointing this script at it would just mean
+##                     reading back its own file; leave this NULL
+##                     instead, which computes the identical result
+##                     directly. Errors clearly if set to this.
+##
+## Requires 02b_fisheries_multisource.R to have ALREADY been run for
+## the selected source - this script does NOT auto-run it itself (the
+## way 02b auto-runs SAU's own download, or auto-runs THIS script for
+## FAO-GFCM, via AUTO_RUN_MISSING_SOURCES there). Auto-running 02b FROM
+## here would risk recursing straight back into this script, since
+## 02b's own FAO-GFCM step auto-runs this file too. A missing input
+## file below is therefore a clear stop() telling you which script to
+## run first, never a silent fallback to NULL's FAO-GFCM behavior.
+##
+## Defaults to "SAU" (not NULL) - discards/unreported/IUU catch, and a
+## real fleet x gear x country split, are treated as always-wanted
+## here, not an occasional opt-in. Set to NULL yourself if you
+## genuinely want the FAO-GFCM-only, single-fleet, landings-only
+## figure for a specific run.
+##
+## Same "reuse if the caller already set it" pattern as DATASET_VERSION
+## above - 02b_fisheries_multisource.R's own STEP 7 sets a global
+## CATCHES_DATA_SOURCE <- NULL before auto-sourcing THIS script,
+## specifically so that auto-run (which exists to regenerate the
+## genuine FAO-GFCM passthrough file 02b's own DataSources_Catch/
+## Script 4 FISHERIES_DATA_SOURCE = "FAO_GFCM" depend on) can't pick up
+## THIS script's own "SAU" default and silently hand back SAU's total
+## relabeled as FAO-GFCM's. Run this script directly/standalone,
+## CATCHES_DATA_SOURCE won't exist yet, so it falls through to "SAU".
+## =================================================================
+if (!exists("CATCHES_DATA_SOURCE", inherits = FALSE)) {
+  CATCHES_DATA_SOURCE <- "SAU"   # NULL | "SAU" | "SAU_no_unreported" | "FishMIP"
+} else {
+  message("[02_fao_catches.R] CATCHES_DATA_SOURCE already set (sourced from another script) -",
+          " using '", if (is.null(CATCHES_DATA_SOURCE)) "NULL" else CATCHES_DATA_SOURCE,
+          "' rather than overriding it.")
+}
 
 ## Forces file= interpretation (bypasses fread's input-must-be-guessed
 ## heuristic entirely - the actual fix for the shell-command fallback,
@@ -180,7 +288,22 @@ safe_fread <- function(path, label = path) {
   fread(file = path)
 }
 
-DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
+## Same "reuse if the caller already set it" pattern as out_dir/pcloud_dir/
+## git_dir above - 02b_fisheries_multisource.R's STEP 7 sets a global
+## DATASET_VERSION to match its own FAO_GFCM_DATASET_VERSION before
+## auto-sourcing this script, specifically so an auto-run can't silently
+## write fg_catch_timeseries_<the WRONG version>.csv (e.g. this script's
+## own unconditional default overriding a caller who deliberately set
+## FAO_GFCM_DATASET_VERSION to "FAO_2020" or "FAO_2026") and then still
+## show up as "not found" to the caller for a confusing reason - run
+## directly/standalone, DATASET_VERSION won't exist yet, so this falls
+## straight through to the same "GFCM_2025" default as before.
+if (!exists("DATASET_VERSION", inherits = FALSE)) {
+  DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025" | "FAO_2026"
+} else {
+  message("[02_fao_catches.R] DATASET_VERSION already set (sourced from another script) - using '",
+          DATASET_VERSION, "' rather than overriding it.")
+}
 
 ## =================================================================
 ## Dataset registry - one entry per source, all config in one place.
@@ -806,6 +929,35 @@ message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_t
         " EwE-ready deliverable is the Catches_Ecopath/Catches_Ecosim sheets below.")
 
 ## =================================================================
+## Apply CATCHES_DATA_SOURCE (set above) - override the FAO-GFCM-
+## derived fg_catch_timeseries just computed/saved above with 02b_
+## fisheries_multisource.R's own output for the selected source, if
+## any. The FAO-GFCM computation above still ran and was still saved
+## to fg_catch_timeseries_<DATASET_VERSION>.csv regardless - only the
+## Catches_Ecopath/Catches_Ecosim SHEETS below are affected by this.
+## =================================================================
+if (!is.null(CATCHES_DATA_SOURCE)) {
+  if (CATCHES_DATA_SOURCE == "FAO_GFCM") {
+    stop("CATCHES_DATA_SOURCE = 'FAO_GFCM' is not valid - that IS this script's own output,",
+         " passed through unchanged by 02b_fisheries_multisource.R. Set CATCHES_DATA_SOURCE",
+         " <- NULL instead, which computes the identical result directly, no extra file needed.")
+  }
+  catches_source_csv_path <- file.path(out_dir, paste0("fg_catch_timeseries_", CATCHES_DATA_SOURCE, ".csv"))
+  if (!file.exists(catches_source_csv_path)) {
+    stop("CATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' but '", catches_source_csv_path,
+         "' doesn't exist yet - run 02b_fisheries_multisource.R first with its own DATA_SOURCE",
+         " <- '", CATCHES_DATA_SOURCE, "' (this script does not auto-run 02b itself - see",
+         " CATCHES_DATA_SOURCE's own comment above for why).")
+  }
+  fg_catch_timeseries <- fread(catches_source_csv_path)
+  message("\nCATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' - using 02b_fisheries_",
+          "multisource.R's own '", catches_source_csv_path, "' (", nrow(fg_catch_timeseries),
+          " rows) as the catch total for Catches_Ecopath/Catches_Ecosim below, INSTEAD OF",
+          " this script's own FAO-GFCM-derived total (that computation above is unaffected -",
+          " still saved to fg_catch_timeseries_", DATASET_VERSION, ".csv as usual).")
+}
+
+## =================================================================
 ## Add Catches_Ecopath/Catches_Ecosim to output/ecopath_ecosim_inputs.xlsx
 ##
 ## DATASET_VERSION is currently the ONE real, working catch source
@@ -867,7 +1019,39 @@ message("NOTE: Divisions 37.1.1-37.1.3 (used to filter catch data) cover GSA 1-1
 ## instead of staying single-fleet. See FLEET_STRUCTURE_PATH's own
 ## comment above for the expected CSV shape.
 fleet_structure <- NULL
-if (!is.null(FLEET_STRUCTURE_PATH)) {
+if (!is.null(CATCHES_DATA_SOURCE) && CATCHES_DATA_SOURCE %in% c("SAU", "SAU_no_unreported")) {
+  ## Self-consistent fleet split for a self-consistent total: since
+  ## CATCHES_DATA_SOURCE above already made fg_catch_timeseries SAU's
+  ## own catch total, the fleet split should come from that SAME SAU
+  ## reconstruction too - fleet_structure_from_sau.csv, written by
+  ## 02b_fisheries_multisource.R's own STEP 5 in the SAME run that
+  ## wrote fg_catch_timeseries_<SOURCE>.csv above. This takes priority
+  ## over FLEET_STRUCTURE_PATH (if also set) rather than combining with
+  ## it - two different fleet_structure sources for one Catches_Ecopath
+  ## sheet would just be confusing, and this one is the strictly better
+  ## choice whenever CATCHES_DATA_SOURCE is SAU-based (see FLEET_
+  ## STRUCTURE_PATH's own comment above on why the FAO-GFCM-total-plus-
+  ## SAU-proportions combination is only an approximation).
+  sau_fleet_structure_path <- file.path(out_dir, "fleet_structure_from_sau.csv")
+  if (!file.exists(sau_fleet_structure_path)) {
+    stop("CATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' but '", sau_fleet_structure_path,
+         "' doesn't exist yet - it's written by 02b_fisheries_multisource.R's own STEP 5",
+         " (the same run that wrote fg_catch_timeseries_", CATCHES_DATA_SOURCE, ".csv) -",
+         " re-run that script if this file specifically is missing.")
+  }
+  fleet_structure <- fread(sau_fleet_structure_path)
+  message("Fleet structure: using '", sau_fleet_structure_path, "' (", uniqueN(fleet_structure$Fleet),
+          " fleet(s) across ", uniqueN(fleet_structure$FG_num), " FG(s)) - SAU's OWN fleet split",
+          " applied to SAU's OWN catch total (via CATCHES_DATA_SOURCE above), fully self-",
+          "consistent.",
+          if (!is.null(FLEET_STRUCTURE_PATH)) {
+            paste0(" NOTE: FLEET_STRUCTURE_PATH is also set to '", FLEET_STRUCTURE_PATH,
+                   "' but is IGNORED - CATCHES_DATA_SOURCE's own SAU fleet structure takes",
+                   " priority whenever both are set.")
+          } else {
+            ""
+          })
+} else if (!is.null(FLEET_STRUCTURE_PATH)) {
   if (!file.exists(FLEET_STRUCTURE_PATH)) {
     stop("FLEET_STRUCTURE_PATH is set to '", FLEET_STRUCTURE_PATH, "' but that file doesn't",
          " exist - either fix the path, or set FLEET_STRUCTURE_PATH <- NULL to fall back to",

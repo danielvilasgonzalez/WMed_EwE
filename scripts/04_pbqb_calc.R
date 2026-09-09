@@ -117,6 +117,40 @@ plot_dir <- file.path(out_dir, "plots")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## =================================================================
+## FISHERIES_DATA_SOURCE: which of 02b_fisheries_multisource.R's four
+## sources (SAU, SAU_no_unreported, FishMIP, FAO_GFCM - see that
+## script's own header comment for what each one is/isn't) drives
+## Yield/Fmort/PB=M+F below. Every source's own catch still appears
+## in the workbook's DataSources_Catch/Catches_by_Fleet/Fishing_
+## Effort_by_Fleet sheets regardless of this setting - written by
+## 02b_fisheries_multisource.R, not this script - only THIS script's
+## own Fmort/PB downstream follow whichever source is picked here.
+##
+## "FAO_GFCM" here reads the SAME file 02_fao_catches.R itself wrote
+## (fg_catch_timeseries_<FAO_GFCM_DATASET_VERSION_HERE>.csv, default
+## "GFCM_2025" below) - 02b_fisheries_multisource.R passes that file
+## through unchanged for this source, it doesn't write its own
+## FAO_GFCM-suffixed copy.
+##
+## Set to NULL to fall back to the ORIGINAL placeholder paths this
+## script used before 02b_fisheries_multisource.R existed (a hand-
+## maintained landings CSV that isn't one of 02b's four sources) -
+## YIELD_SOURCE/FG_YIELD_SOURCE/LANDINGS_CSV_PATH/FG_CATCH_CSV_PATH
+## below can still be set directly in that case, exactly as before.
+##
+## Defaults to "SAU" (not NULL) - species-level resolution AND
+## discards/unreported/IUU catch are treated as always-wanted for the
+## Fmort/PB=M+F chain here, matching 02_fao_catches.R's own
+## CATCHES_DATA_SOURCE default (also "SAU", for the same reason).
+## Nothing here auto-sources this script the way 02b auto-sources
+## 02_fao_catches.R, so there's no recursion risk to guard against -
+## just change this directly if you want a different run's Fmort
+## driven by something else.
+## =================================================================
+FISHERIES_DATA_SOURCE <- "SAU"   # NULL | "SAU" | "SAU_no_unreported" | "FishMIP" | "FAO_GFCM"
+FAO_GFCM_DATASET_VERSION_FOR_04 <- "GFCM_2025"   # must match 02_fao_catches.R's own DATASET_VERSION
+
+## =================================================================
 ## rfishbase/duckdbfs compatibility check - catches, at the very start,
 ## the exact class of bug that cost a long debugging session: an old
 ## rfishbase (<4.0, e.g. the "3.1.9.99" transitional build) can crash
@@ -314,18 +348,37 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Load species_df")))
 ## check the FG-level section after fg_weighted for the actual applied
 ## F, and n_species_with_F / F_FG in the exported CSVs either way.
 ## =================================================================
-YIELD_SOURCE <- "none"
+## Driven by FISHERIES_DATA_SOURCE (set near out_dir/pcloud_dir/git_dir
+## above) whenever it names a source with real species-level
+## resolution (SAU/SAU_no_unreported - the only two 02b_fisheries_
+## multisource.R writes a landings_by_species_gsa_year_<SOURCE>.csv
+## for; FishMIP/FAO_GFCM have no species-level resolution there, so
+## FISHERIES_DATA_SOURCE set to either of those leaves YIELD_SOURCE at
+## "none" here - species-level Yield stays NA, only the FG-level path
+## below (FG_YIELD_SOURCE) applies for them). FISHERIES_DATA_SOURCE
+## NULL restores the original hardcoded "none"/placeholder-path
+## behavior from before 02b_fisheries_multisource.R existed.
+YIELD_SOURCE <- if (!is.null(FISHERIES_DATA_SOURCE) && FISHERIES_DATA_SOURCE %in% c("SAU", "SAU_no_unreported")) {
+  "landings_csv"
+} else {
+  "none"
+}
 
 ## PLACEHOLDER path AND placeholder column names inside
-## attach_yield_from_landings() below - the actual landings/catch data
-## source for this project (STECF/GFCM data-call catch tables, national
-## logbook data, FAO capture statistics, etc.) hasn't been identified
-## yet. Point this at the real file once you have one, and confirm the
+## attach_yield_from_landings() below, used only when FISHERIES_DATA_SOURCE
+## is NULL - the actual landings/catch data source for this project
+## (STECF/GFCM data-call catch tables, national logbook data, FAO
+## capture statistics, etc.) hasn't been identified yet in that case.
+## Point this at the real file once you have one, and confirm the
 ## required_cols list inside attach_yield_from_landings() matches its
 ## actual column names before trusting the output.
 ## Raw/reference data - lives under pcloud_dir, same convention as
 ## 01_survey_density_westmed.R's own fg_file/tm_list_file.
-LANDINGS_CSV_PATH <- file.path(pcloud_dir, "data/landings_by_species_gsa_year.csv")
+LANDINGS_CSV_PATH <- if (!is.null(FISHERIES_DATA_SOURCE) && FISHERIES_DATA_SOURCE %in% c("SAU", "SAU_no_unreported")) {
+  file.path(out_dir, paste0("landings_by_species_gsa_year_", FISHERIES_DATA_SOURCE, ".csv"))
+} else {
+  file.path(pcloud_dir, "data/landings_by_species_gsa_year.csv")
+}
 
 ## area_lookup_csv_path expects strata_area_by_area.csv - written by
 ## 01_survey_density_westmed.R's compute_strata_area_by_area() cache
@@ -461,14 +514,29 @@ if (YIELD_SOURCE == "landings_csv") {
 ##  "none"         - skip; every fish species' Fmort stays NA unless a
 ##                   species-level Yield source is added separately above
 ## =================================================================
-FG_YIELD_SOURCE <- "none"
+## Driven by FISHERIES_DATA_SOURCE (see near out_dir/pcloud_dir/git_dir
+## above) whenever it is set - all four of 02b_fisheries_multisource.R's
+## sources have FG-level resolution, so any non-NULL FISHERIES_DATA_SOURCE
+## turns this on. FISHERIES_DATA_SOURCE NULL restores the original
+## hardcoded "none" default from before 02b_fisheries_multisource.R
+## existed.
+FG_YIELD_SOURCE <- if (!is.null(FISHERIES_DATA_SOURCE)) "fg_catch_csv" else "none"
 
-## Filename must match DATASET_VERSION set in 02_fao_catches.R - default
-## here assumes its default ("GFCM_2025"); update both if that changes.
-## 02_fao_catches.R writes this into its own out_dir - the SAME
-## canonical out_dir this script uses (Step 1 above), so no separate
-## path guess is needed.
-FG_CATCH_CSV_PATH <- file.path(out_dir, "fg_catch_timeseries_GFCM_2025.csv")
+## FAO_GFCM reads 02_fao_catches.R's own output file directly (that
+## script writes fg_catch_timeseries_<DATASET_VERSION>.csv, unrelated
+## to 02b_fisheries_multisource.R, which just passes it through for
+## this source rather than writing its own copy - see this script's
+## FISHERIES_DATA_SOURCE comment above). SAU/SAU_no_unreported/FishMIP
+## instead read the fg_catch_timeseries_<SOURCE>.csv 02b_fisheries_
+## multisource.R itself writes. FISHERIES_DATA_SOURCE NULL falls back
+## to the original hardcoded default filename ("GFCM_2025") - update
+## FAO_GFCM_DATASET_VERSION_FOR_04 above (not this line) if 02_fao_
+## catches.R's own DATASET_VERSION ever changes from that default.
+FG_CATCH_CSV_PATH <- if (is.null(FISHERIES_DATA_SOURCE) || FISHERIES_DATA_SOURCE == "FAO_GFCM") {
+  file.path(out_dir, paste0("fg_catch_timeseries_", FAO_GFCM_DATASET_VERSION_FOR_04, ".csv"))
+} else {
+  file.path(out_dir, paste0("fg_catch_timeseries_", FISHERIES_DATA_SOURCE, ".csv"))
+}
 
 species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
 
@@ -2062,8 +2130,28 @@ if (file.exists(ECOBASE_CSV_PATH)) {
   ecobase_sheet <- merge(fg_name_lookup, ecobase_by_fgname, by = "FG_name", all.x = TRUE)
   setorder(ecobase_sheet, FG)
   setnames(ecobase_sheet, "FG", "FG_num")
-  upsert_workbook_sheets(list(Ecobase = ecobase_sheet), ECOPATH_WORKBOOK_PATH)
-  
+
+  ## Ecobase_by_Model - the SAME literature values, but one row per
+  ## FG x MODEL rather than ecobase_sheet's one row per FG (which only
+  ## keeps an averaged PB_ecobase/QB_ecobase plus a squished References
+  ## text string). Every FG here typically has MULTIPLE published
+  ## EcoBase models behind it - this sheet is what actually shows that
+  ## FG-and-model granularity (which specific model, which year/authors,
+  ## that model's own PB/QB for this FG), rather than only the average
+  ## ecobase_sheet reduces it to. Matched on FG_name, same caveat as
+  ## ecobase_by_fgname above (text match, not a real FG_num join -
+  ## EcoBase has no FG_num of its own).
+  ecobase_by_model <- merge(fg_name_lookup, ecobase_raw, by = "FG_name", all.x = FALSE)
+  ecobase_by_model <- ecobase_by_model[, .(FG_num = FG, FG_name, EwE_model, year, authors, PB, QB)]
+  setorder(ecobase_by_model, FG_num, EwE_model)
+  message(nrow(ecobase_by_model), " FG x model row(s) written to the Ecobase_by_Model sheet",
+          " (", uniqueN(ecobase_by_model$FG_num), " FG(s) x up to ",
+          uniqueN(ecobase_by_model$EwE_model), " distinct published model(s) - the per-model",
+          " detail behind Ecobase's own FG-level PB_ecobase/QB_ecobase averages).")
+
+  upsert_workbook_sheets(list(Ecobase = ecobase_sheet, Ecobase_by_Model = ecobase_by_model),
+                          ECOPATH_WORKBOOK_PATH)
+
   ## downstream Ecopath export (below) uses the gap-filled values so FGs
   ## with no empirical estimate aren't just left blank when a literature
   ## value was available
