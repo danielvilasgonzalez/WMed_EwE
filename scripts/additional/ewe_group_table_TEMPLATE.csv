@@ -1,0 +1,50 @@
+group_number,group_name,is_predator
+1,Whale fish eater,TRUE
+2,Whale zp eater,TRUE
+3,Whale squid eater,TRUE
+4,Whale mammal eater,TRUE
+5,Whale Minke,TRUE
+6,Seal Harp,TRUE
+7,Seal Hooded,TRUE
+8,Seal other,TRUE
+9,Seabird piscivore,TRUE
+10,Seabird planktivore,TRUE
+11,Seabird benthivore,TRUE
+12,Greenland shark,TRUE
+13,Cod> 35 cm,TRUE
+14,Cod<= 35 cm,TRUE
+15,Greenland halibut,TRUE
+16,Silver hake/ Saithe,TRUE
+17,Other piscivorous fish,TRUE
+18,Redfish,TRUE
+19,Arctic cod,TRUE
+20,Other plank-pisc fish,TRUE
+21,AmPlaice > 35,TRUE
+22,AmPLaice <= 35,TRUE
+23,Thorny skate,TRUE
+24,Haddock,TRUE
+25,Other L benthivorous fish,TRUE
+26,Yellowtail flounder,TRUE
+27,Witch flounder,TRUE
+28,Other M benthivorous fish,TRUE
+29,Other S benthivorous fish,TRUE
+30,Herring,TRUE
+31,Sandlance,TRUE
+32,Capelin,TRUE
+33,Other planktivorous fish,TRUE
+34,Squid,TRUE
+35,Shrimp,TRUE
+36,Snow crab,TRUE
+37,King crab,TRUE
+38,Predatory invertebrates,TRUE
+39,Deposit feeding invertebrates,TRUE
+40,Suspension feeding invertebrates,TRUE
+41,Macrozooplankton,TRUE
+42,Large mesozooplankton,TRUE
+43,Small mesozooplankton,TRUE
+44,Microzooplankton,TRUE
+45,Bacteria,TRUE
+46,Heterotrophic nanoflagellates,TRUE
+47,Large Phytoplankton,FALSE
+48,Small Phytoplankton,FALSE
+49,Detritus,FALSE

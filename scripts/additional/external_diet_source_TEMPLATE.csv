@@ -1,0 +1,10 @@
+predator_group,prey_group,proportion
+Hake,Anchovy,0.25
+Hake,Sardine,0.15
+Hake,Cephalopods,0.10
+Hake,Deep-water rose shrimp,0.20
+Hake,Hake,0.05
+Hake,Other fish,0.25
+Dolphins,Hake,0.30
+Dolphins,Anchovy,0.40
+Dolphins,Sardine,0.30

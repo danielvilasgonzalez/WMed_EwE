@@ -1,0 +1,24 @@
+species_name,ewe_group
+Merluccius merluccius,Hake
+Mullus barbatus,Red mullet
+Engraulis encrasicolus,Anchovy
+Sardina pilchardus,Sardine
+Sepia officinalis,Cephalopods
+Parapenaeus longirostris,Deep-water rose shrimp
+Delphinus delphis,Dolphins
+Thunnus thynnus,Large pelagic fish
+# --- Broad taxonomic categories, needed only if you use fetch_external_diet_fishbase.R ---
+# FishBase/SeaLifeBase diet records often name prey at a coarse taxonomic
+# level (their own FoodI/FoodII/FoodIII categories) rather than species, so
+# the mapping table needs entries for those category names too, not just
+# species. Add/adjust these to match your West Med model's actual groups --
+# the ones below are illustrative examples, not a definitive list.
+Crustacea,Crustaceans
+Decapoda,Crustaceans
+Mollusca,Cephalopods
+Teleostei,Other fish
+Zooplankton,Zooplankton
+Phytoplankton,Phytoplankton
+Polychaeta,Benthic invertebrates
+Echinodermata,Benthic invertebrates
+Detritus,Detritus

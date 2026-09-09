@@ -1,0 +1,25 @@
+species,fg_name,proportion
+Merluccius merluccius,Hake juv,0.4
+Merluccius merluccius,Hake adult,0.6
+Mullus barbatus,Red mullet,1
+Engraulis encrasicolus,Anchovy,1
+Sardina pilchardus,Sardine,1
+Sepia officinalis,Cephalopods,1
+Parapenaeus longirostris,Deep-water rose shrimp,1
+Delphinus delphis,Dolphins,1
+Thunnus thynnus,Large pelagic fish,1
+# --- Broad taxonomic categories, needed only if you also use fetch_external_diet_fishbase.R ---
+# FishBase/SeaLifeBase diet records often name prey at a coarse taxonomic
+# level (their own FoodI/FoodII/FoodIII categories) rather than species, so
+# this table needs rows for those category names too, not just species.
+# Add/adjust these to match your West Med model's actual groups -- the ones
+# below are illustrative examples, not a definitive list.
+Crustacea,Crustaceans,1
+Decapoda,Crustaceans,1
+Mollusca,Cephalopods,1
+Teleostei,Other fish,1
+Zooplankton,Zooplankton,1
+Phytoplankton,Phytoplankton,1
+Polychaeta,Benthic invertebrates,1
+Echinodermata,Benthic invertebrates,1
+Detritus,Detritus,1
