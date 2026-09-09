@@ -142,7 +142,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
 ## =================================================================
 
 source(paste0(git_dir, "/scripts/lib_survey_fg_density_functions.R"))
-source(paste0(git_dir, "./scripts/lib_worms_taxonomy_lookup.R"))
+source(paste0(git_dir, "/scripts/lib_worms_taxonomy_lookup.R"))
 
 ## Same pcloud_dir-based convention as 01_survey_density_westmed.R -
 ## previously this script read fg_file/tm_list_file/in_dir from a

@@ -119,7 +119,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
 
 #call functions
 source(paste0(git_dir,"/scripts/lib_survey_fg_density_functions.R"))
-source(paste0(git_dir,"./scripts/lib_worms_taxonomy_lookup.R"))
+source(paste0(git_dir,"/scripts/lib_worms_taxonomy_lookup.R"))
 
 #files in pcloud
 #fg_file should be correctly reference the species scientific name with the FG_name and FG_num
@@ -1241,3 +1241,4 @@ finalize_workbook_sheet_order(
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())
+
