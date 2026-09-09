@@ -112,7 +112,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   )
   
   pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
     stop("No valid pcloud directory selected.")
   }
   
@@ -129,7 +129,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
     )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
     stop("No valid Github directory selected.")
   }
 }
@@ -142,7 +142,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
 ## =================================================================
 
 source(paste0(git_dir, "/scripts/lib_survey_fg_density_functions.R"))
-source(paste0(git_dir, "./scripts/lib_worms_taxonomy_lookup.R"))
+source(paste0(git_dir, "/scripts/lib_worms_taxonomy_lookup.R"))
 
 ## Same pcloud_dir-based convention as 01_survey_density_westmed.R -
 ## previously this script read fg_file/tm_list_file/in_dir from a
@@ -887,3 +887,4 @@ finalize_workbook_sheet_order(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
+
