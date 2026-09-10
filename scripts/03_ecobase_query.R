@@ -73,7 +73,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   )
   
   pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
     stop("No valid pcloud directory selected.")
   }
   
@@ -90,7 +90,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
     )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
     stop("No valid Github directory selected.")
   }
 }
