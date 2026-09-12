@@ -147,13 +147,28 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 ## read the console output carefully.
 message("This script will write its outputs to:\n  out_dir  = ", out_dir, "\n  plot_dir = ", plot_dir)
 
-FILTER_AREAS  <- 1:11
+FILTER_AREAS  <- 1:11                       # GSA
 STRATA        <- TRUE                       # function attribute: strata
 YEAR_ECOPATH  <- 1994:1996                   # function attribute: year_ecopath
 TS_YEARS      <- 1995:2023                        # function attribute: ts_years (NULL -> min:max of data)
-DROP_OUTLIERS <- FALSE                        # function attribute: whether remove_sample_outliers() actually
+DROP_OUTLIERS <- TRUE                        # function attribute: whether remove_sample_outliers() actually
 NORMALIZE_TS  <- TRUE   # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
 # removes flagged observations (TRUE) or only reports them (FALSE)
+
+## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
+## for the full rationale/assumption/caveats. MEDITS_STRATA below only
+## covers 10-800m; this adds two DERIVED pseudo-strata (0-10m, 800-6000m)
+## using AquaMaps depth-envelope ratios scaled against each species' own
+## real MEDITS-measured density, folded into the SAME weight_by_strata()/
+## weight_species_by_area() calculation as the 5 real strata. Left FALSE,
+## behavior is byte-identical to before this existed. Turning it on
+## changes fg_index/fg_index_regional/species_density_regional - i.e. the
+## actual Biomass numbers written to the workbook - so review the
+## AquaMaps_Depth_Adjustment audit sheet (written when this is TRUE)
+## before trusting the adjusted figures for anything downstream. Requires
+## the `aquamapsdata` package's local database (~2GB/~10GB unpacked,
+## downloaded once, cached after that - see ensure_aquamaps_db()).
+APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE
 
 message(
   "This script will run for GSA: ", paste(FILTER_AREAS, collapse = ", "),
@@ -166,7 +181,7 @@ message(
 MEDITS_STRATA <- data.table(
   stratum_num = 1:5,
   depth_min = c(10, 50, 100, 200, 500),
-  depth_max = c(49.9999, 99.9999, 199.9999, 499.9999, 799.9999))
+  depth_max = c(49.99, 99.99, 199.99, 499.99, 799.99))
 
 ## GFCM GSA shapefile - this is the "area_shp" function attribute
 gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
@@ -652,6 +667,95 @@ per_group_sp <- compute_species_densities_by_stratum(dt, strata = STRATA)
 species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area)
 
 ## =================================================================
+## STEP 7b: AquaMaps shallow/deep depth adjustment (OPT-IN - see
+## APPLY_AQUAMAPS_DEPTH_ADJUSTMENT above and lib_aquamaps_depth_
+## extension.R's own header for the full rationale). Re-derives
+## fg_index/fg_index_regional/species_density_regional from an
+## EXTENDED strata set (the 5 real MEDITS strata + 3 AquaMaps-derived
+## pseudo-strata: 0-10m shallow, plus the deep zone split into 800-1000m
+## and 1000-2850m rather than one 800-2850m lump) using the SAME
+## weight_by_strata()/weight_species_by_area() functions as above - not
+## a separate formula.
+## =================================================================
+aquamaps_depth_adjustment_audit <- NULL
+## Default for STEP 8's strata-profile plot - overridden below to the
+## AquaMaps-extended 8-stratum definition when the adjustment is applied.
+strata_def_for_plotting <- MEDITS_STRATA
+if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
+  if (!isTRUE(STRATA)) {
+    stop("APPLY_AQUAMAPS_DEPTH_ADJUSTMENT requires STRATA <- TRUE - the pseudo-strata mechanism",
+         " extends the strata-weighted path specifically; there's no equivalent for the",
+         " unstratified simple_area_density() path.")
+  }
+  message("\n[AquaMaps] APPLY_AQUAMAPS_DEPTH_ADJUSTMENT is TRUE - extending fg_index/",
+          "fg_index_regional/species_density_regional with AquaMaps-derived 0-10m/800-6000m",
+          " pseudo-strata on top of the real MEDITS strata above...")
+  source(file.path(git_dir, "scripts/lib_aquamaps_depth_extension.R"))
+  aq <- apply_aquamaps_depth_adjustment(
+    dt = dt, per_group_fg = per_group_fg, per_group_sp = per_group_sp,
+    n_samples_by_stratum = n_samples_by_stratum,
+    medits_strata_def = MEDITS_STRATA,
+    area_ids = sort(unique(dt$AreaID[dt$AreaID %in% FILTER_AREAS])),
+    area_shp = area_shp, area_id_col = AREA_ID_COL,
+    cache_path = file.path(out_dir, "strata_area_by_area_aquamaps_extended.csv"))
+  
+  ## Kept specifically to compute net_density_multiplier below - the
+  ## REAL before/after effect, as opposed to depth_extrapolation_
+  ## multiplier (lib_aquamaps_depth_extension.R's own column), which is
+  ## only the per-species pseudo-strata add-on BEFORE area-reweighting.
+  ## These two numbers can differ, sometimes a lot: folding the two
+  ## pseudo-strata's AREA into the total also shrinks every REAL
+  ## stratum's own area-proportion (prop = area_km2 / sum(area_km2),
+  ## now summed over 7 strata instead of 5) - so a species can show a
+  ## depth_extrapolation_multiplier > 1 (its pseudo-strata density IS
+  ## higher than its reference density) while its net_density_multiplier
+  ## still comes out < 1, if the real strata's own diluted contribution
+  ## drops by more than the pseudo-strata add - i.e. a genuine "1.2" or
+  ## "0.3"-type outcome depends on both effects together, not just the
+  ## depth-envelope ratio in isolation.
+  species_density_regional_unadjusted <- copy(species_density_regional)
+  
+  fg_index <- weight_by_strata(aq$per_group_fg, aq$n_samples_by_stratum, aq$strata_area)
+  fg_index_regional <- weight_by_area(fg_index)
+  species_density_regional <- weight_species_by_area(aq$per_group_sp, aq$n_samples_by_stratum, aq$strata_area)
+  aquamaps_depth_adjustment_audit <- aq$audit
+  
+  ## fg_index's own per_stratum attribute now spans all 8 strata (the
+  ## 3 AquaMaps pseudo-strata - shallow 0-10m, deep 800-1000m, deep
+  ## 1000-2850m - plus the 5 real MEDITS ones) - the STEP 8 strata-
+  ## profile plot needs THIS extended definition, not the plain 5-row
+  ## MEDITS_STRATA, or the 3 pseudo-strata bars would merge to
+  ## "unknown depth range" instead of a real m label.
+  strata_def_for_plotting <- aq$strata_def
+  
+  ## net_density_multiplier: species_density_regional's own mean_density
+  ## (t/km^2 - same unit as every other Biomass/density figure in this
+  ## pipeline), AFTER divided by BEFORE, averaged over YEAR_ECOPATH
+  ## (this pipeline's baseline period for Biomass figures) - this is
+  ## the actual "multiplied by 1.2" or "multiplied by 0.3" number.
+  before_after <- merge(
+    species_density_regional_unadjusted[Year %in% YEAR_ECOPATH, .(ScientificName, Year, density_before = mean_density)],
+    species_density_regional[Year %in% YEAR_ECOPATH, .(ScientificName, Year, density_after = mean_density)],
+    by = c("ScientificName", "Year"), all = TRUE
+  )
+  net_multiplier_by_species <- before_after[
+    , .(density_before = mean(density_before, na.rm = TRUE), density_after = mean(density_after, na.rm = TRUE)),
+    by = ScientificName
+  ]
+  net_multiplier_by_species[, net_density_multiplier := ifelse(
+    !is.na(density_before) & density_before > 0, density_after / density_before, NA_real_)]
+  aquamaps_depth_adjustment_audit <- merge(
+    aquamaps_depth_adjustment_audit, net_multiplier_by_species, by = "ScientificName", all.x = TRUE)
+  
+  message("[AquaMaps] Done - ", aquamaps_depth_adjustment_audit[note == "adjusted", .N], " of ",
+          nrow(aquamaps_depth_adjustment_audit), " species actually got a shallow/deep adjustment",
+          " (see the 'note' column in AquaMaps_Depth_Adjustment for why the rest didn't; the",
+          " 'net_density_multiplier' column is each species' own YEAR_ECOPATH-averaged density,",
+          " AFTER divided by BEFORE this adjustment - the actual real-world 'x1.2'/'x0.3' figure,",
+          " which can differ from depth_extrapolation_multiplier - see that column's own comment).")
+}
+
+## =================================================================
 ## STEP 8: plots (MEDITS)
 ## =================================================================
 p_by_area <- plot_fg_timeseries_by_area(
@@ -662,9 +766,27 @@ p_regional <- plot_fg_timeseries_regional(fg_index_regional,
                                           title = "MEDITS trawl survey by FG, Western Med (area-weighted)", y_lab = "Area-weighted density (t/km^2)")
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = 150, bg = "white")
 
+fg_density_by_stratum <- NULL  # only built below when STRATA - see the Excel-write step further down
 if (STRATA) {
-  p_profile <- plot_strata_profile(fg_index, MEDITS_STRATA)
+  ## strata_def_for_plotting is MEDITS_STRATA (5 real strata) normally,
+  ## or the AquaMaps-extended 8-stratum definition (3 pseudo-strata +
+  ## 5 real) when APPLY_AQUAMAPS_DEPTH_ADJUSTMENT is TRUE - see STEP 7b.
+  ## fg_index's own per_stratum attribute already reflects whichever set
+  ## was actually used to build it, so this just keeps the plot's stratum
+  ## labels in sync with it instead of merging against the wrong table.
+  p_profile <- plot_strata_profile(fg_index, strata_def_for_plotting)
   ggsave(file.path(plot_dir, "survey_fg_depth_strata_profile.png"), p_profile, width = 16, height = 12, dpi = 150, bg = "white")
+  
+  ## Same "density by depth stratum" information as the plot above, but
+  ## as an Excel sheet: one row per FG, one column per stratum (region-
+  ## wide, area-weighted, YEAR_ECOPATH-averaged), plus Total_Density -
+  ## which reproduces fg_index_regional's own mean_density exactly (see
+  ## build_fg_density_by_stratum_sheet()'s own comment on why the columns
+  ## are additive). Covers whichever strata are actually in play - the
+  ## plain 5 real MEDITS strata, or all 8 once the AquaMaps pseudo-strata
+  ## are folded in - same strata_def_for_plotting as the plot above.
+  fg_density_by_stratum <- build_fg_density_by_stratum_sheet(
+    fg_index, strata_def_for_plotting, year_filter = YEAR_ECOPATH)
 }
 
 ## =================================================================
@@ -1213,6 +1335,39 @@ upsert_workbook_sheets(
 )
 
 ## =================================================================
+## STEP 12b: AquaMaps_Depth_Adjustment audit sheet - only written when
+## APPLY_AQUAMAPS_DEPTH_ADJUSTMENT was TRUE this run (see STEP 7b
+## above). Per-species DepthMin/DepthPrefMin/DepthPrefMax/DepthMax,
+## the shallow/deep probability masses and resulting multipliers, and
+## WHY a species wasn't adjusted where that applies (note column) - so
+## the adjustment behind fg_index/species_density_regional's numbers
+## is reviewable per species, not a black box.
+## =================================================================
+if (!is.null(aquamaps_depth_adjustment_audit)) {
+  upsert_workbook_sheets(
+    sheets = list(AquaMaps_Depth_Adjustment = aquamaps_depth_adjustment_audit),
+    out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  )
+}
+
+## =================================================================
+## STEP 12c: FG_Density_by_Stratum sheet - built whenever STRATA is
+## TRUE (Step 8), independent of APPLY_AQUAMAPS_DEPTH_ADJUSTMENT: one
+## row per FG, one column per depth stratum actually in play (the 5
+## real MEDITS strata alone, or those plus the 3 AquaMaps pseudo-strata
+## when the adjustment is on), plus Total_Density - which reproduces
+## fg_index_regional's own YEAR_ECOPATH-averaged mean_density exactly
+## (see build_fg_density_by_stratum_sheet()'s own comment on why the
+## per-stratum columns are additive, not independently-normalized).
+## =================================================================
+if (!is.null(fg_density_by_stratum)) {
+  upsert_workbook_sheets(
+    sheets = list(FG_Density_by_Stratum = fg_density_by_stratum),
+    out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  )
+}
+
+## =================================================================
 ## STEP 13: fix sheet names/order in ecopath_ecosim_inputs.xlsx.
 ##
 ## Safe to run from EVERY script that touches this workbook, in any
@@ -1234,7 +1389,8 @@ finalize_workbook_sheet_order(
   ),
   target_order = c(
     "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
-    "Ecobase", "PB_QB_References_", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
+    "Ecobase", "PB_QB_References_", "AquaMaps_Depth_Adjustment", "FG_Density_by_Stratum",
+    "traits_ewe", "Ecosim", "FG_spp_Ecosim",
     "Catches_Ecosim", "Fleet_Structure", "Catches_by_Fleet", "Catches_by_Fleet_AllYears",
     "Fishing_Effort_by_Fleet", "DataSources_Catch"
   )
@@ -1242,4 +1398,3 @@ finalize_workbook_sheet_order(
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())
-

@@ -27,84 +27,80 @@
 ## =================================================================
 ## STEP 1: Configuration
 ##
-## Skips straight past all of this (no hardcoded-user check, no
-## directory pickers) when out_dir/pcloud_dir/git_dir already exist -
-## which is exactly the case when this script is auto-sourced by
-## another script (e.g. 02b_fisheries_multisource.R's own STEP 7,
-## which sources this file to regenerate a missing fg_catch_timeseries_
-## <DATASET_VERSION>.csv rather than just telling you to run it
-## yourself) that already resolved those three paths itself. Run this
-## script directly/standalone and nothing changes - the three
-## variables won't exist yet, so this falls straight through to the
-## exact same hardcoded-user-check-then-directory-picker logic as
-## before.
+## Each of out_dir/pcloud_dir/git_dir is resolved INDEPENDENTLY -
+## deliberately NOT as one all-or-nothing block. That matters for two
+## real cases:
+##   (a) auto-sourcing this script from another one (02a_fisheries_
+##       multisource.R's own STEP 7 - see below) that already resolved
+##       all three paths itself - reuses them without re-prompting.
+##   (b) hardcoding just ONE of the three yourself above this block
+##       (e.g. only out_dir, leaving pcloud_dir/git_dir to the
+##       daniel-check/interactive-picker fallback below) - an earlier,
+##       all-or-nothing version of this check required EVERY one of
+##       the three to already exist before reusing ANY of them, so a
+##       partial manual override like that got silently discarded
+##       entirely and every one of the three (including the out_dir
+##       you'd just set) got re-prompted from scratch, clobbering it.
+##       Resolving each one independently means whichever you already
+##       set (by hand, or as this script's caller) is kept exactly as
+##       set, and only the ones you HAVEN'T set fall through to the
+##       daniel-check/interactive-picker logic below.
 ## =================================================================
-if (exists("out_dir", inherits = FALSE) && exists("pcloud_dir", inherits = FALSE) &&
-    exists("git_dir", inherits = FALSE)) {
-  message("[02_fao_catches.R] out_dir/pcloud_dir/git_dir already set (sourced from another script) -",
-          " reusing them rather than re-prompting: out_dir='", out_dir, "', pcloud_dir='", pcloud_dir,
-          "', git_dir='", git_dir, "'.")
-} else if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
-  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
-  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
-  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
-} else {
+resolve_config_dir <- function(var_name, hardcoded_value, prompt_title, prompt_message) {
+  if (exists(var_name, envir = .GlobalEnv, inherits = FALSE)) {
+    val <- get(var_name, envir = .GlobalEnv)
+    ## Validate the REUSED value too, not just a freshly-picked one below -
+    ## a stale/corrupted binding left in the session (e.g. var_name <- NULL
+    ## from an earlier interrupted run, or an empty string) was previously
+    ## being reused as-is with no check at all. file.path(NULL, ...) silently
+    ## collapses to character(0) rather than erroring where it's built, so
+    ## the failure only surfaced much later as a cryptic "missing value
+    ## where TRUE/FALSE needed" wherever that character(0) path first hit
+    ## an if()/file.exists() check - nowhere near var_name itself. Falling
+    ## through to the normal hardcoded/prompt resolution below (rather than
+    ## stopping outright) means a corrupted value self-heals instead of
+    ## propagating.
+    if (!is.null(val) && is.character(val) && length(val) == 1 && !is.na(val) && val != "" && dir.exists(val)) {
+      message("[02_fao_catches.R] ", var_name, " already set - using '", val, "' rather than re-prompting.")
+      return(val)
+    }
+    message("[02_fao_catches.R] ", var_name, " was already set but to something invalid (",
+            if (is.null(val)) "NULL" else if (length(val) == 0) "character(0)" else paste0("'", val, "'"),
+            ", not a real directory) - re-resolving it from scratch instead of reusing it.")
+  }
+  if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
+    return(hardcoded_value)
+  }
   ## Falls back to an interactive directory picker in RStudio, rather
   ## than just stopping with "set it manually" - so this script works
   ## for anyone, not just the one hardcoded username above.
-  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
-      !rstudioapi::isAvailable()) {
-    stop(
-      "This script requires RStudio. Please select the output directory manually."
-    )
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio, or ", var_name, " set manually before running this",
+         " script - ", prompt_message)
   }
-  rstudioapi::showQuestion(
-    title = "Select Output Directory",
-    message = paste(
-      "Please select the directory where output files",
-      "and intermediate results will be saved."
-    )
-  )
-  out_dir <- rstudioapi::selectDirectory()
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
-    stop("No valid output directory selected.")
+  rstudioapi::showQuestion(title = prompt_title, message = prompt_message)
+  val <- rstudioapi::selectDirectory()
+  if (is.null(val) || val == "" || !dir.exists(val)) {
+    stop("No valid directory selected for ", var_name, ".")
   }
-  
-  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
-      !rstudioapi::isAvailable()) {
-    stop(
-      "This script requires RStudio. Please select the pCloud Drive/EwE Western Med 2026 folder."
-    )
-  }
-  rstudioapi::showQuestion(
-    title = "Select pCloud EwE West Med Directory",
-    message = paste(
-      "Please select the location of the the pCloud Drive/EwE Western Med 2026 folder."
-    )
-  )
-  
-  pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
-    stop("No valid pcloud directory selected.")
-  }
-  
-  if (!requireNamespace("rstudioapi", quietly = TRUE) ||
-      !rstudioapi::isAvailable()) {
-    stop(
-      "This script requires RStudio. Please select the github directory manually."
-    )
-  }
-  rstudioapi::showQuestion(
-    title = "Select Github WMed_EwE Directory",
-    message = paste(
-      "Please select the directory where you cloned the WMed_EwE repository."
-    )
-  )
-  git_dir <- rstudioapi::selectDirectory()
-  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
-    stop("No valid Github directory selected.")
-  }
+  val
 }
+
+out_dir <- resolve_config_dir(
+  "out_dir", "/Users/daniel/Work/iMARES/WMed EwE Model/output/",
+  "Select Output Directory",
+  "Please select the directory where output files and intermediate results will be saved."
+)
+pcloud_dir <- resolve_config_dir(
+  "pcloud_dir", "/Users/daniel/pCloud Drive/EwE Western Med 2026/",
+  "Select pCloud EwE West Med Directory",
+  "Please select the location of the pCloud Drive/EwE Western Med 2026 folder."
+)
+git_dir <- resolve_config_dir(
+  "git_dir", "/Users/daniel/Documents/GitHub/WMed_EwE/",
+  "Select Github WMed_EwE Directory",
+  "Please select the directory where you cloned the WMed_EwE repository."
+)
 
 ## =================================================================
 ## Package loading - same pattern as 01_survey_density_westmed.R:
@@ -186,7 +182,7 @@ FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 ##       has to come from somewhere else and be assembled into this
 ##       shape by hand or by another script).
 ##   (2) file.path(out_dir, "fleet_structure_from_sau.csv") - written
-##       automatically by 02b_fisheries_multisource.R (run that script
+##       automatically by 02a_fisheries_multisource.R (run that script
 ##       first, with SAU available), country x gear proportions (e.g.
 ##       "Spain - bottom trawl", "France - purse seine") derived from
 ##       SAU's own real fleet-level catch shares per FG, averaged over
@@ -199,13 +195,13 @@ FG_REFERENCE_SUBPATH   <- "data/FG_WMed.xlsx"
 ##       absorbed; if you want the fleet split to come from the SAME
 ##       reconstruction as the catch totals, use SAU's own
 ##       Catches_by_Fleet sheet (written directly by
-##       02b_fisheries_multisource.R) instead of routing through here.
+##       02a_fisheries_multisource.R) instead of routing through here.
 FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(out_dir, "fleet_structure_from_sau.csv")
 
 ## =================================================================
 ## CATCHES_DATA_SOURCE: pick which source's catch feeds Catches_
 ## Ecopath/Catches_Ecosim below - WITHOUT reimplementing any of
-## 02b_fisheries_multisource.R's own SAU/FishMIP/FAO-GFCM extraction
+## 02a_fisheries_multisource.R's own SAU/FishMIP/FAO-GFCM extraction
 ## logic here. This only SELECTS which of that script's already-
 ## written contract files to read - same "point this script at 2b's
 ## own output" pattern as 04_pbqb_calc.R's FISHERIES_DATA_SOURCE
@@ -216,7 +212,7 @@ FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(out_dir, "fleet_structure_from_s
 ##                     fg_catch_timeseries, computed below from
 ##                     GFCM_Capture_Quantity.csv exactly as before this
 ##                     option existed.
-##   "SAU" / "SAU_no_unreported" - read 02b_fisheries_multisource.R's
+##   "SAU" / "SAU_no_unreported" - read 02a_fisheries_multisource.R's
 ##                     fg_catch_timeseries_<SOURCE>.csv for the catch
 ##                     TOTAL, and its fleet_structure_from_sau.csv for
 ##                     the fleet SPLIT - both come from the SAME SAU
@@ -226,26 +222,26 @@ FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(out_dir, "fleet_structure_from_s
 ##                     total. Overrides FLEET_STRUCTURE_PATH when both
 ##                     are set (a message says so).
 ##   "FishMIP"       - read fg_catch_timeseries_FishMIP.csv (only
-##                     exists if 02b's own FISHMIP_FG_CROSSWALK_PATH
+##                     exists if 02a_fisheries_multisource.R's own FISHMIP_FG_CROSSWALK_PATH
 ##                     was supplied there - errors clearly if not).
 ##                     FishMIP's catch side has no gear dimension at
 ##                     all (only its EFFORT file does), so there's no
 ##                     fleet split to auto-apply for this one -
 ##                     FLEET_STRUCTURE_PATH above still applies
 ##                     normally if you want to graft one on anyway.
-##   "FAO_GFCM"      - NOT valid here - 02b's own "FAO_GFCM" source IS
+##   "FAO_GFCM"      - NOT valid here - 02a_fisheries_multisource.R's own "FAO_GFCM" source IS
 ##                     this script's output, passed through unchanged.
 ##                     Pointing this script at it would just mean
 ##                     reading back its own file; leave this NULL
 ##                     instead, which computes the identical result
 ##                     directly. Errors clearly if set to this.
 ##
-## Requires 02b_fisheries_multisource.R to have ALREADY been run for
+## Requires 02a_fisheries_multisource.R to have ALREADY been run for
 ## the selected source - this script does NOT auto-run it itself (the
-## way 02b auto-runs SAU's own download, or auto-runs THIS script for
-## FAO-GFCM, via AUTO_RUN_MISSING_SOURCES there). Auto-running 02b FROM
+## way 02a_fisheries_multisource.R auto-runs SAU's own download, or auto-runs THIS script for
+## FAO-GFCM, via AUTO_RUN_MISSING_SOURCES there). Auto-running 02a_fisheries_multisource.R FROM
 ## here would risk recursing straight back into this script, since
-## 02b's own FAO-GFCM step auto-runs this file too. A missing input
+## 02a_fisheries_multisource.R's own FAO-GFCM step auto-runs this file too. A missing input
 ## file below is therefore a clear stop() telling you which script to
 ## run first, never a silent fallback to NULL's FAO-GFCM behavior.
 ##
@@ -256,10 +252,10 @@ FLEET_STRUCTURE_PATH <- NULL   # e.g. file.path(out_dir, "fleet_structure_from_s
 ## figure for a specific run.
 ##
 ## Same "reuse if the caller already set it" pattern as DATASET_VERSION
-## above - 02b_fisheries_multisource.R's own STEP 7 sets a global
+## above - 02a_fisheries_multisource.R's own STEP 7 sets a global
 ## CATCHES_DATA_SOURCE <- NULL before auto-sourcing THIS script,
 ## specifically so that auto-run (which exists to regenerate the
-## genuine FAO-GFCM passthrough file 02b's own DataSources_Catch/
+## genuine FAO-GFCM passthrough file 02a_fisheries_multisource.R's own DataSources_Catch/
 ## Script 4 FISHERIES_DATA_SOURCE = "FAO_GFCM" depend on) can't pick up
 ## THIS script's own "SAU" default and silently hand back SAU's total
 ## relabeled as FAO-GFCM's. Run this script directly/standalone,
@@ -289,7 +285,7 @@ safe_fread <- function(path, label = path) {
 }
 
 ## Same "reuse if the caller already set it" pattern as out_dir/pcloud_dir/
-## git_dir above - 02b_fisheries_multisource.R's STEP 7 sets a global
+## git_dir above - 02a_fisheries_multisource.R's STEP 7 sets a global
 ## DATASET_VERSION to match its own FAO_GFCM_DATASET_VERSION before
 ## auto-sourcing this script, specifically so an auto-run can't silently
 ## write fg_catch_timeseries_<the WRONG version>.csv (e.g. this script's
@@ -634,6 +630,28 @@ message("STEP 1 - Direct Species==FG_name matches: ", nrow(direct_matches))
 sci_names <- unique(fg_lookup$ScientificName)
 sci_names <- sci_names[str_detect(sci_names, "^[A-Z][a-z]+ [a-z]+$")]  # proper binomials only
 
+## rfishbase's common_names() (below) is backed by DuckDB, which asks an
+## interactive "duckdb: create ~/.duckdb? (Yes/no/cancel)" confirmation
+## the FIRST time it needs that directory and none exists yet - pre-
+## creating it here means DuckDB has nothing left to ask about, so the
+## prompt never fires. THIS MATTERS BEYOND JUST AVOIDING AN INTERRUPTION:
+## if this code is ever pasted into the console (rather than run via
+## source()/Rscript), that prompt intercepts whichever pasted line
+## happens to arrive next as its Yes/no/cancel answer, desyncing every
+## line after it - which is exactly what an unrelated-looking
+## "Error: unexpected ')'" several lines further down in a pasted block
+## actually means: nothing wrong with the code itself, a swallowed
+## prompt further up. Safe/idempotent if the directory already exists.
+duckdb_home <- path.expand("~/.duckdb")
+if (!dir.exists(duckdb_home)) {
+  dir.create(file.path(duckdb_home, "extensions"), recursive = TRUE, showWarnings = FALSE)
+  if (!dir.exists(duckdb_home)) {
+    message("Could not pre-create '", duckdb_home, "' (permissions?) - DuckDB may still prompt",
+            " below. If it does, answer it directly rather than pasting through it, or run this",
+            " script via source()/Rscript instead of pasting into the console.")
+  }
+}
+
 message("\nSTEP 2 - Querying common names for ", length(sci_names), " species...")
 
 fb_common  <- tryCatch(as.data.table(common_names(sci_names, server = "fishbase")),
@@ -707,7 +725,50 @@ find_or_download_fao_species <- function() {
   if (length(found) > 0) return(found[1])
   url <- "https://data.apps.fao.org/catalog/dataset/b70c52c1-475f-4951-a8ac-de44016abd9b/resource/2c0f936d-6c36-4715-9c7f-fa5a70c00249/download/cl_fi_species_groups.csv"
   destfile <- file.path(out_dir, "CL_FI_SPECIES_GROUPS.csv")
-  download.file(url, destfile = destfile, mode = "wb", method = "libcurl")
+  
+  ## data.apps.fao.org intermittently throws "Stream error in the HTTP/2
+  ## framing layer" partway through a libcurl download (confirmed: this
+  ## is a known class of server/proxy misbehavior with HTTP/2 negotiation,
+  ## not something wrong on this end - the exact same URL often succeeds
+  ## moments later, or with HTTP/1.1 forced instead of HTTP/2). Retries a
+  ## few times with libcurl first (cheapest fix - many of these really
+  ## are purely transient), then falls back to forcing HTTP/1.1 via httr
+  ## if libcurl keeps failing - that bypasses the HTTP/2 framing bug
+  ## entirely instead of just hoping for a lucky retry.
+  max_retries <- 3
+  last_err <- NULL
+  for (attempt in seq_len(max_retries)) {
+    ok <- tryCatch({
+      download.file(url, destfile = destfile, mode = "wb", method = "libcurl", quiet = (attempt > 1))
+      TRUE
+    }, error = function(e) { last_err <<- e; FALSE }, warning = function(w) { last_err <<- w; FALSE })
+    if (isTRUE(ok) && file.exists(destfile) && file.size(destfile) > 0) return(destfile)
+    if (attempt < max_retries) {
+      message("  Download attempt ", attempt, "/", max_retries, " failed (",
+              if (!is.null(last_err)) conditionMessage(last_err) else "unknown error",
+              ") - retrying in ", 2 * attempt, "s...")
+      Sys.sleep(2 * attempt)
+    }
+  }
+  
+  message("  libcurl download still failing after ", max_retries, " attempts - falling back to",
+          " httr with HTTP/1.1 forced (bypasses the HTTP/2 framing-layer bug some servers/proxies",
+          " hit with libcurl's default HTTP/2 negotiation).")
+  if (!requireNamespace("httr", quietly = TRUE)) install.packages("httr")
+  resp <- tryCatch(
+    httr::GET(url, httr::config(http_version = 1.1), httr::write_disk(destfile, overwrite = TRUE),
+              httr::timeout(120)),
+    error = function(e) e
+  )
+  if (inherits(resp, "error") || httr::status_code(resp) != 200 || !file.exists(destfile) ||
+      file.size(destfile) == 0) {
+    stop("Could not download cl_fi_species_groups.csv from FAO after ", max_retries,
+         " libcurl attempt(s) and one HTTP/1.1 fallback attempt. This URL ('", url, "') is known",
+         " to intermittently throw HTTP/2 stream errors on data.apps.fao.org's own end - try again",
+         " in a few minutes, or download it manually in a browser and save it ANYWHERE under",
+         " pcloud_dir as CL_FI_SPECIES_GROUPS.csv (this function searches for it there first,",
+         " before ever trying to download).")
+  }
   destfile
 }
 
@@ -930,7 +991,7 @@ message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_t
 
 ## =================================================================
 ## Apply CATCHES_DATA_SOURCE (set above) - override the FAO-GFCM-
-## derived fg_catch_timeseries just computed/saved above with 02b_
+## derived fg_catch_timeseries just computed/saved above with 02a_
 ## fisheries_multisource.R's own output for the selected source, if
 ## any. The FAO-GFCM computation above still ran and was still saved
 ## to fg_catch_timeseries_<DATASET_VERSION>.csv regardless - only the
@@ -939,18 +1000,18 @@ message("Saved fg_catch_timeseries_", DATASET_VERSION, ".csv (", nrow(fg_catch_t
 if (!is.null(CATCHES_DATA_SOURCE)) {
   if (CATCHES_DATA_SOURCE == "FAO_GFCM") {
     stop("CATCHES_DATA_SOURCE = 'FAO_GFCM' is not valid - that IS this script's own output,",
-         " passed through unchanged by 02b_fisheries_multisource.R. Set CATCHES_DATA_SOURCE",
+         " passed through unchanged by 02a_fisheries_multisource.R. Set CATCHES_DATA_SOURCE",
          " <- NULL instead, which computes the identical result directly, no extra file needed.")
   }
   catches_source_csv_path <- file.path(out_dir, paste0("fg_catch_timeseries_", CATCHES_DATA_SOURCE, ".csv"))
   if (!file.exists(catches_source_csv_path)) {
     stop("CATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' but '", catches_source_csv_path,
-         "' doesn't exist yet - run 02b_fisheries_multisource.R first with its own DATA_SOURCE",
-         " <- '", CATCHES_DATA_SOURCE, "' (this script does not auto-run 02b itself - see",
+         "' doesn't exist yet - run 02a_fisheries_multisource.R first with its own DATA_SOURCE",
+         " <- '", CATCHES_DATA_SOURCE, "' (this script does not auto-run 02a_fisheries_multisource.R itself - see",
          " CATCHES_DATA_SOURCE's own comment above for why).")
   }
   fg_catch_timeseries <- fread(catches_source_csv_path)
-  message("\nCATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' - using 02b_fisheries_",
+  message("\nCATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' - using 02a_fisheries_",
           "multisource.R's own '", catches_source_csv_path, "' (", nrow(fg_catch_timeseries),
           " rows) as the catch total for Catches_Ecopath/Catches_Ecosim below, INSTEAD OF",
           " this script's own FAO-GFCM-derived total (that computation above is unaffected -",
@@ -1024,7 +1085,7 @@ if (!is.null(CATCHES_DATA_SOURCE) && CATCHES_DATA_SOURCE %in% c("SAU", "SAU_no_u
   ## CATCHES_DATA_SOURCE above already made fg_catch_timeseries SAU's
   ## own catch total, the fleet split should come from that SAME SAU
   ## reconstruction too - fleet_structure_from_sau.csv, written by
-  ## 02b_fisheries_multisource.R's own STEP 5 in the SAME run that
+  ## 02a_fisheries_multisource.R's own STEP 5 in the SAME run that
   ## wrote fg_catch_timeseries_<SOURCE>.csv above. This takes priority
   ## over FLEET_STRUCTURE_PATH (if also set) rather than combining with
   ## it - two different fleet_structure sources for one Catches_Ecopath
@@ -1035,7 +1096,7 @@ if (!is.null(CATCHES_DATA_SOURCE) && CATCHES_DATA_SOURCE %in% c("SAU", "SAU_no_u
   sau_fleet_structure_path <- file.path(out_dir, "fleet_structure_from_sau.csv")
   if (!file.exists(sau_fleet_structure_path)) {
     stop("CATCHES_DATA_SOURCE = '", CATCHES_DATA_SOURCE, "' but '", sau_fleet_structure_path,
-         "' doesn't exist yet - it's written by 02b_fisheries_multisource.R's own STEP 5",
+         "' doesn't exist yet - it's written by 02a_fisheries_multisource.R's own STEP 5",
          " (the same run that wrote fg_catch_timeseries_", CATCHES_DATA_SOURCE, ".csv) -",
          " re-run that script if this file specifically is missing.")
   }

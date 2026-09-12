@@ -11,7 +11,7 @@
 
 <meta name="author" content="Documentation generated with Claude" />
 
-<meta name="date" content="2026-09-09" />
+<meta name="date" content="2026-09-10" />
 
 <title>Survey-to-Ecopath/Ecosim Pipeline</title>
 
@@ -1502,7 +1502,7 @@ border-radius: 0px;
 outputs — for any GFCM GSA subset or user-defined region in the
 Mediterranean</h3>
 <h4 class="author">Documentation generated with Claude</h4>
-<h4 class="date">2026-09-09</h4>
+<h4 class="date">2026-09-10</h4>
 
 </div>
 
@@ -4739,13 +4739,79 @@ resolved fleet table itself is written out as a new
 fleet/gear data itself (see the “not implemented” note above:
 <code>GFCM_Capture_ Quantity.csv</code> still carries no fleet/gear
 column), so the <code>fleet_structure</code> CSV has to come from
-somewhere else (GFCM Operational Units, STECF FDI, or a hand-built
-allocation). <code>04_pbqb_calc.R</code>’s
+somewhere else. <strong>Three ways to get one:</strong> (1) GFCM
+Operational Units or STECF FDI, assembled by hand; (2) a hand-built
+allocation; or (3) point <code>FLEET_STRUCTURE_PATH</code> at
+<code>file.path(out_dir, &quot;fleet_structure_from_sau.csv&quot;)</code> —
+written automatically by Script 2b
+(<code>02b_fisheries_multisource.R</code>), country × gear proportions
+(e.g. <code>Spain - bottom trawl</code>,
+<code>France - purse seine</code>) derived from SAU’s own real
+fleet-level catch shares per FG. This is an
+<strong>approximation</strong> — it borrows SAU’s gear mix and applies
+it to this script’s own FAO-GFCM totals, two different catch
+reconstructions for the same species/FG, not a real fleet-resolved
+FAO-GFCM figure, since FAO-GFCM has no gear data of its own to resolve
+directly. If the fleet split should come from the <em>same</em>
+reconstruction as the catch totals, use SAU’s own
+<code>Catches_by_Fleet</code> sheet (written directly by Script 2b, see
+below) instead of routing through here. <code>04_pbqb_calc.R</code>’s
 <code>Fmort_species</code>/<code>Fmort_FG</code> remain unaffected
 either way — they’re computed from the same un-split
 <code>fg_catch_timeseries_*.csv</code> regardless of whether
-<code>Catches_Ecopath</code>/ <code>Catches_Ecosim</code> end up split
-by fleet.</p>
+<code>Catches_Ecopath</code>/<code>Catches_Ecosim</code> end up split by
+fleet.</p>
+<p><strong><code>CATCHES_DATA_SOURCE</code>: pick which source feeds
+<code>Catches_Ecopath</code>/ <code>Catches_Ecosim</code> — without
+duplicating Script 2b’s own logic here.</strong> This selector
+(<code>NULL | &quot;SAU&quot; | &quot;SAU_no_unreported&quot; | &quot;FishMIP&quot;</code>, near
+<code>FLEET_STRUCTURE_PATH</code>) just <strong>selects</strong> which
+of Script 2b’s already-written contract files to read — the same “point
+this script at 2b’s own output” pattern <code>04_pbqb_calc.R</code>’s
+<code>FISHERIES_DATA_SOURCE</code> already uses — it does
+<strong>not</strong> re-implement any of Script 2b’s SAU/FishMIP
+extraction. <strong>Defaults to <code>&quot;SAU&quot;</code></strong> (not
+<code>NULL</code>) — discards/unreported/IUU catch and a real fleet ×
+gear × country split are treated as always-wanted, not an occasional
+opt-in. When <code>&quot;SAU&quot;</code>/<code>&quot;SAU_no_unreported&quot;</code>, this
+script reads Script 2b’s
+<code>fg_catch_timeseries_&lt;SOURCE&gt;.csv</code> for the catch
+<strong>total</strong> <em>and</em>
+<code>fleet_structure_from_sau.csv</code> for the fleet
+<strong>split</strong> — both from the <em>same</em> SAU reconstruction,
+so this is fully self-consistent, unlike routing SAU’s fleet shares
+through <code>FLEET_STRUCTURE_PATH</code> onto a FAO-GFCM total (that
+combo still works and is unaffected, but
+<code>CATCHES_DATA_SOURCE</code>’s own SAU fleet structure takes
+priority over <code>FLEET_STRUCTURE_PATH</code> whenever both are set).
+Set to <code>&quot;FishMIP&quot;</code>, only the total is replaced — FishMIP’s
+catch side has no gear dimension, so there’s no fleet split to
+auto-apply; <code>FLEET_STRUCTURE_PATH</code> still works normally on
+top of it if you want one anyway. Set to <code>NULL</code> yourself to
+restore the original FAO-GFCM-only, landings-only, single-fleet figure
+for a specific run. <code>&quot;FAO_GFCM&quot;</code> is <strong>not</strong> a
+valid value (it would just mean reading back this script’s own output)
+and errors clearly if set. <strong>This script does not auto-run Script
+2b for you</strong> — unlike Script 2b’s own
+<code>AUTO_RUN_MISSING_SOURCES</code>, which auto-runs SAU’s download
+and, separately, auto-runs <em>this</em> script for FAO-GFCM — because
+Script 2 auto-sourcing Script 2b would risk recursing straight back into
+Script 2. A missing contract file is therefore a clear
+<code>stop()</code> naming which script to run first, never a silent
+fallback to <code>NULL</code>’s FAO-GFCM behavior.</p>
+<p><strong>Why the FAO-GFCM auto-run (Script 2b’s own STEP 7) is safe
+from this new default:</strong> since <code>CATCHES_DATA_SOURCE</code>
+now defaults to <code>&quot;SAU&quot;</code>, and Script 2b’s SAU step (STEP 5)
+runs <em>before</em> its FAO-GFCM step (STEP 7) in the same run,
+<code>fg_catch_timeseries_SAU.csv</code> already exists by the time STEP
+7 auto-sources this script — so STEP 7 explicitly sets a global
+<code>CATCHES_DATA_SOURCE &lt;- NULL</code> right before sourcing it,
+overriding this script’s own default (via the same “reuse if the caller
+already set it” pattern <code>DATASET_VERSION</code> uses). Without that
+override, the auto-run would silently hand back SAU’s total mislabeled
+as the FAO-GFCM figure that
+<code>DataSources_Catch</code>/<code>FISHERIES_DATA_SOURCE = &quot;FAO_GFCM&quot;</code>
+depend on being genuinely FAO-GFCM-only.</p>
 </div>
 <div id="outputs-2" class="section level2" number="7.3">
 <h2><span class="header-section-number">7.3</span> Outputs</h2>
@@ -4905,7 +4971,29 @@ Fleet × Year rows).</li>
 <strong>not</strong> change this script’s own output — every available
 source is still written to
 <code>DataSources_Catch</code>/<code>Catches_by_Fleet</code>/<code>Fishing_Effort_by_Fleet</code>
-regardless.</li>
+regardless. 2b. <code>AUTO_RUN_MISSING_SOURCES &lt;- TRUE</code>
+(default) — when SAU’s raw extract or Script 2’s
+<code>fg_catch_timeseries_&lt;FAO_GFCM_DATASET_VERSION&gt;.csv</code> is
+missing, this script now <strong>runs the upstream step itself</strong>
+instead of just telling you to go run something else by hand: SAU
+auto-downloads <code>sau_raw_combined_west_med.csv</code> straight from
+SAU’s API (per-EEZ, via the new <code>lib_sau_extraction.R</code> — the
+same extraction logic as <code>sau_west_med_analysis.Rmd</code>’s own
+“Part 0” chunk, lifted out so it doesn’t require knitting that Rmd by
+hand every time), and FAO-GFCM auto-sources Script 2
+(<code>02_fao_catches.R</code>) itself, first setting a global
+<code>DATASET_VERSION</code> to match this script’s own
+<code>FAO_GFCM_DATASET_VERSION</code> so the auto-run can’t silently
+regenerate the <em>wrong</em> dataset version’s file. Both attempts are
+wrapped so a failure (offline, upstream file genuinely missing, etc.)
+degrades to the same “not found, skipping” message as before — auto-run
+is a shortcut, not a new failure mode. <strong>FishMIP is deliberately
+excluded</strong> — its two parquet files are a manual download from the
+FishMIP Input Explorer website, not something any R script here can
+generate, so a missing FishMIP file always just skips with a message
+pointing at that download page. Set
+<code>AUTO_RUN_MISSING_SOURCES &lt;- FALSE</code> to go back to the old
+“message + skip” behavior for every source.</li>
 <li>Species → FG matching — same <code>match_species_to_fg()</code> →
 <code>match_nominate_subspecies_fg()</code> →
 <code>fallback_match_fg_by_taxonomy()</code> cascade Script 1/Script 2
@@ -4914,9 +5002,26 @@ the whole pipeline.</li>
 <li>SAU — year/country filter, species→FG match, builds country-year
 totals (both “SAU total” and “SAU w/o unreported”), FG-year totals,
 species-year totals (for
-<code>landings_by_species_gsa_year_&lt;SOURCE&gt;.csv</code>), and
-<code>Catches_by_Fleet</code> (country × top-N-gears, “Other gear”
-bucket).</li>
+<code>landings_by_species_gsa_year_&lt;SOURCE&gt;.csv</code>), and two
+fleet-level (country × top-N-gears, “Other gear” bucket) sheets:
+<code>Catches_by_Fleet</code> — <strong>wide</strong>, one row per FG,
+<strong>one column per Fleet</strong>
+(e.g. <code>Spain - bottom trawl</code>, <code>France - longline</code>,
+…), value = that FG × Fleet’s catch (t) <strong>averaged over
+<code>YEAR_ECOPATH</code></strong> (a config constant in this script
+that must match Step 1’s own <code>YEAR_ECOPATH</code>) — same
+single-snapshot convention
+<code>add_catches_to_ecopath_workbook()</code> already uses for
+<code>Catches_Ecopath</code>, but built directly from SAU’s real
+per-fleet annual values rather than a static proportion split, so each
+fleet’s actual year-to-year share is reflected; and
+<code>Catches_by_Fleet_AllYears</code> — the same data in
+<strong>long</strong> form (one row per FG × Fleet × Year), kept for
+anyone who needs the full annual detail the wide sheet collapses out of.
+Both already include discards (+ unreported + IUU) — see “Why four
+sources, not one” above; there is no separate landings-only
+vs. discards-only split at fleet resolution, only SAU’s already-combined
+total.</li>
 <li>FishMIP (if the <code>arrow</code> package and both parquet files
 are available) — builds <code>Fishing_Effort_by_Fleet</code> (the
 <strong>only genuine effort data</strong> in this whole pipeline — SAU
@@ -4929,6 +5034,7 @@ country-level and FG-level Yield, stacked with a <code>source</code>
 column, for side-by-side comparison regardless of which one is selected
 as <code>DATA_SOURCE</code>.</li>
 <li>Writes <code>Catches_by_Fleet</code>,
+<code>Catches_by_Fleet_AllYears</code>,
 <code>Fishing_Effort_by_Fleet</code>, <code>DataSources_Catch</code>
 into the shared workbook via <code>upsert_workbook_sheets()</code>
 (idempotent — re-running replaces these sheets, doesn’t duplicate
@@ -4955,12 +5061,15 @@ match.</li>
 (SAU/SAU_no_unreported only)
 <code>landings_by_species_gsa_year_&lt;DATA_SOURCE&gt;.csv</code>.</li>
 <li><strong>Workbook</strong> <code>ecopath_ecosim_inputs.xlsx</code>,
-sheets written: <code>Catches_by_Fleet</code> (SAU only — the only
-source with real gear × country × species resolution),
-<code>Fishing_Effort_by_Fleet</code> (FishMIP only — genuinely different
-fleet resolution than <code>Catches_by_Fleet</code>, never to be joined
-directly to it), <code>DataSources_Catch</code> (every available source,
-country- and FG-level, side by side).</li>
+sheets written: <code>Catches_by_Fleet</code> (wide — FG rows × Fleet
+columns, averaged over <code>YEAR_ECOPATH</code>) and
+<code>Catches_by_Fleet_AllYears</code> (the same data, long, one row per
+FG × Fleet × Year) — both SAU only, the only source with real gear ×
+country × species resolution; <code>Fishing_Effort_by_Fleet</code>
+(FishMIP only — genuinely different fleet resolution than
+<code>Catches_by_Fleet</code>, never to be joined directly to it),
+<code>DataSources_Catch</code> (every available source, country- and
+FG-level, side by side).</li>
 </ul>
 <hr />
 </div>
@@ -4980,6 +5089,27 @@ the live service</strong> from within the authoring sandbox (no network
 access to <code>sirs.agrocampus-ouest.fr</code>) — the diagnostics
 throughout are there specifically to surface an endpoint change, not
 just fail silently.</p>
+<p><strong>Fixed:
+<code>merge(mediterranean_models, all_status, ...)</code> — “x has
+duplicated column name [comments_objectives]”.</strong> Root cause
+traced to <code>xml_node_to_dt_row()</code> (formerly an inline
+anonymous function, at two call sites — the model-list parse and, in
+<code>fetch_model_inputs()</code>, the per-model group parse): when a
+single <code>&lt;model&gt;</code> (or <code>&lt;group&gt;</code>) XML
+node repeats a child tag — confirmed EcoBase’s own XML does this, e.g. a
+duplicated <code>&lt;comments_objectives&gt;</code> —
+<code>setNames(as.list(xml_text(fields)), xml_name(fields))</code>
+produced a list with two entries sharing one name, and
+<code>as.data.table()</code> on that silently creates a data.table with
+two same-named columns. data.table allows that at creation time; it only
+rejects it the moment something needs unique names — which is why the
+error surfaced three functions and one <code>rbindlist()</code> away
+from where the duplicate actually originated, at the
+<code>merge()</code> call. Fix: both parse sites now go through one
+shared <code>xml_node_to_dt_row()</code> that detects a repeated tag
+name and collapses its values into ONE column, joined with
+<code>&quot;; &quot;</code> — nothing is dropped, there’s just no longer two
+columns fighting over one name.</p>
 <div id="inputs-network" class="section level2" number="9.1">
 <h2><span class="header-section-number">9.1</span> Inputs (network)</h2>
 <table>
@@ -5363,9 +5493,14 @@ When set, it automatically points
 and flips <code>YIELD_SOURCE</code>/<code>FG_YIELD_SOURCE</code> on to
 match — no manual path editing needed as long as this matches Script
 2b’s <code>DATA_SOURCE</code> for the run that produced those files.
-<code>FISHERIES_DATA_SOURCE &lt;- NULL</code> (the default) restores the
-original hardcoded placeholder behavior from before Script 2b existed.
-Every source’s own catch/effort still appears in the workbook’s
+<strong>Defaults to <code>&quot;SAU&quot;</code></strong> (not <code>NULL</code>)
+— species-level resolution and discards/unreported/IUU catch are treated
+as always-wanted for this chain, matching
+<code>02_fao_catches.R</code>’s own <code>CATCHES_DATA_SOURCE</code>
+default (also <code>&quot;SAU&quot;</code>, same reasoning). Set to
+<code>NULL</code> yourself to restore the original hardcoded placeholder
+behavior from before Script 2b existed. Every source’s own catch/effort
+still appears in the workbook’s
 <code>DataSources_Catch</code>/<code>Catches_by_Fleet</code>/<code>Fishing_Effort_by_Fleet</code>
 sheets (written by Script 2b) regardless of this setting — only
 <em>this</em> script’s own Fmort/PB = M+F chain follows whichever source
@@ -5507,7 +5642,16 @@ etc.).</p></li>
 multiple matching literature models per <code>FG_name</code>, flags
 &gt;2×/&lt;0.5× divergence from the empirical estimate, gap-fills only
 where the empirical value is <code>NA</code>. Writes sheet
-<strong><code>Ecobase</code></strong>.</p></li>
+<strong><code>Ecobase</code></strong> (one row per FG, averaged PB/QB
+across every matching model, plus a <code>References</code> column
+listing each contributing model) <strong>and
+<code>Ecobase_by_Model</code></strong> (one row per FG × individual
+published model — <code>FG_num</code>, <code>FG_name</code>,
+<code>EwE_model</code>, <code>year</code>, <code>authors</code>,
+<code>PB</code>, <code>QB</code> — the un-averaged detail behind
+<code>Ecobase</code>’s own per-FG mean, since a single FG typically has
+several different published models backing it and the averaged sheet
+alone loses which model said what).</p></li>
 <li><p><strong>FG-level F top-up</strong> (if
 <code>FG_YIELD_SOURCE = &quot;fg_catch_csv&quot;</code>) — applied only to FGs
 with no species-level F already baked in (mainly mammal/
@@ -5924,9 +6068,13 @@ hasn’t run yet — see “Excel workbook functions” below)</li>
 <code>fleet_structure</code> that resolved to more than one fleet;
 skipped (not an error) otherwise, same as any other not-yet-present
 target-order sheet</li>
-<li><code>Catches_by_Fleet</code> — written by Script 2b, SAU only (see
+<li><code>Catches_by_Fleet</code> — written by Script 2b, SAU only, wide
+(FG rows × Fleet columns, averaged over <code>YEAR_ECOPATH</code>) (see
 Script 2b above); skipped if Script 2b hasn’t run or SAU wasn’t
 available that run</li>
+<li><code>Catches_by_Fleet_AllYears</code> — written by Script 2b, the
+same SAU data long (one row per FG × Fleet × Year); skipped under the
+same conditions as <code>Catches_by_Fleet</code></li>
 <li><code>Fishing_Effort_by_Fleet</code> — written by Script 2b, FishMIP
 only; skipped if Script 2b hasn’t run or FishMIP wasn’t available that
 run</li>

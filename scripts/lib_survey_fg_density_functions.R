@@ -652,7 +652,23 @@ assign_depth_stratum <- function(dt, strata_def) {
             " Deriving from Depth only for the remaining rows that don't.")
   }
   
-  dt[, derived_stratum := strata_def$stratum_num[findInterval(Depth, strata_def$depth_min, all.inside = TRUE)]]
+  ## all.inside=TRUE clamps findInterval()'s result to 1:(length(depth_min)-1)
+  ## at BOTH ends, not just the lower one. The lower-end clamp is harmless -
+  ## the explicit Depth < min(...) check below re-nulls anything that would've
+  ## been wrongly caught there. But the upper-end clamp is not harmless: it
+  ## silently folds every Depth in the deepest real stratum's range (e.g.
+  ## 500-799.99m for the standard 5-row MEDITS_STRATA) into the SECOND-
+  ## deepest stratum instead (e.g. 200-499.99m) - contaminating that
+  ## stratum's density with deep-water catch and leaving the true deepest
+  ## stratum with zero samples. Use plain findInterval() (no clamping)
+  ## instead, which correctly returns index length(depth_min) for any Depth
+  ## >= the deepest depth_min; the only downside is it returns 0 (not NA)
+  ## for Depth below the shallowest depth_min, which would silently shorten
+  ## the vector if used directly as an index (rather than returning NA in
+  ## that position) - so remap 0 to NA_integer_ first.
+  raw_idx <- findInterval(dt$Depth, strata_def$depth_min)
+  raw_idx[raw_idx == 0L] <- NA_integer_
+  dt[, derived_stratum := strata_def$stratum_num[raw_idx]]
   dt[Depth < min(strata_def$depth_min) | Depth > max(strata_def$depth_max), derived_stratum := NA_integer_]
   dt[is.na(Stratum), Stratum := derived_stratum]
   dt[, derived_stratum := NULL]
@@ -1218,6 +1234,18 @@ weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_
   ## below is unambiguously n_samples_by_stratum's TOTAL sample count.
   merged <- merge(per_group_fg, n_samples_by_stratum,
                   by = c("AreaID", "Year", "Stratum"), all.x = TRUE)
+  
+  ## Kept BEFORE the strata_area_by_area merge/filter below, specifically
+  ## for plot_strata_profile() - that plot's whole point is to sanity-check
+  ## raw per-sample density across strata independent of whether a usable
+  ## area-proportion could be computed for a given (AreaID, Stratum) (e.g.
+  ## AquaMaps' 800-6000m pseudo-stratum can have valid sample-derived
+  ## density but no/NA area for a given AreaID's bathymetry, which would
+  ## otherwise make that stratum vanish from the plot with zero trace,
+  ## rather than the "no area - genuinely expected or a real mismatch,
+  ## worth checking" situation the WARNING two blocks down is about).
+  per_stratum_raw <- merged[!is.na(n_samples) & n_samples > 0]
+  
   merged <- merge(merged, strata_area_by_area, by = c("AreaID", "Stratum"), all.x = TRUE)
   
   n_missing <- merged[is.na(prop), .N]
@@ -1239,7 +1267,8 @@ weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_
         n_strata_contributing = .N, n_samples_total = sum(n_samples)),
     by = .(AreaID, Year, FG_num, FG_name)
   ]
-  attr(fg_index, "per_stratum") <- merged  # kept for the depth-profile validation plot
+  attr(fg_index, "per_stratum") <- merged  # kept for weight_by_area() (needs area_km2/prop)
+  attr(fg_index, "per_stratum_raw") <- per_stratum_raw  # kept for plot_strata_profile() (area-independent)
   message("Strata-weighted FG index built: ", nrow(fg_index), " rows.")
   fg_index
 }
@@ -1296,6 +1325,70 @@ weight_by_area <- function(fg_index_stratified) {
   ]
   message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows.")
   fg_index_regional
+}
+
+## =================================================================
+## Excel export: region-wide density by FG x depth stratum, wide
+## format (one row per FG, one column per stratum, plus Total_Density).
+## =================================================================
+## Same region-wide area weighting as weight_by_area() above - each
+## stratum's column is that stratum's own ADDITIVE CONTRIBUTION to the
+## final region-wide density (numerator restricted to that stratum,
+## divided by the SAME grand-total area every stratum uses), so
+## Total_Density = rowSums(stratum columns) reproduces weight_by_area()'s
+## own mean_density exactly (averaged over year_filter if given) - this
+## is deliberately NOT "mean density conditional on being in that
+## stratum" (dividing by just that stratum's own area), which would NOT
+## sum to the region total. Works on ANY strata_def/per_stratum pairing,
+## including the AquaMaps-extended one (pass strata_def_for_plotting -
+## see 01_survey_density_westmed.R Step 7b/8) - a stratum absent from a
+## given FG's rows (e.g. no catch in that FG/stratum combo) becomes an
+## explicit 0 column via dcast's fill, not a missing column.
+## year_filter: e.g. YEAR_ECOPATH, to match how other summary sheets
+## (density_in_base_years, net_density_multiplier) are already restricted
+## to the pipeline's baseline period rather than averaged over every
+## survey year on file. NULL averages over every year present.
+build_fg_density_by_stratum_sheet <- function(fg_index_stratified, strata_def, year_filter = NULL) {
+  per_stratum <- attr(fg_index_stratified, "per_stratum")
+  if (is.null(per_stratum)) {
+    stop("build_fg_density_by_stratum_sheet() needs the per_stratum attribute from weight_by_strata().")
+  }
+  d <- copy(per_stratum)
+  if (!is.null(year_filter)) d <- d[Year %in% year_filter]
+  d <- d[!is.na(area_km2)]
+  
+  ## Grand-total area per Year, de-duplicated to one row per
+  ## (AreaID, Stratum, Year) first - d itself has one row per
+  ## (AreaID, Year, Stratum, FG), so summing area_km2 straight off d
+  ## would multiply it by however many FGs happen to be present.
+  area_by_year <- unique(d[, .(AreaID, Stratum, Year, area_km2)])
+  total_area_by_year <- area_by_year[, .(total_area = sum(area_km2, na.rm = TRUE)), by = Year]
+  
+  contrib <- d[, .(numerator = sum((density_sum / n_samples) * area_km2, na.rm = TRUE)),
+               by = .(Year, FG_num, FG_name, Stratum)]
+  contrib <- merge(contrib, total_area_by_year, by = "Year", all.x = TRUE)
+  contrib[, density_contribution := ifelse(!is.na(total_area) & total_area > 0,
+                                           numerator / total_area, NA_real_)]
+  
+  ## Average each stratum's contribution across the filtered years -
+  ## additive (mean of sums == sum of means), so this still reproduces
+  ## weight_by_area()'s own mean_density averaged over the same years.
+  by_stratum <- contrib[, .(density_contribution = mean(density_contribution, na.rm = TRUE)),
+                        by = .(FG_num, FG_name, Stratum)]
+  
+  by_stratum <- merge(by_stratum, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
+  by_stratum[, stratum_label := fifelse(
+    is.na(depth_min) | is.na(depth_max), paste0("Stratum_", Stratum, "_unknown_depth"),
+    paste0(formatC(depth_min, format = "f", digits = 2), "_", formatC(depth_max, format = "f", digits = 2), "m"))]
+  
+  label_order <- unique(by_stratum[, .(Stratum, stratum_label)])[order(Stratum)]
+  
+  wide <- dcast(by_stratum, FG_num + FG_name ~ stratum_label, value.var = "density_contribution", fill = 0)
+  stratum_cols <- label_order$stratum_label[label_order$stratum_label %in% names(wide)]
+  setcolorder(wide, c("FG_num", "FG_name", stratum_cols))
+  wide[, Total_Density := rowSums(.SD, na.rm = TRUE), .SDcols = stratum_cols]
+  setorder(wide, FG_num)
+  wide
 }
 
 ## =================================================================
@@ -1743,19 +1836,56 @@ plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, 
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
 }
 
-## Depth-strata validation plot: raw per-sample density (before area
-## weighting) across strata, for sanity-checking that known deep-water
-## FGs actually peak in the deep strata and vice versa.
+## Depth-strata validation plot: raw per-sample density across strata,
+## from weight_by_strata()'s per_stratum_raw attribute - deliberately
+## AREA-INDEPENDENT (unlike the per_stratum attribute weight_by_area()
+## uses), so a stratum with valid sample data but no computed area-
+## proportion (e.g. AquaMaps' 800-6000m pseudo-stratum, for an AreaID
+## whose bathymetry didn't yield a usable area there) still shows up
+## here instead of silently vanishing - this plot's whole point is to
+## sanity-check density BEFORE any area weighting, so it should never be
+## gated on area being computable. Falls back to the older per_stratum
+## attribute (with a warning) for callers on a stale weight_by_strata().
 plot_strata_profile <- function(fg_index_stratified, strata_def, top_n_fg = 40) {
-  per_stratum <- attr(fg_index_stratified, "per_stratum")
-  if (is.null(per_stratum)) stop("plot_strata_profile() needs the per_stratum attribute from weight_by_strata().")
+  per_stratum <- attr(fg_index_stratified, "per_stratum_raw")
+  if (is.null(per_stratum)) {
+    warning("[plot_strata_profile] No per_stratum_raw attribute found (stale weight_by_strata()?) -",
+            " falling back to the area-merged per_stratum attribute, which silently drops any",
+            " stratum with no computed area-proportion. Re-source lib_survey_fg_density_functions.R",
+            " to get the area-independent version of this plot.")
+    per_stratum <- attr(fg_index_stratified, "per_stratum")
+  }
+  if (is.null(per_stratum)) stop("plot_strata_profile() needs the per_stratum_raw (or per_stratum) attribute from weight_by_strata().")
   per_stratum <- copy(per_stratum)  # avoid data.table shallow-copy warning - this came from an attribute set after a merge() chain inside weight_by_strata()
   
   per_stratum[, mean_density_per_sample := density_sum / n_samples]
   profile <- per_stratum[, .(mean_density_per_sample = mean(mean_density_per_sample, na.rm = TRUE)),
                          by = .(FG_num, FG_name, Stratum)]
+  
+  ## Strata present in the data but absent from strata_def would silently
+  ## merge to NA depth_min/depth_max and render as "N (NA-NAm)" - surface
+  ## that loudly instead, since it means the wrong strata_def was passed
+  ## in (e.g. the plain MEDITS_STRATA when AquaMaps pseudo-strata are
+  ## active) rather than a real "no data" situation.
+  unmatched_strata <- setdiff(unique(profile$Stratum), strata_def$stratum_num)
+  if (length(unmatched_strata) > 0) {
+    warning("[plot_strata_profile] Stratum value(s) ", paste(sort(unmatched_strata), collapse = ", "),
+            " have data but no matching row in strata_def (which only defines stratum_num ",
+            paste(sort(strata_def$stratum_num), collapse = ", "), ") - their depth range will show as",
+            " 'unknown depth range' below rather than a real m range. Pass the strata_def that matches",
+            " what actually built fg_index_stratified (e.g. the AquaMaps-extended strata_def, not the",
+            " plain 5-row MEDITS_STRATA, whenever the AquaMaps depth adjustment was applied).")
+  }
+  
   profile <- merge(profile, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
-  profile[, stratum_label := paste0(Stratum, " (", depth_min, "-", depth_max, "m)")]
+  ## round to 2 decimals for the axis label - the underlying depth_min/
+  ## depth_max can carry long floating-point tails (e.g. the AquaMaps
+  ## shallow pseudo-stratum's depth_max = 10 - 0.0001 = 9.9999...) that
+  ## are meaningless past 2 decimals for a depth label.
+  profile[, depth_label := fifelse(
+    is.na(depth_min) | is.na(depth_max), "unknown depth range",
+    paste0(formatC(depth_min, format = "f", digits = 2), "-", formatC(depth_max, format = "f", digits = 2), "m"))]
+  profile[, stratum_label := paste0(Stratum, " (", depth_label, ")")]
   profile[, stratum_label := factor(stratum_label, levels = unique(stratum_label[order(Stratum)]))]
   
   top_fg <- profile[, .(tot = sum(mean_density_per_sample, na.rm = TRUE)), by = FG_name][
@@ -2217,7 +2347,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
                           Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
-
+  
   ## --- PB_QB_spp scaffold (species x FG list, no PB/QB yet) --------------
   ## Written here so the PB_QB_spp sheet EXISTS after Step 1 alone, not
   ## only once 04_pbqb_calc.R (Step 4) has run - Step 1 has no PB/QB
@@ -2248,7 +2378,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
       pbqb_spp_has_real_data <- TRUE
     }
   }
-
+  
   if (!pbqb_spp_has_real_data) {
     pbqb_spp_scaffold <- fg_spp_sheet[, .(FG_num, FG_name, Species,
                                           Biomass = Density, prop_biomass_FG = prop_sp_fg)]
@@ -2266,7 +2396,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
             " this workbook) - leaving it untouched rather than overwriting it with a blank",
             " scaffold.")
   }
-
+  
   ## extra_sheets: named list of additional data.tables/data.frames to
   ## include in the SAME workbook/write call - appended here rather
   ## than requiring a separate loadWorkbook()/saveWorkbook() round-trip
@@ -2387,7 +2517,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
 ##   workbook alone.
 add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2,
                                             ts_years = NULL, fleet_structure = NULL) {
-
+  
   if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
     stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
          " Catch_t is a RAW TOTAL (tonnes landed across the whole region), not a density,",
@@ -2395,7 +2525,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
          " the Ecopath sheet. Pass the same total area used elsewhere in the pipeline",
          " (e.g. sum(area_km2) from strata_area_by_area.csv).")
   }
-
+  
   ## convert once, up front - everything below (Catches_Ecopath AND
   ## Catches_Ecosim) reads Catch_t_km2, never the raw Catch_t
   fg_catch <- copy(fg_catch)
@@ -2405,9 +2535,9 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
           " Ecopath sheet) - e.g. total catch of ", round(fg_catch[1, Catch_t], 1),
           " t for FG ", fg_catch[1, FG_num], " in ", fg_catch[1, Year], " becomes ",
           signif(fg_catch[1, Catch_t_km2], 4), " t/km^2.")
-
+  
   full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])[order(FG_num)]
-
+  
   if (is.null(ts_years)) {
     ts_years <- read_existing_ts_years(out_path, "Ecosim")
     if (!is.null(ts_years)) {
@@ -2423,7 +2553,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
               " different range, re-run this function afterward to pick it up.")
     }
   }
-
+  
   ## --- Resolve fleet_structure (or the single-fleet default) -------------
   if (is.null(fleet_structure)) {
     fleet_tbl <- data.table(FG_num = full_fg_list$FG_num, Fleet = "Fleet_1", prop_catch = 1)
@@ -2438,7 +2568,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
            " (see this function's header comment for the expected shape).")
     }
     fleet_tbl <- fleet_tbl[, ..required_fleet_cols]
-
+    
     prop_check <- fleet_tbl[, .(total_prop = sum(prop_catch, na.rm = TRUE)), by = FG_num]
     off_fgs <- prop_check[abs(total_prop - 1) > 1e-6]
     if (nrow(off_fgs) > 0) {
@@ -2447,7 +2577,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
               " but check it's not a typo):")
       print(off_fgs)
     }
-
+    
     missing_fg <- setdiff(full_fg_list$FG_num, fleet_tbl$FG_num)
     if (length(missing_fg) > 0) {
       message(length(missing_fg), " of ", nrow(full_fg_list), " FG(s) not present in",
@@ -2466,7 +2596,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   }
   setorder(fleet_tbl, FG_num, Fleet)
   fleet_names <- sort(unique(fleet_tbl$Fleet))
-
+  
   ## --- Catches_Ecopath ---------------------------------------------------
   base_year <- year_ecopath[1]
   catch_base <- fg_catch[Year == base_year, .(FG_num, Catch_baseyear = Catch_t_km2)]
@@ -2478,7 +2608,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   base_col <- paste0("Catch_", base_year)
   setnames(catches_ecopath, c("Catch_baseyear", "Catch_avg"), c(base_col, range_col))
   setorder(catches_ecopath, FG_num)
-
+  
   n_fg_no_catch <- catches_ecopath[is.na(get(range_col)), .N]
   if (n_fg_no_catch > 0) {
     message(n_fg_no_catch, " of ", nrow(catches_ecopath), " FG(s) have no catch data in ",
@@ -2487,7 +2617,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
             " identical here):")
     print(catches_ecopath[is.na(get(range_col)), .(FG_num, FG_name)])
   }
-
+  
   if (multi_fleet) {
     ## Split the two total-catch columns above into one pair per Fleet,
     ## FG x Fleet's share = FG's total x that Fleet's prop_catch. FGs
@@ -2497,7 +2627,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     fleet_split <- merge(fleet_split, fleet_tbl, by = "FG_num", all.x = TRUE, allow.cartesian = TRUE)
     fleet_split[, (base_col)  := base_col_val * prop_catch]
     fleet_split[, (range_col) := range_col_val * prop_catch]
-
+    
     catches_ecopath <- full_fg_list
     for (fl in fleet_names) {
       fl_cols <- fleet_split[Fleet == fl, .(FG_num, v_base = get(base_col), v_range = get(range_col))]
@@ -2506,18 +2636,18 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     }
     setorder(catches_ecopath, FG_num)
   }
-
+  
   ## --- Catches_Ecosim ------------------------------------------------------
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   catches_ecosim <- data.table(` ` = c(meta_labels, as.character(ts_years)))
-
+  
   build_catch_ts_column <- function(fg_num, prop = 1) {
     vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[order(Year)]$Catch_t_km2 * prop
   }
-
+  
   if (!multi_fleet) {
     for (i in seq_len(nrow(full_fg_list))) {
       fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
@@ -2539,7 +2669,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
       catches_ecosim[, (paste0("fg_", fg_num, "_", fl)) := col]
     }
   }
-
+  
   sheets_to_write <- list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim)
   if (multi_fleet) {
     sheets_to_write$Fleet_Structure <- fleet_tbl
@@ -2547,7 +2677,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
             paste(fleet_names, collapse = ", "), ") across ", uniqueN(fleet_tbl$FG_num), " FG(s).")
   }
   upsert_workbook_sheets(sheets_to_write, out_path)
-
+  
   invisible(sheets_to_write)
 }
 
@@ -2593,7 +2723,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
          " further up in 04_pbqb_calc.R (after the FG-level aggregation step), not",
          " something else.")
   }
-
+  
   optional_cols <- intersect(
     c("Biomass_FG", "n_species_with_PB", "n_species_with_QB", "n_species_total",
       "biomass_coverage_PB", "biomass_coverage_QB", "n_species_with_F",
@@ -2603,9 +2733,9 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
   setnames(pbqb_sheet, "FG", "FG_num")
   setorder(pbqb_sheet, FG_num)
-
+  
   sheets <- list(PB_QB = pbqb_sheet)
-
+  
   if (is.null(species_pb_qb)) {
     message("add_pbqb_to_ecopath_workbook(): no species_pb_qb table passed - PB_QB stays",
             " FG-level only (one row per FG), same as before this argument existed. Pass",
@@ -2622,9 +2752,9 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
            " `results` table (species-level, after PB/QB dispatch), not fg_weighted or",
            " something else.")
     }
-
+    
     spp <- copy(as.data.table(species_pb_qb))
-
+    
     ## Three different "share of the FG" proportions, because PB_FG and
     ## QB_FG are each their OWN biomass-weighted mean over a DIFFERENT
     ## subset of species (whichever ones have a non-NA PB, resp. QB) -
@@ -2652,7 +2782,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
     spp[, Biomass_FG_QB_total := sum(Biomass[!is.na(QB)], na.rm = TRUE), by = FG]
     spp[, prop_biomass_QB     := ifelse(!is.na(QB) & Biomass_FG_QB_total > 0,
                                         Biomass / Biomass_FG_QB_total, NA_real_)]
-
+    
     spp_optional_cols <- intersect(
       c("FG_name", "dispatch_group", "PB_method", "QB_method", "Fmort", "Fmort_source"),
       names(spp)
@@ -2661,17 +2791,17 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
                          "PB", "prop_biomass_PB", "QB", "prop_biomass_QB"), with = FALSE]
     setnames(spp_sheet, "FG", "FG_num")
     setorder(spp_sheet, FG_num, -Biomass)
-
+    
     n_species_no_pb_qb <- spp_sheet[is.na(PB) & is.na(QB), .N]
     message("add_pbqb_to_ecopath_workbook(): PB_QB_spp sheet built - ", nrow(spp_sheet),
             " species across ", uniqueN(spp_sheet$FG_num), " FG(s). ", n_species_no_pb_qb,
             " species have neither a PB nor a QB value (still listed, for biomass-coverage",
             " context, but prop_biomass_PB/prop_biomass_QB are both NA for these - they did",
             " not contribute to PB_FG/QB_FG).")
-
+    
     sheets$PB_QB_spp <- spp_sheet
   }
-
+  
   upsert_workbook_sheets(sheets, out_path)
   invisible(sheets)
 }

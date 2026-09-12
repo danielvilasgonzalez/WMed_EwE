@@ -1,5 +1,8 @@
 ## =================================================================
-## PIPELINE STEP 2b of 4 (optional, runs alongside Step 2)
+## PIPELINE STEP 2a of 4 (renamed from "2b" - RUNS BEFORE Script 2, not
+## alongside it: Script 2's own CATCHES_DATA_SOURCE/FLEET_STRUCTURE_
+## PATH now default to reading THIS script's own output, so this needs
+## to have already run for that default to actually find anything).
 ## REQUIRES Step 1 (01_survey_density_westmed.R or
 ## 01_survey_density_custom.R) to have already run - reads
 ## strata_area_by_area.csv (density conversion) and species_density_
@@ -84,26 +87,66 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 ## =================================================================
 ## STEP 1: Configuration
 ## Byte-identical out_dir/pcloud_dir/git_dir resolution to
-## 02_fao_catches.R's own Step 1 - see that script for the fallback
-## picker wording. Copied rather than sourced from it since it has no
-## exported function for this, just top-level script code.
+## 02_fao_catches.R's own Step 1 (same resolve_config_dir() helper,
+## same rstudioapi::showQuestion() message window shown right before
+## each selectDirectory() picker, so you always see which folder
+## you're being asked for before the OS file-browser pops up) -
+## copied rather than sourced from it since it has no exported
+## function for this, just top-level script code. Each of the three
+## is resolved INDEPENDENTLY (not an all-or-nothing block): reused
+## verbatim if already set - e.g. by 02_fao_catches.R's own STEP 7
+## auto-run of THIS script, or by you hardcoding just one of them by
+## hand above this block - and only the ones not already set fall
+## through to the daniel-check/interactive-picker below.
 ## =================================================================
-if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
-  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
-  pcloud_dir <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
-  git_dir <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
-} else {
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
-    stop("This script requires RStudio. Please select the output/pcloud/github directories manually,",
-         " matching 02_fao_catches.R's own Step 1.")
+resolve_config_dir <- function(var_name, hardcoded_value, prompt_title, prompt_message) {
+  if (exists(var_name, envir = .GlobalEnv, inherits = FALSE)) {
+    val <- get(var_name, envir = .GlobalEnv)
+    ## Same reused-value validation as 02_fao_catches.R's own copy of this
+    ## function - see its comment for why this matters (a stale/corrupted
+    ## binding like var_name <- NULL was previously being reused blindly,
+    ## silently producing character(0) paths that only crashed much later,
+    ## far from here, with a cryptic "missing value where TRUE/FALSE
+    ## needed" error).
+    if (!is.null(val) && is.character(val) && length(val) == 1 && !is.na(val) && val != "" && dir.exists(val)) {
+      message("[02a_fisheries_multisource.R] ", var_name, " already set - using '", val,
+              "' rather than re-prompting.")
+      return(val)
+    }
+    message("[02a_fisheries_multisource.R] ", var_name, " was already set but to something invalid (",
+            if (is.null(val)) "NULL" else if (length(val) == 0) "character(0)" else paste0("'", val, "'"),
+            ", not a real directory) - re-resolving it from scratch instead of reusing it.")
   }
-  out_dir <- rstudioapi::selectDirectory(caption = "Select Output Directory (same one Step 1/2 used)")
-  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) stop("No valid output directory selected.")
-  pcloud_dir <- rstudioapi::selectDirectory(caption = "Select the pCloud Drive/EwE Western Med 2026 folder")
-  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) stop("No valid pcloud directory selected.")
-  git_dir <- rstudioapi::selectDirectory(caption = "Select the Github WMed_EwE directory")
-  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) stop("No valid Github directory selected.")
+  if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
+    return(hardcoded_value)
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio, or ", var_name, " set manually before running this",
+         " script - ", prompt_message)
+  }
+  rstudioapi::showQuestion(title = prompt_title, message = prompt_message)
+  val <- rstudioapi::selectDirectory()
+  if (is.null(val) || val == "" || !dir.exists(val)) {
+    stop("No valid directory selected for ", var_name, ".")
+  }
+  val
 }
+
+out_dir <- resolve_config_dir(
+  "out_dir", "/Users/daniel/Work/iMARES/WMed EwE Model/output/",
+  "Select Output Directory",
+  "Please select the directory where output files and intermediate results will be saved (same one Step 1/2 used)."
+)
+pcloud_dir <- resolve_config_dir(
+  "pcloud_dir", "/Users/daniel/pCloud Drive/EwE Western Med 2026/",
+  "Select pCloud EwE West Med Directory",
+  "Please select the location of the pCloud Drive/EwE Western Med 2026 folder."
+)
+git_dir <- resolve_config_dir(
+  "git_dir", "/Users/daniel/Documents/GitHub/WMed_EwE/",
+  "Select Github WMed_EwE Directory",
+  "Please select the directory where you cloned the WMed_EwE repository."
+)
 
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))
 source(file.path(git_dir, "scripts/lib_worms_taxonomy_lookup.R"))
@@ -131,8 +174,8 @@ TARGET_COUNTRIES_NOTE <- paste0(
 message(TARGET_COUNTRIES_NOTE)
 
 N_TOP_GEARS <- 8   # gears/effort-gears beyond the top N are folded into "Other gear" - same convention as
-                   # sau_gear_species_region_analysis.R/westmed_fisheries_analysis.R, avoids a combinatorial
-                   # explosion of near-empty FG x Fleet x Year rows
+# sau_gear_species_region_analysis.R/westmed_fisheries_analysis.R, avoids a combinatorial
+# explosion of near-empty FG x Fleet x Year rows
 
 ## Must match Step 1's own YEAR_ECOPATH exactly - this is the single-
 ## snapshot period Catches_by_Fleet (below) is averaged over, same
@@ -203,7 +246,15 @@ DATA_SOURCE <- "SAU"   # "SAU" | "SAU_no_unreported" | "FishMIP" | "FAO_GFCM"
 ## attempt to spend a minute timing out, or you deliberately want
 ## last run's FAO-GFCM file left alone rather than regenerated.
 ## =================================================================
-AUTO_RUN_MISSING_SOURCES <- TRUE
+if (!exists("AUTO_RUN_MISSING_SOURCES", inherits = FALSE) || !is.logical(AUTO_RUN_MISSING_SOURCES) ||
+    is.na(AUTO_RUN_MISSING_SOURCES)) {
+  if (exists("AUTO_RUN_MISSING_SOURCES", inherits = FALSE)) {
+    message("[02a_fisheries_multisource.R] AUTO_RUN_MISSING_SOURCES was set to something other than",
+            " TRUE/FALSE ('", AUTO_RUN_MISSING_SOURCES, "') - resetting it to the default (TRUE).",
+            " Set it to TRUE or FALSE explicitly above this line if you want a different value.")
+  }
+  AUTO_RUN_MISSING_SOURCES <- TRUE
+}
 
 ## =================================================================
 ## STEP 4: FG reference + species->FG matching cascade
@@ -234,7 +285,7 @@ match_scientific_names_to_fg <- function(scientific_names, label) {
 ## =================================================================
 ## STEP 5: SAU (Sea Around Us)
 ## =================================================================
-if (!file.exists(SAU_RAW_CSV) && AUTO_RUN_MISSING_SOURCES) {
+if (!file.exists(SAU_RAW_CSV) && isTRUE(AUTO_RUN_MISSING_SOURCES)) {
   message("[SAU] Raw extract not found at '", SAU_RAW_CSV, "' - attempting to download it now,",
           " straight from SAU's own API (api.seaaroundus.org), per-EEZ (this can take a minute;",
           " set AUTO_RUN_MISSING_SOURCES <- FALSE above to skip this and just fall back to",
@@ -261,7 +312,7 @@ sau_species_yield <- data.table()
 
 if (!sau_available) {
   message("[SAU] Raw extract not found at '", SAU_RAW_CSV, "'",
-          if (AUTO_RUN_MISSING_SOURCES) {
+          if (isTRUE(AUTO_RUN_MISSING_SOURCES)) {
             " (auto-download was attempted above and did not produce it - see its own messages for why;"
           } else {
             " - set AUTO_RUN_MISSING_SOURCES <- TRUE above to have this script download it automatically, or"
@@ -270,7 +321,7 @@ if (!sau_available) {
           " included. Skipping SAU for this run.")
 } else {
   sau_raw <- fread(SAU_RAW_CSV)
-
+  
   ## defensive column resolution - SAU's dimension-aggregation export and
   ## its raw CSV export use slightly different names (same candidates
   ## list as sau_west_med_analysis.Rmd/westmed_fisheries_analysis_source_sau.R)
@@ -288,15 +339,15 @@ if (!sau_available) {
   }
   setnames(sau_raw, unlist(sau_resolved), names(sau_resolved))
   if (!"report" %in% names(sau_resolved)) sau_raw[, report := NA_character_]
-
+  
   sau_raw <- sau_raw[!is.na(year) & year >= START_YEAR & year <= END_YEAR & country %in% names(TARGET_ISO3)]
   message("[SAU] ", nrow(sau_raw), " rows after year/country filter (", START_YEAR, "-", END_YEAR, ", ",
           paste(names(TARGET_ISO3), collapse = ", "), ").")
-
+  
   ## --- species -> FG match ------------------------------------------------
   sau_species_fg <- match_scientific_names_to_fg(sau_raw$sci_name, "SAU")
   sau_raw <- merge(sau_raw, sau_species_fg, by.x = "sci_name", by.y = "ScientificName", all.x = TRUE)
-
+  
   ## --- Yield definitions ---------------------------------------------------
   ## "SAU" (total): SAU's own reconstruction already adds back
   ## unreported + discarded + IUU catch on top of official landings -
@@ -305,7 +356,7 @@ if (!sau_available) {
   ## still needs a discard figure added on top.
   sau_total_cy <- sau_raw[, .(tonnes = sum(tonnes, na.rm = TRUE)), by = .(country, year)]
   sau_total_cy[, source := "SAU total (reconstructed)"]
-
+  
   ## "SAU_no_unreported": SAU's own reporting_status dimension, kept as
   ## its own labeled source rather than presented as a clean landings-
   ## only or landings+discards figure - see this script's header note.
@@ -316,14 +367,14 @@ if (!sau_available) {
   } else {
     message("[SAU] No reporting-status column in this extract - 'SAU w/o unreported' source unavailable this run.")
   }
-
+  
   ## --- FG-level yield (for DataSources_Catch / DATA_SOURCE = 'SAU'*) ------
   sau_fg_total <- sau_raw[!is.na(FG_num), .(Catch_t = sum(tonnes, na.rm = TRUE)), by = .(Year = year, FG_num, FG_name)]
   if (nrow(sau_reported_cy) > 0) {
     sau_fg_reported <- sau_raw[!is.na(FG_num) & grepl("^report", report, ignore.case = TRUE) & !grepl("unreport", report, ignore.case = TRUE),
                                .(Catch_t = sum(tonnes, na.rm = TRUE)), by = .(Year = year, FG_num, FG_name)]
   }
-
+  
   ## --- species-level yield (for landings_by_species_gsa_year_SAU*.csv) ----
   ## AreaID left NA - SAU has no GSA/AreaID concept, only country; this
   ## mirrors 04_pbqb_calc.R's own landings_by_species_gsa_year.csv
@@ -333,7 +384,7 @@ if (!sau_available) {
   sau_species_yield <- sau_raw[!is.na(FG_num), .(catch_t = sum(tonnes, na.rm = TRUE)),
                                by = .(ScientificName = sci_name, Year = year)]
   sau_species_yield[, AreaID := NA_integer_]
-
+  
   ## --- Catches_by_Fleet (SAU is the only source with real gear x
   ## country x species resolution - see this script's header note) -----
   ## Yield here already includes discards (+ unreported + IUU, by SAU's
@@ -350,7 +401,7 @@ if (!sau_available) {
   message("[SAU] Catches_by_Fleet_AllYears: ", uniqueN(sau_catches_by_fleet$Fleet), " fleet(s) (country x gear, top ",
           N_TOP_GEARS, " gears + 'Other gear'), ", uniqueN(sau_catches_by_fleet$FG_num), " FG(s), ",
           uniqueN(sau_catches_by_fleet$Year), " year(s).")
-
+  
   ## --- Catches_by_Fleet (WIDE, Ecopath-style): one row per FG, one
   ## COLUMN PER FLEET, value = that FG x Fleet's catch (t) averaged over
   ## YEAR_ECOPATH - the same single-snapshot convention
@@ -384,7 +435,7 @@ if (!sau_available) {
               max(YEAR_ECOPATH), ". ", n_fg_no_catch, " FG(s) have NO SAU catch from ANY fleet in",
               " that period (blank row, not zero) - genuinely unfished and simply unmatched/",
               " unresolved look identical here, same caveat as Catches_Ecopath's own equivalent.")
-
+      
       ## --- fleet_structure_from_sau.csv: an AUTO-DERIVED fleet_structure
       ## input for 02_fao_catches.R's own FLEET_STRUCTURE_PATH mechanism -
       ## (FG_num, Fleet, prop_catch), each FG's fleets summing to 1 - so
@@ -447,7 +498,7 @@ if (!fishmip_available) {
   effort[, year := as.integer(year)]
   effort[, country := FISHMIP_SAUP_TO_COUNTRY[as.character(saup)]]
   effort <- effort[!is.na(country) & year >= START_YEAR & year <= END_YEAR]
-
+  
   ## --- Fishing_Effort_by_Fleet - the ONLY genuine effort data in this
   ## whole pipeline (SAU has no effort variable at all) -------------------
   top_effort_gears <- effort[, .(g_tot = sum(nom_active, na.rm = TRUE)), by = gear][order(-g_tot)][seq_len(min(N_TOP_GEARS, .N)), gear]
@@ -460,12 +511,12 @@ if (!fishmip_available) {
           " NOTE: this is a DIFFERENT fleet resolution than Catches_by_Fleet (SAU) - FishMIP's own catch file",
           " (below) has NO gear dimension, so effort-by-gear and catch-by-gear can never be joined directly,",
           " only compared side by side (see the source module's own header comment).")
-
+  
   catch <- as.data.table(arrow::read_parquet(FISHMIP_CATCH_PARQUET))
   catch[, year := as.integer(year)]
   catch[, country := FISHMIP_SAUP_TO_COUNTRY[as.character(saup)]]
   catch <- catch[!is.na(country) & year >= START_YEAR & year <= END_YEAR]
-
+  
   ## "FishMIP" Yield = reported + discards (landings + discards, per
   ## this script's Yield definition) - IUU kept as its own audit column,
   ## NOT included in Yield by default, since the user's definition was
@@ -478,7 +529,7 @@ if (!fishmip_available) {
   fishmip_country_total[, source := "FishMIP (reported+discards)"]
   fishmip_country_reported <- catch[, .(tonnes = sum(reported, na.rm = TRUE)), by = .(country, year)]
   fishmip_country_reported[, source := "FishMIP reported-only"]
-
+  
   if (!is.null(FISHMIP_FG_CROSSWALK_PATH) && file.exists(FISHMIP_FG_CROSSWALK_PATH)) {
     fg_crosswalk <- fread(FISHMIP_FG_CROSSWALK_PATH)
     if (!all(c("fishmip_f_group", "FG_num") %in% names(fg_crosswalk))) {
@@ -500,7 +551,7 @@ if (!fishmip_available) {
 ## =================================================================
 ## STEP 7: FAO-GFCM passthrough (this pipeline's existing source)
 ## =================================================================
-if (!file.exists(FAO_GFCM_FG_CSV) && AUTO_RUN_MISSING_SOURCES) {
+if (!file.exists(FAO_GFCM_FG_CSV) && isTRUE(AUTO_RUN_MISSING_SOURCES)) {
   message("[FAO-GFCM] '", FAO_GFCM_FG_CSV, "' not found - attempting to auto-run 02_fao_catches.R now",
           " to produce it (set AUTO_RUN_MISSING_SOURCES <- FALSE above to skip this and just fall",
           " back to 'not found' instead). This re-runs that script's OWN full pipeline (its own",
@@ -548,7 +599,7 @@ if (file.exists(FAO_GFCM_FG_CSV)) {
           " Landings only (no discards) - see 02_fao_catches.R's own caveats, unchanged here.")
 } else {
   message("[FAO-GFCM] '", FAO_GFCM_FG_CSV, "' not found",
-          if (AUTO_RUN_MISSING_SOURCES) {
+          if (isTRUE(AUTO_RUN_MISSING_SOURCES)) {
             " (auto-run was attempted above and did not produce it - see its own messages for why)."
           } else {
             " - set AUTO_RUN_MISSING_SOURCES <- TRUE above to have this script auto-run 02_fao_catches.R,"
@@ -592,7 +643,7 @@ if (nrow(fishmip_effort_by_fleet) > 0) sheets_to_write$Fishing_Effort_by_Fleet <
 if (nrow(country_sources) > 0 || nrow(fg_sources) > 0) {
   sheets_to_write$DataSources_Catch <- rbindlist(list(
     if (nrow(country_sources) > 0) country_sources[, .(level = "country", country, FG_num = NA_integer_,
-                                                        FG_name = NA_character_, Year = year, tonnes, source)],
+                                                       FG_name = NA_character_, Year = year, tonnes, source)],
     if (nrow(fg_sources) > 0) fg_sources[, .(level = "FG", country = NA_character_, FG_num, FG_name,
                                              Year, tonnes = Catch_t, source)]
   ), fill = TRUE)
@@ -632,11 +683,11 @@ fg_out_path <- file.path(out_dir, paste0("fg_catch_timeseries_", DATA_SOURCE, ".
 species_out_path <- file.path(out_dir, paste0("landings_by_species_gsa_year_", DATA_SOURCE, ".csv"))
 
 fg_yield_for_source <- switch(DATA_SOURCE,
-  SAU = sau_fg_total,
-  SAU_no_unreported = sau_fg_reported,
-  FishMIP = fishmip_fg_total,
-  FAO_GFCM = fao_gfcm_fg_total,
-  stop("DATA_SOURCE must be one of: SAU, SAU_no_unreported, FishMIP, FAO_GFCM")
+                              SAU = sau_fg_total,
+                              SAU_no_unreported = sau_fg_reported,
+                              FishMIP = fishmip_fg_total,
+                              FAO_GFCM = fao_gfcm_fg_total,
+                              stop("DATA_SOURCE must be one of: SAU, SAU_no_unreported, FishMIP, FAO_GFCM")
 )
 
 if (is.null(fg_yield_for_source) || nrow(fg_yield_for_source) == 0) {
@@ -663,5 +714,5 @@ if (DATA_SOURCE %in% c("SAU", "SAU_no_unreported") && nrow(sau_species_yield) > 
           " its own species-level CSV.)")
 }
 
-message("\nDone (02b_fisheries_multisource.R). Re-run this script any time a source's underlying data changes -",
+message("\nDone (02a_fisheries_multisource.R). Re-run this script any time a source's underlying data changes -",
         " every step above is idempotent (upsert_workbook_sheets() + fwrite() overwrite, they don't append).")
