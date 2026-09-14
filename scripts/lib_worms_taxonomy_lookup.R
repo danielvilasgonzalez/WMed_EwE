@@ -114,9 +114,72 @@ fetch_names_robust <- function(terms, max_retries = 3) {
   result
 }
 
-#function
+## =================================================================
+## cache_path (optional, default NULL = old behavior, always queries
+## WoRMS fresh) - this is what actually fixes "taking forever": WoRMS
+## taxonomy for a given ScientificName never changes between runs of
+## THIS pipeline in normal development (re-running after a code change
+## elsewhere, debugging, re-running with different FILTER_AREAS, etc.),
+## so re-querying all ~900+ species from scratch every single run is
+## pure waste. When cache_path is set, names already resolved on a
+## previous run are read from an on-disk RDS file and skipped entirely
+## - only genuinely NEW names (first time seen, or a name that
+## previously came back "not found" - see below) go to WoRMS at all.
+## A cache hit costs a disk read, not an HTTP round-trip.
+##
+## "not found" results ARE cached too (not just successful ones) -
+## otherwise every run would keep re-querying the same handful of
+## always-unresolvable names (typos, non-marine taxa, etc.) forever,
+## which is exactly the kind of name most likely to trigger WoRMS's
+## flaky 500s in the first place (see fetch_names_robust()'s own
+## comment). Delete the cache file (or pass a fresh cache_path) if you
+## fix an upstream spelling issue and want a "not found" name re-tried.
+## =================================================================
 worms_taxonomy_lookup <- function(names_vector, chunk_size = 50, max_retries = 3,
-                                  inter_chunk_sleep = 1) {
+                                  inter_chunk_sleep = 1, cache_path = NULL) {
+  
+  cache <- if (!is.null(cache_path) && file.exists(cache_path)) {
+    readRDS(cache_path)
+  } else {
+    NULL
+  }
+  
+  already_cached <- if (!is.null(cache)) intersect(names_vector, cache$original_name) else character(0)
+  to_query <- setdiff(names_vector, already_cached)
+  
+  if (!is.null(cache_path)) {
+    message("  WoRMS taxonomy cache (", cache_path, "): ", length(already_cached),
+            " of ", length(names_vector), " name(s) already cached, ",
+            length(to_query), " to actually query.")
+  }
+  
+  fresh_result <- if (length(to_query) > 0) {
+    worms_taxonomy_lookup_uncached(to_query, chunk_size = chunk_size,
+                                   max_retries = max_retries, inter_chunk_sleep = inter_chunk_sleep)
+  } else {
+    NULL
+  }
+  
+  if (!is.null(cache_path)) {
+    updated_cache <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else
+      dplyr::bind_rows(cache, fresh_result)
+    if (!is.null(updated_cache)) {
+      dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
+      saveRDS(updated_cache, cache_path)
+    }
+  }
+  
+  ## final result must be in names_vector's own order (including
+  ## duplicates, if any) - same contract worms_taxonomy_lookup_uncached()
+  ## always had - so pull each row (cached or fresh) back out by name
+  ## rather than just returning fresh_result alone.
+  all_known <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else
+    dplyr::bind_rows(cache, fresh_result)
+  all_known %>% dplyr::slice(match(names_vector, original_name))
+}
+
+worms_taxonomy_lookup_uncached <- function(names_vector, chunk_size = 50, max_retries = 3,
+                                           inter_chunk_sleep = 1) {
   
   ## Strip common non-taxonomic qualifiers (spp./sp./cf./aff., case-
   ## insensitive) so those still resolve, and NEVER send a literal,
@@ -150,10 +213,22 @@ worms_taxonomy_lookup <- function(names_vector, chunk_size = 50, max_retries = 3
   ## wins an unqualified call - fragile and silently wrong when it
   ## picks maps::map() instead, which is exactly what happened here
   ## once "maps" was added to the calling script's package list.
+  ## Progress message per chunk - without this, a long fallback (many
+  ## hundreds of species, each chunk taking a few seconds plus whatever
+  ## retry/backoff time a flaky 500 costs) prints NOTHING between the
+  ## opening "N distinct species..." message and completion, which
+  ## looks identical to a hung process from the outside. This alone
+  ## doesn't make it faster, but it's the difference between "is this
+  ## stuck?" and "it's on chunk 12 of 19, working normally."
+  message("  Querying WoRMS: ", length(chunk_idx), " chunk(s) of up to ", chunk_size,
+          " name(s) each (", length(search_terms), " total).")
   raw_results <- vector("list", length(search_terms))
   for (k in seq_along(chunk_idx)) {
     idx <- chunk_idx[[k]]
+    t0 <- Sys.time()
     raw_results[idx] <- fetch_names_robust(search_terms[idx], max_retries = max_retries)
+    message("    chunk ", k, "/", length(chunk_idx), " (", length(idx), " name(s)) done in ",
+            round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1), "s.")
     if (k < length(chunk_idx)) Sys.sleep(inter_chunk_sleep)   # space out batches - see fetch_names_robust()'s own note
   }
   

@@ -155,6 +155,56 @@ DROP_OUTLIERS <- TRUE                        # function attribute: whether remov
 NORMALIZE_TS  <- TRUE   # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
 # removes flagged observations (TRUE) or only reports them (FALSE)
 
+## OUTLIER_METHOD: which sample-level outlier removal rule actually
+## runs (see remove_sample_outliers_multi()'s own header comment for
+## the full description of each method):
+##  "medits" (default) - Tukey/boxplot IQR fences (1.5xIQR beyond
+##      Q1/Q3), applied per (AreaID, ScientificName) on log1p(Density).
+##      This automates the same box-plot convention RoME (the MEDITS-
+##      community QC package) draws in its own check_abundance() check
+##      for screening abundance/density indices - RoME's docs don't
+##      publish that as a numeric auto-removal rule (it's meant for a
+##      person to eyeball the plot), so this turns that same visual
+##      convention into an automatic rule rather than reproducing a
+##      published MEDITS threshold that doesn't exist for density data.
+##  "mad" - this pipeline's original single robust-z method (median/MAD,
+##      threshold=70) - see remove_sample_outliers()'s own header
+##      comment for the calibration story. Not a MEDITS/RoME method.
+##  "percentile" - the 5th-95th percentile-band method RoME's
+##      check_weight() uses for its own official QC check - but that
+##      check is defined for mean individual weight per haul, not
+##      Density, so this is an adaptation of the method to density, not
+##      a literal reproduction of RoME's own published numeric bands
+##      (those come from an external 2012-2022 reference dataset baked
+##      into that package, not exposed as a reusable table from R).
+##  "multi" - runs more than one method at once and combines them via
+##      OUTLIER_CONSENSUS ("all"/"any"/"majority"); set
+##      OUTLIER_MULTI_METHODS below to whichever combination you want.
+OUTLIER_METHOD        <- "medits"            # "medits" (=boxplot/Tukey), "mad", "percentile", or "multi"
+OUTLIER_CONSENSUS     <- "all"               # only used when OUTLIER_METHOD == "multi": "all"/"any"/"majority"
+OUTLIER_MULTI_METHODS <- c("mad", "percentile", "boxplot")  # only used when OUTLIER_METHOD == "multi"
+
+## Species presence check - a character VECTOR of ScientificName(s) to
+## print, per species, how many distinct hauls caught it in each year
+## of the full 1994-2023 MEDITS record (not just TS_YEARS), or NULL to
+## skip entirely. Example below checks two Lessepsian/invasive species
+## whose presence-by-year (and how many hauls, not just which years) is
+## itself often the question, not just their density where present.
+SPECIES_PRESENCE_CHECK <- c("Pterois miles", "Fistularia commersonii",'Rugulopteryx okamurae',
+                            'Siganus luridus','Siganus rivulatus','Lagocephalus sceleratus',
+                            'Canthigaster capistrata','Lagocephalus lagocephalus','Sparisoma cretense','Sciaena umbra')    # NULL to skip
+
+## Persistent on-disk cache for WoRMS taxonomy lookups (see
+## worms_taxonomy_lookup()'s own header comment in
+## lib_worms_taxonomy_lookup.R for the full rationale) - species already
+## resolved on a PREVIOUS run of this script are read from this file
+## instead of re-queried from WoRMS, which is what actually fixes the
+## taxonomy-fallback step "taking forever" on every re-run during normal
+## development/debugging. Set to NULL to disable caching entirely
+## (always query WoRMS fresh, the old behavior). Delete this file if you
+## suspect it's stale (e.g. WoRMS updated a name) and want a clean re-query.
+WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
+
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
 ## covers 10-800m; this adds two DERIVED pseudo-strata (0-10m, 800-6000m)
@@ -344,7 +394,7 @@ MANUAL_OVERRIDES <- data.table(
   taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species",'species'))
 
 ## needs taxonomy on fg_lookup_safe to resolve genus/family/class-rank overrides
-fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "worms")
+fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
 fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy, by = "ScientificName", all.x = TRUE)
 
 resolve_override <- function(taxon_name, rank) {
@@ -391,12 +441,19 @@ message("After manual overrides: ", dt[!is.na(FG_num), uniqueN(ScientificName)],
 ## aren't real taxa and would just waste a WoRMS query for nothing;
 ## setting ScientificName to NA here only affects the fallback match
 ## attempt, not the underlying observation rows themselves
+## str_detect() on an already-NA ScientificName returns NA (not FALSE),
+## so non_taxon itself legitimately contains NAs wherever ScientificName
+## was already NA - data.table's `dt[non_taxon, ...]` already treats
+## those NA entries as "not selected" (same as FALSE), so the actual
+## exclusion logic here was always correct; only sum(non_taxon) below
+## was wrong (NA propagates through sum() without na.rm, printing "NA"
+## instead of a real count, which is what made this look broken/stuck).
 non_taxon <- str_detect(dt$ScientificName, "^NO\\b") | str_detect(dt$ScientificName, regex("eggs?", ignore_case = TRUE))
 dt[non_taxon, ScientificName := NA_character_]
-message(sum(non_taxon), " non-taxon row(s) (NO-prefixed or egg-capsule entries) excluded",
+message(sum(non_taxon, na.rm = TRUE), " non-taxon row(s) (NO-prefixed or egg-capsule entries) excluded",
         " from the taxonomy fallback attempt.")
 
-dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms")
+dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
 
 ## --- Seed FG rules -----------------------------------------------------
 ## For FGs that genuinely have ZERO species pre-listed in dataframe2 -
@@ -492,6 +549,37 @@ message("Saved to survey_unmatched_for_manual_review.csv for review.")
 message("\nFinal FG match rate: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " of ",
         dt[, uniqueN(ScientificName)], " distinct species matched.")
 
+## Species presence check (SPECIES_PRESENCE_CHECK, set above) - for
+## each species, how many DISTINCT HAULS (SampleID) actually caught it
+## in each year, checked against the FULL 1994-2023 MEDITS time series
+## (not just TS_YEARS, which is the shorter Ecosim-output window and
+## may start later - this check is about the raw survey record).
+## Deliberately BEFORE outlier removal/catchability correction below,
+## since this is about whether/how often the species was ever caught at
+## all, not about its corrected density. Density > 0 (not just !is.na)
+## specifically - some survey formats carry an explicit zero-catch row
+## per haul per species checked for, which would otherwise inflate
+## "presence" to mean "was checked for" rather than "was caught".
+if (!is.null(SPECIES_PRESENCE_CHECK)) {
+  full_survey_years <- 1994:2023
+  for (sp in SPECIES_PRESENCE_CHECK) {
+    hauls_by_year <- dt[ScientificName == sp & !is.na(Biomass) & Biomass > 0,
+                        .(n_hauls_present = uniqueN(SampleID)), by = Year][order(Year)]
+    yrs_missing <- setdiff(full_survey_years, hauls_by_year$Year)
+    if (nrow(hauls_by_year) == 0) {
+      message("\n[Species check] '", sp, "' NOT found in dt at all across ",
+              min(full_survey_years), "-", max(full_survey_years), ".")
+    } else {
+      message("\n[Species check] '", sp, "' present in ", nrow(hauls_by_year), " of ",
+              length(full_survey_years), " year(s), ", sum(hauls_by_year$n_hauls_present),
+              " haul(s) total across the time series. Hauls with presence, by year:")
+      print(hauls_by_year)
+      message("Absent (zero hauls) in: ",
+              if (length(yrs_missing) == 0) "none" else paste(yrs_missing, collapse = ", "), ".")
+    }
+  }
+}
+
 ## species_taxonomy - built here (moved up from the Excel-export step)
 ## since apply_catchability_correction() below needs it too, not just
 ## the export. Starts from fg_lookup_safe's own taxonomy (reference
@@ -517,7 +605,7 @@ if (length(still_missing_taxonomy) > 0) {
   message("\n", length(still_missing_taxonomy), " observed species have no taxonomy yet",
           " (likely matched via MANUAL_OVERRIDES, which doesn't fetch taxonomy) -",
           " fetching directly for these:")
-  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "worms")
+  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
   species_taxonomy <- rbindlist(list(species_taxonomy, gap_taxonomy), fill = TRUE)
   species_taxonomy <- unique(species_taxonomy, by = "ScientificName")
 }
@@ -601,7 +689,24 @@ if (file.exists(CATCHABILITY_CSV_PATH)) {
 ## FG or the whole year for other species sharing it. Uses a high
 ## (threshold=5) bar since this is an automatic exclusion, not just a
 ## flag for review - only fires with real confidence.
-dt <- remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = DROP_OUTLIERS)
+## dt_before_outliers kept specifically for plot_outlier_diagnostic()
+## below, which needs the REAL Density values for flagged rows (already
+## NA'd out of dt itself once removed).
+dt_before_outliers <- copy(dt)
+
+dt <- if (identical(OUTLIER_METHOD, "medits")) {
+  ## boxplot/Tukey IQR only - see OUTLIER_METHOD's own comment above for
+  ## why this (not "mad") is the default: it's the method RoME's own
+  ## check_abundance() convention uses for density/abundance screening.
+  remove_sample_outliers_multi(dt, methods = "boxplot", drop_outliers = DROP_OUTLIERS)
+} else if (identical(OUTLIER_METHOD, "percentile")) {
+  remove_sample_outliers_multi(dt, methods = "percentile", drop_outliers = DROP_OUTLIERS)
+} else if (identical(OUTLIER_METHOD, "multi")) {
+  remove_sample_outliers_multi(dt, methods = OUTLIER_MULTI_METHODS,
+                               consensus = OUTLIER_CONSENSUS, drop_outliers = DROP_OUTLIERS)
+} else {
+  remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = DROP_OUTLIERS)
+}
 
 ## save right here, before dt moves on to compute_fg_densities_by_stratum()
 ## etc. below - those functions weren't designed to know about or
@@ -612,7 +717,16 @@ if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
   fwrite(flagged_outliers, file.path(out_dir, "survey_outliers_flagged.csv"))
   message("Saved ", nrow(flagged_outliers), " flagged outlier(s) to survey_outliers_flagged.csv",
           " (includes a 'was_dropped' column - TRUE if actually removed, FALSE if only reported).")
+  
+  ## diagnostic plot - box-plot per flagged species with the flagged
+  ## points overlaid, the same visual convention RoME's check_abundance()
+  ## uses for MEDITS QC screening (see plot_outlier_diagnostic()'s own
+  ## header comment).
+  p_outliers <- plot_outlier_diagnostic(dt_before_outliers, flagged_outliers)
+  ggsave(file.path(plot_dir, "survey_outlier_diagnostic.png"), p_outliers,
+         width = 10, height = 7, dpi = 150, bg = "white")
 }
+rm(dt_before_outliers)
 
 per_group_fg <- compute_fg_densities_by_stratum(dt, strata = STRATA)
 
@@ -787,6 +901,16 @@ if (STRATA) {
   ## are folded in - same strata_def_for_plotting as the plot above.
   fg_density_by_stratum <- build_fg_density_by_stratum_sheet(
     fg_index, strata_def_for_plotting, year_filter = YEAR_ECOPATH)
+  
+  ## Area-weight composition (Stage 5's "% of area" weighting, made
+  ## visible per area rather than buried in strata_area_by_area's own
+  ## numbers) - one donut per area, sliced by depth stratum's prop.
+  ## Capped to a readable number of areas via facet_wrap's own default;
+  ## pass area_ids = <a few AreaIDs> below if FILTER_AREAS covers many
+  ## areas and the full facet grid gets too small to read.
+  p_area_weights <- plot_area_weight_donut(fg_index, strata_def_for_plotting)
+  ggsave(file.path(plot_dir, "survey_area_weight_donut.png"), p_area_weights,
+         width = 14, height = 10, dpi = 150, bg = "white")
 }
 
 ## =================================================================
@@ -866,7 +990,7 @@ if (n_no_sci > 0) {
 
 acoustic_matched <- match_species_to_fg(acoustic[!is.na(ScientificName)], fg_lookup_safe)
 acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
-acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms")
+acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
 message("MEDIAS: ", acoustic_matched[!is.na(FG_num), uniqueN(ScientificName)], " of ",
         acoustic_matched[, uniqueN(ScientificName)], " species matched to an FG.")
 

@@ -310,12 +310,12 @@ match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
 ## don't depend on each other, so this is a genuine combined fallback,
 ## not just redundancy).
 
-fetch_taxonomy_worms <- function(species_names) {
+fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
   if (!exists("worms_taxonomy_lookup")) {
     stop("worms_taxonomy_lookup() not found - source() the same",
          " lib_worms_taxonomy_lookup.R used elsewhere in this project first.")
   }
-  raw <- worms_taxonomy_lookup(species_names)
+  raw <- worms_taxonomy_lookup(species_names, cache_path = cache_path)
   as.data.table(raw)[, .(ScientificName = original_name, Genus = genus, Family = family,
                          Order = order, Class = class, Phylum = phylum)]
 }
@@ -335,11 +335,11 @@ fetch_taxonomy_fishbase <- function(species_names) {
   unique(results, by = "ScientificName")
 }
 
-fetch_taxonomy <- function(species_names, taxonomy_source = "worms") {
-  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names))
+fetch_taxonomy <- function(species_names, taxonomy_source = "worms", cache_path = NULL) {
+  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names, cache_path = cache_path))
   if (taxonomy_source == "fishbase") return(fetch_taxonomy_fishbase(species_names))
   if (taxonomy_source == "both") {
-    worms_tax <- fetch_taxonomy_worms(species_names)
+    worms_tax <- fetch_taxonomy_worms(species_names, cache_path = cache_path)
     still_missing <- setdiff(species_names, worms_tax[!is.na(Genus) | !is.na(Family), ScientificName])
     if (length(still_missing) > 0) {
       fb_tax <- fetch_taxonomy_fishbase(still_missing)
@@ -362,7 +362,8 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "worms") {
 ## re-derived automatically on the next run rather than needing manual
 ## updates to a separate rules table.
 fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "worms",
-                                          rank_levels = c("Genus", "Family", "Order", "Class", "Phylum")) {
+                                          rank_levels = c("Genus", "Family", "Order", "Class", "Phylum"),
+                                          cache_path = NULL) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
   unmatched_sci <- unique(dt[!is.na(ScientificName) & is.na(FG_num), ScientificName])
   if (length(unmatched_sci) == 0) {
@@ -377,7 +378,7 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## rank columns aren't already present
   missing_rank_cols <- setdiff(rank_levels, names(fg_lookup_safe))
   if (length(missing_rank_cols) > 0) {
-    fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source)
+    fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source, cache_path = cache_path)
     fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy[, c("ScientificName", rank_levels), with = FALSE],
                             by = "ScientificName", all.x = TRUE)
   }
@@ -385,8 +386,11 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## attached as an attribute on the return value (see bottom of this
   ## function, "fetched_taxonomy") so a caller with its own additional
   ## taxonomy-based logic can reuse this fetch instead of re-querying
-  ## the same species
-  unmatched_taxonomy <- fetch_taxonomy(unmatched_sci, taxonomy_source)
+  ## the same species. cache_path (see worms_taxonomy_lookup()'s own
+  ## header comment) is what actually makes a RE-run of this pipeline
+  ## fast - species already resolved on a previous run are read off
+  ## disk instead of re-queried from WoRMS.
+  unmatched_taxonomy <- fetch_taxonomy(unmatched_sci, taxonomy_source, cache_path = cache_path)
   message(unmatched_taxonomy[!is.na(Genus) | !is.na(Family), .N], " of ",
           length(unmatched_sci), " found with usable genus/family.")
   
@@ -1102,6 +1106,130 @@ remove_sample_outliers <- function(dt, threshold = 70, min_samples = 5, drop_out
   }
   
   dt[, c("obs_id", "eval_value", "group_median", "group_mad", "n_obs_in_group", "robust_z", "is_outlier") := NULL]
+  attr(dt, "flagged_outliers") <- flagged
+  dt
+}
+
+## =================================================================
+## Multi-method sample-level outlier detection - runs up to three
+## complementary tests on the same (AreaID, ScientificName) grouping,
+## log1p(Density), and min_samples floor as remove_sample_outliers()
+## above (see that function's own comments for why each of those
+## choices), then combines them via a consensus rule:
+##
+##  - "mad"        robust z-score (median/MAD) > mad_threshold - the
+##                 method remove_sample_outliers() implements above;
+##                 see its header comment for the calibration story
+##                 (threshold=70, tuned against a synthetic genuine-
+##                 event-vs-error test).
+##  - "percentile" outside the [pctl_lower, pctl_upper] percentile band
+##                 of that species' own within-area distribution - the
+##                 METHOD RoME's check_weight() uses for official MEDITS
+##                 QC (5th-95th percentile of mean individual weight).
+##                 RoME's own reference bands come from a fixed external
+##                 2012-2022 Mediterranean-wide dataset baked into that
+##                 package and not exposed as a reusable table from R,
+##                 so this reproduces the percentile-band METHOD using
+##                 each species' own distribution in THIS survey's data
+##                 as the reference instead - not a literal reproduction
+##                 of RoME's specific numeric bands.
+##  - "boxplot"    outside Tukey's classic IQR fences (Q1 - boxplot_coef
+##                 * IQR, Q3 + boxplot_coef*IQR; boxplot_coef=1.5 is
+##                 R's own boxplot() default) - the same rule RoME's
+##                 check_abundance() draws as a box-plot for visual
+##                 screening; this automates that rule instead of
+##                 leaving it to eyeballing a plot.
+##
+## consensus = "all" (default) requires every ACTIVE method (i.e. every
+## method named in `methods`) to agree before a sample is flagged/
+## removed - the conservative choice. EXPECT "percentile" and "boxplot"
+## to each catch many more samples on their own than "mad" does at its
+## calibrated threshold=70 - they are much more aggressive at their
+## textbook defaults (5%, 1.5xIQR), so requiring all three to agree
+## keeps this from becoming far more aggressive than the single-method
+## version above. consensus = "any" flags anything ANY active method
+## catches (most aggressive); consensus = "majority" needs a majority
+## of the active methods.
+## =================================================================
+remove_sample_outliers_multi <- function(dt, methods = c("mad", "percentile", "boxplot"),
+                                         consensus = c("all", "any", "majority"),
+                                         mad_threshold = 70, pctl_lower = 0.05, pctl_upper = 0.95,
+                                         boxplot_coef = 1.5, min_samples = 5, drop_outliers = TRUE,
+                                         log_scale = TRUE) {
+  consensus <- match.arg(consensus)
+  methods <- intersect(methods, c("mad", "percentile", "boxplot"))
+  if (length(methods) == 0) stop("methods must include at least one of 'mad', 'percentile', 'boxplot'.")
+  
+  dt <- copy(dt)
+  dt[, obs_id := .I]
+  dt[, eval_value := if (log_scale) log1p(Density) else Density]
+  
+  stats <- dt[!is.na(eval_value) & !is.na(ScientificName),
+              .(group_median = median(eval_value, na.rm = TRUE),
+                group_mad = mad(eval_value, na.rm = TRUE),
+                q_lo = quantile(eval_value, pctl_lower, na.rm = TRUE, names = FALSE),
+                q_hi = quantile(eval_value, pctl_upper, na.rm = TRUE, names = FALSE),
+                iqr_q1 = quantile(eval_value, 0.25, na.rm = TRUE, names = FALSE),
+                iqr_q3 = quantile(eval_value, 0.75, na.rm = TRUE, names = FALSE),
+                n_obs_in_group = .N),
+              by = .(AreaID, ScientificName)]
+  stats[, iqr := iqr_q3 - iqr_q1]
+  stats[, box_lo := iqr_q1 - boxplot_coef * iqr]
+  stats[, box_hi := iqr_q3 + boxplot_coef * iqr]
+  
+  dt <- merge(dt, stats, by = c("AreaID", "ScientificName"), all.x = TRUE)
+  enough <- !is.na(dt$eval_value) & !is.na(dt$n_obs_in_group) & dt$n_obs_in_group >= min_samples
+  
+  dt[, is_outlier_mad := FALSE]
+  dt[, is_outlier_percentile := FALSE]
+  dt[, is_outlier_boxplot := FALSE]
+  
+  if ("mad" %in% methods) {
+    dt[, robust_z := ifelse(enough & group_mad > 0, abs(eval_value - group_median) / group_mad, NA_real_)]
+    dt[, is_outlier_mad := enough & !is.na(robust_z) & robust_z > mad_threshold]
+  }
+  if ("percentile" %in% methods) {
+    dt[, is_outlier_percentile := enough & (eval_value < q_lo | eval_value > q_hi)]
+  }
+  if ("boxplot" %in% methods) {
+    dt[, is_outlier_boxplot := enough & (eval_value < box_lo | eval_value > box_hi)]
+  }
+  
+  flag_cols <- paste0("is_outlier_", methods)
+  n_active <- length(methods)
+  dt[, n_methods_flagged := rowSums(.SD), .SDcols = flag_cols]
+  dt[, is_outlier := switch(consensus,
+                            all = n_methods_flagged == n_active,
+                            any = n_methods_flagged >= 1,
+                            majority = n_methods_flagged > n_active / 2)]
+  
+  flagged <- dt[is_outlier == TRUE, c("ScientificName", "AreaID", "Year", "SampleID",
+                                      "Density", flag_cols, "n_methods_flagged"), with = FALSE]
+  setnames(flagged, "Density", "flagged_density")
+  setorder(flagged, -n_methods_flagged)
+  flagged[, was_dropped := drop_outliers]
+  
+  if (nrow(flagged) > 0) {
+    message("\n", nrow(flagged), " sample-level observation(s) flagged as outliers under the '",
+            consensus, "' consensus rule across method(s): ", paste(methods, collapse = ", "), ".",
+            if (drop_outliers) " REMOVED from the data (drop_outliers=TRUE)." else
+              " NOT removed - drop_outliers=FALSE, this is a report only.",
+            " Full detail (most methods in agreement first):")
+    print(flagged)
+    message("\nFlagged, by species:")
+    print(dt[is_outlier == TRUE, .N, by = ScientificName][order(-N)])
+    if (drop_outliers) {
+      dt[is_outlier == TRUE, `:=`(Density = NA_real_, Biomass = NA_real_)]
+    }
+  } else {
+    message("\nNo sample-level observations flagged under the '", consensus, "' consensus rule",
+            " across method(s): ", paste(methods, collapse = ", "), ".")
+  }
+  
+  drop_cols <- c("obs_id", "eval_value", "group_median", "group_mad", "q_lo", "q_hi",
+                 "iqr_q1", "iqr_q3", "iqr", "box_lo", "box_hi", "n_obs_in_group",
+                 "robust_z", "n_methods_flagged", flag_cols, "is_outlier")
+  dt[, (intersect(drop_cols, names(dt))) := NULL]
   attr(dt, "flagged_outliers") <- flagged
   dt
 }
@@ -1898,6 +2026,92 @@ plot_strata_profile <- function(fg_index_stratified, strata_def, top_n_fg = 40) 
     labs(title = "Depth-strata density profile by FG", x = "Depth stratum", y = "Mean density per sample") +
     theme_minimal(base_size = 10) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+## =================================================================
+## Outlier diagnostic plot - visualizes what remove_sample_outliers()
+## or remove_sample_outliers_multi() actually did: per-species log-
+## density distribution (as a box-plot, the same visual convention
+## RoME's check_abundance() uses for MEDITS QC screening) with flagged/
+## removed observations overlaid as points. Pass the SAME dt that went
+## INTO the outlier-removal function (i.e. BEFORE removal, so the
+## removed values still have their real Density rather than NA) plus
+## the flagged_outliers table pulled off its output via
+## attr(dt_after, "flagged_outliers"). Restricted to the species that
+## actually had something flagged by default (top_n_species caps how
+## many get shown, since a full-community plot would be unreadable).
+## =================================================================
+plot_outlier_diagnostic <- function(dt_before, flagged_outliers, top_n_species = 12) {
+  if (is.null(flagged_outliers) || nrow(flagged_outliers) == 0) {
+    stop("plot_outlier_diagnostic() needs a non-empty flagged_outliers table",
+         " (attr(<result of remove_sample_outliers[_multi]()>, \"flagged_outliers\")) -",
+         " nothing was flagged, so there's nothing to diagnose.")
+  }
+  species_to_show <- flagged_outliers[, .N, by = ScientificName][
+    order(-N)][seq_len(min(top_n_species, .N)), ScientificName]
+  
+  plot_data <- dt_before[ScientificName %in% species_to_show & !is.na(Density),
+                         .(ScientificName, AreaID, SampleID, Density)]
+  plot_data[, log_density := log1p(Density)]
+  
+  flagged_pts <- unique(flagged_outliers[ScientificName %in% species_to_show,
+                                         .(ScientificName, AreaID, SampleID,
+                                           log_density = log1p(flagged_density))])
+  
+  ggplot(plot_data, aes(x = ScientificName, y = log_density)) +
+    geom_boxplot(outlier.shape = NA, fill = "grey90", color = "grey40") +
+    geom_jitter(width = 0.15, alpha = 0.25, size = 0.8, color = "steelblue") +
+    geom_point(data = flagged_pts, color = "firebrick", size = 2.2, shape = 17) +
+    coord_flip() +
+    labs(title = "Sample-level outlier diagnostic",
+         subtitle = "Grey box-plots: within-species distribution (log1p density). Red triangles: flagged outliers.",
+         x = NULL, y = "log1p(Density)") +
+    theme_minimal(base_size = 11)
+}
+
+## =================================================================
+## Area-weight composition plot - what fraction of each area's density
+## estimate is contributed by each depth stratum (i.e. the prop =
+## area_km2/sum(area_km2) weights weight_by_strata() actually applies),
+## shown as a donut per area so the relative influence of the
+## AquaMaps pseudo-strata (when active) versus the real MEDITS strata
+## is visible at a glance, rather than buried in a wide sheet of
+## numbers. Reads the SAME per_stratum attribute plot_strata_profile()
+## and build_fg_density_by_stratum_sheet() use, so it automatically
+## reflects whichever strata_def actually built fg_index_stratified
+## (5 real strata, or the 8-strata AquaMaps-extended set).
+## =================================================================
+plot_area_weight_donut <- function(fg_index_stratified, strata_def, area_ids = NULL) {
+  per_stratum <- attr(fg_index_stratified, "per_stratum")
+  if (is.null(per_stratum)) {
+    stop("plot_area_weight_donut() needs the per_stratum attribute from weight_by_strata()",
+         " (the area-merged one, since this plot is specifically about each stratum's AREA",
+         " weight - prop - not just whether it has samples).")
+  }
+  props <- unique(per_stratum[, .(AreaID, Stratum, prop)])
+  if (!is.null(area_ids)) props <- props[AreaID %in% area_ids]
+  
+  props <- merge(props, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
+  props[, depth_label := fifelse(
+    is.na(depth_min) | is.na(depth_max), paste0("Stratum ", Stratum),
+    paste0(formatC(depth_min, format = "f", digits = 0), "-",
+           formatC(depth_max, format = "f", digits = 0), "m"))]
+  props[, depth_label := factor(depth_label, levels = unique(depth_label[order(Stratum)]))]
+  
+  ## donut = pie with a hole, built the standard ggplot way (stacked bar
+  ## + coord_polar), ymax/ymin per wedge computed manually so a hole can
+  ## be punched via xlim() rather than needing a separate library
+  props[, ymax := cumsum(prop), by = AreaID]
+  props[, ymin := ymax - prop, by = AreaID]
+  
+  ggplot(props, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = depth_label)) +
+    geom_rect() +
+    coord_polar(theta = "y") +
+    xlim(c(2, 4)) +
+    facet_wrap(vars(AreaID), labeller = label_both) +
+    labs(title = "Area proportion (prop) by depth stratum", fill = "Depth stratum") +
+    theme_void(base_size = 11) +
+    theme(legend.position = "right")
 }
 
 ## =================================================================
