@@ -38,9 +38,12 @@
 ## install.packages("rfishbase") installs a broken pre-4.0 CRAN
 ## version. patchwork (used later for combining plots) is included
 ## here now too, rather than being loaded separately mid-script.
+## worrms is no longer needed here - taxonomic classification (Step 1
+## below) was migrated from WoRMS to FishBase/SeaLifeBase (via
+## rfishbase, same as the survey scripts) for project-wide consistency.
 ## =================================================================
 pkgs <- c("data.table", "stringr", "ggplot2", "progress", "patchwork",
-          "readxl", "openxlsx", "worrms", "purrr")
+          "readxl", "openxlsx", "purrr")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
@@ -618,17 +621,24 @@ if (FG_YIELD_SOURCE == "fg_catch_csv") {
 
 ## =================================================================
 ## STEP 1: taxonomic classification -> dispatch group
-## Primary signal: WoRMS Class. Fallback signal for species where
-## WoRMS returns no Class at all: whether the species has ANY
-## FishBase record (fish-specific database) vs only SeaLifeBase -
-## more robust than relying on Class string-matching alone.
+## Primary signal: FishBase/SeaLifeBase Class (via rfishbase::load_taxa(),
+## same function/cache used by the biomass survey scripts - standardized
+## on FishBase/SeaLifeBase project-wide per Andrea's instruction, 2026-09,
+## replacing the WoRMS-based lookup this step used previously). FishBase
+## covers fish (Actinopteri/Elasmobranchii/etc.); SeaLifeBase covers
+## everything else (invertebrates, mammals, birds, algae) - both are
+## queried and combined by fetch_taxonomy_fishbase(), same as the survey
+## scripts' species-to-FG matching.
 ## =================================================================
 
-source(file.path(git_dir, "scripts/lib_worms_taxonomy_lookup.R"))
+## fetch_taxonomy_fishbase() comes from lib_survey_fg_density_functions.R,
+## already source()'d near the top of this script (see the
+## ECOPATH_WORKBOOK_PATH block above) for add_pbqb_to_ecopath_workbook().
 
-taxonomy <- as.data.table(worms_taxonomy_lookup(sp_list))[
-  , .(Species = original_name, Genus = genus, Family = family, Order = order, Class = class, Phylum = phylum)
-]
+FISHBASE_TAXONOMY_CACHE_PATH <- file.path(out_dir, "fishbase_taxonomy_cache.rds")
+
+taxonomy <- fetch_taxonomy_fishbase(sp_list, cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+setnames(taxonomy, "ScientificName", "Species")
 
 FISH_CLASSES <- c("Teleostei", "Elasmobranchii", "Chondrichthyes", "Actinopteri",
                   "Actinopterygii", "Myxini", "Petromyzonti", "Holocephali")
@@ -649,50 +659,42 @@ classify_dispatch <- function(class_vec) {
 taxonomy[, dispatch_group := classify_dispatch(Class)]
 
 ## --- Fallback for species with no Class: the usual cause is that the
-## name is a SYNONYM - WoRMS records for synonym/unaccepted names often
-## have an incomplete classification chain even though the full chain
-## exists under the ACCEPTED name. Follow that resolution within WoRMS
-## itself (synonym -> valid_AphiaID -> accepted record's classification)
-## rather than falling back to an unrelated database as an indirect proxy.
+## name FishBase/SeaLifeBase's load_taxa() doesn't recognize as a valid
+## current name (a synonym, or a genus-level placeholder like "Sepiola
+## spp."). rfishbase::synonyms() maps a synonym back to its currently
+## valid name, which is then re-queried directly - the FishBase-side
+## equivalent of the old WoRMS valid_AphiaID resolution step.
 unresolved <- taxonomy[is.na(dispatch_group), Species]
 if (length(unresolved) > 0) {
-  message("\n", length(unresolved), " species had no WoRMS Class from the initial lookup -",
-          " attempting synonym -> accepted-name resolution via WoRMS.")
+  message("\n", length(unresolved), " species had no FishBase/SeaLifeBase Class from the initial lookup -",
+          " attempting synonym -> valid-name resolution via rfishbase::synonyms().")
   
-  resolve_via_accepted_name <- function(sp) {
-    ## Strip trailing "spp."/"sp." the SAME way worms_taxonomy_lookup()'s
-    ## main batch lookup already does - without this, a genus-level
-    ## placeholder like "Sepiola spp." gets queried LITERALLY, which
-    ## WoRMS's API always rejects (204 No Content, not a real taxon
-    ## name) - guaranteed failure every time, and worse, it means these
-    ## entries never actually get classified at all, just silently
-    ## fall through to the "invertebrate" default below. Querying the
-    ## bare genus instead ("Sepiola") can actually succeed and return
-    ## real Class/Family/Order/Phylum - which is all dispatch_group
-    ## classification needs anyway, species-level resolution isn't
-    ## required for that.
+  resolve_via_synonym <- function(sp) {
+    ## Strip trailing "spp."/"sp." the SAME way fetch_taxonomy_fishbase()'s
+    ## underlying load_taxa() call needs a real binomial to match against -
+    ## without this, a genus-level placeholder like "Sepiola spp." never
+    ## matches any synonym record and just falls through to the
+    ## "invertebrate" default below. Querying the bare genus instead
+    ## ("Sepiola") can still succeed and return real Class/Family/Order/
+    ## Phylum via a species within that genus - all dispatch_group
+    ## classification needs, species-level resolution isn't required for
+    ## that.
     query_term <- str_trim(str_remove(sp, "\\s+spp?\\.?$"))
-    Sys.sleep(1)  # space out requests in case WoRMS's API is rate-sensitive
-    rec <- tryCatch(worrms::wm_records_names(query_term, marine_only = FALSE)[[1]], error = function(e) {
-      message("  WoRMS lookup failed for '", sp, "' (queried as '", query_term, "'): ", conditionMessage(e))
-      NULL
+    valid_name <- tryCatch({
+      syn <- rfishbase::synonyms(query_term)
+      if (is.null(syn) || nrow(syn) == 0) NA_character_ else syn$Species[1]
+    }, error = function(e) {
+      message("  rfishbase::synonyms() failed for '", sp, "' (queried as '", query_term, "'): ", conditionMessage(e))
+      NA_character_
     })
-    if (is.null(rec) || nrow(rec) == 0) return(NULL)
-    rec <- rec[1, ]
-    ## if this is a synonym/unaccepted record with its own classification
-    ## missing, re-query WoRMS directly by the accepted name's AphiaID
-    if (!is.na(rec$valid_AphiaID) && rec$valid_AphiaID != rec$AphiaID && is.na(rec$class)) {
-      accepted <- tryCatch(worrms::wm_record(id = rec$valid_AphiaID), error = function(e) {
-        message("  WoRMS accepted-name lookup failed for '", sp, "': ", conditionMessage(e))
-        NULL
-      })
-      if (!is.null(accepted) && nrow(accepted) > 0) rec <- accepted[1, ]
-    }
-    data.table(Species = sp, Genus_r = rec$genus, Family_r = rec$family,
-               Order_r = rec$order, Class_r = rec$class, Phylum_r = rec$phylum)
+    if (is.na(valid_name) || valid_name == query_term) return(NULL)
+    rec <- fetch_taxonomy_fishbase_uncached(valid_name)
+    if (nrow(rec) == 0 || is.na(rec$Class[1])) return(NULL)
+    data.table(Species = sp, Genus_r = rec$Genus[1], Family_r = rec$Family[1],
+               Order_r = rec$Order[1], Class_r = rec$Class[1], Phylum_r = rec$Phylum[1])
   }
   
-  resolved <- rbindlist(lapply(unresolved, resolve_via_accepted_name), fill = TRUE)
+  resolved <- rbindlist(lapply(unresolved, resolve_via_synonym), fill = TRUE)
   
   if (nrow(resolved) > 0) {
     taxonomy <- merge(taxonomy, resolved, by = "Species", all.x = TRUE)
@@ -704,13 +706,13 @@ if (length(unresolved) > 0) {
     taxonomy[is.na(dispatch_group), dispatch_group := classify_dispatch(Class)]
   }
   
-  ## whatever's still unresolved after a genuine WoRMS attempt defaults
-  ## to invertebrate as a taxonomically-neutral fallback, not a fish/
-  ## non-fish guess borrowed from an unrelated database
+  ## whatever's still unresolved after a genuine FishBase/SeaLifeBase
+  ## attempt defaults to invertebrate as a taxonomically-neutral
+  ## fallback, not a fish/non-fish guess borrowed from an unrelated source
   still_unresolved <- taxonomy[is.na(dispatch_group), Species]
   taxonomy[Species %in% still_unresolved, dispatch_group := "invertebrate"]
   
-  message(length(unresolved) - length(still_unresolved), " resolved via WoRMS synonym lookup, ",
+  message(length(unresolved) - length(still_unresolved), " resolved via FishBase/SeaLifeBase synonym lookup, ",
           length(still_unresolved), " still fully unresolved (defaulted to invertebrate):")
   if (length(still_unresolved) > 0) print(still_unresolved)
 }
@@ -724,7 +726,7 @@ species_df <- merge(species_df, taxonomy, by = "Species", all.x = TRUE)
 
 message("\nDispatch group counts:")
 print(species_df[, .N, by = dispatch_group])
-invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (WoRMS)")))
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (FishBase/SeaLifeBase)")))
 
 ## =================================================================
 ## HELPER: pick the best row per species from a multi-record FishBase/

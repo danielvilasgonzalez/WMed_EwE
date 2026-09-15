@@ -112,7 +112,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   )
   
   pcloud_dir <- rstudioapi::selectDirectory()
-  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) {
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid pcloud directory selected.")
   }
   
@@ -129,7 +129,7 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
     )
   )
   git_dir <- rstudioapi::selectDirectory()
-  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) {
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) {
     stop("No valid Github directory selected.")
   }
 }
@@ -142,7 +142,16 @@ if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
 ## =================================================================
 
 source(paste0(git_dir, "/scripts/lib_survey_fg_density_functions.R"))
-source(paste0(git_dir, "/scripts/lib_worms_taxonomy_lookup.R"))
+source(paste0(git_dir, "./scripts/lib_worms_taxonomy_lookup.R"))  # still sourced - taxonomy_source = "worms" fallback remains available even though "fishbase" is now the default (see fetch_taxonomy()'s own comment)
+
+## Persistent on-disk cache for FishBase/SeaLifeBase taxonomy lookups -
+## same rationale/cache file as 01_survey_density_westmed.R's own
+## FISHBASE_TAXONOMY_CACHE_PATH (see that script, and
+## fetch_taxonomy_fishbase()'s header comment in
+## lib_survey_fg_density_functions.R). Switched from WoRMS to FishBase/
+## SeaLifeBase (2026-09) to match 02_fisheries_master.R and
+## 04_pbqb_calc.R's own taxonomy source.
+FISHBASE_TAXONOMY_CACHE_PATH <- file.path(out_dir, "fishbase_taxonomy_cache.rds")
 
 ## Same pcloud_dir-based convention as 01_survey_density_westmed.R -
 ## previously this script read fg_file/tm_list_file/in_dir from a
@@ -246,7 +255,7 @@ if (CUSTOM_AREA_TYPE == "gsa") {
   ## boundary that ISN'T GSA-aligned at all, use "bbox" or "shapefile"
   ## instead.
   CUSTOM_GSA_IDS <- c(11)   # edit to the GSA number(s) you want, e.g. c(9, 10, 11)
-
+  
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
   gsa_zip_file <- file.path(out_dir, "GFCM_GSA.zip")
   gsa_shp_dir  <- file.path(out_dir, "GFCM_GSA_shp")
@@ -261,7 +270,7 @@ if (CUSTOM_AREA_TYPE == "gsa") {
   gsa_shp_all <- st_read(gsa_shp_path, quiet = TRUE)
   gsa_shp_all$gsa_num <- as.numeric(gsa_shp_all$SMU_CODE)
   gsa_shp_all$gsa_num[gsa_shp_all$gsa_num %in% c(111, 112)] <- 11   # W/E Sardinia fix, same as the GSA-based example
-
+  
   area_shp <- gsa_shp_all[gsa_shp_all$gsa_num %in% CUSTOM_GSA_IDS, ]
   if (nrow(area_shp) == 0) {
     stop("CUSTOM_GSA_IDS (", paste(CUSTOM_GSA_IDS, collapse = ", "), ") matched no GSA in the GFCM shapefile -",
@@ -269,7 +278,7 @@ if (CUSTOM_AREA_TYPE == "gsa") {
   }
   area_shp <- st_make_valid(area_shp)
   area_shp$area_id <- area_shp$gsa_num   # same "area_id" convention as the bbox/shapefile branches below,
-                                          # so downstream code doesn't need to know which branch ran
+  # so downstream code doesn't need to know which branch ran
 } else if (CUSTOM_AREA_TYPE == "bbox") {
   ## Option A - a simple rectangular boundary. Replace with your own
   ## region's actual coordinates (decimal degrees).
@@ -438,7 +447,7 @@ MANUAL_OVERRIDES <- data.table(
   taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species", 'species')
 )
 
-fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "worms")
+fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
 fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy, by = "ScientificName", all.x = TRUE)
 
 resolve_override <- function(taxon_name, rank) {
@@ -465,7 +474,7 @@ non_taxon <- str_detect(dt$ScientificName, "^NO\\b") | str_detect(dt$ScientificN
 dt[non_taxon, ScientificName := NA_character_]
 message(sum(non_taxon), " non-taxon row(s) excluded from the taxonomy fallback attempt.")
 
-dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms")
+dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
 
 SEED_RULES <- data.table(
   rank = c("Class", "Class", "Class", "Class", "Class", "Class",
@@ -497,7 +506,7 @@ species_taxonomy <- unique(rbindlist(list(
 species_actually_observed <- unique(dt[!is.na(ScientificName), ScientificName])
 still_missing_taxonomy <- setdiff(species_actually_observed, species_taxonomy$ScientificName)
 if (length(still_missing_taxonomy) > 0) {
-  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "worms")
+  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
   species_taxonomy <- unique(rbindlist(list(species_taxonomy, gap_taxonomy), fill = TRUE), by = "ScientificName")
 }
 
@@ -887,4 +896,3 @@ finalize_workbook_sheet_order(
 )
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
-

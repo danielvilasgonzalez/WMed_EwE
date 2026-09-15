@@ -190,20 +190,24 @@ OUTLIER_MULTI_METHODS <- c("mad", "percentile", "boxplot")  # only used when OUT
 ## skip entirely. Example below checks two Lessepsian/invasive species
 ## whose presence-by-year (and how many hauls, not just which years) is
 ## itself often the question, not just their density where present.
-SPECIES_PRESENCE_CHECK <- c("Pterois miles", "Fistularia commersonii",'Rugulopteryx okamurae',
-                            'Siganus luridus','Siganus rivulatus','Lagocephalus sceleratus',
-                            'Canthigaster capistrata','Lagocephalus lagocephalus','Sparisoma cretense','Sciaena umbra')    # NULL to skip
+SPECIES_PRESENCE_CHECK <- c("Pterois miles", "Siganus luridus")    # NULL to skip
 
-## Persistent on-disk cache for WoRMS taxonomy lookups (see
-## worms_taxonomy_lookup()'s own header comment in
-## lib_worms_taxonomy_lookup.R for the full rationale) - species already
-## resolved on a PREVIOUS run of this script are read from this file
-## instead of re-queried from WoRMS, which is what actually fixes the
+## Persistent on-disk cache for FishBase/SeaLifeBase taxonomy lookups
+## (see fetch_taxonomy_fishbase()'s own header comment in
+## lib_survey_fg_density_functions.R for the full rationale) - species
+## already resolved on a PREVIOUS run of this script are read from this
+## file instead of re-queried, which is what actually fixes the
 ## taxonomy-fallback step "taking forever" on every re-run during normal
 ## development/debugging. Set to NULL to disable caching entirely
-## (always query WoRMS fresh, the old behavior). Delete this file if you
-## suspect it's stale (e.g. WoRMS updated a name) and want a clean re-query.
-WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
+## (always query fresh, the old behavior). Delete this file if you
+## suspect it's stale and want a clean re-query.
+## Switched from WoRMS to FishBase/SeaLifeBase (2026-09) so this
+## script's species taxonomy matches 02_fisheries_master.R and
+## 04_pbqb_calc.R's own FishBase-based taxonomy instead of a third,
+## independent authority - taxonomy_source = "worms" is still supported
+## below (lib_worms_taxonomy_lookup.R is still sourced above) for a
+## species FishBase/SeaLifeBase genuinely lacks.
+FISHBASE_TAXONOMY_CACHE_PATH <- file.path(out_dir, "fishbase_taxonomy_cache.rds")
 
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
@@ -394,7 +398,7 @@ MANUAL_OVERRIDES <- data.table(
   taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species",'species'))
 
 ## needs taxonomy on fg_lookup_safe to resolve genus/family/class-rank overrides
-fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
+fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
 fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy, by = "ScientificName", all.x = TRUE)
 
 resolve_override <- function(taxon_name, rank) {
@@ -453,7 +457,7 @@ dt[non_taxon, ScientificName := NA_character_]
 message(sum(non_taxon, na.rm = TRUE), " non-taxon row(s) (NO-prefixed or egg-capsule entries) excluded",
         " from the taxonomy fallback attempt.")
 
-dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
+dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
 
 ## --- Seed FG rules -----------------------------------------------------
 ## For FGs that genuinely have ZERO species pre-listed in dataframe2 -
@@ -556,10 +560,13 @@ message("\nFinal FG match rate: ", dt[!is.na(FG_num), uniqueN(ScientificName)], 
 ## may start later - this check is about the raw survey record).
 ## Deliberately BEFORE outlier removal/catchability correction below,
 ## since this is about whether/how often the species was ever caught at
-## all, not about its corrected density. Density > 0 (not just !is.na)
-## specifically - some survey formats carry an explicit zero-catch row
-## per haul per species checked for, which would otherwise inflate
-## "presence" to mean "was checked for" rather than "was caught".
+## all, not about its corrected density. Checked on Biomass (dt's own
+## raw-catch column at this point in the pipeline - Density doesn't
+## exist yet, it's only computed later on the separate FG_spp_Ecopath
+## table), and > 0 (not just !is.na) specifically - some survey formats
+## carry an explicit zero-catch row per haul per species checked for,
+## which would otherwise inflate "presence" to mean "was checked for"
+## rather than "was caught".
 if (!is.null(SPECIES_PRESENCE_CHECK)) {
   full_survey_years <- 1994:2023
   for (sp in SPECIES_PRESENCE_CHECK) {
@@ -605,7 +612,7 @@ if (length(still_missing_taxonomy) > 0) {
   message("\n", length(still_missing_taxonomy), " observed species have no taxonomy yet",
           " (likely matched via MANUAL_OVERRIDES, which doesn't fetch taxonomy) -",
           " fetching directly for these:")
-  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
+  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
   species_taxonomy <- rbindlist(list(species_taxonomy, gap_taxonomy), fill = TRUE)
   species_taxonomy <- unique(species_taxonomy, by = "ScientificName")
 }
@@ -990,7 +997,26 @@ if (n_no_sci > 0) {
 
 acoustic_matched <- match_species_to_fg(acoustic[!is.na(ScientificName)], fg_lookup_safe)
 acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
-acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms", cache_path = WORMS_TAXONOMY_CACHE_PATH)
+acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+
+## Same manual-rules tier and manual-review export MEDITS gets above
+## (SEED_RULES/SPECIES_EXCEPTIONS - defined once above, reused verbatim
+## here since it's the same FG scheme) - previously skipped for MEDIAS,
+## which meant a species matchable only via a manual rule (e.g. a
+## zero-reference FG) silently stayed unmatched here even though the
+## identical species would have resolved for MEDITS, and nothing
+## unmatched ever got written out for review. summarize_unresolved_species()
+## expects a `Biomass` column (MEDITS' own convention) - acoustic_matched
+## carries the same value under `total_biomass`, aliased here rather than
+## renamed so nothing downstream that expects `total_biomass` breaks.
+acoustic_matched <- apply_seed_fg_rules(acoustic_matched, dataframe2, SEED_RULES, species_exceptions = SPECIES_EXCEPTIONS)
+acoustic_taxonomy_context <- attr(acoustic_matched, "still_unresolved_taxonomy")
+acoustic_matched[, Biomass := total_biomass]
+medias_still_unmatched <- summarize_unresolved_species(acoustic_matched, taxonomy = acoustic_taxonomy_context)
+acoustic_matched[, Biomass := NULL]
+fwrite(medias_still_unmatched, file.path(out_dir, "medias_unmatched_for_manual_review.csv"))
+message("Saved to medias_unmatched_for_manual_review.csv for review.")
+
 message("MEDIAS: ", acoustic_matched[!is.na(FG_num), uniqueN(ScientificName)], " of ",
         acoustic_matched[, uniqueN(ScientificName)], " species matched to an FG.")
 

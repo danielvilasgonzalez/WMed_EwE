@@ -291,7 +291,7 @@ match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
 
 ## =================================================================
 ## STEP 4: Maximize FG assignment via taxonomy fallback
-## (WoRMS and/or FishBase)
+## (FishBase/SeaLifeBase, or WoRMS)
 ## =================================================================
 ## Generalized from Section 4c of the MEDITS pipeline: for species with
 ## no direct FG match, try genus then family fallback, under the
@@ -301,14 +301,20 @@ match_nominate_subspecies_fg <- function(dt, fg_lookup_safe) {
 ## FG among the reference species - anything spanning multiple FGs is
 ## too ecologically diverse to assign safely and is left unresolved.
 ##
-## taxonomy_source: "worms" (default, requires worms_taxonomy_lookup()
-## already sourced - the same function used throughout this project),
-## "fishbase" (requires rfishbase, uses species()'s own Genus/Family
-## fields - fish/SeaLifeBase coverage only, won't resolve algae or taxa
-## outside FishBase/SeaLifeBase's scope), or "both" (tries worms first,
-## then fishbase for whatever worms left unresolved - the two sources
-## don't depend on each other, so this is a genuine combined fallback,
-## not just redundancy).
+## taxonomy_source: "fishbase" (DEFAULT, since 2026-09 - requires
+## rfishbase; uses load_taxa() over BOTH the fishbase server (fish) and
+## the sealifebase server (everything else - invertebrates, algae,
+## etc.), covering the full Genus/Family/Order/Class rank hierarchy,
+## plus Phylum for sealifebase taxa - matches the taxonomy source
+## 04_pbqb_calc.R already standardized on, so a species' family/order
+## etc. is never compared across two different authorities between
+## that script and this one), "worms" (requires worms_taxonomy_lookup()
+## already sourced - the source this project used before 2026-09; kept
+## available, not removed, in case FishBase/SeaLifeBase genuinely lacks
+## a taxon WoRMS has), or "both" (tries fishbase first, then worms for
+## whatever fishbase left unresolved - the two sources don't depend on
+## each other, so this is a genuine combined fallback, not just
+## redundancy).
 
 fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
   if (!exists("worms_taxonomy_lookup")) {
@@ -320,34 +326,136 @@ fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
                          Order = order, Class = class, Phylum = phylum)]
 }
 
-fetch_taxonomy_fishbase <- function(species_names) {
+## fetch_taxonomy_fishbase(): same output contract as
+## fetch_taxonomy_worms() (ScientificName/Genus/Family/Order/Class/
+## Phylum), but sourced from FishBase (fish) + SeaLifeBase (everything
+## else - invertebrates, algae, etc.) via rfishbase::load_taxa(),
+## instead of WoRMS. Made the project's default per Andrea's
+## instruction (2026-09) to keep taxonomy consistent with 04_pbqb_calc.R,
+## which already standardized on FishBase/SeaLifeBase (via rfishbase)
+## rather than WoRMS. load_taxa() (not species()) is used deliberately -
+## species() only carries Genus/Family, while load_taxa() returns the
+## full Class/Order/Family/Genus/Species hierarchy needed for every
+## rank_levels fallback step below, matching WoRMS's coverage. Phylum/
+## Kingdom are only returned by SeaLifeBase's own load_taxa() (fish
+## don't need a Phylum column to disambiguate FG assignment in practice,
+## so its absence for the "fishbase" server is not filled in with a
+## guess - it stays genuinely NA and Phylum-level fallback simply never
+## fires for a fish species, same as it would for any other truly
+## missing rank).
+##
+## Each server is retried (same 3-attempt exponential backoff idea as
+## fetch_names_robust() in lib_worms_taxonomy_lookup.R) since FishBase's
+## own Hugging Face-hosted backend is occasionally slow/flaky under
+## load, not because a name is bad.
+fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
   if (!requireNamespace("rfishbase", quietly = TRUE)) {
     stop("rfishbase not installed - required for taxonomy_source='fishbase' or 'both'.")
   }
+  fetch_one_server <- function(server) {
+    for (attempt in seq_len(max_retries)) {
+      tax <- tryCatch(as.data.table(rfishbase::load_taxa(species_names, server = server)), error = function(e) e)
+      if (!inherits(tax, "error")) return(tax)
+      if (attempt < max_retries) {
+        message("  rfishbase::load_taxa() failed on server '", server, "' (attempt ", attempt, "/", max_retries,
+                "): ", conditionMessage(tax), " - retrying in ", 2^attempt, "s.")
+        Sys.sleep(2^attempt)
+      } else {
+        message("  rfishbase::load_taxa() permanently failed on server '", server, "' after ", max_retries,
+                " attempt(s): ", conditionMessage(tax))
+      }
+    }
+    data.table()
+  }
   results <- rbindlist(lapply(c("fishbase", "sealifebase"), function(server) {
-    tryCatch({
-      sp <- as.data.table(rfishbase::species(species_names, server = server))
-      if (nrow(sp) == 0) return(NULL)
-      sp[, .(ScientificName = Species, Genus = Genus, Family = Family)]
-    }, error = function(e) NULL)
-  }))
-  if (nrow(results) == 0) return(data.table(ScientificName = character(0), Genus = character(0), Family = character(0)))
-  unique(results, by = "ScientificName")
+    tax <- fetch_one_server(server)
+    if (nrow(tax) == 0) return(NULL)
+    keep_cols <- intersect(c("Species", "Genus", "Family", "Order", "Class", "Phylum"), names(tax))
+    tax <- tax[Species %in% species_names, ..keep_cols]
+    for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), keep_cols)) tax[, (missing_col) := NA_character_]
+    setnames(tax, "Species", "ScientificName")
+    tax
+  }), fill = TRUE)
+  not_found <- data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
+                          Order = NA_character_, Class = NA_character_, Phylum = NA_character_)
+  if (is.null(results) || nrow(results) == 0) return(not_found)
+  
+  ## fishbase and sealifebase are disjoint in practice (a species is one
+  ## or the other), but if a name genuinely comes back from both, keep
+  ## whichever row has more ranks filled in rather than an arbitrary pick.
+  results[, n_filled := rowSums(!is.na(.SD)), .SDcols = c("Genus", "Family", "Order", "Class", "Phylum")]
+  setorder(results, ScientificName, -n_filled)
+  results <- unique(results, by = "ScientificName")[, n_filled := NULL]
+  
+  ## Explicit "not found" rows for every input species NEITHER server
+  ## resolved (same convention as worms_taxonomy_lookup_uncached() - see
+  ## its own header comment: "'not found' results ARE cached too", so a
+  ## genuinely unresolvable name isn't re-queried against FishBase/
+  ## SeaLifeBase again on every future run just because it has no row here).
+  still_missing <- setdiff(species_names, results$ScientificName)
+  if (length(still_missing) > 0) results <- rbindlist(list(results, not_found[ScientificName %in% still_missing]))
+  results
 }
 
-fetch_taxonomy <- function(species_names, taxonomy_source = "worms", cache_path = NULL) {
-  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names, cache_path = cache_path))
-  if (taxonomy_source == "fishbase") return(fetch_taxonomy_fishbase(species_names))
-  if (taxonomy_source == "both") {
-    worms_tax <- fetch_taxonomy_worms(species_names, cache_path = cache_path)
-    still_missing <- setdiff(species_names, worms_tax[!is.na(Genus) | !is.na(Family), ScientificName])
-    if (length(still_missing) > 0) {
-      fb_tax <- fetch_taxonomy_fishbase(still_missing)
-      worms_tax <- rbindlist(list(worms_tax[!ScientificName %in% still_missing], fb_tax), fill = TRUE)
-    }
-    return(worms_tax)
+## Same on-disk RDS caching pattern as worms_taxonomy_lookup() (see that
+## function's own header comment in lib_worms_taxonomy_lookup.R for the
+## full rationale) - without this, switching the default taxonomy
+## source from WoRMS to FishBase/SeaLifeBase would silently lose the
+## re-run speedup every taxonomy_source = "worms" call site already
+## relied on (cache_path was always threaded through for WoRMS; the
+## un-cached fetch_taxonomy_fishbase() above never had that on its own).
+fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
+  cache <- if (!is.null(cache_path) && file.exists(cache_path)) readRDS(cache_path) else NULL
+  already_cached <- if (!is.null(cache)) intersect(species_names, cache$ScientificName) else character(0)
+  to_query <- setdiff(species_names, already_cached)
+  
+  if (!is.null(cache_path)) {
+    message("  FishBase/SeaLifeBase taxonomy cache (", cache_path, "): ", length(already_cached),
+            " of ", length(species_names), " name(s) already cached, ", length(to_query), " to actually query.")
   }
-  stop("taxonomy_source must be 'worms', 'fishbase', or 'both' - got '", taxonomy_source, "'")
+  
+  fresh_result <- if (length(to_query) > 0) fetch_taxonomy_fishbase_uncached(to_query) else NULL
+  
+  if (!is.null(cache_path)) {
+    updated_cache <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else rbindlist(list(cache, fresh_result), fill = TRUE)
+    if (!is.null(updated_cache)) {
+      dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
+      saveRDS(updated_cache, cache_path)
+    }
+  }
+  
+  all_known <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else rbindlist(list(cache, fresh_result), fill = TRUE)
+  if (is.null(all_known) || nrow(all_known) == 0) {
+    return(data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
+                      Order = NA_character_, Class = NA_character_, Phylum = NA_character_))
+  }
+  ## Every row of fetch_taxonomy_fishbase_uncached()'s own output already
+  ## carries one row per requested name (see its "not found" backfill),
+  ## so match() here should always find every name - but re-assert
+  ## ScientificName from species_names explicitly rather than trusting
+  ## the joined-in column to survive the reorder untouched, since a
+  ## caller-supplied name genuinely absent from `all_known` (e.g. a
+  ## brand-new name added after the cache file was last written, with no
+  ## cache_path re-query triggered for some other reason) must still come
+  ## back as ITS OWN name with NA taxonomy, never as a bare NA row.
+  out <- all_known[match(species_names, ScientificName)]
+  out[, ScientificName := species_names]
+  out
+}
+
+fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_path = NULL) {
+  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names, cache_path = cache_path))
+  if (taxonomy_source == "fishbase") return(fetch_taxonomy_fishbase(species_names, cache_path = cache_path))
+  if (taxonomy_source == "both") {
+    fb_tax <- fetch_taxonomy_fishbase(species_names, cache_path = cache_path)
+    still_missing <- setdiff(species_names, fb_tax[!is.na(Genus) | !is.na(Family), ScientificName])
+    if (length(still_missing) > 0) {
+      worms_tax <- fetch_taxonomy_worms(still_missing)
+      fb_tax <- rbindlist(list(fb_tax[!ScientificName %in% still_missing], worms_tax), fill = TRUE)
+    }
+    return(fb_tax)
+  }
+  stop("taxonomy_source must be 'fishbase' (default), 'worms', or 'both' - got '", taxonomy_source, "'")
 }
 
 ## rank_levels tried in order, most specific first ("the lowest level
@@ -361,7 +469,7 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "worms", cache_path 
 ## needed anywhere; if the FG scheme changes, these safe mappings are
 ## re-derived automatically on the next run rather than needing manual
 ## updates to a separate rules table.
-fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "worms",
+fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "fishbase",
                                           rank_levels = c("Genus", "Family", "Order", "Class", "Phylum"),
                                           cache_path = NULL) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
