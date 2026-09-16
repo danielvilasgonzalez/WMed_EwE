@@ -176,6 +176,25 @@ FISHMIP_EFFORT_PARQUET <- file.path(pcloud_dir, "data/fisheries/FishMIP/effort_h
 FISHMIP_CATCH_PARQUET  <- file.path(pcloud_dir, "data/fisheries/FishMIP/calibration_catch_histsoc_1850_2017_western-mediterranean-sea.parquet")  # FishMIP catch parquet path
 FISHMIP_FG_CROSSWALK_PATH <- NULL   # columns: fishmip_f_group, FG_num - leave NULL to keep FishMIP's own naming
 
+## Rousseau et al. 2024 (Scientific Data 11:260) global fishing-capacity/
+## effort database - manual download, same convention as FDI/FishMIP/SAU
+## (place the repo's Data/Final_DataStudyFAO_AllGears_wCode.csv here).
+## Per Andrea (2026-09): used below (a) to hindcast Spain/France/Italy's
+## pre-STECF_FDI_START_YEAR effort, IN PLACE OF the old FDI-ratio x
+## SAU-hindcasted-catch method, and (b) as a second, independent effort
+## figure alongside FishMIP nom_active for Morocco/Algeria/Tunisia (SAU
+## itself has no effort variable to draw on for the "other" non-EU
+## countries - see the comment at ROUSSEAU_EFFORT_NONEU block below).
+## CAVEAT logged at runtime: checked against STECF FDI's own real
+## Effort_days for Spain/France/Italy over their one overlap window
+## (2013-2017), Rousseau's NomEffort correlates at r=-0.21 (Spain),
+## r=-0.01 (Italy), r=0.62 (France) - i.e. it does NOT reproduce FDI's
+## real effort shape for 2 of the 3 countries. It is used anyway per
+## Andrea's explicit direction, ANCHORED (not trusted on its own trend)
+## to FDI's real level via a per-country calibration factor computed
+## from that same overlap window - see rousseau_calibration below.
+ROUSSEAU_EFFORT_PATH <- file.path(pcloud_dir, "data/fisheries/Rousseau/Final_DataStudyFAO_AllGears_wCode.csv")  # Rousseau et al. 2024 effort CSV path
+
 ## SAU is now a manual-download FOLDER, same convention as FDI/FishMIP
 ## (pcloud_dir/data/fisheries/SAU/ - one or more CSVs, whatever Sea
 ## Around Us's current site hands you per-EEZ; all *.csv files in this
@@ -1721,6 +1740,56 @@ if (nrow(stecf_fdi_effort_by_gsa) > 0 && nrow(stecf_fdi_catch_by_gsa) > 0 && "Ef
           " Spain/France/Italy's pre-2014 effort from their SAU-hindcasted catch-by-fleet.")
 }
 
+## --- Rousseau et al. 2024 effort, loaded once and used two ways below:
+## (a) calibrated pre-STECF_FDI_START_YEAR hindcast for Spain/France/
+## Italy (replacing the FDI-ratio x SAU-catch method as primary, per
+## Andrea's direction), and (b) a second effort figure alongside FishMIP
+## nom_active for Morocco/Algeria/Tunisia (see ROUSSEAU_EFFORT_PATH's own
+## comment above for the validation caveat). Country x Year only (not
+## Country x Gear x Year) - Rousseau's own Gear scheme doesn't map onto
+## GEAR_TO_FLEETTYPE (that crosswalk is keyed to SAU's gear strings), so
+## re-deriving a Rousseau-specific gear crosswalk was out of scope here;
+## the Country x Year total is instead distributed across FleetTypes
+## below using each FleetType's own catch share, same proportional-
+## allocation logic already used for the fleet split itself. ------------
+rousseau_effort_cy <- data.table()
+if (!file.exists(ROUSSEAU_EFFORT_PATH)) {
+  message("\n[Rousseau] Effort CSV not found at '", ROUSSEAU_EFFORT_PATH, "' - EU-3 pre-",
+          STECF_FDI_START_YEAR, " hindcast falls back to the FDI-ratio x SAU-catch method,",
+          " and Morocco/Algeria/Tunisia effort stays FishMIP-only (no Rousseau comparison column).")
+} else {
+  rousseau_raw <- fread(ROUSSEAU_EFFORT_PATH, select = c("Year", "Country", "NomEffort"))  # only what's needed here
+  rousseau_country_map <- c("Spain" = "Spain", "France" = "France", "Italy" = "Italy",
+                            "Morocco" = "Morocco", "Algeria" = "Algeria", "Tunisia" = "Tunisia")  # Rousseau's own Country field already matches these names
+  rousseau_effort_cy <- rousseau_raw[Country %in% rousseau_country_map,
+                                     .(NomEffort = sum(NomEffort, na.rm = TRUE)), by = .(Country, Year)]
+  message("\n[Rousseau] rousseau_effort_cy: ", nrow(rousseau_effort_cy), " Country x Year row(s), ",
+          min(rousseau_effort_cy$Year), "-", max(rousseau_effort_cy$Year), " (hard ceiling, not extrapolated -",
+          " does NOT cover ", max(rousseau_effort_cy$Year) + 1, "-", END_YEAR, ", same gap as FishMIP).")
+}
+
+## Calibration: for Spain/France/Italy, anchor Rousseau's Country x Year
+## total to FDI's own real Effort_days total (summed across FleetType) in
+## their overlap years - a single per-country multiplicative factor, not
+## a trend fit, since the year-to-year correlation itself is weak (see
+## caveat above). Wherever a country has no usable factor (no overlap, or
+## Rousseau missing), the OLD FDI-ratio x SAU-catch hindcast is kept as
+## the fallback for that country - never silently dropped to NA.
+rousseau_calibration <- data.table(Country = character(), calib_factor = numeric())
+if (nrow(rousseau_effort_cy) > 0 && nrow(stecf_fdi_effort_by_gsa) > 0 && "Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
+  fdi_days_cy <- stecf_fdi_effort_by_gsa[Country %in% c("Spain", "France", "Italy"),
+                                         .(Effort_days = sum(Effort_total_fishing_days, na.rm = TRUE)), by = .(Country, Year)]
+  cal <- merge(fdi_days_cy, rousseau_effort_cy, by = c("Country", "Year"))
+  rousseau_calibration <- cal[, .(fdi_total = sum(Effort_days, na.rm = TRUE), rou_total = sum(NomEffort, na.rm = TRUE)), by = Country]
+  rousseau_calibration <- rousseau_calibration[rou_total > 0, .(Country, calib_factor = fdi_total / rou_total)]
+  message("[Rousseau] rousseau_calibration (FDI real Effort_days / Rousseau NomEffort, summed over the overlap",
+          " years, per country): ", paste(sprintf("%s=%.6g", rousseau_calibration$Country, rousseau_calibration$calib_factor), collapse = ", "),
+          ". Applied below as a flat scaling factor to Rousseau's pre-", STECF_FDI_START_YEAR,
+          " series - this ANCHORS the level to FDI's real effort but does NOT fix Rousseau's weak",
+          " year-to-year correlation with FDI (see ROUSSEAU_EFFORT_PATH comment) - treat the resulting",
+          " pre-", STECF_FDI_START_YEAR, " hindcast as a judgment call, same status as TECH_CREEP_COUNTRY_MULTIPLIER.")
+}
+
 ## =================================================================
 ## # assign a percentage of total catch to discards
 ## =================================================================
@@ -2155,6 +2224,36 @@ message("\n[Bycatch] ", sum(!is.na(bycatch_placeholder$bycatch_rate)), " of ", n
         " Country x FG cell(s) filled from BYCATCH_RATE_MANUAL; the rest flagged 'not estimated'.")
 
 ## =================================================================
+## # recreational fishing EFFORT - manual-entry placeholder only
+## Recreational CATCH has a proxy (recreational_rows above, from SAU's
+## own sector split). Recreational EFFORT does not - checked GFCM, FDI,
+## SAU and FishMIP, none carries a recreational-effort variable of any
+## kind (days, boats, anglers) for these 6 countries. Per Andrea (2026-
+## 09): "recreational effort is added later as expert knowledge" - same
+## flagged manual-entry convention as BYCATCH_RATE_MANUAL, fill in by
+## hand (Country/Year/recreational_effort/units/source_citation) if/when
+## an expert figure becomes available; left empty this stays explicitly
+## "not estimated", never defaulted to zero or silently omitted from the
+## output like it was before this placeholder existed.
+## =================================================================
+RECREATIONAL_EFFORT_MANUAL <- data.table(
+  Country = character(), Year = integer(),
+  recreational_effort = numeric(), units = character(), source_citation = character()
+)
+recreational_effort_placeholder <- CJ(Country = unique(FLEET_REGISTER[Sector == "Recreational"]$Country), Year = YEAR_ECOPATH)  # one row per country x Ecopath-year
+if (nrow(RECREATIONAL_EFFORT_MANUAL) > 0) {
+  recreational_effort_placeholder <- merge(recreational_effort_placeholder, RECREATIONAL_EFFORT_MANUAL, by = c("Country", "Year"), all.x = TRUE)  # attach any manually-entered figures
+} else {
+  recreational_effort_placeholder[, `:=`(recreational_effort = NA_real_, units = NA_character_, source_citation = NA_character_)]  # no manual entries at all - leave empty
+}
+recreational_effort_placeholder[, data_status := fifelse(is.na(recreational_effort),
+                                                         "not estimated - no source in this pipeline captures recreational effort", "manually entered - see source_citation")]  # flag whether each row is filled or not
+fwrite(recreational_effort_placeholder, file.path(out_dir, "recreational_effort_placeholder.csv"))  # write result to CSV
+message("\n[Recreational effort] ", sum(!is.na(recreational_effort_placeholder$recreational_effort)), " of ",
+        nrow(recreational_effort_placeholder), " Country x Year cell(s) filled from RECREATIONAL_EFFORT_MANUAL;",
+        " the rest flagged 'not estimated' - written to recreational_effort_placeholder.csv.")
+
+## =================================================================
 ## GFCM DCRF Task 2 (catch by fleet segment) - NOT automatable.
 ## Task 2 is the right slot in GFCM's own framework for exactly this
 ## (fleet-segment-resolved catch, covering ALL GFCM members including
@@ -2357,11 +2456,53 @@ if (nrow(stecf_effort_catch_ratio) > 0 && nrow(catch_by_fleet_total_pre2013) > 0
   effort_hindcast_sau_by_fleet <- merge(catch_by_fleet_total_pre2013, stecf_effort_catch_ratio, by = c("Country", "FleetType"))  # attach FDI's own days-per-tonne ratio
   effort_hindcast_sau_by_fleet[, `:=`(
     Effort_days = Catch_t_total * days_per_tonne,  # implied effort = catch x FDI's real days-per-tonne ratio
-    effort_source = "SAU-hindcasted catch x FDI's own days-per-tonne ratio (Country x FleetType, pre-2014)"
+    effort_source = "FALLBACK: SAU-hindcasted catch x FDI's own days-per-tonne ratio (Country x FleetType, pre-2014, used only where no Rousseau calibration exists)"
   )]
-  message("\n[Effort hindcast] effort_hindcast_sau_by_fleet: ", nrow(effort_hindcast_sau_by_fleet),
+  message("\n[Effort hindcast] effort_hindcast_sau_by_fleet (fallback method): ", nrow(effort_hindcast_sau_by_fleet),
           " Country x FleetType x Year row(s), ", uniqueN(effort_hindcast_sau_by_fleet$Country),
           " of the up-to-3 EU countries had a days-per-tonne ratio to apply.")
+}
+
+## PRIMARY pre-2014 method (per Andrea, 2026-09): Rousseau's Country x
+## Year effort, calibrated to FDI's real level (rousseau_calibration
+## above), distributed across FleetTypes using each FleetType's own
+## share of catch_by_fleet_total_pre2013 - a country-year total split
+## the same proportional way the fleet split itself works, since
+## Rousseau carries no FleetType/Gear breakdown usable here (see the
+## rousseau_effort_cy comment above). Falls back to
+## effort_hindcast_sau_by_fleet, row by row, wherever a Country has no
+## calibration factor or a Country x Year cell has no Rousseau value.
+effort_hindcast_rousseau_by_fleet <- data.table()
+if (nrow(rousseau_calibration) > 0 && nrow(catch_by_fleet_total_pre2013) > 0) {
+  fleet_share <- copy(catch_by_fleet_total_pre2013)
+  fleet_share[, catch_share := Catch_t_total / sum(Catch_t_total), by = .(Country, Year)]  # each fleet's share of that country x year's total pre-2014 catch
+  effort_hindcast_rousseau_by_fleet <- merge(fleet_share, rousseau_effort_cy, by = c("Country", "Year"))  # attach Rousseau's country x year total
+  effort_hindcast_rousseau_by_fleet <- merge(effort_hindcast_rousseau_by_fleet, rousseau_calibration, by = "Country")  # attach the FDI-anchored calibration factor
+  effort_hindcast_rousseau_by_fleet[, `:=`(
+    Effort_days = NomEffort * calib_factor * catch_share,  # FDI-anchored Rousseau total, split across fleets by catch share
+    effort_source = "Rousseau et al. 2024 NomEffort, calibrated to FDI's real level, split by FleetType's catch share (Country x FleetType, pre-2014) - see ROUSSEAU_EFFORT_PATH comment for validation caveat"
+  )]
+  effort_hindcast_rousseau_by_fleet <- effort_hindcast_rousseau_by_fleet[, .(Country, FleetType, Year, Effort_days, effort_source)]
+  message("[Effort hindcast] effort_hindcast_rousseau_by_fleet (PRIMARY pre-", STECF_FDI_START_YEAR, " method): ",
+          nrow(effort_hindcast_rousseau_by_fleet), " Country x FleetType x Year row(s), ",
+          uniqueN(effort_hindcast_rousseau_by_fleet$Country), " of the up-to-3 EU countries covered.")
+}
+
+## Combine: Rousseau-calibrated wherever it exists for a Country x
+## FleetType x Year cell, the SAU-ratio fallback filling any gap
+## Rousseau doesn't cover (missing calibration, or a year outside
+## Rousseau's own 1950-2017 coverage).
+effort_hindcast_by_fleet <- effort_hindcast_sau_by_fleet  # start from the fallback, full coverage
+if (nrow(effort_hindcast_rousseau_by_fleet) > 0) {
+  effort_hindcast_by_fleet <- rbindlist(list(
+    effort_hindcast_rousseau_by_fleet,
+    effort_hindcast_sau_by_fleet[!effort_hindcast_rousseau_by_fleet, on = .(Country, FleetType, Year)]  # only the cells Rousseau didn't cover
+  ), use.names = TRUE, fill = TRUE)
+  setorder(effort_hindcast_by_fleet, Country, FleetType, Year)
+  message("[Effort hindcast] effort_hindcast_by_fleet: ", nrow(effort_hindcast_by_fleet),
+          " Country x FleetType x Year row(s) combined - ", nrow(effort_hindcast_rousseau_by_fleet),
+          " from Rousseau (primary), ", nrow(effort_hindcast_by_fleet) - nrow(effort_hindcast_rousseau_by_fleet),
+          " from the SAU-ratio fallback.")
 }
 
 effort_by_fleettype_eu3 <- data.table()
@@ -2383,8 +2524,8 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
                  if ("Effort_kWdays_total" %in% names(stecf_effort_real_agg)) "Effort_kWdays_total")
   effort_by_fleettype_eu3 <- rbindlist(list(
     stecf_effort_real_agg[, ..keep_cols],
-    effort_hindcast_sau_by_fleet[, .(Country, FleetType, Year, Effort_days, effort_source)]
-  ), use.names = TRUE, fill = TRUE)  # combine FDI's real 2014+ effort with the pre-2014 hindcast
+    effort_hindcast_by_fleet[, .(Country, FleetType, Year, Effort_days, effort_source)]
+  ), use.names = TRUE, fill = TRUE)  # combine FDI's real 2014+ effort with the pre-2014 hindcast (Rousseau-calibrated where available, SAU-ratio fallback otherwise)
   setorder(effort_by_fleettype_eu3, Country, FleetType, Year)  # sort for readability
   
   ## Join in the Capacity file's fleet-size figures where available (2014+
@@ -2473,10 +2614,16 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
 ## converted here using the SAME Total_Area_km2, so an FG's fleet-split
 ## columns sum back to its Catches_Ecopath total (they're two views of
 ## the same underlying catch, one FG-only, one FG x Fleet). Recreational
-## excluded - no numeric estimate exists for it anywhere in this pipeline.
+## is INCLUDED wherever recreational_rows above actually has an
+## SAU-derived estimate for that Country x FG x Year cell (fixed 2026-09
+## - this used to exclude every Recreational row unconditionally, even
+## cells that DID carry a real estimate, on a comment claiming none
+## existed anywhere in the pipeline; that comment was stale). Cells still
+## flagged "not estimated" (Catch_t is NA) are still dropped here, same
+## as before - only cells with a real number are added in.
 ## =================================================================
-ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & Sector != "Recreational",
-                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch by country x FG x fleet over the Ecopath snapshot years, excluding Recreational
+ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & (Sector != "Recreational" | !is.na(Catch_t)),
+                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
 ecopath_fleet_long[, `:=`(Fleet = paste(Country, FleetType, sep = " - "),
                           Catch_t_km2_avg = Catch_t_avg / Total_Area_km2)]  # build the Fleet label and convert catch to density
 
@@ -2569,10 +2716,18 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   
   top_effort_gears <- effort[, .(g_tot = sum(nom_active, na.rm = TRUE)), by = gear][order(-g_tot)][seq_len(min(N_TOP_GEARS, .N)), gear]  # the N_TOP_GEARS gears with the most effort
   effort[, gear_grp := ifelse(gear %in% top_effort_gears, gear, "Other gear")]  # fold minor gears into "Other gear"
-  effort[, Fleet := paste0(country, " - ", gear_grp)]  # build the Fleet label
+  
+  ## FishMIP's own `sector` column (Industrial/Artisanal) was previously
+  ## dropped entirely here - Fleet was built from country x gear alone,
+  ## so Morocco/Algeria/Tunisia's artisanal effort was never separated
+  ## out, just silently mixed into whichever gear bucket it fell under.
+  ## Andrea flagged this as a real gap (2026-09) - fixed by carrying
+  ## `sector` into the Fleet label, same convention as FLEET_REGISTER's
+  ## own Sector field for the catch side.
+  effort[, Fleet := paste0(country, " - ", gear_grp, " - ", sector)]  # build the Fleet label, now including FishMIP's own Artisanal/Industrial split
   effort_by_fleet <- effort[, .(nom_active_kWdays = sum(nom_active, na.rm = TRUE)),
-                            by = .(Fleet, Country = country, gear = gear_grp, Year = year)]  # sum effort by fleet x year
-  setorder(effort_by_fleet, Country, gear, Year)  # sort for readability
+                            by = .(Fleet, Country = country, gear = gear_grp, Sector = sector, Year = year)]  # sum effort by fleet x year
+  setorder(effort_by_fleet, Country, Sector, gear, Year)  # sort for readability
   
   ## Same tech_creep_multiplier() as effort_by_fleettype_eu3 above,
   ## applied here too since `nom_active_kWdays` is FishMIP's own kW*days
@@ -2594,6 +2749,29 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
           " decelerating from TECH_CREEP_BASE_YEAR = ", TECH_CREEP_BASE_YEAR, "). Cumulative effect ranges",
           " from ", min(fishmip_creep_range$pct), "% to ", max(fishmip_creep_range$pct), "% across the",
           " covered years - same ASSUMPTION-DRIVEN adjustment as effort_by_fleettype_eu3, not a measurement.")
+  
+  ## Rousseau NomEffort added as a SECOND, independent effort figure per
+  ## Country x Year (not replacing FishMIP - SAU itself has no effort
+  ## variable for these "other" non-EU countries, so Rousseau is the only
+  ## candidate second source here; per Andrea's direction to bring
+  ## Rousseau in for the non-EU side too). Country x Year only, joined
+  ## onto every Fleet row for that country x year so it reads alongside
+  ## FishMIP's fleet-level breakdown - NOT split by gear/sector itself
+  ## (Rousseau's Gear scheme doesn't map onto this script's fleet
+  ## taxonomy, same limitation as the EU-3 hindcast above). The two
+  ## sources track each other's SHAPE reasonably well for these 3
+  ## countries (Algeria r=0.98, Tunisia r=0.98, Morocco r=0.82 across
+  ## 1950-2017) but differ ~5-10x in absolute magnitude - kept as a
+  ## side-by-side comparison column, not blended into nom_active_kWdays,
+  ## since there's no ground truth here to say which scale is "right".
+  if (nrow(rousseau_effort_cy) > 0) {
+    effort_by_fleet <- merge(effort_by_fleet, rousseau_effort_cy, by = c("Country", "Year"), all.x = TRUE)
+    setnames(effort_by_fleet, "NomEffort", "rousseau_nom_effort_country_year")
+    message("[Effort] Rousseau NomEffort joined as rousseau_nom_effort_country_year (Country x Year, same value",
+            " repeated across every Fleet row for that country/year) - a comparison figure only, not blended",
+            " into nom_active_kWdays. NA where Rousseau's own 1950-2017 coverage doesn't reach (", END_YEAR,
+            "'s tail years, same as FishMIP's own ceiling).")
+  }
 }
 
 ## =================================================================
