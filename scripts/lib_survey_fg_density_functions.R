@@ -121,6 +121,68 @@ library(sf)
 ## area filters, etc.) the same way.
 
 ## =================================================================
+## resolve_pcloud_file() - added 2026-09-16, per Andrea: pCloud data
+## keeps getting reorganized into "complementary" subfolders (a file
+## that used to sit directly under pcloud_dir/data/ moves one or two
+## levels deeper), which breaks every hardcoded `paste0(pcloud_dir,
+## "/data/<filename>")` path in the numbered scripts with a bare
+## "cannot open file" error that doesn't say WHERE to look next.
+##
+## This wraps any such hardcoded path: if it exists as given, use it
+## unchanged (zero behavior change for anyone whose data hasn't moved).
+## If not, recursively search under `search_root` (default:
+## file.path(pcloud_dir, "data")) for a file with that EXACT basename.
+## - Exactly one match -> use it, with a loud message saying where it
+##   was actually found, so the hardcoded path in the script can be
+##   updated to match next time.
+## - More than one match -> stop() naming all candidates - silently
+##   picking one of several same-named files (e.g. a "_v2" copy some-
+##   where) is the wrong kind of "helpful" here.
+## - No match at all -> if `required = TRUE` (default), stop() with a
+##   clear "place this file somewhere under <search_root>" message; if
+##   `required = FALSE`, returns the original expected_path unchanged
+##   so a caller's own `if (file.exists(...))`-guarded optional-input
+##   logic (e.g. 01_biomass.R's catchability correction) still sees a
+##   normal "not found" and skips gracefully, exactly as before.
+## =================================================================
+resolve_pcloud_file <- function(expected_path, pcloud_dir, search_root = file.path(pcloud_dir, "data"), required = TRUE) {
+  if (file.exists(expected_path)) return(expected_path)
+  
+  fname <- basename(expected_path)
+  message("[resolve_pcloud_file] '", expected_path, "' not found - searching under '", search_root,
+          "' for a file named '", fname, "' (in case it moved into a subfolder)...")
+  if (!dir.exists(search_root)) {
+    if (required) stop("[resolve_pcloud_file] '", expected_path, "' doesn't exist, and search_root '", search_root, "' doesn't exist either - check pcloud_dir is set correctly.")
+    return(expected_path)
+  }
+  
+  ## Exact basename comparison, not a regex `pattern=` match - several of
+  ## these real filenames contain regex-special characters themselves
+  ## (e.g. "TM_list_(April_2019).xlsx"), so matching on the literal
+  ## basename after a plain recursive listing sidesteps escaping entirely.
+  all_files <- list.files(search_root, recursive = TRUE, full.names = TRUE, all.files = FALSE)
+  hits <- all_files[basename(all_files) == fname]
+  
+  if (length(hits) == 1) {
+    message("  Found it at: '", hits[1], "' - using this path. Consider updating the hardcoded path near the",
+            " top of the script to match, so this search doesn't need to run again next time.")
+    return(hits[1])
+  } else if (length(hits) > 1) {
+    stop("[resolve_pcloud_file] '", fname, "' is not at its expected path ('", expected_path, "'), and more than",
+         " one file with that exact name was found under '", search_root, "': ", paste(hits, collapse = "; "),
+         " - set the exact path explicitly (which one is current) instead of relying on auto-search.")
+  } else {
+    if (required) {
+      stop("[resolve_pcloud_file] No file named '", fname, "' found anywhere under '", search_root, "'",
+           " (searched recursively) - either place it there, in any subfolder, or fix the hardcoded path",
+           " near the top of the script if it's meant to live somewhere else entirely.")
+    }
+    message("  Not found anywhere under '", search_root, "' either - treating as genuinely absent.")
+    return(expected_path)
+  }
+}
+
+## =================================================================
 ## STEP 2: Input data validation
 ## =================================================================
 ## Not a data transformation - just a fail-fast check that the
@@ -354,7 +416,20 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
   }
   fetch_one_server <- function(server) {
     for (attempt in seq_len(max_retries)) {
-      tax <- tryCatch(as.data.table(rfishbase::load_taxa(species_names, server = server)), error = function(e) e)
+      ## load_taxa() has NEVER taken a species-name filter argument (old
+      ## rfishbase: update/cache/server/limit; current: server/version/...)
+      ## - it always returns the WHOLE taxa table for that server. Passing
+      ## species_names positionally here (as this call used to) silently
+      ## binds to whichever formal comes next after `server` is matched by
+      ## name (e.g. `version`), handing rfishbase's internal code a
+      ## 900+-element character vector where it expects a scalar - which is
+      ## exactly the "the condition has length > 1" error this produced on
+      ## every attempt/every server (not transient network flakiness, so
+      ## the retry loop below never actually helped for THIS failure mode).
+      ## Fix: call load_taxa() with no species argument at all and let the
+      ## existing `tax[Species %in% species_names, ...]` filter a few lines
+      ## down (in the caller) do the filtering, same as it already does.
+      tax <- tryCatch(as.data.table(rfishbase::load_taxa(server = server)), error = function(e) e)
       if (!inherits(tax, "error")) return(tax)
       if (attempt < max_retries) {
         message("  rfishbase::load_taxa() failed on server '", server, "' (attempt ", attempt, "/", max_retries,
@@ -367,14 +442,35 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
     }
     data.table()
   }
+  ## Single-token queries ("Alloteuthis", or whatever's left of a
+  ## "Genus spp."/"Genus sp." record once fallback_match_fg_by_taxonomy()
+  ## strips that marker before calling here) are never going to equal
+  ## anything in the Species column - Species is always "Genus species" -
+  ## so they'd come back "not found" even though FishBase/SeaLifeBase
+  ## almost certainly HAS that genus. Matched against the Genus column
+  ## instead, below, using any one row of that genus (every species in a
+  ## genus shares the same Family/Order/Class/Phylum).
+  bare_names <- species_names[!grepl("\\s", species_names)]
+  
   results <- rbindlist(lapply(c("fishbase", "sealifebase"), function(server) {
     tax <- fetch_one_server(server)
     if (nrow(tax) == 0) return(NULL)
     keep_cols <- intersect(c("Species", "Genus", "Family", "Order", "Class", "Phylum"), names(tax))
-    tax <- tax[Species %in% species_names, ..keep_cols]
-    for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), keep_cols)) tax[, (missing_col) := NA_character_]
-    setnames(tax, "Species", "ScientificName")
-    tax
+    species_hits <- tax[Species %in% species_names, ..keep_cols]
+    for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), keep_cols)) species_hits[, (missing_col) := NA_character_]
+    setnames(species_hits, "Species", "ScientificName")
+    
+    genus_hits <- data.table()
+    if (length(bare_names) > 0 && "Genus" %in% keep_cols) {
+      genus_cols <- setdiff(keep_cols, "Species")
+      genus_rows <- unique(tax[Genus %in% bare_names, ..genus_cols], by = "Genus")
+      if (nrow(genus_rows) > 0) {
+        genus_hits <- copy(genus_rows)
+        genus_hits[, ScientificName := Genus]
+        for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), names(genus_hits))) genus_hits[, (missing_col) := NA_character_]
+      }
+    }
+    rbindlist(list(species_hits, genus_hits), fill = TRUE)
   }), fill = TRUE)
   not_found <- data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
                           Order = NA_character_, Class = NA_character_, Phylum = NA_character_)
@@ -406,25 +502,53 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
 ## un-cached fetch_taxonomy_fishbase() above never had that on its own).
 fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
   cache <- if (!is.null(cache_path) && file.exists(cache_path)) readRDS(cache_path) else NULL
-  already_cached <- if (!is.null(cache)) intersect(species_names, cache$ScientificName) else character(0)
+  
+  ## Only trust a cached row as "already cached" if it actually resolved
+  ## to something (at least one rank filled in). An all-NA "not found"
+  ## row in the cache is indistinguishable from one that failed because
+  ## the FETCH ITSELF was broken (e.g. the load_taxa() bug fixed earlier
+  ## this session - every one of the 939 species affected by it would
+  ## have been written to the cache as an all-NA "not found" row, and the
+  ## OLD logic here trusted that forever, even after the code fix, since
+  ## the cache is checked before load_taxa() is ever called again). So
+  ## all-NA cache rows are treated as NOT cached and re-queried every
+  ## run; only genuinely-resolved rows are skipped. This costs a small
+  ## repeat query for names that are truly unresolvable (they can no
+  ## longer be cached as "not found" once and skipped forever), in
+  ## exchange for never permanently trusting a "not found" that was
+  ## actually just a broken fetch.
+  rank_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  resolved_cache_names <- if (!is.null(cache) && nrow(cache) > 0) {
+    cache[rowSums(!is.na(cache[, ..rank_cols])) > 0, ScientificName]
+  } else character(0)
+  already_cached <- intersect(species_names, resolved_cache_names)
   to_query <- setdiff(species_names, already_cached)
   
   if (!is.null(cache_path)) {
+    n_stale_not_found <- length(intersect(species_names, if (!is.null(cache)) cache$ScientificName else character(0))) - length(already_cached)
     message("  FishBase/SeaLifeBase taxonomy cache (", cache_path, "): ", length(already_cached),
-            " of ", length(species_names), " name(s) already cached, ", length(to_query), " to actually query.")
+            " of ", length(species_names), " name(s) already resolved & cached, ", length(to_query),
+            " to (re-)query", if (n_stale_not_found > 0) paste0(" (", n_stale_not_found, " of those were cached 'not found' - retrying in case that was a stale/failed fetch)") else "", ".")
   }
   
   fresh_result <- if (length(to_query) > 0) fetch_taxonomy_fishbase_uncached(to_query) else NULL
   
+  ## Drop any stale row for a name we just re-queried (it's either
+  ## replaced by fresh_result or, if that still came back all-NA,
+  ## re-added fresh below) - never keep the old row AND append a new
+  ## one for the same ScientificName. Computed whether or not cache_path
+  ## is set, since `all_known` below needs the same de-duplication.
+  cache_kept <- if (!is.null(cache)) cache[!ScientificName %in% to_query] else NULL
+  
   if (!is.null(cache_path)) {
-    updated_cache <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else rbindlist(list(cache, fresh_result), fill = TRUE)
+    updated_cache <- if (is.null(cache_kept)) fresh_result else if (is.null(fresh_result)) cache_kept else rbindlist(list(cache_kept, fresh_result), fill = TRUE)
     if (!is.null(updated_cache)) {
       dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
       saveRDS(updated_cache, cache_path)
     }
   }
   
-  all_known <- if (is.null(cache)) fresh_result else if (is.null(fresh_result)) cache else rbindlist(list(cache, fresh_result), fill = TRUE)
+  all_known <- if (is.null(cache_kept)) fresh_result else if (is.null(fresh_result)) cache_kept else rbindlist(list(cache_kept, fresh_result), fill = TRUE)
   if (is.null(all_known) || nrow(all_known) == 0) {
     return(data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
                       Order = NA_character_, Class = NA_character_, Phylum = NA_character_))
@@ -483,12 +607,99 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
           " (", paste(rank_levels, collapse = " -> "), ").")
   
   ## taxonomy for the FG reference species themselves too, for whichever
-  ## rank columns aren't already present
+  ## rank columns aren't already present. Selects only missing_rank_cols
+  ## from fg_taxonomy (NOT the full rank_levels) - selecting all of
+  ## rank_levels here would re-merge in a second, differently-named copy
+  ## (Genus.x/Genus.y) of any rank column fg_lookup_safe already had,
+  ## silently breaking every later `rank %in% names(fg_lookup_safe)`
+  ## check for that rank (caught via a synthetic test where fg_lookup_safe
+  ## arrived with some but not all rank columns already populated - the
+  ## real caller in 01_biomass.R always passes one with NONE of them
+  ## populated, so all 5 are "missing" there and this collision never
+  ## actually fired in production, but it's a real latent bug regardless).
   missing_rank_cols <- setdiff(rank_levels, names(fg_lookup_safe))
   if (length(missing_rank_cols) > 0) {
     fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source, cache_path = cache_path)
-    fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy[, c("ScientificName", rank_levels), with = FALSE],
+    fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy[, c("ScientificName", missing_rank_cols), with = FALSE],
                             by = "ScientificName", all.x = TRUE)
+  }
+  
+  ## Some unmatched records aren't full binomial species names at all -
+  ## a genus-only / indeterminate-species identification ("Genus spp."
+  ## or "Genus sp.", the formal marker for "identified only to genus"),
+  ## or a bare higher-rank name used when even genus wasn't certain
+  ## (e.g. survey data recording "Porifera" for an unidentified sponge).
+  ## Querying FishBase/SeaLifeBase's Species column for either of these
+  ## would always come back "not found" - they were never going to BE a
+  ## Species value - even though the record already IS a real
+  ## taxonomic identification, just coarser than species. Handled in
+  ## two passes: (1) strip the "spp."/"sp." marker so the bare genus
+  ## gets queried instead of the un-queryable whole string (fetch_
+  ## taxonomy_fishbase_uncached() also now matches a bare genus against
+  ## FishBase's own Genus column, not just Species, so this alone
+  ## recovers real Family/Order/Class/Phylum for a lot of these); (2)
+  ## whatever's STILL a single bare word with no space at all (a genus,
+  ## family, order, class or phylum name and nothing else) is ALSO
+  ## checked directly against fg_lookup_safe's own rank columns - free,
+  ## no network call, and the only way to resolve a name like "Porifera"
+  ## that will never be in FishBase's Genus column since Porifera is a
+  ## phylum, not a genus.
+  query_name <- sub("\\s+spp?\\.?\\s*$", "", unmatched_sci, ignore.case = TRUE)
+  n_stripped <- sum(query_name != unmatched_sci)
+  if (n_stripped > 0) {
+    example_idx <- which(query_name != unmatched_sci)[1]
+    message(n_stripped, " of ", length(unmatched_sci), " unmatched name(s) carry a 'spp.'/'sp.' genus-only",
+            " marker - querying the bare genus instead (e.g. '", unmatched_sci[example_idx], "' -> '",
+            query_name[example_idx], "').")
+  }
+  name_map <- data.table(ScientificName = unmatched_sci, query_name = query_name,
+                         is_bare_word = !grepl("\\s", query_name))
+  
+  ## Reusable exclusive/majority resolver for one rank, built ONCE per
+  ## rank from fg_lookup_safe and reused both for the direct bare-word
+  ## match here and for the main taxonomy-driven loop just below - same
+  ## rule either way: exclusive if every already-assigned relative at
+  ## this rank agrees on one FG, majority if most (but not all, and not
+  ## tied) do.
+  resolve_fg_votes_for_rank <- function(rank) {
+    if (!rank %in% names(fg_lookup_safe)) {
+      return(data.table(rank_value_lower = character(0), FG_num = numeric(0), FG_name = character(0),
+                        match_type = character(0), vote_share = character(0)))
+    }
+    votes <- fg_lookup_safe[!is.na(get(rank)), .(n_species = uniqueN(ScientificName)), by = c(rank, "FG_num", "FG_name")]
+    if (nrow(votes) == 0) return(data.table(rank_value_lower = character(0), FG_num = numeric(0), FG_name = character(0),
+                                            match_type = character(0), vote_share = character(0)))
+    setnames(votes, rank, "rank_value")
+    votes[, rank_value_lower := tolower(rank_value)]
+    votes[, total_at_value := sum(n_species), by = rank_value_lower]
+    votes[, n_fg := uniqueN(FG_num), by = rank_value_lower]
+    votes[, is_top := n_species == max(n_species), by = rank_value_lower]
+    tied <- unique(votes[n_fg > 1 & is_top == TRUE, .N, by = rank_value_lower][N > 1, rank_value_lower])
+    out <- votes[n_fg == 1 | (is_top == TRUE & !(rank_value_lower %in% tied))]
+    out[, match_type := fifelse(n_fg == 1, "exclusive", "majority")]
+    out[, vote_share := fifelse(match_type == "majority", paste0(n_species, "/", total_at_value), NA_character_)]
+    unique(out[, .(rank_value_lower, FG_num, FG_name, match_type, vote_share)])
+  }
+  
+  direct_matches <- data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0),
+                               match_type = character(0), match_rank = character(0), vote_share = character(0))
+  bare_lookup <- name_map[is_bare_word == TRUE, .(ScientificName, rank_value_lower = tolower(query_name))]
+  for (rank in rank_levels) {
+    if (nrow(bare_lookup) == 0) break
+    rank_votes <- resolve_fg_votes_for_rank(rank)
+    if (nrow(rank_votes) == 0) next
+    hits <- merge(bare_lookup, rank_votes, by = "rank_value_lower")
+    if (nrow(hits) > 0) {
+      hits[, match_rank := rank]
+      direct_matches <- rbindlist(list(direct_matches, hits[, .(ScientificName, FG_num, FG_name, match_type, match_rank, vote_share)]), fill = TRUE)
+      bare_lookup <- bare_lookup[!ScientificName %in% hits$ScientificName]
+    }
+  }
+  if (nrow(direct_matches) > 0) {
+    message(nrow(direct_matches), " bare genus/higher-rank name(s) matched DIRECTLY against already-assigned",
+            " species' own Genus/Family/Order/Class/Phylum (no taxonomy fetch needed): ",
+            paste(head(direct_matches$ScientificName, 10), collapse = ", "),
+            if (nrow(direct_matches) > 10) ", ..." else "")
   }
   
   ## attached as an attribute on the return value (see bottom of this
@@ -497,13 +708,32 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## the same species. cache_path (see worms_taxonomy_lookup()'s own
   ## header comment) is what actually makes a RE-run of this pipeline
   ## fast - species already resolved on a previous run are read off
-  ## disk instead of re-queried from WoRMS.
-  unmatched_taxonomy <- fetch_taxonomy(unmatched_sci, taxonomy_source, cache_path = cache_path)
+  ## disk instead of re-queried from WoRMS. Only names direct_matches
+  ## didn't already resolve are fetched at all, using query_name (the
+  ## spp./sp.-stripped form) so a genus-only record queries FishBase as
+  ## its bare genus instead of the un-queryable full string.
+  still_needs_fetch <- name_map[!ScientificName %in% direct_matches$ScientificName]
+  fetch_targets <- unique(still_needs_fetch$query_name)
+  ## Empty-case initialized with the full rank column set (fetch_taxonomy()
+  ## always returns Genus/Family/Order/Class/Phylum regardless of
+  ## rank_levels) - a bare data.table(query_name = character(0)) here
+  ## would have zero rank columns at all, crashing the message() a few
+  ## lines down the same way an empty data.table() crashed elsewhere in
+  ## this project (see stock_assessment_fg_year in 01_biomass.R).
+  fetched <- if (length(fetch_targets) > 0) {
+    fetch_taxonomy(fetch_targets, taxonomy_source, cache_path = cache_path)
+  } else {
+    data.table(query_name = character(0), Genus = character(0), Family = character(0),
+               Order = character(0), Class = character(0), Phylum = character(0))
+  }
+  if (length(fetch_targets) > 0) setnames(fetched, "ScientificName", "query_name")
+  unmatched_taxonomy <- merge(still_needs_fetch[, .(ScientificName, query_name)], fetched, by = "query_name", all.x = TRUE)
+  unmatched_taxonomy[, query_name := NULL]
   message(unmatched_taxonomy[!is.na(Genus) | !is.na(Family), .N], " of ",
-          length(unmatched_sci), " found with usable genus/family.")
+          nrow(unmatched_taxonomy), " (of ", length(unmatched_sci), " total unmatched) found with usable genus/family via taxonomy fetch.")
   
   remaining <- copy(unmatched_taxonomy)
-  matches_by_level <- list()
+  matches_by_level <- list(direct = direct_matches)
   
   for (rank in rank_levels) {
     if (nrow(remaining) == 0) break
@@ -517,16 +747,48 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
       rank_safe <- unique(fg_lookup_safe[get(rank) %in% safe_values, c(rank, "FG_num", "FG_name"), with = FALSE])
       level_matches <- merge(remaining, rank_safe, by = rank)
       if (nrow(level_matches) > 0) {
-        matches_by_level[[rank]] <- level_matches[, .(ScientificName, FG_num, FG_name)]
-        message("Resolved via ", rank, " fallback: ", nrow(level_matches))
+        level_matches[, `:=`(match_type = "exclusive", match_rank = rank, vote_share = NA_character_)]
+        matches_by_level[[paste0(rank, "_exclusive")]] <- level_matches[, .(ScientificName, FG_num, FG_name, match_type, match_rank, vote_share)]
+        message("Resolved via ", rank, " fallback (exclusive - every already-assigned relative is in one FG): ", nrow(level_matches))
         remaining <- remaining[!ScientificName %in% level_matches$ScientificName]
       }
     }
-    if (length(ambiguous_values) > 0) {
-      message(length(ambiguous_values), " ", rank, "-level value(s) span multiple FGs",
-              " (too ecologically diverse for fallback, not used): ",
-              paste(head(ambiguous_values, 10), collapse = ", "),
-              if (length(ambiguous_values) > 10) ", ..." else "")
+    if (length(ambiguous_values) > 0 && nrow(remaining) > 0) {
+      ## Per Andrea's instruction: an unmatched species can still be
+      ## assigned by its closest relative even when that genus/family
+      ## spans more than one FG - assign it to whichever FG holds the
+      ## MAJORITY of its already-assigned relatives at this rank (e.g.
+      ## 4 of 5 already-assigned Plesionika species sit in "Deep
+      ## shrimps" -> the 5th Plesionika goes there too). A genuine tie
+      ## (two or more FGs equally represented, no real majority) is left
+      ## unresolved rather than guessed - falls through to the next,
+      ## coarser rank_levels entry or into "still_unresolved_taxonomy".
+      votes <- fg_lookup_safe[get(rank) %in% ambiguous_values & !is.na(FG_num),
+                              .(n_species = uniqueN(ScientificName)), by = c(rank, "FG_num", "FG_name")]
+      votes[, total_at_rank := sum(n_species), by = rank]
+      votes[, is_top := n_species == max(n_species), by = rank]
+      tied_values <- unique(votes[is_top == TRUE, .N, by = rank][N > 1, get(rank)])
+      majority <- votes[is_top == TRUE & !(get(rank) %in% tied_values)]
+      
+      if (length(tied_values) > 0) {
+        message(length(tied_values), " ", rank, "-level value(s) tied between two or more FGs with no clear",
+                " majority among their already-assigned relatives - left unresolved: ",
+                paste(head(tied_values, 10), collapse = ", "), if (length(tied_values) > 10) ", ..." else "")
+      }
+      
+      if (nrow(majority) > 0) {
+        majority[, vote_share := paste0(n_species, "/", total_at_rank)]
+        rank_majority <- unique(majority[, c(rank, "FG_num", "FG_name", "vote_share"), with = FALSE])
+        level_matches <- merge(remaining, rank_majority, by = rank)
+        if (nrow(level_matches) > 0) {
+          level_matches[, `:=`(match_type = "majority", match_rank = rank)]
+          matches_by_level[[paste0(rank, "_majority")]] <- level_matches[, .(ScientificName, FG_num, FG_name, match_type, match_rank, vote_share)]
+          message("Resolved via ", rank, " fallback (majority vote among relatives): ", nrow(level_matches),
+                  " (vote share e.g. ", paste(head(unique(level_matches$vote_share), 5), collapse = ", "),
+                  if (uniqueN(level_matches$vote_share) > 5) ", ..." else "", ") - flagged match_type='majority' for review.")
+          remaining <- remaining[!ScientificName %in% level_matches$ScientificName]
+        }
+      }
     }
   }
   
@@ -538,11 +800,23 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   fallback_matches <- if (length(matches_by_level) > 0) {
     rbindlist(matches_by_level, fill = TRUE)
   } else {
-    data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0))
+    data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0),
+               match_type = character(0), match_rank = character(0), vote_share = character(0))
   }
   message("Still unresolved after all taxonomy levels: ", length(unmatched_sci) - nrow(fallback_matches))
+  if (nrow(fallback_matches[match_type == "majority"]) > 0) {
+    message(fallback_matches[match_type == "majority", .N], " of those were resolved by MAJORITY vote",
+            " (ambiguous genus/family, assigned to the FG with the most already-assigned relatives) -",
+            " see the 'fallback_match_detail' attribute / the taxonomy fallback review CSV for which ones.")
+  }
   
-  dt <- merge(dt, fallback_matches, by = "ScientificName", all.x = TRUE, suffixes = c("", "_fb"))
+  ## dt itself only gets FG_num/FG_name merged in (same as before) - the
+  ## match_type/match_rank/vote_share detail is deliberately kept OFF dt
+  ## (which downstream code reshapes/rbinds in ways that don't expect
+  ## extra columns) and exposed only via the "fallback_match_detail"
+  ## attribute below, for an audit CSV of exactly which species were
+  ## assigned by majority vote vs. unanimous agreement among relatives.
+  dt <- merge(dt, fallback_matches[, .(ScientificName, FG_num, FG_name)], by = "ScientificName", all.x = TRUE, suffixes = c("", "_fb"))
   dt[is.na(FG_num) & !is.na(FG_num_fb), `:=`(FG_num = FG_num_fb, FG_name = FG_name_fb)]
   dt[, c("FG_num_fb", "FG_name_fb") := NULL]
   
@@ -560,6 +834,11 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## it along the way.
   attr(dt, "fetched_taxonomy") <- unmatched_taxonomy
   attr(dt, "still_unresolved_taxonomy") <- remaining
+  ## Every species this call actually resolved via the taxonomy
+  ## fallback (both "exclusive" and "majority" match_type), for an
+  ## audit trail of which FG assignments came from real data vs. an
+  ## inferred closest-relative guess.
+  attr(dt, "fallback_match_detail") <- fallback_matches
   dt
 }
 
@@ -609,6 +888,7 @@ apply_seed_fg_rules <- function(dt, dataframe2, seed_rules, species_exceptions =
   ## export) still finds it there.
   taxonomy_source_data <- attr(dt, "fetched_taxonomy")
   still_unresolved_taxonomy_data <- attr(dt, "still_unresolved_taxonomy")
+  fallback_match_detail_data <- attr(dt, "fallback_match_detail")
   if (is.null(taxonomy_source_data)) {
     stop("apply_seed_fg_rules() needs the 'fetched_taxonomy' attribute from",
          " fallback_match_fg_by_taxonomy() - run that first.")
@@ -669,6 +949,7 @@ apply_seed_fg_rules <- function(dt, dataframe2, seed_rules, species_exceptions =
   
   attr(dt, "fetched_taxonomy") <- taxonomy_source_data
   attr(dt, "still_unresolved_taxonomy") <- still_unresolved_taxonomy_data
+  attr(dt, "fallback_match_detail") <- fallback_match_detail_data
   dt
 }
 
@@ -2352,12 +2633,21 @@ upsert_workbook_sheets <- function(sheets, out_path) {
 ## Sheets in target_order that don't exist in the workbook are skipped
 ## with a message (not an error) - upstream scripts run at different
 ## times, so not every sheet is guaranteed to exist yet.
-## Sheets that exist in the workbook but are NOT in target_order are
-## kept and appended at the end, in their original relative order -
-## never silently dropped, just flagged with a warning so an
-## unexpected/forgotten sheet doesn't slip by unnoticed.
+## Sheets that exist in the workbook but are NOT in target_order are,
+## by DEFAULT (drop_extras = FALSE), kept and appended at the end, in
+## their original relative order - never silently dropped, just
+## flagged with a warning so an unexpected/forgotten sheet doesn't
+## slip by unnoticed. Pass drop_extras = TRUE (added 2026-09-16, per
+## Andrea's request for a workbook containing ONLY the final summary
+## sheets - "info", Ecopath_B/L/Di/PBQB/traits/diet, Ecosim_ts - not
+## every native sheet the individual pipeline scripts wrote along the
+## way) to instead REMOVE every sheet not in target_order. Only call
+## this with drop_extras = TRUE once, at the very END of the WHOLE
+## pipeline (currently: at the end of 04_diets.R's run_pipeline(), the
+## last script to run) - calling it mid-pipeline would delete native
+## sheets (e.g. FG_spp_Ecopath) that a LATER script still needs to read.
 ## =================================================================
-finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), target_order) {
+finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), target_order, drop_extras = FALSE) {
   if (!requireNamespace("openxlsx", quietly = TRUE)) {
     stop("openxlsx is required to finalize sheet order for '", out_path, "'.")
   }
@@ -2420,11 +2710,20 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
   
   extra_sheets <- setdiff(current_names, target_order)
   if (length(extra_sheets) > 0) {
-    warning("finalize_workbook_sheet_order(): sheet(s) in the workbook but NOT in target_order -",
-            " kept, appended at the end rather than dropped: ", paste(extra_sheets, collapse = ", "))
+    if (drop_extras) {
+      message("finalize_workbook_sheet_order(): drop_extras = TRUE - removing sheet(s) not in",
+              " target_order: ", paste(extra_sheets, collapse = ", "))
+      for (nm in extra_sheets) openxlsx::removeWorksheet(wb, nm)
+    } else {
+      warning("finalize_workbook_sheet_order(): sheet(s) in the workbook but NOT in target_order -",
+              " kept, appended at the end rather than dropped: ", paste(extra_sheets, collapse = ", "))
+    }
   }
   
-  final_order_names <- c(target_present, extra_sheets)
+  current_names <- names(wb)  # re-read again - removeWorksheet() above (if it ran) changes both the
+  # sheet count and index positions, so target_present's indices into
+  # the ORIGINAL current_names would silently point at the wrong sheets
+  final_order_names <- if (drop_extras) target_present else c(target_present, extra_sheets)
   new_position_of_current_index <- match(final_order_names, current_names)
   openxlsx::worksheetOrder(wb) <- new_position_of_current_index
   
@@ -2432,6 +2731,209 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
   message("finalize_workbook_sheet_order(): saved '", out_path, "' - final sheet order: ",
           paste(names(wb), collapse = ", "))
   invisible(wb)
+}
+
+## =================================================================
+## finalize_ecopath_ecosim_summary_sheets()
+##
+## Added 2026-09-16 per Andrea: "beside [keeping] csv files or
+## intermediate files ... the excel file should include the following
+## sheets: Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
+## Ecopath_traits, Ecosim_ts (with B, L, Di and effort)". Ecopath_traits
+## is written directly by 03_pbqb-traits.R (it's a brand-new table, not
+## sitting in another sheet already); this function builds the other
+## five by reading back sheets 01_biomass.R/02_fisheries.R/
+## 03_pbqb-traits.R already wrote NATIVELY into the same workbook, and
+## consolidating/renaming them - it does NOT remove or rewrite any of
+## those native sheets (Ecopath, Catches_Ecopath, Catches_Discards_
+## FG_ts, PB_QB, Ecosim, Catches_Ecosim, Fishing_Effort_by_Fleet all
+## stay exactly as they were). Call this ONCE, after every upstream
+## script has run at least once against out_path - same "run last"
+## rule as finalize_workbook_sheet_order(). A source sheet that hasn't
+## been written yet is skipped with a message, not an error, so this
+## is safe to call even if only some of 01/02/03 have run so far (it's
+## called automatically at the end of 03_pbqb-traits.R, so in the
+## normal run order all three have already run by the time it fires).
+##
+## Ecopath_L/Ecopath_Di are built from Catches_Discards_FG_ts, NOT from
+## Catches_Ecopath's own Catch_* columns - that sheet's columns can be
+## split by Fleet depending on settings, and it's not always clear by
+## name alone whether it holds plain landings or gross catch (landings
+## + discards). Catches_Discards_FG_ts has unambiguous Landings_t/
+## Catch_t/Discard_t columns at plain FG x Year grain, which is what
+## both new sheets actually need.
+## =================================================================
+finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
+  if (!file.exists(out_path)) {
+    message("finalize_ecopath_ecosim_summary_sheets(): workbook not found at '", out_path, "' - nothing to do.")
+    return(invisible(NULL))
+  }
+  existing <- openxlsx::getSheetNames(out_path)
+  read_sheet <- function(nm) {
+    if (!(nm %in% existing)) return(NULL)
+    as.data.table(openxlsx::read.xlsx(out_path, sheet = nm, check.names = FALSE))
+  }
+  
+  base_year <- year_ecopath[1]
+  range_lab <- paste0(min(year_ecopath), "_", max(year_ecopath))
+  out_sheets <- list()
+  
+  ## --- Ecopath_B ----------------------------------------------------
+  ecopath <- read_sheet("Ecopath")
+  if (!is.null(ecopath)) {
+    b_base_col  <- paste0("Biomass_", base_year)
+    b_range_col <- paste0("Biomass_", range_lab)
+    keep <- intersect(c("FG_num", "FG_name", b_base_col, b_range_col), names(ecopath))
+    out_sheets$Ecopath_B <- ecopath[, ..keep]
+  } else {
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecopath' sheet not found - skipping Ecopath_B",
+            " (run 01_biomass.R against this workbook first).")
+  }
+  
+  ## --- Ecopath_L / Ecopath_Di, both from Catches_Discards_FG_ts ------
+  cd_ts <- read_sheet("Catches_Discards_FG_ts")
+  if (!is.null(cd_ts)) {
+    cd_ts[, Year := as.numeric(Year)]
+    
+    l_base  <- cd_ts[Year == base_year, .(FG_num, FG_name, Landings_t)]
+    l_range <- cd_ts[Year %in% year_ecopath, .(Landings_t = mean(Landings_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
+    setnames(l_base,  "Landings_t", paste0("Landings_", base_year))
+    setnames(l_range, "Landings_t", paste0("Landings_", range_lab))
+    ecopath_l <- merge(l_base, l_range, by = c("FG_num", "FG_name"), all = TRUE)
+    setorder(ecopath_l, FG_num)
+    out_sheets$Ecopath_L <- ecopath_l
+    
+    di_base  <- cd_ts[Year == base_year, .(FG_num, FG_name, Discard_t)]
+    di_range <- cd_ts[Year %in% year_ecopath, .(Discard_t = mean(Discard_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
+    setnames(di_base,  "Discard_t", paste0("Discard_", base_year))
+    setnames(di_range, "Discard_t", paste0("Discard_", range_lab))
+    ecopath_di <- merge(di_base, di_range, by = c("FG_num", "FG_name"), all = TRUE)
+    setorder(ecopath_di, FG_num)
+    out_sheets$Ecopath_Di <- ecopath_di
+  } else {
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts' sheet not found - skipping",
+            " Ecopath_L/Ecopath_Di (run 02_fisheries.R against this workbook first).")
+  }
+  
+  ## --- Ecopath_PBQB ---------------------------------------------------
+  pbqb <- read_sheet("PB_QB")
+  if (!is.null(pbqb)) {
+    out_sheets$Ecopath_PBQB <- pbqb
+  } else {
+    message("finalize_ecopath_ecosim_summary_sheets(): 'PB_QB' sheet not found - skipping Ecopath_PBQB",
+            " (run 03_pbqb-traits.R against this workbook first).")
+  }
+  
+  ## --- Ecosim_ts: B (from Ecosim) + L (from Catches_Ecosim) + Di
+  ## (built fresh from Catches_Discards_FG_ts - no existing Ecosim-
+  ## format Di sheet to borrow) + Effort (pivoted from Fishing_Effort_
+  ## by_Fleet's long Fleet x Year shape into one column per fleet) -
+  ## all combined into ONE sheet using the same meta-row-then-one-row-
+  ## per-year convention every native Ecosim-format sheet already uses,
+  ## so this reads as "the same kind of sheet, just with every driver
+  ## in one place" rather than a different layout altogether.
+  ecosim_b <- read_sheet("Ecosim")
+  ecosim_l <- read_sheet("Catches_Ecosim")
+  effort   <- read_sheet("Fishing_Effort_by_Fleet")
+  meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+  
+  if (!is.null(ecosim_b)) {
+    years <- suppressWarnings(as.numeric(ecosim_b[[1]][-seq_along(meta_labels)]))
+    combined <- data.table(` ` = c(meta_labels, as.character(years)))
+    
+    add_block <- function(sheet_dt, new_prefix) {
+      if (is.null(sheet_dt)) return(invisible(NULL))
+      value_cols <- setdiff(names(sheet_dt), names(sheet_dt)[1])
+      for (col in value_cols) {
+        vals <- sheet_dt[[col]]
+        meta   <- vals[seq_along(meta_labels)]   # keep the source sheet's own descriptive "Name" row as-is (it's already e.g. "B_Hake"/"C_Hake") - only the combined data.table's own COLUMN KEY gets prefixed below, so B_/L_/Di_/Effort_ columns pulled from different source sheets never collide once combined into one sheet
+        yrvals <- vals[-seq_along(meta_labels)]
+        combined[, (paste0(new_prefix, "_", col)) := c(meta, yrvals)]
+      }
+    }
+    add_block(ecosim_b, "B")
+    add_block(ecosim_l, "L")
+    
+    if (!is.null(cd_ts)) {
+      for (fg_num in unique(cd_ts$FG_num)) {
+        fg_name <- cd_ts[FG_num == fg_num, FG_name][1]
+        ts_vals <- vapply(years, function(y) {
+          v <- cd_ts[FG_num == fg_num & Year == y, Discard_t]
+          if (length(v) == 0) NA_real_ else v[1]
+        }, numeric(1))
+        col <- c(paste0("Di_", gsub("[^A-Za-z0-9]+", "", fg_name)), "Discards", "reference", "absolute",
+                 "1", paste0(fg_num, ": ", fg_name), "", "Annual", as.character(ts_vals))
+        combined[, (paste0("Di_fg_", fg_num)) := col]
+      }
+    }
+    
+    if (!is.null(effort)) {
+      value_col <- intersect(c("nom_active_kWdays_effective", "nom_active_kWdays"), names(effort))[1]
+      if (!is.na(value_col)) {
+        effort[, Year := as.numeric(Year)]
+        for (fl in unique(effort$Fleet)) {
+          ts_vals <- vapply(years, function(y) {
+            v <- effort[Fleet == fl & Year == y, get(value_col)]
+            if (length(v) == 0) NA_real_ else v[1]
+          }, numeric(1))
+          col <- c(paste0("Effort_", gsub("[^A-Za-z0-9]+", "", fl)), "Effort", "reference", "absolute",
+                   "1", fl, "", "Annual", as.character(ts_vals))
+          combined[, (paste0("Effort_fleet_", gsub("[^A-Za-z0-9]+", "", fl))) := col]
+        }
+      }
+    }
+    
+    out_sheets$Ecosim_ts <- combined
+  } else {
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecosim' sheet not found - skipping Ecosim_ts",
+            " (run 01_biomass.R against this workbook first).")
+  }
+  
+  if (length(out_sheets) == 0) {
+    message("finalize_ecopath_ecosim_summary_sheets(): nothing to write - none of the source sheets were found yet.")
+    return(invisible(NULL))
+  }
+  upsert_workbook_sheets(out_sheets, out_path)
+  message("finalize_ecopath_ecosim_summary_sheets(): wrote ", paste(names(out_sheets), collapse = ", "), ".")
+  invisible(out_sheets)
+}
+
+## =================================================================
+## build_info_sheet() - added 2026-09-16, per Andrea: the final
+## workbook should lead with an "info" sheet ("with data from the run,
+## GSAs, time ecopath, time ecosim region...."). A plain Field/Value
+## table, best-effort - every argument defaults to reading the matching
+## config variable straight out of .GlobalEnv (the numbered scripts all
+## set these - FILTER_AREAS/TARGET_COUNTRIES/YEAR_ECOPATH/TS_YEARS - and
+## since the whole pipeline runs in ONE R session via run_pipeline_demo.R,
+## they're all still in scope by the time this is called at the very
+## end), and falls back to "not available" rather than erroring if a
+## script was run standalone/out of order and that variable was never set.
+## =================================================================
+build_info_sheet <- function(filter_areas = NULL, target_countries = NULL, year_ecopath = NULL, ts_years = NULL,
+                             region_name = NULL) {
+  get_or_default <- function(val, var_name, envir = .GlobalEnv) {
+    if (!is.null(val)) return(val)
+    if (exists(var_name, envir = envir, inherits = FALSE)) get(var_name, envir = envir) else NULL
+  }
+  filter_areas     <- get_or_default(filter_areas, "FILTER_AREAS")
+  target_countries <- get_or_default(target_countries, "TARGET_COUNTRIES")
+  year_ecopath     <- get_or_default(year_ecopath, "YEAR_ECOPATH")
+  ts_years         <- get_or_default(ts_years, "TS_YEARS")
+  region_name      <- get_or_default(region_name, "AREA_NAME")
+  
+  fmt <- function(x, as_range = FALSE) {
+    if (is.null(x) || length(x) == 0 || all(is.na(x))) return("not available")
+    if (as_range && is.numeric(x) && length(x) > 1) return(paste(range(x), collapse = "-"))
+    paste(x, collapse = ", ")
+  }
+  
+  data.table(
+    Field = c("Run timestamp", "Region", "GSAs (FILTER_AREAS)", "Countries (TARGET_COUNTRIES)",
+              "Ecopath base year(s) (YEAR_ECOPATH)", "Ecosim time series range (TS_YEARS)"),
+    Value = c(as.character(Sys.time()), fmt(region_name), fmt(filter_areas), fmt(target_countries),
+              fmt(year_ecopath, as_range = TRUE), fmt(ts_years, as_range = TRUE))
+  )
 }
 
 ## Lets a sheet-writer match ITS year-row range to another sheet
@@ -3036,6 +3538,24 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
 ##                     final number. Omit this argument (or pass NULL) to
 ##                     write PB_QB only, same as before this argument existed.
 ## =================================================================
+## Reads whichever FG name/number reference is already IN the shared
+## workbook - "FG" if 01_biomass.R's finalize_workbook_sheet_order()
+## has already renamed FG_lookup -> FG, or "FG_lookup" itself if that
+## rename hasn't run yet (03_pbqb-traits.R has no fixed run-order
+## requirement relative to that finalize call). Returns NULL (not an
+## error) if neither sheet exists yet - callers degrade to "whatever
+## FGs this run's own data happened to cover" the same way they always
+## did before this existed.
+read_full_fg_reference <- function(out_path) {
+  if (!file.exists(out_path)) return(NULL)
+  existing <- openxlsx::getSheetNames(out_path)
+  sheet_nm <- intersect(c("FG", "FG_lookup"), existing)[1]
+  if (is.na(sheet_nm) || length(sheet_nm) == 0) return(NULL)
+  ref <- as.data.table(openxlsx::read.xlsx(out_path, sheet = sheet_nm))
+  if (!all(c("FG_num", "FG_name") %in% names(ref))) return(NULL)
+  unique(ref[, .(FG_num, FG_name)])
+}
+
 add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL) {
   required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
   missing_cols <- setdiff(required_cols, names(fg_weighted))
@@ -3054,6 +3574,33 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   )
   pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
   setnames(pbqb_sheet, "FG", "FG_num")
+  
+  ## Expand to EVERY FG in the model (per Andrea: this feeds Ecopath_PBQB,
+  ## which goes straight into the EwE software - a row missing for an
+  ## FG that just happens to have had no species data THIS run breaks a
+  ## direct import, since EwE expects one row per functional group in
+  ## the model, not just the ones with a computed value). A genuinely
+  ## un-computed FG still gets a row here, with PB_FG/QB_FG left NA and
+  ## flagged below - "no data yet" rather than "silently absent."
+  full_fg_ref <- read_full_fg_reference(out_path)
+  if (!is.null(full_fg_ref)) {
+    n_before <- nrow(pbqb_sheet)
+    pbqb_sheet <- merge(full_fg_ref, pbqb_sheet, by = "FG_num", all.x = TRUE, suffixes = c("_ref", ""))
+    pbqb_sheet[is.na(FG_name), FG_name := FG_name_ref]
+    pbqb_sheet[, FG_name_ref := NULL]
+    n_added <- nrow(pbqb_sheet) - n_before
+    if (n_added > 0) {
+      message("add_pbqb_to_ecopath_workbook(): expanded PB_QB from ", n_before, " to ", nrow(pbqb_sheet),
+              " row(s) using the full FG reference already in the workbook - ", n_added, " FG(s) had no",
+              " species data this run and are included with blank PB_FG/QB_FG rather than omitted: ",
+              paste(pbqb_sheet[is.na(PB_FG), FG_name], collapse = ", "))
+    }
+  } else {
+    message("add_pbqb_to_ecopath_workbook(): no 'FG'/'FG_lookup' sheet found yet in ", out_path,
+            " to expand against - PB_QB will only cover the FG(s) with species data in THIS run.",
+            " Run 01_biomass.R against this same workbook first (it writes that reference sheet)",
+            " to guarantee every model FG gets a row here, even ones with no data yet.")
+  }
   setorder(pbqb_sheet, FG_num)
   
   sheets <- list(PB_QB = pbqb_sheet)

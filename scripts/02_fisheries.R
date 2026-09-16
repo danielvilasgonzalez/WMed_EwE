@@ -79,10 +79,10 @@ resolve_config_dir <- function(var_name, hardcoded_value, prompt_title, prompt_m
   if (exists(var_name, envir = .GlobalEnv, inherits = FALSE)) {  # reuse an already-set variable from this session, if valid
     val <- get(var_name, envir = .GlobalEnv)
     if (!is.null(val) && is.character(val) && length(val) == 1 && !is.na(val) && val != "" && dir.exists(val)) {
-      message("[02_fisheries_master.R] ", var_name, " already set - using '", val, "' rather than re-prompting.")
+      message("[02_fisheries.R] ", var_name, " already set - using '", val, "' rather than re-prompting.")
       return(val)  # existing value is valid, use it as-is
     }
-    message("[02_fisheries_master.R] ", var_name, " was already set but to something invalid - re-resolving.")
+    message("[02_fisheries.R] ", var_name, " was already set but to something invalid - re-resolving.")
   }
   if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") return(hardcoded_value)  # Daniel's machine: skip prompting, use hardcoded path
   if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
@@ -103,14 +103,21 @@ git_dir <- resolve_config_dir("git_dir", "/Users/daniel/Documents/GitHub/WMed_Ew
 
 ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")  # path to the EwE Ecopath/Ecosim workbook to write into
 
-DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025"
-START_YEAR <- 1994
-END_YEAR   <- 2023                # GFCM_2025's full available series. FishMIP/SAU below have no
+## SOURCE-ABLE SCRIPT: as with out_dir/pcloud_dir/git_dir above, every
+## knob below is only set to its West Med default when not already set
+## by a calling driver script (e.g. run_pipeline_demo.R) - set any
+## subset of these before source()-ing this script for a custom
+## region/year run; anything left unset keeps its original default.
+if (!exists("DATASET_VERSION", envir = .GlobalEnv, inherits = FALSE)) DATASET_VERSION <- "GFCM_2025"   # "FAO_2020" | "GFCM_2025"
+if (!exists("START_YEAR",      envir = .GlobalEnv, inherits = FALSE)) START_YEAR <- 1994
+if (!exists("END_YEAR",        envir = .GlobalEnv, inherits = FALSE)) END_YEAR   <- 2023                # GFCM_2025's full available series. FishMIP/SAU below have no
 # data past ~2017-2019 regardless - their own coverage messages
 # say so explicitly rather than truncating GFCM's longer series.
-YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps
+if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps
 
-TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
+if (!exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
+message("[02_fisheries.R] Region/year config in effect: TARGET_COUNTRIES = ", paste(TARGET_COUNTRIES, collapse=", "),
+        " | START_YEAR-END_YEAR = ", START_YEAR, "-", END_YEAR, " | DATASET_VERSION = ", DATASET_VERSION)
 
 ## Unreported-% adjustment (SAU reported-vs-total ratio, per country) -
 ## OFF by default: the ratios it produces came out implausibly high
@@ -251,7 +258,7 @@ FISHMIP_SAUP_TO_COUNTRY <- c(`12` = "Algeria", `250` = "France", `380` = "Italy"
 ## NOT the same as depending on another fisheries SCRIPT'S OUTPUT
 ## having already run (see this file's header) - nothing here reads a
 ## file another fisheries script produced; this is the SAME shared
-## library 01_survey_density_westmed.R (Biomass) and the old
+## library 01_biomass.R (Biomass) and the old
 ## 02_fao_catches.R (Catches) both already source, so Catches_Ecopath/
 ## Catches_Ecosim below come out byte-for-byte the same shape Biomass's
 ## Ecopath/Ecosim sheets do, not a reimplementation that could quietly
@@ -265,13 +272,13 @@ source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # load 
 ## need it, not just the F step.
 if (!file.exists(STRATA_AREA_PATH)) {
   stop("'", STRATA_AREA_PATH, "' not found - needed to convert catch tonnes into a t/km^2 density",  # abort if the required contract file is missing
-       " matching Biomass's units in the Ecopath/Ecosim sheets. Run 01_survey_density_westmed.R",
+       " matching Biomass's units in the Ecopath/Ecosim sheets. Run 01_biomass.R",
        " first (it writes this file), or check out_dir matches where it saved it.")
 }
 Total_Area_km2 <- fread(STRATA_AREA_PATH)[, sum(area_km2, na.rm = TRUE)]  # total study area = sum of all strata areas
 message("\n[Area] Study area for the Catches<->Biomass density conversion: ", round(Total_Area_km2, 1),
-        " km^2 (sum of strata_area_by_area.csv's area_km2 - the same figure 01_survey_density_westmed.R/",
-        "04_pbqb_calc.R use).")
+        " km^2 (sum of strata_area_by_area.csv's area_km2 - the same figure 01_biomass.R/",
+        "03_pbqb-traits.R use).")
 
 ## =================================================================
 ## # get GFCM catches by species and year and GSA
@@ -1058,60 +1065,121 @@ TECH_CREEP_COUNTRY_MULTIPLIER <- data.table(
   creep_multiplier = c(1, 1, 1, 0.7, 0.7, 0.7)
 )
 
-## (2) Time-varying rate, kept inside the realistic 0-5%/year creep range
-## Andrea named (the earlier draft re-evaluated Palomares & Pauly's
-## duration-average formula at each year's own short elapsed distance from
-## the base year, which spiked to 13.8%/year right at the start - correct
-## algebraically but not a realistic ANNUAL rate, since that formula's Y is
-## meant as a whole-window average, not something to re-derive one year at
-## a time). Replaced with a plain per-PERIOD annual rate, each one a flat
-## %, applied by simple proportional year-by-year compounding (multiplier
-## for year Y = product, across every calendar year between the base year
-## and Y, of (1 + that year's own period rate/100)) - no formula re-
-## evaluation, no spikes, each step is just "X% more than last year":
-##  - 1994-2003: 2.0%/year - slower gear/electronics turnover, ASSUMPTION.
-##  - 2004-2013: 3.0%/year - GPS/plotters/sonar becoming mainstream,
-##    ASSUMPTION.
-##  - 2014-2023: 4.5%/year - the one period-rate actually tied to a
-##    source: Palomares & Pauly's own C% = 13.8 x Y^-0.511 evaluated ONCE
-##    at Y = 9 (2014-2023's own full length, the FDI-trusted window this
-##    pipeline actually corrects) = 4.49%/year.
-## All three sit inside the realistic 0-5%/year range - change
-## TECH_CREEP_PERIOD_RATES directly for different breakpoints/rates.
-TECH_CREEP_PERIOD_RATES <- data.table(
-  period_start = c(1994, 2004, 2014),
-  period_end   = c(2003, 2013, 2023),
-  annual_pct   = c(2.0, 3.0, 4.5)
+## (1b) Sector/gear differential, per Andrea (2026-09): creep should also
+## differ between artisanal and industrial (mechanized) gears, since
+## engine/electronics/net-material upgrades reach large industrial vessels
+## (trawlers, purse seiners) faster than small artisanal boats. As with the
+## country multiplier above, NO fishery-specific literature figure exists
+## for this split either (checked Marchal et al. 2007 ICES J. Mar. Sci. -
+## qualitative harbour-interview data and CPUE-GLM coefficients only, no
+## quantitative annual gear-specific creep rate) - this is ALSO A JUDGMENT
+## CALL, same status/convention as TECH_CREEP_COUNTRY_MULTIPLIER: Industrial
+## keeps the full rate (multiplier 1); Artisanal is reduced by 40%
+## (multiplier 0.6), reflecting slower capital-equipment turnover on small
+## boats. Combined with the country multiplier by simple multiplication
+## (Sector multiplier x Country multiplier), so an artisanal Moroccan fleet
+## gets 0.6 x 0.7 = 0.42 of the base rate, an industrial Spanish fleet gets
+## 1 x 1 = 1 (the full base rate). Change these two numbers directly if you
+## have a better source or a different view.
+TECH_CREEP_SECTOR_MULTIPLIER <- data.table(
+  Sector = c("Industrial", "Artisanal", "Recreational"),
+  sector_creep_multiplier = c(1, 0.6, 0.6)
 )
 
-## Looks up which period a calendar year falls in and returns that
-## period's flat annual %; a year outside every listed period's range
-## (e.g. END_YEAR extended past 2023) uses the nearest period's rate.
-tech_creep_rate_for_year <- function(yr) {
-  hit <- TECH_CREEP_PERIOD_RATES[yr >= period_start & yr <= period_end]  # find the period this year falls in
-  if (nrow(hit) > 0) return(hit$annual_pct[1])  # return that period's flat annual rate
-  mids <- (TECH_CREEP_PERIOD_RATES$period_start + TECH_CREEP_PERIOD_RATES$period_end) / 2  # midpoint year of each period
-  TECH_CREEP_PERIOD_RATES$annual_pct[which.min(abs(yr - mids))]  # use the rate of whichever period's midpoint is closest
+## (2) Time- AND gear-varying rate, kept inside the realistic 0-5%/year
+## creep range Andrea named (the earlier draft re-evaluated Palomares &
+## Pauly's duration-average formula at each year's own short elapsed
+## distance from the base year, which spiked to 13.8%/year right at the
+## start - correct algebraically but not a realistic ANNUAL rate, since
+## that formula's Y is meant as a whole-window average, not something to
+## re-derive one year at a time). Applied by simple proportional year-
+## by-year compounding (multiplier for year Y = product, across every
+## calendar year between the base year and Y, of (1 + that year's own
+## period/gear rate/100)) - no formula re-evaluation, no spikes, each
+## step is just "X% more than last year":
+##  - 1994-2013 (pre-FDI window), GEAR-SPECIFIC, per Andrea (2026-09) -
+##    both period-rates now tied to real Mediterranean literature rather
+##    than being assumption-only placeholders:
+##      * bottom-trawl-type gear (FDI's own "DTS" fishing-technology
+##        code): 0.79%/year - Tsagarakis et al. (2022, Frontiers in
+##        Marine Science 9:919793) directly quote this as "estimated by
+##        Damalas et al." from Damalas, D., Maravelias, C.D., Osio, G.C.,
+##        Maynou, F., Sbrana, M., Sartor, P. (2015). "Once upon a Time in
+##        the Mediterranean" - long term trends of Mediterranean
+##        fisheries resources based on fishers' Traditional Ecological
+##        Knowledge. PLoS ONE, 10(3), e0119330. (Tsagarakis et al. cite
+##        this as "Damalas et al., 2014" - same study, accepted/online
+##        year vs. PLoS ONE's 2015 publication year.)
+##      * every OTHER gear: 2.0%/year - Tsagarakis et al. (2022) tested
+##        0%/1%/2%/year (their own summary of the wider Mediterranean
+##        creep literature) as an Ecopath hindcast proxy for 1993-2020
+##        and selected 2%/year as the best-fitting rate for non-trawl
+##        gears.
+##  - 2014-2023 (FDI-trusted window): 4.5%/year, uniform across gears -
+##    Palomares & Pauly (2019)'s own C% = 13.8 x Y^-0.511 evaluated ONCE
+##    at Y = 9 (2014-2023's own full length) = 4.49%/year. No gear-
+##    specific split exists in that source, so kept flat here.
+## All rates sit inside the realistic 0-5%/year range - change
+## TECH_CREEP_PERIOD_RATES directly for different breakpoints/rates/gears.
+## gear_class "all" matches every gear (used for the 2014-2023 row,
+## which doesn't vary by gear); "bottom_trawl"/"other" only match a
+## request for that specific gear_class (see tech_creep_rate_for_year()).
+TECH_CREEP_PERIOD_RATES <- data.table(
+  period_start = c(1994, 1994, 2014),
+  period_end   = c(2013, 2013, 2023),
+  rate_gear    = c("bottom_trawl", "other", "all"),  # named differently from the gear_class argument below to avoid a data.table column/variable name collision
+  annual_pct   = c(0.79, 2.0, 4.5)
+)
+
+## Looks up which period/gear a calendar year + gear_class falls in and
+## returns that row's flat annual % - gear_class defaults to "other"
+## (the general, non-bottom-trawl Mediterranean rate) when the caller
+## doesn't know the gear, which only matters in the 1994-2013 window
+## (the 2014-2023 row is gear_class "all", matching every request). A
+## year outside every listed period's range (e.g. END_YEAR extended past
+## 2023) uses the nearest matching-gear period's rate.
+tech_creep_rate_for_year <- function(yr, gear_class = "other") {
+  candidates <- TECH_CREEP_PERIOD_RATES[rate_gear == "all" | rate_gear == gear_class]  # rows that apply to every gear, or specifically to this gear_class
+  hit <- candidates[yr >= period_start & yr <= period_end]  # find the period this year falls in
+  if (nrow(hit) > 0) return(hit$annual_pct[1])  # return that period/gear's flat annual rate
+  mids <- (candidates$period_start + candidates$period_end) / 2  # midpoint year of each candidate period
+  candidates$annual_pct[which.min(abs(yr - mids))]  # use the rate of whichever period's midpoint is closest
 }
 
-## Cumulative effective multiplier for a Country x Year, built by walking
-## year by year from TECH_CREEP_BASE_YEAR to Year (forward or backward),
-## multiplying in (1 + that calendar year's own period rate x the
-## country's creep_multiplier / 100) at each step - a plain proportional
+## Cumulative effective multiplier for a Country x Year (x optional
+## Sector), built by walking year by year from TECH_CREEP_BASE_YEAR to
+## Year (forward or backward), multiplying in (1 + that calendar year's
+## own period rate x the country's creep_multiplier x the sector's
+## sector_creep_multiplier / 100) at each step - a plain proportional
 ## year-by-year increase, not a formula re-evaluated at each distance.
 ## Years before the base year divide instead of multiply at each step
 ## (older effort discounted relative to the base year's technology).
-tech_creep_multiplier <- function(country, year, base_year = TECH_CREEP_BASE_YEAR) {
+## `sector` is optional (NULL/NA/omitted) for backward compatibility -
+## when not supplied, only the country multiplier applies (sector
+## multiplier defaults to 1), same behavior as before this was added.
+## `gear_class` is optional (NULL/NA/omitted), same backward-compatible
+## convention as `sector` - when not supplied, every row uses the
+## general "other" gear rate from TECH_CREEP_PERIOD_RATES (see
+## tech_creep_rate_for_year()'s own default), i.e. behaves exactly as
+## before gear-specific rates existed for any caller that hasn't been
+## updated to pass one.
+tech_creep_multiplier <- function(country, year, sector = NULL, gear_class = NULL, base_year = TECH_CREEP_BASE_YEAR) {
   mult_lookup <- setNames(TECH_CREEP_COUNTRY_MULTIPLIER$creep_multiplier, TECH_CREEP_COUNTRY_MULTIPLIER$Country)  # country -> creep multiplier lookup
+  sector_lookup <- setNames(TECH_CREEP_SECTOR_MULTIPLIER$sector_creep_multiplier, TECH_CREEP_SECTOR_MULTIPLIER$Sector)  # sector -> creep multiplier lookup
+  if (is.null(sector)) sector <- rep(NA_character_, length(year))  # no sector supplied - treat every row as sector multiplier 1
+  if (is.null(gear_class)) gear_class <- rep(NA_character_, length(year))  # no gear_class supplied - tech_creep_rate_for_year() falls back to "other"
   vapply(seq_along(year), function(i) {
-    cc <- country[i]; yr <- year[i]
+    cc <- country[i]; yr <- year[i]; ss <- sector[i]
+    gg <- if (is.na(gear_class[i])) "other" else gear_class[i]
     if (is.na(cc) || is.na(yr)) return(NA_real_)
     cm <- if (cc %in% names(mult_lookup)) mult_lookup[[cc]] else 1  # this country's creep multiplier, default 1
+    sm <- if (!is.na(ss) && ss %in% names(sector_lookup)) sector_lookup[[ss]] else 1  # this sector's creep multiplier, default 1 if unknown/not supplied
+    cm <- cm * sm  # combine country x sector multiplier
     if (yr == base_year) return(1)  # no correction needed at the base year itself
     step <- if (yr > base_year) 1L else -1L  # walk forward or backward from base_year
     mult <- 1
     for (y in seq(base_year + step, yr, by = step)) {
-      r <- tech_creep_rate_for_year(y) * cm / 100  # this calendar year's country-adjusted creep rate
+      r <- tech_creep_rate_for_year(y, gg) * cm / 100  # this calendar year's gear x country x sector-adjusted creep rate
       mult <- if (step > 0) mult * (1 + r) else mult / (1 + r)  # compound forward, or discount backward
     }
     mult
@@ -1792,8 +1860,17 @@ if (nrow(rousseau_effort_cy) > 0 && nrow(stecf_fdi_effort_by_gsa) > 0 && "Effort
 
 ## =================================================================
 ## # assign a percentage of total catch to discards
+## Per Andrea (2026-09): discard data should carry BOTH a time
+## dimension (proportion over time) and a species/FG dimension
+## (proportion by FG) - this used to collapse straight to ONE flat
+## ratio per FG_num across the WHOLE study period, throwing away the
+## Year dimension even though FishMIP's own catch parquet is Year-
+## resolved. Fixed below: the PRIMARY ratio is now FG_num x Year; a
+## Year x FG_num cell only falls back to that FG's own all-years
+## pooled ratio when the per-year cell itself is missing or
+## implausible (never falls back across FGs).
 ## =================================================================
-discard_by_fg <- data.table(FG_num = integer(), discard_ratio = numeric())  # placeholder, filled below if FishMIP data is available
+discard_by_fg <- data.table(FG_num = integer(), Year = integer(), discard_ratio = numeric(), discard_ratio_source = character())  # placeholder, filled below if FishMIP data is available
 fishmip_fg_scheme_used <- NA_character_
 
 if (!requireNamespace("arrow", quietly = TRUE)) {
@@ -1806,27 +1883,50 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   catch <- catch[year >= START_YEAR & year <= END_YEAR]  # restrict to the study period
   catch[, Yield_t := reported + discards]  # total yield = reported landings + discards
   
+  ## `gear` is kept through this step (it wasn't before) purely for the
+  ## ambiguous-match gear-plausibility filter further down - it plays
+  ## no role in the ratio itself, which stays Mediterranean-wide.
   if (!is.null(FISHMIP_FG_CROSSWALK_PATH) && file.exists(FISHMIP_FG_CROSSWALK_PATH)) {
     fg_crosswalk <- fread(FISHMIP_FG_CROSSWALK_PATH)  # load the FishMIP-group -> model-FG crosswalk
     if (!all(c("fishmip_f_group", "FG_num") %in% names(fg_crosswalk))) stop("FISHMIP_FG_CROSSWALK_PATH must have columns fishmip_f_group, FG_num.")
     catch_fg <- merge(catch, fg_crosswalk, by.x = "f_group", by.y = "fishmip_f_group", all.x = TRUE)  # attach model FG_num via the crosswalk
-    fishmip_total    <- catch_fg[!is.na(FG_num), .(tonnes = sum(Yield_t, na.rm = TRUE)), by = .(FG_num, Year = year)]  # sum total yield by FG x year
-    fishmip_reported <- catch_fg[!is.na(FG_num), .(tonnes_reported = sum(reported, na.rm = TRUE)), by = .(FG_num, Year = year)]  # sum reported landings by FG x year
+    fishmip_total    <- catch_fg[!is.na(FG_num), .(tonnes = sum(Yield_t, na.rm = TRUE)), by = .(FG_num, gear, Year = year)]  # sum total yield by FG x gear x year
+    fishmip_reported <- catch_fg[!is.na(FG_num), .(tonnes_reported = sum(reported, na.rm = TRUE)), by = .(FG_num, gear, Year = year)]  # sum reported landings by FG x gear x year
     fishmip_fg_scheme_used <- "FG_num (via FISHMIP_FG_CROSSWALK_PATH)"
   } else {
     message("\n[Discards] No FISHMIP_FG_CROSSWALK_PATH - discard ratio computed in FishMIP's own f_group naming.")
-    fishmip_total    <- catch[, .(tonnes = sum(Yield_t, na.rm = TRUE)), by = .(FG_num = f_group, Year = year)]  # sum total yield by FishMIP group x year
-    fishmip_reported <- catch[, .(tonnes_reported = sum(reported, na.rm = TRUE)), by = .(FG_num = f_group, Year = year)]  # sum reported landings by FishMIP group x year
+    fishmip_total    <- catch[, .(tonnes = sum(Yield_t, na.rm = TRUE)), by = .(FG_num = f_group, gear, Year = year)]  # sum total yield by FishMIP group x gear x year
+    fishmip_reported <- catch[, .(tonnes_reported = sum(reported, na.rm = TRUE)), by = .(FG_num = f_group, gear, Year = year)]  # sum reported landings by FishMIP group x gear x year
     fishmip_fg_scheme_used <- "fishmip_f_group (no crosswalk supplied)"
   }
-  fm <- merge(fishmip_total, fishmip_reported, by = c("FG_num", "Year")); fm <- fm[tonnes > 0]  # pair up total and reported, drop zero-yield cells
-  discard_ratio_fg <- fm[, .(discard_ratio = 1 - sum(tonnes_reported, na.rm = TRUE) / sum(tonnes, na.rm = TRUE)), by = FG_num]  # compute discard ratio per FG, across all years
-  implausible <- discard_ratio_fg[discard_ratio < 0 | discard_ratio > 0.95]  # ratios outside a plausible range
-  if (nrow(implausible) > 0) {
-    message("[Discards] ", nrow(implausible), " FG(s) implausible discard_ratio - excluded.")
-    discard_ratio_fg <- discard_ratio_fg[!(discard_ratio < 0 | discard_ratio > 0.95)]  # drop implausible ratios
-  }
-  discard_by_fg <- discard_ratio_fg
+  fm <- merge(fishmip_total, fishmip_reported, by = c("FG_num", "gear", "Year")); fm <- fm[tonnes > 0]  # pair up total and reported, drop zero-yield cells
+  
+  ## PRIMARY: per FG_num x Year (collapsing gear out again - it was
+  ## only carried this far for the ambiguous-match filter below).
+  fm_fg_year <- fm[, .(tonnes = sum(tonnes, na.rm = TRUE), tonnes_reported = sum(tonnes_reported, na.rm = TRUE)), by = .(FG_num, Year)]
+  discard_ratio_fg_year <- fm_fg_year[, .(discard_ratio = 1 - tonnes_reported / tonnes), by = .(FG_num, Year)]
+  discard_ratio_fg_year <- discard_ratio_fg_year[is.finite(discard_ratio) & discard_ratio >= 0 & discard_ratio <= 0.95]  # drop implausible per-year cells (not the whole FG)
+  
+  ## FALLBACK: this FG's own all-years pooled ratio - used only for the
+  ## specific Year x FG_num cells that didn't survive the per-year pass
+  ## (thin FishMIP data that year, or an implausible single-year ratio).
+  fm_fg_flat <- fm_fg_year[, .(tonnes = sum(tonnes, na.rm = TRUE), tonnes_reported = sum(tonnes_reported, na.rm = TRUE)), by = FG_num]
+  discard_ratio_fg_flat <- fm_fg_flat[, .(discard_ratio_flat = 1 - tonnes_reported / tonnes), by = FG_num]
+  discard_ratio_fg_flat <- discard_ratio_fg_flat[is.finite(discard_ratio_flat) & discard_ratio_flat >= 0 & discard_ratio_flat <= 0.95]
+  
+  all_fg_years <- CJ(FG_num = unique(fm_fg_year$FG_num), Year = START_YEAR:END_YEAR)  # every FG x Year combination in the study window
+  discard_by_fg <- merge(all_fg_years, discard_ratio_fg_year, by = c("FG_num", "Year"), all.x = TRUE)
+  discard_by_fg <- merge(discard_by_fg, discard_ratio_fg_flat, by = "FG_num", all.x = TRUE)
+  discard_by_fg[, discard_ratio_source := fifelse(!is.na(discard_ratio), "FishMIP reported-vs-total ratio (FG x Year, time-varying)",
+                                                  fifelse(!is.na(discard_ratio_flat), "FishMIP reported-vs-total ratio (FG, all-years pooled - this specific Year's own cell was too thin/implausible)", NA_character_))]
+  discard_by_fg[is.na(discard_ratio), discard_ratio := discard_ratio_flat]  # backfill from the flat ratio only where the per-year cell is missing
+  discard_by_fg[, discard_ratio_flat := NULL]
+  discard_by_fg <- discard_by_fg[!is.na(discard_ratio)]  # drop cells with neither a per-year nor a flat ratio available
+  n_year_specific <- sum(discard_by_fg$discard_ratio_source == "FishMIP reported-vs-total ratio (FG x Year, time-varying)")
+  message("\n[Discards] discard_by_fg: ", nrow(discard_by_fg), " FG x Year row(s) - ", n_year_specific,
+          " with a real year-specific ratio, ", nrow(discard_by_fg) - n_year_specific, " backfilled from that",
+          " same FG's own all-years pooled ratio (that Year's own FishMIP cell was too thin or implausible).")
+  
   if (is.na(fishmip_fg_scheme_used) || !grepl("^FG_num", fishmip_fg_scheme_used)) {
     ## No crosswalk (or no row in it) ties this FishMIP f_group to a real
     ## model FG_num - rather than dropping the discard estimate entirely,
@@ -1844,7 +1944,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
     ## (never guessed at random) and reported below.
     message("[Discards] discard_by_fg is in FishMIP's own f_group scheme, NOT joined onto real FG_num",
             " via FISHMIP_FG_CROSSWALK_PATH. Written separately to discards_by_fishmip_fgroup_timeseries.csv.",
-            " Attempting a name-keyword 'closest FG' fallback instead of dropping it entirely.")
+            " Attempting a name-keyword AMBIGUOUS/MISMATCH 'closest FG' fallback instead of dropping it entirely.")
     fwrite(discard_by_fg, file.path(out_dir, "discards_by_fishmip_fgroup_timeseries.csv"))  # write the FishMIP-scheme discard ratios to CSV for review
     
     ## Build every (fishmip_f_group, FG_num) pair where the FULL word-set of
@@ -1876,41 +1976,102 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
     closest_fg_matches <- if (is.null(match_pairs) || nrow(match_pairs) == 0) data.table(fgroup = character(), FG_num = integer()) else unique(match_pairs)  # empty placeholder if nothing matched
     n_matched_fgroups <- uniqueN(closest_fg_matches$fgroup)  # how many FishMIP groups matched at least one FG
     n_unmatched_fgroups <- length(setdiff(fgroup_names, unique(closest_fg_matches$fgroup)))  # how many matched nothing
-    message("[Discards] 'closest FG' keyword match: ", n_matched_fgroups, " of ", length(fgroup_names),
+    n_ambiguous_fgroups <- sum(table(closest_fg_matches$fgroup) > 1)  # fgroups matching MORE than one FG before any gear filtering
+    message("[Discards] name-keyword match: ", n_matched_fgroups, " of ", length(fgroup_names),
             " FishMIP f_group(s) matched to at least one model FG (", n_unmatched_fgroups,
-            " unmatched - dropped, not guessed). ",
-            sum(table(closest_fg_matches$fgroup) > 1), " matched f_group(s) mapped to MORE THAN ONE model FG",
-            " - discard_ratio applied identically to each (split across FGs via their own differing catch tonnage).")
+            " unmatched - dropped, not guessed). ", n_ambiguous_fgroups, " matched f_group(s) are AMBIGUOUS/",
+            "MISMATCHED (map to MORE than one model FG) - resolving with the gear-plausibility filter below",
+            " before falling back to an even name-only split.")
+    
+    ## AMBIGUOUS/MISMATCH FILTER (2026-09, per Andrea: "split them into FG
+    ## that could belong to that group, depending on the fleet and the
+    ## name"). For every fgroup that name-matched MORE than one model FG,
+    ## narrow the candidates using which gear(s) actually reported that
+    ## fgroup's catch (fm above, before gear was collapsed out) against
+    ## SAU's own real Country x FG x gear catch (sau_country_fg_gear,
+    ## already built earlier in this script for the fleet split) - i.e.
+    ## "does SAU show this gear actually catching this candidate FG at
+    ## all, anywhere". A candidate with essentially zero gear-plausible
+    ## catch is dropped as an implausible name-only coincidence (e.g. a
+    ## keyword match that isn't really the same fish group); a candidate
+    ## survives if it keeps at least FISHMIP_GEAR_FILTER_MIN_SHARE of the
+    ## fgroup's total gear-plausible catch across all its candidates. If
+    ## the gear crosswalk can't place a single candidate at all (e.g. the
+    ## fgroup's own gear is one of FishMIP's "Others_*" catch-all buckets,
+    ## or sau_country_fg_gear has nothing for any candidate), every
+    ## candidate is kept exactly as before - this filter only NARROWS an
+    ## ambiguous match, it never invents a match the name-only pass didn't
+    ## already find, and it never turns an ambiguous match into zero.
+    FISHMIP_GEAR_KEYWORD <- list(   # FishMIP's own gear tokens -> a regex matched against SAU's own gear strings (Purse seine/Longline/Set longline/Bottom trawl/Midwater trawl/Gillnet/Handline/Pole-and-line)
+      Trawl_Bottom = "trawl", Trawl_Midwater_or_Unsp = "trawl",
+      Seine_Purse_Seine = "purse seine", Seine_Danish_and_Other = "seine",
+      Lines_Longlines = "longline", Lines_Unspecified = "line|hand",
+      Gillnets = "gillnet|net", Pots_and_Traps = "trap|pot",
+      Others_Others = NA_character_, Others_Multiple_Gears = NA_character_, Others_Unknown = NA_character_
+    )
+    FISHMIP_GEAR_FILTER_MIN_SHARE <- 0.05  # a candidate FG keeping less than 5% of its fgroup's total gear-plausible catch is dropped as implausible
+    
+    ambiguous_fgroups <- names(which(table(closest_fg_matches$fgroup) > 1))
+    n_gear_filtered <- 0L
+    if (length(ambiguous_fgroups) > 0 && nrow(sau_country_fg_gear) > 0) {
+      fgroup_gear <- fm[FG_num %in% ambiguous_fgroups, .(tonnes = sum(tonnes, na.rm = TRUE)), by = .(fgroup = FG_num, gear)]  # which gear(s) actually reported each ambiguous fgroup's catch, and how much
+      sau_gear_totals <- sau_country_fg_gear[, .(Catch_t = sum(Catch_t, na.rm = TRUE)), by = .(FG_num, sau_gear)]  # SAU's real Country-pooled catch by FG x gear
+      kept_rows <- rbindlist(lapply(ambiguous_fgroups, function(g) {
+        candidates <- closest_fg_matches[fgroup == g, FG_num]
+        gears_here <- fgroup_gear[fgroup == g & tonnes > 0, gear]  # this fgroup's own real reporting gear(s)
+        keywords_here <- na.omit(unlist(FISHMIP_GEAR_KEYWORD[gears_here]))
+        if (length(keywords_here) == 0) return(data.table(fgroup = g, FG_num = candidates))  # no usable gear info at all - keep every name-matched candidate, unfiltered
+        pattern <- paste(keywords_here, collapse = "|")
+        plaus <- sau_gear_totals[FG_num %in% candidates & grepl(pattern, sau_gear, ignore.case = TRUE), .(Catch_t = sum(Catch_t)), by = FG_num]
+        if (nrow(plaus) == 0 || sum(plaus$Catch_t) == 0) return(data.table(fgroup = g, FG_num = candidates))  # gear crosswalk found nothing for ANY candidate - keep all, unfiltered (never worse than before)
+        plaus[, share := Catch_t / sum(Catch_t)]
+        survivors <- plaus[share >= FISHMIP_GEAR_FILTER_MIN_SHARE, FG_num]
+        if (length(survivors) == 0) survivors <- candidates  # degenerate case (shouldn't happen given the share test) - fall back to unfiltered rather than dropping everything
+        data.table(fgroup = g, FG_num = survivors)
+      }))
+      n_gear_filtered <- sum(table(closest_fg_matches$fgroup) > 1) - sum(table(kept_rows$fgroup) > 1)  # how many ambiguous fgroups got narrowed to a single candidate
+      closest_fg_matches <- rbindlist(list(closest_fg_matches[!fgroup %in% ambiguous_fgroups], kept_rows), use.names = TRUE)
+      message("[Discards] gear-plausibility filter (per Andrea: split by fleet AND name): of ", length(ambiguous_fgroups),
+              " ambiguous/mismatched f_group(s), ", n_gear_filtered, " narrowed to exactly one model FG using",
+              " SAU's own real gear x FG catch as a plausibility check; the rest either kept multiple gear-",
+              " plausible candidates or had no usable gear crosswalk (kept unfiltered, same as before this fix).")
+    } else if (length(ambiguous_fgroups) > 0) {
+      message("[Discards] ", length(ambiguous_fgroups), " ambiguous/mismatched f_group(s) - sau_country_fg_gear",
+              " is empty (no SAU data loaded this run), so the gear-plausibility filter is skipped; falling back",
+              " to the even name-only split (identical ratio applied to every name-matched candidate).")
+    }
     
     setnames(discard_by_fg, "FG_num", "fgroup")  # this column is still FishMIP's own label at this point, not a real model FG_num
-    discard_by_fg <- merge(discard_by_fg, closest_fg_matches, by = "fgroup", allow.cartesian = TRUE)  # attach real model FG_num via the keyword match
+    discard_by_fg <- merge(discard_by_fg, closest_fg_matches, by = "fgroup", allow.cartesian = TRUE)  # attach real model FG_num via the (now gear-narrowed) keyword match
     
-    ## BUG FIX (2026-09): a plain unique(FG_num, discard_ratio) here is NOT
-    ## enough to guarantee one row per FG_num - if TWO DIFFERENT FishMIP
-    ## f_groups (e.g. "Demersals" and "Miscellaneous demersal fishes") both
-    ## keyword-match onto the SAME model FG but carry different discard
-    ## ratios, unique() keeps both rows (they differ in discard_ratio, so
-    ## they're not exact duplicates), leaving more than one row per FG_num.
-    ## The downstream merge(..., by = "FG_num") into gfcm_country_fg then
-    ## fans every one of those duplicate keys out across every matching row
+    ## BUG FIX (2026-09): a plain unique(FG_num, Year, discard_ratio) here
+    ## is NOT enough to guarantee one row per FG_num x Year - if TWO
+    ## DIFFERENT FishMIP f_groups (e.g. "Demersals" and "Miscellaneous
+    ## demersal fishes") both keyword-match onto the SAME model FG for the
+    ## SAME year but carry different ratios, unique() keeps both rows,
+    ## leaving more than one row per FG_num x Year. The downstream
+    ## merge(..., by = c("FG_num","Year")) into gfcm_country_fg then fans
+    ## every one of those duplicate keys out across every matching row
     ## (the "9582 rows > 5894" cartesian-join error). Fixed by explicitly
-    ## collapsing to ONE row per FG_num - the mean of every f_group's ratio
-    ## that landed on it - and logging every FG_num where this actually
-    ## resolved a real conflict (never silently averaged without saying so).
-    n_before_fg_collapse <- uniqueN(discard_by_fg$FG_num)
-    conflict_check <- discard_by_fg[, .(n_sources = uniqueN(discard_ratio)), by = FG_num]
+    ## collapsing to ONE row per FG_num x Year - the mean of every
+    ## f_group's ratio that landed on it - and logging every cell where
+    ## this actually resolved a real conflict (never silently averaged
+    ## without saying so).
+    n_before_fg_collapse <- uniqueN(discard_by_fg[, .(FG_num, Year)])
+    conflict_check <- discard_by_fg[, .(n_sources = uniqueN(discard_ratio)), by = .(FG_num, Year)]
     n_conflicting_fg <- sum(conflict_check$n_sources > 1)
-    discard_by_fg <- discard_by_fg[, .(discard_ratio = mean(discard_ratio, na.rm = TRUE)), by = FG_num]  # ONE row per FG_num, guaranteed
+    discard_by_fg <- discard_by_fg[, .(discard_ratio = mean(discard_ratio, na.rm = TRUE),
+                                       discard_ratio_source = discard_ratio_source[1]), by = .(FG_num, Year)]  # ONE row per FG_num x Year, guaranteed
     if (n_conflicting_fg > 0) {
-      message("[Discards] ", n_conflicting_fg, " of ", n_before_fg_collapse, " FG_num(s) matched more than one",
-              " FishMIP f_group with DIFFERING discard ratios (e.g. both 'Demersals' and a more specific group",
-              " keyword-matched the same FG) - averaged to a single ratio per FG_num rather than left as",
-              " duplicate rows (which previously caused a cartesian-join error on the merge below).")
+      message("[Discards] ", n_conflicting_fg, " of ", n_before_fg_collapse, " FG_num x Year cell(s) matched more",
+              " than one FishMIP f_group with DIFFERING discard ratios - averaged to a single ratio per cell",
+              " rather than left as duplicate rows (which previously caused a cartesian-join error downstream).")
     }
     fwrite(closest_fg_matches, file.path(out_dir, "discards_fishmip_closest_fg_match_REVIEW.csv"))  # write the keyword matches to CSV for manual review
   }
-  message("[Discards] discard_ratio available for ", nrow(discard_by_fg), " FG(s) (Mediterranean-wide,",
-          " applied uniformly across countries - FishMIP cannot cross country x FG). Max FishMIP year: ", max(catch$year), ".")
+  message("[Discards] discard_ratio available for ", uniqueN(discard_by_fg$FG_num), " FG(s) x ",
+          uniqueN(discard_by_fg$Year), " Year(s) (Mediterranean-wide, applied uniformly across countries -",
+          " FishMIP cannot cross country x FG). Max FishMIP year: ", max(catch$year), ".")
 }
 
 ## =================================================================
@@ -1973,12 +2134,15 @@ if (nrow(catch_magnitude_calibration) > 0) {
 }
 
 ## Country x FG x Year catch WITH discards added back onto GFCM's landings
-## (now scaled to STECF FDI's magnitude above wherever a factor exists):
-catch_with_discards <- merge(gfcm_country_fg, discard_by_fg, by = "FG_num", all.x = TRUE)  # attach the FishMIP discard ratio to every country x FG x year row
+## (now scaled to STECF FDI's magnitude above wherever a factor exists).
+## Joined on FG_num x Year (2026-09, was FG_num alone) - discard_by_fg is
+## now time-varying, not one flat ratio per FG for the whole period; see
+## discard_by_fg's own header comment above.
+catch_with_discards <- merge(gfcm_country_fg, discard_by_fg, by = c("FG_num", "Year"), all.x = TRUE)  # attach the FishMIP discard ratio to every country x FG x year row
 catch_with_discards[, `:=`(
   Catch_t   = fifelse(!is.na(discard_ratio), Landings_t / (1 - discard_ratio), Landings_t),  # gross up landings to include discards where a ratio exists
   Discard_t = fifelse(!is.na(discard_ratio), Landings_t / (1 - discard_ratio) - Landings_t, NA_real_),  # implied discard tonnage
-  discard_source = fifelse(!is.na(discard_ratio), "FishMIP reported-vs-total ratio (FG-level, Med-wide)", "not available - landings-only")
+  discard_source = fifelse(!is.na(discard_ratio), discard_ratio_source, "not available - landings-only")
 )]
 
 ## Prefer SAU's own discard ratio (hindcast/bias-corrected against FDI
@@ -2162,7 +2326,7 @@ message("\n[Catches] fg_catch_timeseries completed to ", uniqueN(full_fg_list$FG
 
 catches_discards_fg <- copy(fg_catch_timeseries)  # start from the full FG x year landings grid
 if (nrow(discard_by_fg) > 0) {
-  catches_discards_fg <- merge(catches_discards_fg, discard_by_fg, by = "FG_num", all.x = TRUE)  # attach FishMIP's discard ratio
+  catches_discards_fg <- merge(catches_discards_fg, discard_by_fg, by = c("FG_num", "Year"), all.x = TRUE)  # attach FishMIP's discard ratio (time-varying, 2026-09 - see discard_by_fg's own header comment)
   catches_discards_fg[, `:=`(
     Catch_t   = fifelse(!is.na(discard_ratio), Landings_t / (1 - discard_ratio), Landings_t),  # gross up landings to include discards
     Discard_t = fifelse(!is.na(discard_ratio), Landings_t / (1 - discard_ratio) - Landings_t, NA_real_)
@@ -2172,6 +2336,138 @@ if (nrow(discard_by_fg) > 0) {
 }
 setcolorder(catches_discards_fg, c("Year", "FG_num", "FG_name", "Landings_t", "Catch_t", "Discard_t"))  # standardize column order
 message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Year row(s), full West Med series.")
+
+## =================================================================
+## # GFCM STAR + RAM Legacy stock-assessment catch/landings CROSS-CHECK
+## Per Andrea (2026-09), using her own combine_STAR_RAMlegacy.R /
+## analysis_STAR.R scripts (GFCM STAR Power BI scrape + RAM Legacy stock
+## database) - these give a SECOND, independent catch/landings series
+## for the subset of species that actually have a real stock assessment.
+## Wired in here as a CROSS-CHECK against the GFCM/FDI/SAU-built catch
+## series above, NOT a replacement or an override: STAR/RAM only cover
+## assessed stocks (a handful of commercially important species, e.g.
+## hake, red mullet, sardine, anchovy, deep-water rose shrimp), while
+## catches_discards_fg above covers every species/FG GFCM's STATLANT
+## capture-production reports at all - far broader coverage, just not
+## independently verified. Where the two disagree meaningfully for an
+## assessed FG's Year, that's a real signal worth a human look (a
+## discard/misreporting gap in one source, or a stock-assessment-vs-
+## STATLANT methodology difference) - never silently averaged or
+## blended into Catch_t itself.
+##
+## Species -> FG matching reuses fg_lookup's own exact-name-then-genus
+## cascade (same convention already used for SAU's species -> FG match
+## above - see sau_direct/sau_genus), so a stock assessed under a
+## synonym or at a slightly different taxonomic rank still has a decent
+## chance of resolving to the right FG rather than being silently
+## dropped.
+##
+## Expects Andrea's own combine_STAR_RAMlegacy.R output,
+## combined_medbs_star_ramlegacy.csv (source/stock_key/species/
+## common_name/gsa/subregion/year/biomass/catches/landings/
+## landings_flag/... - see that script's own header), placed under
+## STAR_RAMLEGACY_DIR. Optional - message + skip if not found, same
+## convention as every other optional source in this script (e.g.
+## MOROCCO_ALGERIA_DIR above).
+## =================================================================
+STAR_RAMLEGACY_DIR <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")  # folder for combine_STAR_RAMlegacy.R's own output CSV
+star_ram_path <- file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+star_ram_combined <- if (file.exists(star_ram_path)) {
+  fread(star_ram_path, encoding = "UTF-8")
+} else {
+  message("\n[STAR/RAM cross-check] '", star_ram_path, "' not found - skipping (run combine_STAR_RAMlegacy.R",
+          " first and place its output under STAR_RAMLEGACY_DIR if you want this cross-check).")
+  data.table()
+}
+
+star_catch_by_fg <- data.table()
+if (nrow(star_ram_combined) > 0) {
+  ## Restrict to the West Med subregion (same field/convention Andrea's own
+  ## analysis_STAR.R already computes and combine_STAR_RAMlegacy.R already
+  ## filters on: str_detect(subregion, "Western Mediterranean")) - GFCM
+  ## Divisions 37.1.1-37.1.3 / GSA 1-11, matching this whole pipeline's
+  ## scope everywhere else.
+  star_wm <- star_ram_combined[grepl("Western Mediterranean", subregion, fixed = TRUE)]
+  
+  ## Species -> FG_num, exact scientific-name match first, genus fallback
+  ## second - identical cascade to the SAU species match above.
+  star_wm[, genus := extract_genus(species)]
+  star_direct <- merge(star_wm, fg_lookup[, .(ScientificName, FG_num, FG_name)], by.x = "species", by.y = "ScientificName")
+  star_remaining <- fsetdiff(star_wm[, .(source, stock_key, species, gsa, year)], star_direct[, .(source, stock_key, species, gsa, year)])  # rows not resolved by the exact-name match
+  star_remaining <- merge(star_remaining, star_wm, by = c("source", "stock_key", "species", "gsa", "year"))
+  star_genus <- merge(star_remaining[!is.na(genus)], fg_lookup[!is.na(genus), .(genus, FG_num, FG_name)], by = "genus", allow.cartesian = TRUE)
+  star_matched <- rbindlist(list(star_direct, star_genus), use.names = TRUE, fill = TRUE)
+  
+  n_star_unmatched <- uniqueN(star_wm$species) - uniqueN(star_matched$species)
+  message("\n[STAR/RAM cross-check] ", uniqueN(star_matched$species), " of ", uniqueN(star_wm$species),
+          " assessed species matched to a FG (exact name or genus fallback); ", max(n_star_unmatched, 0),
+          " species could not be matched and are excluded from this cross-check.")
+  
+  ## Sum Catches/Landings across every West Med GSA (stock assessments
+  ## report an absolute total, not a density, so summing across GSAs
+  ## within the model's West Med scope gives the whole-domain total
+  ## directly - same principle already used for the GSA-level area
+  ## discussion elsewhere in this script). Landings rows flagged
+  ## landings_flag (Landings > Catches - a known data-entry error per
+  ## analysis_STAR.R's own sanity check) are excluded from the landings
+  ## sum, same as her own combine_STAR_RAMlegacy.R plots already do.
+  star_catch_by_fg <- star_matched[, .(
+    star_catches_t  = sum(catches, na.rm = TRUE),
+    star_landings_t = sum(landings[landings_flag %in% FALSE], na.rm = TRUE),
+    star_n_stocks   = uniqueN(stock_key),
+    star_sources    = paste(sort(unique(source)), collapse = "+")
+  ), by = .(FG_num, FG_name, Year = year)]
+  
+  ## Discard ratio implied by STAR/RAM: neither source reports a
+  ## separate discard figure (see this block's own header comment), but
+  ## Catches (= Landings + Discards, by definition) minus Landings gives
+  ## an implied discard total, and dividing by Catches gives the SAME
+  ## Di/C ratio this pipeline computes elsewhere (discard_ratio =
+  ## Discard_t / Catch_t) - directly comparable, just fleet-blind and
+  ## restricted to assessed stocks. NA where star_landings_t is 0 (would
+  ## make this look like a 100% discard ratio, which is really "no
+  ## landings figure available for this FG/year", not a real 100% rate).
+  star_catch_by_fg[, star_discard_ratio := fifelse(
+    star_catches_t > 0 & star_landings_t > 0, (star_catches_t - star_landings_t) / star_catches_t, NA_real_
+  )]
+  fwrite(star_catch_by_fg, file.path(out_dir, "star_ram_catch_by_fg_crosscheck.csv"))
+  message("[STAR/RAM cross-check] star_catch_by_fg: ", nrow(star_catch_by_fg), " FG x Year row(s) with an assessed-stock",
+          " catch figure (", uniqueN(star_catch_by_fg$FG_num), " FG(s) total) - written to star_ram_catch_by_fg_crosscheck.csv.")
+}
+
+## Attach as comparison-only columns on catches_discards_fg - NEVER
+## replacing Catch_t/Landings_t, just sitting alongside them so a
+## meaningful disagreement is visible rather than requiring a separate
+## join every time someone wants to check.
+catches_discards_fg[, `:=`(star_catches_t = NA_real_, star_landings_t = NA_real_, star_n_stocks = NA_integer_,
+                           star_sources = NA_character_, star_discard_ratio = NA_real_)]
+if (nrow(star_catch_by_fg) > 0) {
+  catches_discards_fg[star_catch_by_fg, on = c("FG_num", "Year"), `:=`(
+    star_catches_t = i.star_catches_t, star_landings_t = i.star_landings_t,
+    star_n_stocks = i.star_n_stocks, star_sources = i.star_sources, star_discard_ratio = i.star_discard_ratio
+  )]
+  catches_discards_fg[, star_catch_pct_diff := fifelse(!is.na(star_catches_t) & star_catches_t > 0,
+                                                       round(100 * (Catch_t - star_catches_t) / star_catches_t, 1), NA_real_)]  # this pipeline's Catch_t vs STAR/RAM's, % difference - positive = this pipeline reports MORE
+  ## Same comparison for the discard ratio - this pipeline's own
+  ## discard_ratio (FishMIP/SAU-derived, FG x Year, time-varying) vs
+  ## STAR/RAM's implied Di/C for the same cell. Both use the SAME Di/C
+  ## definition (see the fisheries flow diagram's Stage 3 formula), so
+  ## a disagreement here is a real signal, not a units/definition
+  ## mismatch.
+  catches_discards_fg[, star_discard_ratio_diff_pp := fifelse(
+    !is.na(star_discard_ratio) & !is.na(discard_ratio), round(100 * (discard_ratio - star_discard_ratio), 1), NA_real_
+  )]  # difference in PERCENTAGE POINTS (not %), since both are already ratios - positive = this pipeline's discard ratio is higher
+  n_flagged <- catches_discards_fg[!is.na(star_catch_pct_diff) & abs(star_catch_pct_diff) > 50, .N]  # arbitrary but generous threshold - just surfaces the biggest disagreements for a human look
+  n_flagged_discard <- catches_discards_fg[!is.na(star_discard_ratio_diff_pp) & abs(star_discard_ratio_diff_pp) > 15, .N]  # 15 percentage points - generous, just surfaces the biggest gaps
+  message("[STAR/RAM cross-check] ", catches_discards_fg[!is.na(star_catches_t), .N], " FG x Year cell(s) have a",
+          " STAR/RAM cross-check figure; ", n_flagged, " of those disagree with this pipeline's own Catch_t by",
+          " more than 50% - see star_catch_pct_diff. Of the cells with an implied STAR/RAM discard ratio (Catches",
+          " and Landings both > 0), ", n_flagged_discard, " disagree with this pipeline's own discard_ratio by more",
+          " than 15 percentage points - see star_discard_ratio_diff_pp. Both are cross-checks only - neither",
+          " overrides Catch_t or discard_ratio.")
+} else {
+  catches_discards_fg[, `:=`(star_catch_pct_diff = NA_real_, star_discard_ratio_diff_pp = NA_real_)]
+}
 
 ## --- Catches_Ecopath / Catches_Ecosim (FG-only) -------------------------
 ## Same structure/units as Biomass's own Ecopath/Ecosim sheets (t/km^2/
@@ -2225,55 +2521,97 @@ if (isTRUE(APPLY_UNREPORTED_ADJUSTMENT)) {
 ## =================================================================
 ## # bycatch
 ## No source anywhere in this pipeline (GFCM, SAU, FishMIP) gives a
-## bycatch rate. Flagged manual-entry placeholder ONLY, same convention
-## as recreational catch elsewhere in this pipeline - fill in by hand
-## (Country/FG_num/Year/bycatch_rate/source_citation) if you have
-## literature or stock-assessment figures; anything left unfilled stays
-## explicitly "not estimated" rather than defaulting to zero.
+## bycatch rate for most FGs. Manual-entry table, resolved by Country x
+## FleetType x FG (not just Country x FG - bycatch is fundamentally a
+## GEAR effect, e.g. bottom trawls take far more elasmobranch bycatch
+## than longlines) - fill in by hand (add rows with FG_num/FleetType/
+## bycatch_rate/source_citation) as more literature/stock-assessment
+## figures are found; anything left unfilled stays explicitly "not
+## estimated" rather than defaulting to zero.
+##
+## Seeded (2026-09, per Andrea's request to look for real data) with the
+## one quantitative, gear-resolved figure found so far, for sharks & rays
+## in EU Mediterranean fisheries: Bargnesi et al. 2024 (Sustainability,
+## "Assessing the relevance of sharks and rays for Mediterranean EU
+## fisheries") - elasmobranch discard rate by gear: bottom trawls ~40%
+## (of the ~75% of elasmobranch catch trawls take); fixed nets/longlines
+## <2.5%. Applied here to EU-3 (Spain/France/Italy) trawl and longline
+## FleetTypes only, matched by gear-name keyword (robust to this run's
+## exact FleetType spelling, e.g. "Bottom trawls" vs "Trawls -n.e.i-").
+## NOT extended to Morocco/Algeria/Tunisia - the source paper covers EU
+## Med fisheries specifically, and non-EU gear/discard practice is not
+## confirmed to match. Every other Country x FleetType x FG cell (every
+## other FG entirely, and every non-trawl/non-longline gear for sharks &
+## rays too) stays "not estimated" - this is a STARTING POINT, not a
+## comprehensive multi-species Mediterranean bycatch dataset.
 ## =================================================================
-BYCATCH_RATE_MANUAL <- data.table(
-  Country = character(), FG_num = integer(), Year = integer(),
-  bycatch_rate = numeric(), source_citation = character()
-)
-bycatch_placeholder <- unique(catch_with_unreported[, .(Country, FG_num, FG_name)])  # one row per country x FG for the bycatch placeholder table
+sharkray_fg <- full_fg_list[grepl("shark|ray|elasmobranch", FG_name, ignore.case = TRUE)]  # find this run's own FG_num/FG_name for sharks & rays, whatever its exact numbering
+BYCATCH_RATE_MANUAL <- if (nrow(sharkray_fg) > 0) {
+  rbindlist(lapply(sharkray_fg$FG_num, function(fg) data.table(
+    Country = rep(c("Spain", "France", "Italy"), 2),
+    FleetType_keyword = c(rep("trawl", 3), rep("longlin", 3)),  # matched against FleetType by regex below, not an exact FleetType string
+    FG_num = fg,
+    bycatch_rate = c(rep(0.40, 3), rep(0.025, 3)),
+    source_citation = "Bargnesi et al. 2024, Sustainability - elasmobranch discard rate by gear, EU Mediterranean fisheries (bottom trawl ~40%, fixed nets/longlines <2.5%)"
+  )))
+} else {
+  data.table(Country = character(), FleetType_keyword = character(), FG_num = integer(),
+             bycatch_rate = numeric(), source_citation = character())
+}
+bycatch_placeholder <- unique(fleet_prop[, .(Country, FleetType, FG_num)])  # one row per country x fleet x FG for the bycatch placeholder table (fleet-resolved, not just country x FG)
+bycatch_placeholder <- merge(bycatch_placeholder, unique(catch_with_unreported[, .(FG_num, FG_name)]), by = "FG_num", all.x = TRUE)  # attach FG_name for readability
 if (nrow(BYCATCH_RATE_MANUAL) > 0) {
-  bycatch_placeholder <- merge(bycatch_placeholder, BYCATCH_RATE_MANUAL, by = c("Country", "FG_num"), all.x = TRUE)  # attach any manually-entered rates
+  bycatch_placeholder[, bycatch_rate := NA_real_]; bycatch_placeholder[, source_citation := NA_character_]
+  for (i in seq_len(nrow(BYCATCH_RATE_MANUAL))) {
+    r <- BYCATCH_RATE_MANUAL[i]
+    hit <- bycatch_placeholder$Country == r$Country & bycatch_placeholder$FG_num == r$FG_num &
+      grepl(r$FleetType_keyword, bycatch_placeholder$FleetType, ignore.case = TRUE)
+    bycatch_placeholder[hit, `:=`(bycatch_rate = r$bycatch_rate, source_citation = r$source_citation)]
+  }
 } else {
   bycatch_placeholder[, `:=`(bycatch_rate = NA_real_, source_citation = NA_character_)]  # no manual entries at all - leave empty
 }
-bycatch_placeholder[, data_status := fifelse(is.na(bycatch_rate), "not estimated - no source in this pipeline captures bycatch", "manually entered - see source_citation")]  # flag whether each row is filled or not
+bycatch_placeholder[, data_status := fifelse(is.na(bycatch_rate), "not estimated - no source in this pipeline captures bycatch for this Country x FleetType x FG cell", "literature-sourced - see source_citation")]  # flag whether each row is filled or not
 message("\n[Bycatch] ", sum(!is.na(bycatch_placeholder$bycatch_rate)), " of ", nrow(bycatch_placeholder),
-        " Country x FG cell(s) filled from BYCATCH_RATE_MANUAL; the rest flagged 'not estimated'.")
+        " Country x FleetType x FG cell(s) filled (sharks & rays x EU-3 trawl/longline, from Bargnesi et al. 2024);",
+        " the rest flagged 'not estimated'.")
 
 ## =================================================================
-## # recreational fishing EFFORT - manual-entry placeholder only
+## # recreational fishing EFFORT - default vector + manual override
 ## Recreational CATCH has a proxy (recreational_rows above, from SAU's
 ## own sector split). Recreational EFFORT does not - checked GFCM, FDI,
 ## SAU and FishMIP, none carries a recreational-effort variable of any
-## kind (days, boats, anglers) for these 6 countries. Per Andrea (2026-
-## 09): "recreational effort is added later as expert knowledge" - same
-## flagged manual-entry convention as BYCATCH_RATE_MANUAL, fill in by
-## hand (Country/Year/recreational_effort/units/source_citation) if/when
-## an expert figure becomes available; left empty this stays explicitly
-## "not estimated", never defaulted to zero or silently omitted from the
-## output like it was before this placeholder existed.
+## kind (days, boats, anglers) for these 6 countries.
+##
+## Per Andrea (2026-09): default every Country x Year cell to 1 (a
+## neutral, unscaled index - "no adjustment" - rather than leaving it
+## NA), and let a specific fleet/year be overridden by hand wherever a
+## real or expert figure becomes available. RECREATIONAL_EFFORT_MANUAL
+## is now the OVERRIDE table only (add a row per Country x Year you want
+## to replace); every cell without a matching row keeps the default of
+## 1, tracked via `effort_source` ("default (=1, no adjustment)" vs
+## "manual override - see source_citation") so default and overridden
+## cells are always distinguishable downstream - never silently
+## indistinguishable from a real measurement.
 ## =================================================================
+RECREATIONAL_EFFORT_DEFAULT <- 1  # neutral default applied to every Country x Year cell unless overridden below
 RECREATIONAL_EFFORT_MANUAL <- data.table(
   Country = character(), Year = integer(),
   recreational_effort = numeric(), units = character(), source_citation = character()
-)
+)  # OVERRIDE table only - add rows here (Country/Year/recreational_effort/units/source_citation) for any fleet/year you want to replace the default of 1 with a real or expert figure
 recreational_effort_placeholder <- CJ(Country = unique(FLEET_REGISTER[Sector == "Recreational"]$Country), Year = YEAR_ECOPATH)  # one row per country x Ecopath-year
+recreational_effort_placeholder[, `:=`(recreational_effort = RECREATIONAL_EFFORT_DEFAULT, units = "index (default = 1, no adjustment)", source_citation = NA_character_, effort_source = "default (=1, no adjustment)")]  # start every cell at the default
 if (nrow(RECREATIONAL_EFFORT_MANUAL) > 0) {
-  recreational_effort_placeholder <- merge(recreational_effort_placeholder, RECREATIONAL_EFFORT_MANUAL, by = c("Country", "Year"), all.x = TRUE)  # attach any manually-entered figures
-} else {
-  recreational_effort_placeholder[, `:=`(recreational_effort = NA_real_, units = NA_character_, source_citation = NA_character_)]  # no manual entries at all - leave empty
+  recreational_effort_placeholder[RECREATIONAL_EFFORT_MANUAL, on = c("Country", "Year"), `:=`(
+    recreational_effort = i.recreational_effort, units = i.units, source_citation = i.source_citation,
+    effort_source = "manual override - see source_citation"
+  )]  # overwrite the default wherever a manual override row exists for that Country x Year
 }
-recreational_effort_placeholder[, data_status := fifelse(is.na(recreational_effort),
-                                                         "not estimated - no source in this pipeline captures recreational effort", "manually entered - see source_citation")]  # flag whether each row is filled or not
 fwrite(recreational_effort_placeholder, file.path(out_dir, "recreational_effort_placeholder.csv"))  # write result to CSV
-message("\n[Recreational effort] ", sum(!is.na(recreational_effort_placeholder$recreational_effort)), " of ",
-        nrow(recreational_effort_placeholder), " Country x Year cell(s) filled from RECREATIONAL_EFFORT_MANUAL;",
-        " the rest flagged 'not estimated' - written to recreational_effort_placeholder.csv.")
+message("\n[Recreational effort] ", sum(recreational_effort_placeholder$effort_source == "manual override - see source_citation"), " of ",
+        nrow(recreational_effort_placeholder), " Country x Year cell(s) manually overridden from RECREATIONAL_EFFORT_MANUAL;",
+        " the rest default to ", RECREATIONAL_EFFORT_DEFAULT, " (no adjustment) - written to recreational_effort_placeholder.csv,",
+        " with effort_source marking which is which.")
 
 ## =================================================================
 ## GFCM DCRF Task 2 (catch by fleet segment) - NOT automatable.
@@ -2603,23 +2941,38 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
   ## this pipeline), applied as a separate `Effort_kWdays_total_effective`
   ## column so the raw reported total above is never overwritten.
   if ("Effort_kWdays_total" %in% names(effort_by_fleettype_eu3)) {
-    effort_by_fleettype_eu3[, creep_mult := tech_creep_multiplier(Country, Year)]  # compute the technology-creep multiplier per row
+    effort_by_fleettype_eu3[, Sector := fifelse(FleetType == "Artisanal", "Artisanal", "Industrial")]  # derive Sector from FleetType, same rule as FLEET_REGISTER
+    ## Gear class for the creep rate itself (Damalas et al. 2015 / Tsagarakis
+    ## et al. 2022, see TECH_CREEP_PERIOD_RATES's own comment) - FDI's "DTS"
+    ## fishing-technology code IS bottom/demersal trawlers & seiners, so it's
+    ## the direct match for the literature's "bottom trawl" gear; everything
+    ## else (PMP, HOK, and any other FDI code that reaches this table) gets
+    ## the general "other" rate.
+    effort_by_fleettype_eu3[, gear_class := fifelse(FleetType == "DTS", "bottom_trawl", "other")]
+    effort_by_fleettype_eu3[, creep_mult := tech_creep_multiplier(Country, Year, Sector, gear_class)]  # compute the technology-creep multiplier per row (country x sector x gear x year)
     effort_by_fleettype_eu3[, Effort_kWdays_total_effective := Effort_kWdays_total * creep_mult]  # apply it to the primary effort metric
     if ("Effort_kWdays_per_vessel" %in% names(effort_by_fleettype_eu3)) {
       effort_by_fleettype_eu3[, Effort_kWdays_per_vessel_effective := Effort_kWdays_per_vessel * creep_mult]  # apply it to the per-vessel metric too
     }
-    effort_by_fleettype_eu3[, creep_mult := NULL]  # drop the now-unneeded helper column
+    effort_by_fleettype_eu3[, `:=`(creep_mult = NULL, gear_class = NULL)]  # drop the now-unneeded helper columns
     creep_range <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective),
                                            .(pct = round(100 * (Effort_kWdays_total_effective / Effort_kWdays_total - 1), 1)), by = .(Country, Year)]  # % change from the raw figure, for reporting
+    creep_by_sector <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective),
+                                               .(pct = round(100 * (Effort_kWdays_total_effective / Effort_kWdays_total - 1), 1)), by = .(Sector, Year)][
+                                                 , .(min_pct = min(pct), max_pct = max(pct)), by = Sector]  # cumulative range per sector, for the flow-diagram bullet
     message("[Effort hindcast] Technology-creep correction applied to the PRIMARY effort metric:",
-            " Effort_kWdays_total_effective = Effort_kWdays_total (kW x days x nboats) x tech_creep_multiplier(Country, Year)",
+            " Effort_kWdays_total_effective = Effort_kWdays_total (kW x days x nboats) x tech_creep_multiplier(Country, Year, Sector, gear_class)",
             " (same multiplier also applied to the secondary per-vessel figure, as Effort_kWdays_per_vessel_effective).",
             " Varies by country (EU-3 multiplier 1, Morocco/Algeria/Tunisia multiplier 0.7 - see",
-            " TECH_CREEP_COUNTRY_MULTIPLIER) and by year (decelerating year-by-year increments from",
-            " Palomares & Pauly 2019's C% = 13.8 x y^-0.511, y = years elapsed since TECH_CREEP_BASE_YEAR = ",
-            TECH_CREEP_BASE_YEAR, "). Cumulative effect ranges from ", min(creep_range$pct), "% to ",
-            max(creep_range$pct), "% across the covered years. This is an ASSUMPTION (no fishery-specific",
-            " creep rate is available), applied only where FDI's own kW-days figure exists (2014+); pre-2014",
+            " TECH_CREEP_COUNTRY_MULTIPLIER), by sector (Industrial multiplier 1, Artisanal/Recreational multiplier 0.6 -",
+            " see TECH_CREEP_SECTOR_MULTIPLIER), by gear (bottom-trawl/DTS 0.79%/year, every other gear 2.0%/year,",
+            " both 1994-2013 - Damalas et al. 2015 & Tsagarakis et al. 2022), and by year (4.5%/year 2014-2023, uniform",
+            " across gears - Palomares & Pauly 2019's C% = 13.8 x y^-0.511 evaluated once at y=9 - see",
+            " TECH_CREEP_PERIOD_RATES for all of the above). Cumulative effect",
+            " (Industrial, EU-3) ranges from ", min(creep_range$pct), "% to ", max(creep_range$pct), "% across the",
+            " covered years; by sector: ", paste(sprintf("%s %s%% to %s%%", creep_by_sector$Sector, creep_by_sector$min_pct, creep_by_sector$max_pct), collapse = "; "),
+            ". This is an ASSUMPTION-DRIVEN adjustment for both the country and sector dimensions (no fishery-specific",
+            " creep rate exists for either split), applied only where FDI's own kW-days figure exists (2014+); pre-2014",
             " hindcasted rows are left uncorrected since they carry no kW-days figure to begin with.")
   }
   
@@ -2692,7 +3045,7 @@ message("[Fleet_Structure] ", nrow(fleet_structure_out), " FG x Fleet row(s), pr
 f_by_fg <- data.table()
 if (!file.exists(SPECIES_DENSITY_PATH)) {
   message("\n[F] Skipped - '", SPECIES_DENSITY_PATH, "' not found. Run Step 1",
-          " (01_survey_density_westmed.R / 01_survey_density_custom.R) first if you want F computed here.")
+          " (01_biomass.R / 01_survey_density_custom.R) first if you want F computed here.")
 } else {
   species_density <- fread(SPECIES_DENSITY_PATH)   # Year, FG_num, FG_name, ScientificName, mean_density (t/km2)
   req_density_cols <- c("Year", "FG_num", "FG_name", "ScientificName", "mean_density")
@@ -2760,17 +3113,37 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   ## time series (this is also where TECH_CREEP_COUNTRY_MULTIPLIER's
   ## Morocco/Algeria/Tunisia = 0.7 reduced rate actually applies, since the
   ## EU-3's own effort_by_fleettype_eu3 block above never reaches this one).
-  effort_by_fleet[, nom_active_kWdays_effective := nom_active_kWdays * tech_creep_multiplier(Country, Year)]  # apply the technology-creep correction
+  ## Gear class for the creep rate itself (same Damalas et al. 2015 /
+  ## Tsagarakis et al. 2022 split as effort_by_fleettype_eu3 above) -
+  ## FishMIP's own `gear` field doesn't carry FDI's "DTS" code, so bottom-
+  ## trawl-type gear is identified here by name-keyword instead (matches
+  ## "trawl" but excludes "midwater"/"pelagic" trawls, which aren't the
+  ## demersal gear either literature source is about) - a best-effort
+  ## match against FishMIP's own gear-name taxonomy, not an exact code
+  ## lookup like the FDI side has.
+  effort_by_fleet[, gear_class := fifelse(
+    grepl("trawl", gear, ignore.case = TRUE) & !grepl("midwater|pelagic", gear, ignore.case = TRUE),
+    "bottom_trawl", "other"
+  )]
+  effort_by_fleet[, nom_active_kWdays_effective := nom_active_kWdays * tech_creep_multiplier(Country, Year, Sector, gear_class)]  # apply the technology-creep correction (country x sector x gear x year)
   fishmip_creep_range <- effort_by_fleet[!is.na(nom_active_kWdays_effective),
                                          .(pct = round(100 * (nom_active_kWdays_effective / nom_active_kWdays - 1), 1)), by = .(Country, Year)]  # % change from the raw figure, for reporting
+  fishmip_creep_by_sector <- effort_by_fleet[!is.na(nom_active_kWdays_effective),
+                                             .(pct = round(100 * (nom_active_kWdays_effective / nom_active_kWdays - 1), 1)), by = .(Sector, Year)][
+                                               , .(min_pct = min(pct), max_pct = max(pct)), by = Sector]  # cumulative range per sector, for the flow-diagram bullet
   message("[Effort] Fishing_Effort_by_Fleet: ", uniqueN(effort_by_fleet$Fleet), " fleet(s) (country x top ",
           N_TOP_GEARS, " gears + 'Other gear'), ", nrow(effort_by_fleet), " Fleet x Year row(s). Max FishMIP",
           " year: ", max(effort$year), " (hard ceiling, not extrapolated). Technology-creep correction added",
-          " as nom_active_kWdays_effective = nom_active_kWdays x tech_creep_multiplier(Country, Year)",
-          " (varies by country - EU-3 multiplier 1, Morocco/Algeria/Tunisia multiplier 0.7 - and by year,",
-          " decelerating from TECH_CREEP_BASE_YEAR = ", TECH_CREEP_BASE_YEAR, "). Cumulative effect ranges",
-          " from ", min(fishmip_creep_range$pct), "% to ", max(fishmip_creep_range$pct), "% across the",
-          " covered years - same ASSUMPTION-DRIVEN adjustment as effort_by_fleettype_eu3, not a measurement.")
+          " as nom_active_kWdays_effective = nom_active_kWdays x tech_creep_multiplier(Country, Year, Sector, gear_class)",
+          " (varies by country - EU-3 multiplier 1, Morocco/Algeria/Tunisia multiplier 0.7 - by sector -",
+          " Industrial multiplier 1, Artisanal multiplier 0.6 - by gear - bottom-trawl 0.79%/year, other gears",
+          " 2.0%/year, both 1994-2013 (Damalas et al. 2015 & Tsagarakis et al. 2022) - and by year, 4.5%/year",
+          " 2014-2023 (Palomares & Pauly 2019), decelerating from TECH_CREEP_BASE_YEAR = ",
+          TECH_CREEP_BASE_YEAR, "). Cumulative effect (Industrial) ranges from ", min(fishmip_creep_range$pct),
+          "% to ", max(fishmip_creep_range$pct), "% across the covered years; by sector: ",
+          paste(sprintf("%s %s%% to %s%%", fishmip_creep_by_sector$Sector, fishmip_creep_by_sector$min_pct, fishmip_creep_by_sector$max_pct), collapse = "; "),
+          " - country/sector split is still an ASSUMPTION (no literature figure exists for that split); the",
+          " gear x period rates themselves are now literature-backed (see TECH_CREEP_PERIOD_RATES).")
   
   ## Rousseau NomEffort added as a SECOND, independent effort figure per
   ## Country x Year (not replacing FishMIP - SAU itself has no effort
@@ -2994,6 +3367,18 @@ if (nrow(stecf_fdi_effort_by_gsa) > 0) sheets_to_write$STECF_FDI_Effort_by_GSA <
 if (nrow(effort_by_fleettype_eu3) > 0) sheets_to_write$Effort_by_FleetType_EU3 <- effort_by_fleettype_eu3  # add this sheet only if it has data
 if (nrow(stecf_fdi_capacity_by_fleet) > 0) sheets_to_write$STECF_FDI_Capacity_by_Fleet <- stecf_fdi_capacity_by_fleet  # add this sheet only if it has data
 if (nrow(discard_calibration) > 0) sheets_to_write$SAU_STECF_Discard_Calibration <- discard_calibration  # add this sheet only if it has data
+if (nrow(star_catch_by_fg) > 0) sheets_to_write$STAR_RAM_Catch_CrossCheck <- catches_discards_fg[!is.na(star_catches_t), .(Year, FG_num, FG_name, Catch_t, star_catches_t, star_landings_t, star_catch_pct_diff, star_n_stocks, star_sources)]  # add this sheet only if the STAR/RAM cross-check found data
+
+## Written here as its own sheet (2026-09-16, per Andrea) IN ADDITION
+## to its existing CSV (catches_and_discards_by_FG_timeseries_*.csv,
+## further up) - this is the clean Year/FG_num/FG_name/Landings_t/
+## Catch_t/Discard_t table finalize_ecopath_ecosim_summary_sheets()
+## (lib_survey_fg_density_functions.R, called at the end of
+## 03_pbqb-traits.R) reads to build the Ecopath_L/Ecopath_Di summary
+## sheets - kept as a plain FG x Year table (not the Ecopath/Ecosim-
+## specific meta-row format) since it's meant to be read back
+## programmatically, not opened as an Ecopath forcing function itself.
+sheets_to_write$Catches_Discards_FG_ts <- catches_discards_fg[, .(Year, FG_num, FG_name, Landings_t, Catch_t, Discard_t)]
 
 upsert_workbook_sheets(sheets_to_write, ECOPATH_WORKBOOK_PATH)  # write/replace all these sheets in the workbook
 
@@ -3012,11 +3397,20 @@ finalize_workbook_sheet_order(  # reorder/rename the workbook's sheets into thei
     "Catches_Ecosim", "Catches_Species_Division_FG", "GFCM_Catches_by_Division", "Fleet_vs_Division_Check",
     "Catches_ByCountryFleetSector", "STECF_FDI_Catch_by_GSA", "STECF_FDI_Effort_by_GSA", "STECF_FDI_Capacity_by_Fleet", "Effort_by_FleetType_EU3",
     "SAU_STECF_Discard_Calibration", "GFCM_Task2_Placeholder", "GFCM_SAF_Effort_Placeholder",
-    "Unreported_Pct_by_Country", "Bycatch_Placeholder", "Fishing_Effort_by_Fleet", "DataSources_Catch"
+    "Unreported_Pct_by_Country", "Bycatch_Placeholder", "Fishing_Effort_by_Fleet", "STAR_RAM_Catch_CrossCheck", "DataSources_Catch",
+    "Catches_Discards_FG_ts",
+    ## Six-sheet consolidated summary (added 2026-09-16, per Andrea) -
+    ## listed here even though most of them don't exist until
+    ## 03_pbqb-traits.R runs (finalize_ecopath_ecosim_summary_sheets(),
+    ## called at its end) - target_order entries for sheets not yet in
+    ## the workbook are simply skipped (see this function's own header
+    ## comment), so this is safe to list up front rather than needing
+    ## a second finalize_workbook_sheet_order() call after 03 runs.
+    "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB", "Ecopath_traits", "Ecosim_ts"
   )
 )
 
-message("\n=== Done (02_fisheries_master.R) === Wrote ", length(sheets_to_write), " sheet(s) directly, plus",
+message("\n=== Done (02_fisheries.R) === Wrote ", length(sheets_to_write), " sheet(s) directly, plus",
         " Catches_Ecopath/Catches_Ecosim earlier: ", paste(names(sheets_to_write), collapse = ", "),
         ", Catches_Ecopath, Catches_Ecosim. Every catch/discard/fleet-split/unreported/bycatch value",
         " carries its own *_source or data_status column - check those before treating any row as",
