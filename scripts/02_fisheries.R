@@ -193,7 +193,7 @@ FISHMIP_FG_CROSSWALK_PATH <- NULL   # columns: fishmip_f_group, FG_num - leave N
 ## Andrea's explicit direction, ANCHORED (not trusted on its own trend)
 ## to FDI's real level via a per-country calibration factor computed
 ## from that same overlap window - see rousseau_calibration below.
-ROUSSEAU_EFFORT_PATH <- file.path(pcloud_dir, "data/fisheries/Rousseau/Final_DataStudyFAO_AllGears_wCode.csv")  # Rousseau et al. 2024 effort CSV path
+ROUSSEAU_EFFORT_PATH <- file.path(pcloud_dir, "data/fisheries/RousseauEtAl2023/Data/Final_DataStudyFAO_AllGears_wCode.csv")  # Rousseau et al. 2024 effort CSV path - confirmed on disk under this exact folder name (2026-09)
 
 ## SAU is now a manual-download FOLDER, same convention as FDI/FishMIP
 ## (pcloud_dir/data/fisheries/SAU/ - one or more CSVs, whatever Sea
@@ -1884,7 +1884,29 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
     
     setnames(discard_by_fg, "FG_num", "fgroup")  # this column is still FishMIP's own label at this point, not a real model FG_num
     discard_by_fg <- merge(discard_by_fg, closest_fg_matches, by = "fgroup", allow.cartesian = TRUE)  # attach real model FG_num via the keyword match
-    discard_by_fg <- unique(discard_by_fg[, .(FG_num, discard_ratio)])  # keep only the final FG_num x discard_ratio columns
+    
+    ## BUG FIX (2026-09): a plain unique(FG_num, discard_ratio) here is NOT
+    ## enough to guarantee one row per FG_num - if TWO DIFFERENT FishMIP
+    ## f_groups (e.g. "Demersals" and "Miscellaneous demersal fishes") both
+    ## keyword-match onto the SAME model FG but carry different discard
+    ## ratios, unique() keeps both rows (they differ in discard_ratio, so
+    ## they're not exact duplicates), leaving more than one row per FG_num.
+    ## The downstream merge(..., by = "FG_num") into gfcm_country_fg then
+    ## fans every one of those duplicate keys out across every matching row
+    ## (the "9582 rows > 5894" cartesian-join error). Fixed by explicitly
+    ## collapsing to ONE row per FG_num - the mean of every f_group's ratio
+    ## that landed on it - and logging every FG_num where this actually
+    ## resolved a real conflict (never silently averaged without saying so).
+    n_before_fg_collapse <- uniqueN(discard_by_fg$FG_num)
+    conflict_check <- discard_by_fg[, .(n_sources = uniqueN(discard_ratio)), by = FG_num]
+    n_conflicting_fg <- sum(conflict_check$n_sources > 1)
+    discard_by_fg <- discard_by_fg[, .(discard_ratio = mean(discard_ratio, na.rm = TRUE)), by = FG_num]  # ONE row per FG_num, guaranteed
+    if (n_conflicting_fg > 0) {
+      message("[Discards] ", n_conflicting_fg, " of ", n_before_fg_collapse, " FG_num(s) matched more than one",
+              " FishMIP f_group with DIFFERING discard ratios (e.g. both 'Demersals' and a more specific group",
+              " keyword-matched the same FG) - averaged to a single ratio per FG_num rather than left as",
+              " duplicate rows (which previously caused a cartesian-join error on the merge below).")
+    }
     fwrite(closest_fg_matches, file.path(out_dir, "discards_fishmip_closest_fg_match_REVIEW.csv"))  # write the keyword matches to CSV for manual review
   }
   message("[Discards] discard_ratio available for ", nrow(discard_by_fg), " FG(s) (Mediterranean-wide,",
