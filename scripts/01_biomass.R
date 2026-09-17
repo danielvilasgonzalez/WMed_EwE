@@ -231,6 +231,20 @@ if (!exists("SPECIES_PRESENCE_CHECK", envir = .GlobalEnv, inherits = FALSE)) SPE
 ## species FishBase/SeaLifeBase genuinely lacks.
 FISHBASE_TAXONOMY_CACHE_PATH <- file.path(out_dir, "fishbase_taxonomy_cache.rds")
 
+## taxonomy_source = "both" (2026-09-17): FishBase/SeaLifeBase is
+## fish/aquatic-organism-focused and genuinely doesn't carry every
+## algae/sponge/bryozoan/echinoderm/crustacean name in the survey data
+## (e.g. Osmundaria volubilis, Anamathia rissoana, Ergasticus clouei,
+## Lissa chiragra came back with zero taxonomy from FishBase/SeaLifeBase
+## alone). WoRMS (World Register of Marine Species) covers the full
+## marine taxonomic tree - algae, invertebrates of every phylum, and
+## bare higher-rank names themselves (e.g. "Porifera" is itself a valid
+## WoRMS phylum-rank record) - so it's used as a SECOND-PASS fallback,
+## only for whatever FishBase/SeaLifeBase left with no rank filled in at
+## all. FishBase/SeaLifeBase stays the first authority wherever it does
+## resolve a name, so nothing already working changes.
+WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
+
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
 ## covers 10-800m; this adds two DERIVED pseudo-strata (0-10m, 800-6000m)
@@ -254,7 +268,7 @@ message(
 
 ## MEDITS' 5 standard bathymetric strata - passed as strata_def to the
 ## shared functions, not hardcoded inside them.
-## Bounds written as Andrea specified: 10-50, 51-100, 101-200, 201-500,
+## Bounds written per spec: 10-50, 51-100, 101-200, 201-500,
 ## 501-800m - i.e. each stratum's own upper bound (50/100/200/500/800)
 ## belongs to THAT stratum, not the next one down. assign_depth_stratum()
 ## only calls findInterval() on depth_min (see its own comment on why
@@ -432,7 +446,7 @@ MANUAL_OVERRIDES <- data.table(
   taxon_rank   = c("species", "family", "class", "genus", "genus", "class", "species",'species'))
 
 ## needs taxonomy on fg_lookup_safe to resolve genus/family/class-rank overrides
-fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
 fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy, by = "ScientificName", all.x = TRUE)
 
 resolve_override <- function(taxon_name, rank) {
@@ -491,7 +505,7 @@ dt[non_taxon, ScientificName := NA_character_]
 message(sum(non_taxon, na.rm = TRUE), " non-taxon row(s) (NO-prefixed or egg-capsule entries) excluded",
         " from the taxonomy fallback attempt.")
 
-dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
 
 ## --- Seed FG rules -----------------------------------------------------
 ## For FGs that genuinely have ZERO species pre-listed in dataframe2 -
@@ -588,7 +602,7 @@ message("Saved to survey_unmatched_for_manual_review.csv for review.")
 ## (fallback_match_fg_by_taxonomy()) - both the "exclusive" ones (every
 ## already-assigned relative at that rank agrees on one FG) and the
 ## "majority" ones (that rank was ambiguous - assigned to whichever FG
-## holds the most already-assigned relatives, per Andrea's instruction
+## holds the most already-assigned relatives, per the instruction
 ## that an unmatched species can be placed by its closest relative even
 ## when the genus/family itself isn't exclusive to one FG). vote_share
 ## (e.g. "4/5") shows exactly how strong that majority was, so a review
@@ -663,7 +677,7 @@ if (length(still_missing_taxonomy) > 0) {
   message("\n", length(still_missing_taxonomy), " observed species have no taxonomy yet",
           " (likely matched via MANUAL_OVERRIDES, which doesn't fetch taxonomy) -",
           " fetching directly for these:")
-  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+  gap_taxonomy <- fetch_taxonomy(still_missing_taxonomy, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
   species_taxonomy <- rbindlist(list(species_taxonomy, gap_taxonomy), fill = TRUE)
   species_taxonomy <- unique(species_taxonomy, by = "ScientificName")
 }
@@ -1048,7 +1062,7 @@ if (n_no_sci > 0) {
 
 acoustic_matched <- match_species_to_fg(acoustic[!is.na(ScientificName)], fg_lookup_safe)
 acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
-acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "fishbase", cache_path = FISHBASE_TAXONOMY_CACHE_PATH)
+acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
 
 ## Same manual-rules tier and manual-review export MEDITS gets above
 ## (SEED_RULES/SPECIES_EXCEPTIONS - defined once above, reused verbatim
@@ -1240,13 +1254,13 @@ message("MEDIAS region-wide species-level density built: ", nrow(species_density
 ## Year - built HERE, BEFORE the MEDITS+MEDIAS combine step below, so
 ## it can feed the priority rule that combine step applies
 ## (single-species / stanza FGs use it as PRIMARY; every other FG
-## keeps it validation-only, per Andrea's 2026-09 instruction: "the
+## keeps it validation-only, "the
 ## priority of FG estimates MEDIAS>MEDITS, then if FG single species
 ## and have stock assessment then stock assessment, if a species is
 ## FG stanza then stock assessment. the rest MEDITS" - see the "FG
 ## biomass-source priority" block below for the actual rule, which
 ## replaced an earlier demersal/small-pelagic-keyword-based version).
-## Expects Andrea's own combine_STAR_RAMlegacy.R output,
+## Expects the combine_STAR_RAMlegacy.R output,
 ## combined_medbs_star_ramlegacy.csv (source/stock_key/species/
 ## common_name/gsa/subregion/year/biomass/catches/landings/
 ## landings_flag/... - see that script's own header), placed under
@@ -1271,7 +1285,7 @@ star_ram_combined <- if (file.exists(star_ram_path)) {
 ## column select with "object 'FG_num' not found" the moment
 ## combine_STAR_RAMlegacy.R's output genuinely isn't there (the normal,
 ## documented "optional, skip if not found" case above, not an error
-## condition) - this is what Andrea hit.
+## condition) - this is what was hit during testing.
 stock_assessment_fg_year <- data.table(FG_num = integer(0), FG_name = character(0), Year = integer(0),
                                        star_biomass_t = numeric(0), star_n_stocks = integer(0),
                                        star_sources = character(0), stock_assessment_density_t_km2 = numeric(0))
@@ -1330,9 +1344,9 @@ if (nrow(star_ram_combined) > 0) {
 }
 
 ## =================================================================
-## FG biomass-source priority (rewritten 2026-09-16, per Andrea -
+## FG biomass-source priority (rewritten 2026-09-16 -
 ## REPLACES the earlier demersal/small-pelagic-KEYWORD-guessing version,
-## which is removed entirely). Andrea's own rule, verbatim: "the
+## which is removed entirely). The rule, verbatim: "the
 ## priority of FG estimates MEDIAS>MEDITS, then if FG single species
 ## and have stock assessment then stock assessment, if a species is
 ## FG stanza then stock assessment. the rest MEDITS." Translated to
@@ -1470,7 +1484,7 @@ message("Saved species_density_regional_combined.csv (", nrow(species_density_re
 ## in the combined time series (not just the Ecopath base years), one
 ## row per species, with its FG_num/FG_name assignment and full
 ## taxonomy (Genus/Family/Order/Class/Phylum) attached, "to see the
-## species i got" (Andrea). A species matched to more than one FG_num
+## species i got" . A species matched to more than one FG_num
 ## across different rows (shouldn't normally happen post-fallback, but
 ## checked rather than assumed) gets one row per FG_num it was actually
 ## assigned to, flagged, rather than silently picking one.
@@ -1499,7 +1513,7 @@ message("Saved species_inventory_with_taxonomy.csv (", nrow(species_inventory), 
 ## the override (where it happened) is visibly checked against what the
 ## survey alone would have said, and every other assessed FG (the
 ## "mixed"-ecology ones, where stock assessment is validation-only per
-## Andrea's original 2026-09 instruction) gets its comparison too.
+## the original 2026-09 instruction) gets its comparison too.
 ## =================================================================
 stock_assessment_biomass_crosscheck <- data.table()
 if (nrow(stock_assessment_fg_year) > 0) {
@@ -1531,10 +1545,11 @@ if (nrow(stock_assessment_fg_year) > 0) {
           " (single-species FGs, see FG_ECOLOGY_TYPE/biomass_source) - every other row is validation-only, exactly",
           " as before: fg_index_regional_combined stays MEDITS/MEDIAS-built for every mixed-ecology FG.")
   
-  upsert_workbook_sheets(
-    list(StockAssessment_Biomass_CrossCheck = stock_assessment_biomass_crosscheck),
-    out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
-  )
+  ## 2026-09-17 update: stock_assessment_biomass_crosscheck.csv (written
+  ## just above via fwrite()) already IS this table as a CSV - no need to
+  ## also add it to the workbook now that native/intermediate tables are
+  ## CSV-only, so the upsert_workbook_sheets() call that used to add a
+  ## StockAssessment_Biomass_CrossCheck workbook sheet has been removed.
 }
 
 ## --- Combine CV.log across surveys - average where both have a value,
@@ -1671,12 +1686,17 @@ fwrite(FG_spp_Ecopath[, .(FG_num, FG_name, Species, Density, prop_sp_fg)],
        file.path(out_dir, "biomass_proportion_by_species_fg.csv"))
 message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg = that species' share of its FG's total biomass).")
 
-upsert_workbook_sheets(
-  sheets = list(
+## 2026-09-17 update: FG_spp_Ecopath and FG_lookup are native/intermediate
+## reference tables, not final target sheets - written as CSV only.
+## FG_lookup.csv in particular is read back by read_full_fg_reference()
+## (used by 03/04's PB_QB and diet FG-expansion steps), so this must run
+## before those.
+write_native_sheets_csv(
+  sheets  = list(
     FG_spp_Ecopath = FG_spp_Ecopath,
     FG_lookup      = FG_lookup
   ),
-  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  out_dir = out_dir
 )
 
 ## =================================================================
@@ -1805,9 +1825,12 @@ message("traits_ewe reconciled: ", nrow(traits_reconciled), " species total (",
         sum(!traits_reconciled$missing_traits), " with traits, ",
         sum(traits_reconciled$missing_traits), " missing traits).")
 
-upsert_workbook_sheets(
-  sheets = list(traits_ewe = traits_reconciled),
-  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+## 2026-09-17 update: traits_ewe is a native/intermediate species-level
+## table here (the final target sheet, Ecopath_traits, is the FG-level
+## rollup 03_pbqb-traits.R builds) - written as CSV only.
+write_native_sheets_csv(
+  sheets  = list(traits_ewe = traits_reconciled),
+  out_dir = out_dir
 )
 
 ## =================================================================
@@ -1820,9 +1843,10 @@ upsert_workbook_sheets(
 ## is reviewable per species, not a black box.
 ## =================================================================
 if (!is.null(aquamaps_depth_adjustment_audit)) {
-  upsert_workbook_sheets(
-    sheets = list(AquaMaps_Depth_Adjustment = aquamaps_depth_adjustment_audit),
-    out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  ## 2026-09-17 update: audit sheet, not a final target sheet - CSV only.
+  write_native_sheets_csv(
+    sheets  = list(AquaMaps_Depth_Adjustment = aquamaps_depth_adjustment_audit),
+    out_dir = out_dir
   )
 }
 
@@ -1837,40 +1861,28 @@ if (!is.null(aquamaps_depth_adjustment_audit)) {
 ## per-stratum columns are additive, not independently-normalized).
 ## =================================================================
 if (!is.null(fg_density_by_stratum)) {
-  upsert_workbook_sheets(
-    sheets = list(FG_Density_by_Stratum = fg_density_by_stratum),
-    out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  ## 2026-09-17 update: reference/audit sheet, not a final target sheet - CSV only.
+  write_native_sheets_csv(
+    sheets  = list(FG_Density_by_Stratum = fg_density_by_stratum),
+    out_dir = out_dir
   )
 }
 
 ## =================================================================
-## STEP 13: fix sheet names/order in ecopath_ecosim_inputs.xlsx.
-##
-## Safe to run from EVERY script that touches this workbook, in any
-## order - finalize_workbook_sheet_order() skips target sheets that
-## don't exist yet (e.g. Catches_Ecopath/Catches_Ecosim from
-## 02_fao_catches.R, PB_QB from 03_pbqb-traits.R, Ecobase/References from
-## wherever those come from, if they haven't run yet) and appends any
-## sheet it doesn't recognize rather than dropping it - so whichever
-## script runs LAST naturally leaves the workbook in the right order,
-## same order-independent design as upsert_workbook_sheets() itself.
-## Add this same block to 02_fao_catches.R and 03_pbqb-traits.R too so
-## the order stays correct no matter which one actually runs last.
+## STEP 13: trim ecopath_ecosim_inputs.xlsx down to EXACTLY the 8 final
+## target sheets (info, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
+## Ecopath_traits, Ecopath_diet, Ecosim_ts) - the excel ecopath_ecosim
+## file must have exactly the intended sheets, trimmed script by
+## script. Safe to run from EVERY script that touches this workbook, in
+## any order - trim_workbook_to_final_sheets() (via
+## finalize_workbook_sheet_order(..., drop_extras = TRUE)) skips target
+## sheets that don't exist yet and DROPS anything else, so whichever
+## script runs LAST naturally leaves the workbook holding only whichever
+## of the 8 final sheets exist so far - never any native/intermediate
+## sheet, since those are all CSV-only now. Add this same call to
+## 02_fisheries.R, 03_pbqb-traits.R, and 04_diets.R too.
 ## =================================================================
-finalize_workbook_sheet_order(
-  out_path = file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
-  rename_map = c(
-    FG_lookup  = "FG",
-    References = "PB_QB_References_"
-  ),
-  target_order = c(
-    "FG", "Ecopath", "Catches_Ecopath", "FG_spp_Ecopath", "PB_QB", "PB_QB_spp",
-    "Ecobase", "PB_QB_References_", "AquaMaps_Depth_Adjustment", "FG_Density_by_Stratum",
-    "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim", "Fleet_Structure", "Catches_by_Fleet", "Catches_by_Fleet_AllYears",
-    "Fishing_Effort_by_Fleet", "StockAssessment_Biomass_CrossCheck", "DataSources_Catch"
-  )
-)
+trim_workbook_to_final_sheets(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())

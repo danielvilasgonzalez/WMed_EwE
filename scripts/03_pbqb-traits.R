@@ -43,7 +43,7 @@
 ## each for a different reason - flagged here together so it's clear
 ## at a glance which packages this script actually depends on and why
 ## none of them go through the naive install.packages()/library()
-## path above (this answers Andrea's 2026-09 question re: "packages
+## path above (answers a 2026-09 question about "packages
 ## used in the pbqb... there was one tropfishR"):
 ##   - rfishbase   REQUIRED, but version-pinned - a naive
 ##                 install.packages("rfishbase") installs a broken
@@ -204,6 +204,17 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 ## =================================================================
 if (!exists("FISHERIES_DATA_SOURCE", envir = .GlobalEnv, inherits = FALSE)) FISHERIES_DATA_SOURCE <- "SAU"   # NULL | "SAU" | "SAU_no_unreported" | "FishMIP" | "FAO_GFCM"
 if (!exists("FAO_GFCM_DATASET_VERSION_FOR_04", envir = .GlobalEnv, inherits = FALSE)) FAO_GFCM_DATASET_VERSION_FOR_04 <- "GFCM_2025"   # must match 02_fao_catches.R's own DATASET_VERSION
+
+## EcoBase literature PB/QB query (03b_ecobase.R) - sourced and called
+## directly from this script (see "Supplement with EcoBase literature
+## values" further down), not run as a standalone step. ENABLE_ECOBASE_QUERY
+## <- FALSE skips it entirely (useful offline, or if the network egress
+## doesn't reach sirs.agrocampus-ouest.fr); ECOBASE_FORCE_REFRESH <- TRUE
+## re-queries EcoBase even if ecobase_literature_pb_qb_simple.csv already
+## exists from a previous run (default FALSE just reuses that cache).
+if (!exists("ENABLE_ECOBASE_QUERY",  envir = .GlobalEnv, inherits = FALSE)) ENABLE_ECOBASE_QUERY  <- TRUE
+if (!exists("ECOBASE_FORCE_REFRESH", envir = .GlobalEnv, inherits = FALSE)) ECOBASE_FORCE_REFRESH <- FALSE
+source(file.path(git_dir, "scripts/03b_ecobase.R"))   # defines fetch_ecobase_literature_pb_qb()
 
 ## =================================================================
 ## rfishbase/duckdbfs compatibility check - catches, at the very start,
@@ -678,7 +689,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv") {
 ## STEP 1: taxonomic classification -> dispatch group
 ## Primary signal: FishBase/SeaLifeBase Class (via rfishbase::load_taxa(),
 ## same function/cache used by the biomass survey scripts - standardized
-## on FishBase/SeaLifeBase project-wide per Andrea's instruction, 2026-09,
+## on FishBase/SeaLifeBase project-wide per the instruction, 2026-09,
 ## replacing the WoRMS-based lookup this step used previously). FishBase
 ## covers fish (Actinopteri/Elasmobranchii/etc.); SeaLifeBase covers
 ## everything else (invertebrates, mammals, birds, algae) - both are
@@ -1986,7 +1997,7 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Calculate PB/QB (all groups)
 ## to a narrow PB/QB-only column set (see their own final `out[, .(...)]`
 ## lines above), so these don't survive the rbindlist() above on their
 ## own. Needed for the FG-level trait aggregation right below (feeds
-## the Ecopath_traits summary sheet, added 2026-09-16 per Andrea) -
+## the Ecopath_traits summary sheet, added 2026-09-16) -
 ## PB/QB themselves are untouched by this, it only adds columns.
 trait_cols <- intersect(c("Loo", "K", "Winf", "Longevity", "TrophicLevel", "AspectRatio", "Depth", "Temp"), names(species_df))
 if (length(trait_cols) > 0) {
@@ -2087,7 +2098,7 @@ fg_weighted <- merge(fg_weighted, fg_name_lookup, by = "FG", all.x = TRUE)
 
 ## =================================================================
 ## Biomass-weighted FG-level TRAITS (feeds the Ecopath_traits summary
-## sheet, added 2026-09-16 per Andrea) - same weighting convention as
+## sheet, added 2026-09-16) - same weighting convention as
 ## PB_FG/QB_FG just above: each species' trait value contributes in
 ## proportion to its own share of the FG's total Biomass, not a plain
 ## unweighted mean across however many species happen to be in the FG.
@@ -2169,8 +2180,10 @@ fwrite(phyto_flagged, file.path(out_dir, "phytoplankton_needs_separate_method.cs
 ## =================================================================
 ## Supplement with EcoBase literature values (03b_ecobase.R output)
 ## =================================================================
-## 03b_ecobase.R produces ecobase_literature_pb_qb_simple.csv - PB/QB
-## from PUBLISHED Ecopath models, one row per FG_name per source model.
+## 03b_ecobase.R's fetch_ecobase_literature_pb_qb() is called directly
+## here (rather than expecting ecobase_literature_pb_qb_simple.csv to
+## already exist from a separate manual run) - it produces PB/QB from
+## PUBLISHED Ecopath models, one row per FG_name per source model.
 ## Matched here on FG_name (EcoBase has no FG_num of its own - group
 ## naming won't line up automatically across different models' own
 ## definitions, so this is a text match and should be spot-checked,
@@ -2180,7 +2193,15 @@ fwrite(phyto_flagged, file.path(out_dir, "phytoplankton_needs_separate_method.cs
 ## the most rows.
 ECOBASE_CSV_PATH <- file.path(out_dir, "ecobase_literature_pb_qb_simple.csv")
 
-if (file.exists(ECOBASE_CSV_PATH)) {
+if (ENABLE_ECOBASE_QUERY) {
+  fetch_ecobase_literature_pb_qb(out_dir = out_dir, force_refresh = ECOBASE_FORCE_REFRESH)
+} else {
+  message("ENABLE_ECOBASE_QUERY = FALSE - skipping the EcoBase literature query entirely.",
+          " Continuing with empirical PB/QB only",
+          if (file.exists(ECOBASE_CSV_PATH)) " (a cached ecobase_literature_pb_qb_simple.csv exists but will NOT be read while this is FALSE)." else ".")
+}
+
+if (ENABLE_ECOBASE_QUERY && file.exists(ECOBASE_CSV_PATH)) {
   ecobase_raw <- fread(ECOBASE_CSV_PATH)
   message("\nLoaded EcoBase literature PB/QB: ", nrow(ecobase_raw), " rows across ",
           uniqueN(ecobase_raw$FG_name), " distinct FG_name values from ",
@@ -2277,18 +2298,21 @@ if (file.exists(ECOBASE_CSV_PATH)) {
           uniqueN(ecobase_by_model$EwE_model), " distinct published model(s) - the per-model",
           " detail behind Ecobase's own FG-level PB_ecobase/QB_ecobase averages).")
   
-  upsert_workbook_sheets(list(Ecobase = ecobase_sheet, Ecobase_by_Model = ecobase_by_model),
-                         ECOPATH_WORKBOOK_PATH)
+  ## 2026-09-17 update, CSV-not-workbook-sheet refactor:
+  ## Ecobase/Ecobase_by_Model are native/intermediate reference tables,
+  ## not final target sheets - written as CSV only.
+  write_native_sheets_csv(list(Ecobase = ecobase_sheet, Ecobase_by_Model = ecobase_by_model),
+                          out_dir)
   
   ## downstream Ecopath export (below) uses the gap-filled values so FGs
   ## with no empirical estimate aren't just left blank when a literature
   ## value was available
   fg_weighted <- copy(fg_weighted_ecobase)
   fg_weighted[, `:=`(PB_FG = PB_FG_filled, QB_FG = QB_FG_filled)]
-} else {
-  message("\nNo EcoBase literature file found at ", ECOBASE_CSV_PATH,
-          " - run 03b_ecobase.R first if you want literature PB/QB values",
-          " merged in as a comparison/gap-fill. Continuing with empirical",
+} else if (ENABLE_ECOBASE_QUERY) {
+  message("\nNo usable EcoBase literature file at ", ECOBASE_CSV_PATH,
+          " after querying EcoBase (see messages above for why - e.g. no network,",
+          " or no models returned usable data). Continuing with empirical",
           " estimates only.")
 }
 
@@ -2372,8 +2396,8 @@ add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKB
                              species_pb_qb = results)
 
 ## =================================================================
-## Ecopath_traits + the six-sheet consolidated summary (2026-09-16,
-## per Andrea): "beside [keeping] csv files or intermediate files...
+## Ecopath_traits + the six-sheet consolidated summary (2026-09-16):
+## "beside [keeping] csv files or intermediate files...
 ## the excel file should include ... Ecopath_B, Ecopath_L, Ecopath_Di,
 ## Ecopath_PBQB, Ecopath_traits, Ecosim_ts". Ecopath_traits is written
 ## directly (it's this script's own new fg_traits_weighted table, not
@@ -2388,30 +2412,21 @@ add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKB
 ## least once against this same out_path (a sheet whose source hasn't
 ## run yet is simply skipped with a message, not an error).
 ## =================================================================
+## Ecopath_traits IS one of the 8 final target sheets - written directly
+## to the workbook (unchanged). finalize_ecopath_ecosim_summary_sheets()
+## builds whichever of Ecopath_L/Ecopath_Di/Ecosim_ts can be built from
+## the native CSVs 01_biomass.R/02_fisheries.R already wrote (see that
+## function's own header comment) - additive, run-order-independent.
 upsert_workbook_sheets(list(Ecopath_traits = fg_traits_weighted), ECOPATH_WORKBOOK_PATH)
 finalize_ecopath_ecosim_summary_sheets(out_path = ECOPATH_WORKBOOK_PATH, year_ecopath = YEAR_ECOPATH)
 
-## Re-run finalize_workbook_sheet_order() with the SAME target_order
-## 02_fisheries.R uses (kept in sync with it - see that script's own
-## call) - its own call already ran, possibly before the six summary
-## sheets above existed yet (order-independent by design, but a sheet
-## created AFTER the one finalize call that ran never gets reordered
-## by that earlier call). Safe/idempotent to call again here.
-finalize_workbook_sheet_order(
-  out_path = ECOPATH_WORKBOOK_PATH,
-  rename_map = c(FG_lookup = "FG", References = "PB_QB_References_"),
-  target_order = c(
-    "FG", "Ecopath", "Catches_Ecopath", "Catches_Ecopath_ByFleet", "Fleet_Structure", "FG_spp_Ecopath",
-    "PB_QB", "PB_QB_spp", "F_by_FG_EcopathYears", "Ecobase", "PB_QB_References_",
-    "AquaMaps_Depth_Adjustment", "FG_Density_by_Stratum", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim", "Catches_Species_Division_FG", "GFCM_Catches_by_Division", "Fleet_vs_Division_Check",
-    "Catches_ByCountryFleetSector", "STECF_FDI_Catch_by_GSA", "STECF_FDI_Effort_by_GSA", "STECF_FDI_Capacity_by_Fleet", "Effort_by_FleetType_EU3",
-    "SAU_STECF_Discard_Calibration", "GFCM_Task2_Placeholder", "GFCM_SAF_Effort_Placeholder",
-    "Unreported_Pct_by_Country", "Bycatch_Placeholder", "Fishing_Effort_by_Fleet", "STAR_RAM_Catch_CrossCheck", "DataSources_Catch",
-    "Catches_Discards_FG_ts",
-    "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB", "Ecopath_traits", "Ecosim_ts"
-  )
-)
+## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+## the intended sheets, trimmed script by script - trim the workbook
+## down to EXACTLY whichever of the 8 final target sheets exist at this
+## point in the pipeline - drops every native/intermediate sheet (all
+## CSV-only now). Safe/idempotent to call again here even if
+## 01_biomass.R/02_fisheries.R already trimmed it earlier this session.
+trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 ## =================================================================
 ## Method comparison plots - fish only, since that's the group with
@@ -2513,7 +2528,9 @@ message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
 ## citations already live in their own "Ecobase" sheet (model/year/
 ## authors columns), a different grain that doesn't merge cleanly
 ## into this species-level table.
-upsert_workbook_sheets(list(References = reference_table), ECOPATH_WORKBOOK_PATH)
+## 2026-09-17 update: native/intermediate reference table, not a final
+## target sheet - written as CSV only.
+write_native_sheets_csv(list(References = reference_table), out_dir)
 
 ## =================================================================
 ## OUTPUT 1b: METHOD_REFERENCES - which published equation/method
@@ -2599,7 +2616,9 @@ message("\nSaved: pbqb_method_references.csv (", nrow(METHOD_REFERENCES),
 ## (that sheet's own species-level FishBase provenance) so the two
 ## don't get confused - this one answers "which formula", not "which
 ## study backs this species' trait value".
-upsert_workbook_sheets(list(PBQB_Method_References = METHOD_REFERENCES), ECOPATH_WORKBOOK_PATH)
+## 2026-09-17 update: native/intermediate reference table, not a final
+## target sheet - written as CSV only.
+write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), out_dir)
 
 ## =================================================================
 ## Load the full FG reference (FGnum -> FGname) once, used both by the

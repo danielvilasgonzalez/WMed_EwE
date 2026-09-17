@@ -1,7 +1,7 @@
 ## =================================================================
 ## FISHERIES MASTER SCRIPT - ONE SELF-CONTAINED SOURCE FILE.
 ##
-## Runs the whole fisheries flow end to end. Andrea's flow (below) is
+## Runs the whole fisheries flow end to end. The flow (below) is
 ## the CONCEPTUAL order this script follows; the literal section
 ## headers further down still read as the original 10-step list
 ## (get GFCM catches -> distribute over sector/fleet -> discards ->
@@ -130,13 +130,13 @@ message("[02_fisheries.R] Region/year config in effect: TARGET_COUNTRIES = ", pa
 APPLY_UNREPORTED_ADJUSTMENT <- FALSE
 
 ## GFCM's own download is a VERSIONED folder (e.g. "FI_Regional_2025.1.0",
-## "FI_Regional_2026.1.0" as of Andrea's latest pCloud listing) - the
+## "FI_Regional_2026.1.0" as of the latest pCloud listing) - the
 ## version number bumps on its own schedule, not this script's, so
 ## hardcoding one exact folder name breaks every time GFCM re-exports.
 ## find_versioned_subdir() below looks for whichever subfolder actually
 ## has the marker file/dir in it, rather than assuming a fixed name.
 ## Two possible locations are supported, tried in this order:
-##   1) pcloud_dir/data/fisheries/GFCM/<any version folder> - Andrea's
+##   1) pcloud_dir/data/fisheries/GFCM/<any version folder> - the
 ##      current layout (moved here alongside FDI/FishMIP/SAU, Sept 2026).
 ##   2) git_dir/data/raw/<any version folder> - the older convention
 ##      (Daniel's clone), kept as a fallback so this still runs unchanged
@@ -186,7 +186,7 @@ FISHMIP_FG_CROSSWALK_PATH <- NULL   # columns: fishmip_f_group, FG_num - leave N
 ## Rousseau et al. 2024 (Scientific Data 11:260) global fishing-capacity/
 ## effort database - manual download, same convention as FDI/FishMIP/SAU
 ## (place the repo's Data/Final_DataStudyFAO_AllGears_wCode.csv here).
-## Per Andrea (2026-09): used below (a) to hindcast Spain/France/Italy's
+## (2026-09) used below (a) to hindcast Spain/France/Italy's
 ## pre-STECF_FDI_START_YEAR effort, IN PLACE OF the old FDI-ratio x
 ## SAU-hindcasted-catch method, and (b) as a second, independent effort
 ## figure alongside FishMIP nom_active for Morocco/Algeria/Tunisia (SAU
@@ -197,7 +197,7 @@ FISHMIP_FG_CROSSWALK_PATH <- NULL   # columns: fishmip_f_group, FG_num - leave N
 ## (2013-2017), Rousseau's NomEffort correlates at r=-0.21 (Spain),
 ## r=-0.01 (Italy), r=0.62 (France) - i.e. it does NOT reproduce FDI's
 ## real effort shape for 2 of the 3 countries. It is used anyway per
-## Andrea's explicit direction, ANCHORED (not trusted on its own trend)
+## the explicit direction given, ANCHORED (not trusted on its own trend)
 ## to FDI's real level via a per-country calibration factor computed
 ## from that same overlap window - see rousseau_calibration below.
 ROUSSEAU_EFFORT_PATH <- file.path(pcloud_dir, "data/fisheries/RousseauEtAl2023/Data/Final_DataStudyFAO_AllGears_wCode.csv")  # Rousseau et al. 2024 effort CSV path - confirmed on disk under this exact folder name (2026-09)
@@ -217,7 +217,7 @@ SAU_DIR <- file.path(pcloud_dir, "data/fisheries/SAU")  # folder of manually-dow
 SAU_RAW_CSV <- file.path(pcloud_dir, "data/fisheries/sau_raw_combined_west_med.csv")  # legacy single-file fallback, kept only for AUTO_DOWNLOAD_SAU's own cache
 AUTO_DOWNLOAD_SAU <- FALSE          # SAU's v1 API is unconfirmed as still live - manually download into SAU_DIR instead (see comment above)
 
-## Morocco/Algeria real local data (2026-09, per Andrea's uploaded workbook
+## Morocco/Algeria real local data (2026-09, per the uploaded workbook
 ## "Mediterranean_Morocco_Algeria_Fisheries_Data_1.xlsx") - place the 8
 ## non-README sheets here as individual CSVs, one file per sheet, named
 ## exactly after the sheet (e.g. "MAR_Catch_by_Species.csv"). Fills the
@@ -976,7 +976,7 @@ message("[Fleet split] sau_fleet_prop_by_year: ", nrow(sau_fleet_prop_by_year), 
 ## landings, DISCARDS, and effort (days x capacity) by gear/metier x
 ## GSA x quarter x species, for Spain/France/Italy ONLY (Morocco/
 ## Algeria/Tunisia aren't EU Member States and don't report into FDI).
-## Per Andrea's flow: FDI is the PRIMARY fleet source for these 3
+## FDI is the PRIMARY fleet source for these 3
 ## countries from 2014 onward (its own trusted coverage window); SAU fills the
 ## gaps - years before 2014, and any Country x FG STECF doesn't cover
 ## (see the fleet_prop_final blend and the hindcast section below, and
@@ -986,7 +986,7 @@ message("[Fleet split] sau_fleet_prop_by_year: ", nrow(sau_fleet_prop_by_year), 
 ## catches, capacity, biological" bulk file from https://stecf.ec.
 ## europa.eu/data-dissemination/fdi_en, unzip it, and point
 ## STECF_FDI_DIR at the unzipped folder. Real structure (confirmed
-## against Andrea's own download, Sept 2026) is five subfolders, NOT
+## against the real download, Sept 2026) is five subfolders, NOT
 ## one single catch table:
 ##   Catches/FDI Catches by country<YEAR>.csv   - one file per year,
 ##     2013-2024, country/gear/metier/GSA-resolved, WITH BOTH
@@ -1012,7 +1012,7 @@ message("[Fleet split] sau_fleet_prop_by_year: ", nrow(sau_fleet_prop_by_year), 
 ## Entirely optional - skipped with a message, fleet_prop_final falls
 ## back to SAU/default everywhere, if STECF_FDI_DIR isn't there yet.
 ## =================================================================
-## Same versioned-subfolder problem as GFCM above - Andrea's real
+## Same versioned-subfolder problem as GFCM above - the real
 ## download unzips into pcloud_dir/data/fisheries/FDI/<year>_Effort-
 ## landings-catches-capacity-biological/ (e.g. "2025_Effort-landings-
 ## catches-capacity-biological"), not directly into FDI/ itself, and
@@ -1030,7 +1030,7 @@ if (is.na(STECF_FDI_DIR)) {
 } else {
   message("\n[Paths] STECF_FDI_DIR resolved to: '", STECF_FDI_DIR, "'.")
 }
-## 2013 is FDI's first reporting year and, per Andrea's own review, its
+## 2013 is FDI's first reporting year and, its
 ## data quality that year isn't trustworthy - member states were still
 ## ramping up their DCF submissions. Bumping this to 2014 means every
 ## downstream mechanism keyed off it (the STECF/SAU tier split, the
@@ -1047,7 +1047,7 @@ STECF_FDI_START_YEAR <- 2014   # FDI's own TRUSTED coverage window starts here -
 ## kW-days-per-vessel figure to correct FROM.
 TECH_CREEP_BASE_YEAR <- STECF_FDI_START_YEAR  # reference year for the technology-creep correction, tied to FDI's start year
 
-## Per Andrea: the creep % should (1) vary across countries - EU vs
+## Requirement: the creep % should (1) vary across countries - EU vs
 ## non-EU, not every country individually - and (2) vary over time
 ## rather than being one flat rate for the whole series.
 ##
@@ -1065,7 +1065,7 @@ TECH_CREEP_COUNTRY_MULTIPLIER <- data.table(
   creep_multiplier = c(1, 1, 1, 0.7, 0.7, 0.7)
 )
 
-## (1b) Sector/gear differential, per Andrea (2026-09): creep should also
+## (1b) Sector/gear differential, creep should also
 ## differ between artisanal and industrial (mechanized) gears, since
 ## engine/electronics/net-material upgrades reach large industrial vessels
 ## (trawlers, purse seiners) faster than small artisanal boats. As with the
@@ -1087,7 +1087,7 @@ TECH_CREEP_SECTOR_MULTIPLIER <- data.table(
 )
 
 ## (2) Time- AND gear-varying rate, kept inside the realistic 0-5%/year
-## creep range Andrea named (the earlier draft re-evaluated Palomares &
+## creep range specified (the earlier draft re-evaluated Palomares &
 ## Pauly's duration-average formula at each year's own short elapsed
 ## distance from the base year, which spiked to 13.8%/year right at the
 ## start - correct algebraically but not a realistic ANNUAL rate, since
@@ -1097,7 +1097,7 @@ TECH_CREEP_SECTOR_MULTIPLIER <- data.table(
 ## calendar year between the base year and Y, of (1 + that year's own
 ## period/gear rate/100)) - no formula re-evaluation, no spikes, each
 ## step is just "X% more than last year":
-##  - 1994-2013 (pre-FDI window), GEAR-SPECIFIC, per Andrea (2026-09) -
+##  - 1994-2013 (pre-FDI window), GEAR-SPECIFIC, (2026-09 update) -
 ##    both period-rates now tied to real Mediterranean literature rather
 ##    than being assumption-only placeholders:
 ##      * bottom-trawl-type gear (FDI's own "DTS" fishing-technology
@@ -1396,7 +1396,7 @@ STECF_VESSEL_LENGTH_ARTISANAL <- c("VL0006", "VL0612")  # <12m - EU small-scale 
 ## seiners, TBB beam trawlers, PMP pelagic trawlers/purse seiners, HOK
 ## hook gears, DFN drift/fixed netters, FPO pots/traps, DRB dredgers, PGP/
 ## PGO polyvalent). THIS MAPPING IS A BEST GUESS from the standard DCF code
-## list, NOT confirmed against Andrea's real fishing_tech values the way
+## list, NOT confirmed against the real fishing_tech values the way
 ## STECF_GEAR_TO_FLEETTYPE was - the Capacity block below prints every
 ## fishing_tech value it actually finds; check that against this table
 ## before trusting the FleetType assignment, same caution as everywhere
@@ -1811,7 +1811,7 @@ if (nrow(stecf_fdi_effort_by_gsa) > 0 && nrow(stecf_fdi_catch_by_gsa) > 0 && "Ef
 ## --- Rousseau et al. 2024 effort, loaded once and used two ways below:
 ## (a) calibrated pre-STECF_FDI_START_YEAR hindcast for Spain/France/
 ## Italy (replacing the FDI-ratio x SAU-catch method as primary, per
-## Andrea's direction), and (b) a second effort figure alongside FishMIP
+## that direction), and (b) a second effort figure alongside FishMIP
 ## nom_active for Morocco/Algeria/Tunisia (see ROUSSEAU_EFFORT_PATH's own
 ## comment above for the validation caveat). Country x Year only (not
 ## Country x Gear x Year) - Rousseau's own Gear scheme doesn't map onto
@@ -1860,7 +1860,7 @@ if (nrow(rousseau_effort_cy) > 0 && nrow(stecf_fdi_effort_by_gsa) > 0 && "Effort
 
 ## =================================================================
 ## # assign a percentage of total catch to discards
-## Per Andrea (2026-09): discard data should carry BOTH a time
+## (2026-09) discard data should carry BOTH a time
 ## dimension (proportion over time) and a species/FG dimension
 ## (proportion by FG) - this used to collapse straight to ONE flat
 ## ratio per FG_num across the WHOLE study period, throwing away the
@@ -1932,7 +1932,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
     ## model FG_num - rather than dropping the discard estimate entirely,
     ## fall back to a transparent name-keyword match against full_fg_list's
     ## own FG_name: e.g. FishMIP's "Demersals" f_group keyword-matches every
-    ## model FG whose FG_name contains "demersal". Per Andrea's instruction
+    ## model FG whose FG_name contains "demersal". Per the instruction
     ## (2026-09): "assign to FG closest, and if targeted by multiple FG in
     ## the model then split it" - here "closest" = shares a keyword with the
     ## FishMIP category name, and "split" = the SAME discard ratio is applied
@@ -1983,7 +1983,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
             "MISMATCHED (map to MORE than one model FG) - resolving with the gear-plausibility filter below",
             " before falling back to an even name-only split.")
     
-    ## AMBIGUOUS/MISMATCH FILTER (2026-09, per Andrea: "split them into FG
+    ## AMBIGUOUS/MISMATCH FILTER (2026-09, "split them into FG
     ## that could belong to that group, depending on the fleet and the
     ## name"). For every fgroup that name-matched MORE than one model FG,
     ## narrow the candidates using which gear(s) actually reported that
@@ -2031,7 +2031,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
       }))
       n_gear_filtered <- sum(table(closest_fg_matches$fgroup) > 1) - sum(table(kept_rows$fgroup) > 1)  # how many ambiguous fgroups got narrowed to a single candidate
       closest_fg_matches <- rbindlist(list(closest_fg_matches[!fgroup %in% ambiguous_fgroups], kept_rows), use.names = TRUE)
-      message("[Discards] gear-plausibility filter (per Andrea: split by fleet AND name): of ", length(ambiguous_fgroups),
+      message("[Discards] gear-plausibility filter (split by fleet AND name): of ", length(ambiguous_fgroups),
               " ambiguous/mismatched f_group(s), ", n_gear_filtered, " narrowed to exactly one model FG using",
               " SAU's own real gear x FG catch as a plausibility check; the rest either kept multiple gear-",
               " plausible candidates or had no usable gear crosswalk (kept unfiltered, same as before this fix).")
@@ -2076,7 +2076,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
 
 ## =================================================================
 ## GFCM catch-MAGNITUDE calibration against STECF FDI (2026-09, per
-## Andrea's instruction: "FDI is the most trustable dataset ... when
+## the instruction: "FDI is the most trustable dataset ... when
 ## using GFCM data to fill in gaps on catch for 1994-2013, GFCM should
 ## be scaled to match FDI magnitude, and the same for the other data").
 ## Same overlap-year calibration-factor pattern as fleet_calibration/
@@ -2189,7 +2189,7 @@ if (nrow(stecf_discard_ratio) > 0) {
 }
 
 ## =================================================================
-## Morocco/Algeria real local catch data (2026-09, per Andrea's uploaded
+## Morocco/Algeria real local catch data (2026-09, per the uploaded
 ## workbook - see MOROCCO_ALGERIA_DIR comment near the top of this
 ## script). Belhabib et al.'s reconstructed catch-by-taxon-group tables
 ## (Morocco: Belhabib, Harper, Zeller & Pauly 2013, Table A2a;
@@ -2339,7 +2339,7 @@ message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Y
 
 ## =================================================================
 ## # GFCM STAR + RAM Legacy stock-assessment catch/landings CROSS-CHECK
-## Per Andrea (2026-09), using her own combine_STAR_RAMlegacy.R /
+## (2026-09), using the combine_STAR_RAMlegacy.R /
 ## analysis_STAR.R scripts (GFCM STAR Power BI scrape + RAM Legacy stock
 ## database) - these give a SECOND, independent catch/landings series
 ## for the subset of species that actually have a real stock assessment.
@@ -2362,7 +2362,7 @@ message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Y
 ## chance of resolving to the right FG rather than being silently
 ## dropped.
 ##
-## Expects Andrea's own combine_STAR_RAMlegacy.R output,
+## Expects the combine_STAR_RAMlegacy.R output,
 ## combined_medbs_star_ramlegacy.csv (source/stock_key/species/
 ## common_name/gsa/subregion/year/biomass/catches/landings/
 ## landings_flag/... - see that script's own header), placed under
@@ -2382,7 +2382,7 @@ star_ram_combined <- if (file.exists(star_ram_path)) {
 
 star_catch_by_fg <- data.table()
 if (nrow(star_ram_combined) > 0) {
-  ## Restrict to the West Med subregion (same field/convention Andrea's own
+  ## Restrict to the West Med subregion (same field/convention
   ## analysis_STAR.R already computes and combine_STAR_RAMlegacy.R already
   ## filters on: str_detect(subregion, "Western Mediterranean")) - GFCM
   ## Divisions 37.1.1-37.1.3 / GSA 1-11, matching this whole pipeline's
@@ -2529,7 +2529,7 @@ if (isTRUE(APPLY_UNREPORTED_ADJUSTMENT)) {
 ## figures are found; anything left unfilled stays explicitly "not
 ## estimated" rather than defaulting to zero.
 ##
-## Seeded (2026-09, per Andrea's request to look for real data) with the
+## Seeded (2026-09, to look for real data) with the
 ## one quantitative, gear-resolved figure found so far, for sharks & rays
 ## in EU Mediterranean fisheries: Bargnesi et al. 2024 (Sustainability,
 ## "Assessing the relevance of sharks and rays for Mediterranean EU
@@ -2583,7 +2583,7 @@ message("\n[Bycatch] ", sum(!is.na(bycatch_placeholder$bycatch_rate)), " of ", n
 ## SAU and FishMIP, none carries a recreational-effort variable of any
 ## kind (days, boats, anglers) for these 6 countries.
 ##
-## Per Andrea (2026-09): default every Country x Year cell to 1 (a
+## (2026-09) default every Country x Year cell to 1 (a
 ## neutral, unscaled index - "no adjustment" - rather than leaving it
 ## NA), and let a specific fleet/year be overridden by hand wherever a
 ## real or expert figure becomes available. RECREATIONAL_EFFORT_MANUAL
@@ -2652,7 +2652,7 @@ message("\n[GFCM Task 2] ", sum(!is.na(gfcm_task2_placeholder$Catch_t)), " of ",
 
 ## =================================================================
 ## Assemble the fleet-level table (Country x FG x Sector x FleetType x
-## Year). Per Andrea's flow: STECF FDI's own PER-YEAR gear/metier x GSA
+## Year). STECF FDI's own PER-YEAR gear/metier x GSA
 ## split is used for Spain/France/Italy from 2014 onward wherever FDI
 ## actually covers that Country x FG x Year; SAU/default's time-
 ## invariant split (fleet_prop, built above) fills every other cell -
@@ -2823,7 +2823,7 @@ if (nrow(stecf_effort_catch_ratio) > 0 && nrow(catch_by_fleet_total_pre2013) > 0
           " of the up-to-3 EU countries had a days-per-tonne ratio to apply.")
 }
 
-## PRIMARY pre-2014 method (per Andrea, 2026-09): Rousseau's Country x
+## PRIMARY pre-2014 method (2026-09 update): Rousseau's Country x
 ## Year effort, calibrated to FDI's real level (rousseau_calibration
 ## above), distributed across FleetTypes using each FleetType's own
 ## share of catch_by_fleet_total_pre2013 - a country-year total split
@@ -2870,7 +2870,7 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
   ## Effort_total_kW_fishing_days (kW x days actually fishing, not just at
   ## sea) is FDI's own capacity-weighted fishing-power total for the whole
   ## fleet-stratum - summed here alongside plain days so the per-vessel kW-
-  ## days metric below (Andrea's "effort should be KW days per boat") can be
+  ## days metric below (per spec, "effort should be KW days per boat") can be
   ## built without re-deriving it from Capacity x Effort separately.
   kwdays_col <- intersect(c("Effort_total_kW_fishing_days", "Effort_total_kW_days_at_sea"),
                           names(stecf_fdi_effort_by_gsa))[1]  # find whichever kW-days column is actually present
@@ -2917,7 +2917,7 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
             " Capacity has no pre-2014 SAU counterpart, so pre-2014 rows keep NA for all of these).")
   }
   
-  ## --- PRIMARY EFFORT metric, per Andrea's own spec: EFFORT = kW x days x
+  ## --- PRIMARY EFFORT metric, EFFORT = kW x days x
   ## n_boats - i.e. capacity-weighted fishing power, aggregated across the
   ## WHOLE fleet (not divided down to a per-vessel figure). This is exactly
   ## `Effort_kWdays_total` above (FDI's own `total_kW_fishing_days`,
@@ -3065,6 +3065,36 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   message("[F] F_by_FG (", paste(range(YEAR_ECOPATH), collapse = "-"), " average): ", nrow(f_by_fg), " FG(s).",
           " F undefined (NA/Inf) where Catch_t_avg is 0 (no GFCM catch matched to that FG for those years)",
           " or Biomass_density_avg is 0/NA (FG not observed in the survey).")
+  fwrite(f_by_fg, file.path(out_dir, "F_by_fg.csv"))
+  
+  ## Species-resolved view of the same F. GFCM catch (catches_discards_fg)
+  ## is only ever available at FG resolution - there is no species-level
+  ## catch anywhere in this pipeline to split further - so F itself is
+  ## NOT independently estimated per species here; it's the SAME FG-level
+  ## F value repeated for every species in that FG (the standard EwE
+  ## simplifying assumption: catch is taken from an FG's species in
+  ## proportion to their share of that FG's biomass, i.e. uniform fishing
+  ## pressure within the FG). What genuinely differs per species is its
+  ## own biomass density, its resulting share of the FG's total biomass
+  ## (prop_sp_fg - the same "proportion of biomass within FG" 01_biomass.R
+  ## computes for FG_spp_Ecopath), and the per-species catch density that
+  ## falls out of applying the shared F to that species' own biomass.
+  species_biomass_avg <- species_density[Year %in% YEAR_ECOPATH,
+                                         .(Species_density_avg = mean(mean_density, na.rm = TRUE)), by = .(FG_num, FG_name, ScientificName)]  # average each species' own density over the Ecopath years
+  f_by_species_fg <- merge(species_biomass_avg,
+                           f_by_fg[, .(FG_num, FG_name, Biomass_density_avg, F)],
+                           by = c("FG_num", "FG_name"), all.x = TRUE)  # attach the FG's biomass total and F to every one of its species
+  f_by_species_fg[, `:=`(
+    prop_sp_fg = ifelse(!is.na(Biomass_density_avg) & Biomass_density_avg > 0, Species_density_avg / Biomass_density_avg, NA_real_),  # this species' share of its FG's biomass
+    Species_catch_density_avg = F * Species_density_avg  # this species' implied catch density under the uniform-F-within-FG assumption
+  )]
+  setnames(f_by_species_fg, "ScientificName", "Species")
+  setcolorder(f_by_species_fg, c("FG_num", "FG_name", "Species", "Species_density_avg", "Biomass_density_avg",
+                                 "prop_sp_fg", "F", "Species_catch_density_avg"))
+  setorder(f_by_species_fg, FG_num, -prop_sp_fg)
+  fwrite(f_by_species_fg, file.path(out_dir, "F_by_species_fg.csv"))
+  message("[F] F_by_species_fg.csv written: ", nrow(f_by_species_fg), " Species x FG row(s) (F is the FG-level",
+          " value repeated per species - see comment above; prop_sp_fg is each species' own share of its FG's biomass).")
 }
 
 ## =================================================================
@@ -3096,7 +3126,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   ## dropped entirely here - Fleet was built from country x gear alone,
   ## so Morocco/Algeria/Tunisia's artisanal effort was never separated
   ## out, just silently mixed into whichever gear bucket it fell under.
-  ## Andrea flagged this as a real gap (2026-09) - fixed by carrying
+  ## This was flagged as a real gap (2026-09) - fixed by carrying
   ## `sector` into the Fleet label, same convention as FLEET_REGISTER's
   ## own Sector field for the catch side.
   effort[, Fleet := paste0(country, " - ", gear_grp, " - ", sector)]  # build the Fleet label, now including FishMIP's own Artisanal/Industrial split
@@ -3148,7 +3178,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   ## Rousseau NomEffort added as a SECOND, independent effort figure per
   ## Country x Year (not replacing FishMIP - SAU itself has no effort
   ## variable for these "other" non-EU countries, so Rousseau is the only
-  ## candidate second source here; per Andrea's direction to bring
+  ## candidate second source here; to bring
   ## Rousseau in for the non-EU side too). Country x Year only, joined
   ## onto every Fleet row for that country x year so it reads alongside
   ## FishMIP's fleet-level breakdown - NOT split by gear/sector itself
@@ -3170,7 +3200,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
 }
 
 ## =================================================================
-## Algeria real trawl effort (2026-09, per Andrea's uploaded workbook -
+## Algeria real trawl effort (2026-09, per the uploaded workbook -
 ## see MOROCCO_ALGERIA_DIR comment near the top of this script).
 ## Belhabib, Pauly, Harper & Zeller (2012), Table 5: REAL, MEASURED
 ## annual trawl-fleet hours-at-sea, 1994-2010 - explicitly flagged in the
@@ -3243,7 +3273,7 @@ if (nrow(dza_effort_trawl) > 0 && nrow(effort_by_fleet) > 0) {
 
 ## =================================================================
 ## Rousseau et al. (2024) independent fleet-effort database, Morocco/
-## Algeria (2026-09, per Andrea's uploaded workbook). Written out as a
+## Algeria (2026-09, per the uploaded workbook). Written out as a
 ## cross-check series only - NOT wired into TECH_CREEP_COUNTRY_MULTIPLIER
 ## or nom_active_kWdays above - because its own "Effective effort,
 ## linear-creep-adjusted (kW-days)" column is wildly implausible as
@@ -3251,7 +3281,7 @@ if (nrow(dza_effort_trawl) > 0 && nrow(effort_by_fleet) > 0) {
 ## for the SAME year, which is not achievable by any realistic annual
 ## creep rate compounded over a 1994-2010 window - this smells like a
 ## units/compounding error in how that column was originally computed,
-## not a real technology-creep effect). Andrea/Daniel should sanity-
+## not a real technology-creep effect). the numbers should be sanity-
 ## check rousseau_effort_review.csv against the source repository
 ## directly before using this column for anything; the "Nominal effort"
 ## and "Active-vessel effort" columns look internally consistent and are
@@ -3276,7 +3306,7 @@ if (nrow(rousseau_mar) > 0 || nrow(rousseau_dza) > 0) {
     if (nrow(rousseau_mar) > 0) rousseau_mar[, Country := "Morocco (NATIONWIDE - see caveat above, not Med-only)"] else NULL,
     if (nrow(rousseau_dza) > 0) rousseau_dza[, Country := "Algeria (Mediterranean-only, no caveat)"] else NULL
   ), use.names = TRUE, fill = TRUE)
-  rousseau_effort_review[, implied_creep_ratio := `Effective effort, linear-creep-adjusted (kW-days)` / `Nominal effort (kW-days)`]  # flagged as implausible, see comment above - kept for Andrea/Daniel to inspect directly
+  rousseau_effort_review[, implied_creep_ratio := `Effective effort, linear-creep-adjusted (kW-days)` / `Nominal effort (kW-days)`]  # flagged as implausible, see comment above - kept for manual inspection
   fwrite(rousseau_effort_review, file.path(out_dir, "rousseau_effort_review.csv"))
   message("\n[Morocco/Algeria effort] Rousseau et al. (2024) effort database written to rousseau_effort_review.csv",
           " (", nrow(rousseau_effort_review), " Year x Sector x Gear row(s)) as a CROSS-CHECK only - its own",
@@ -3369,7 +3399,7 @@ if (nrow(stecf_fdi_capacity_by_fleet) > 0) sheets_to_write$STECF_FDI_Capacity_by
 if (nrow(discard_calibration) > 0) sheets_to_write$SAU_STECF_Discard_Calibration <- discard_calibration  # add this sheet only if it has data
 if (nrow(star_catch_by_fg) > 0) sheets_to_write$STAR_RAM_Catch_CrossCheck <- catches_discards_fg[!is.na(star_catches_t), .(Year, FG_num, FG_name, Catch_t, star_catches_t, star_landings_t, star_catch_pct_diff, star_n_stocks, star_sources)]  # add this sheet only if the STAR/RAM cross-check found data
 
-## Written here as its own sheet (2026-09-16, per Andrea) IN ADDITION
+## Written here as its own sheet (2026-09-16) IN ADDITION
 ## to its existing CSV (catches_and_discards_by_FG_timeseries_*.csv,
 ## further up) - this is the clean Year/FG_num/FG_name/Landings_t/
 ## Catch_t/Discard_t table finalize_ecopath_ecosim_summary_sheets()
@@ -3380,35 +3410,28 @@ if (nrow(star_catch_by_fg) > 0) sheets_to_write$STAR_RAM_Catch_CrossCheck <- cat
 ## programmatically, not opened as an Ecopath forcing function itself.
 sheets_to_write$Catches_Discards_FG_ts <- catches_discards_fg[, .(Year, FG_num, FG_name, Landings_t, Catch_t, Discard_t)]
 
-upsert_workbook_sheets(sheets_to_write, ECOPATH_WORKBOOK_PATH)  # write/replace all these sheets in the workbook
+## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+## the intended sheets, trimmed script by script; other sheets should
+## be saved as csv files, not kept in the final output excel file.
+## Every table above (native/intermediate - none of these are among the
+## 8 final target sheets) is written as CSV only, never to the workbook.
+write_native_sheets_csv(sheets_to_write, out_dir)  # write/replace all these tables as CSV, never in the workbook
 
-## Fix sheet order/names last, same order-independent convention every
-## other script that touches this workbook uses (see this function's
-## own header comment in lib_survey_fg_density_functions.R) - safe to
-## run here even if Biomass/PB_QB haven't run yet this session; their
-## target sheets are simply skipped with a message until they do.
-finalize_workbook_sheet_order(  # reorder/rename the workbook's sheets into their final layout
-  out_path = ECOPATH_WORKBOOK_PATH,
-  rename_map = c(FG_lookup = "FG", References = "PB_QB_References_"),
-  target_order = c(
-    "FG", "Ecopath", "Catches_Ecopath", "Catches_Ecopath_ByFleet", "Fleet_Structure", "FG_spp_Ecopath",
-    "PB_QB", "PB_QB_spp", "F_by_FG_EcopathYears", "Ecobase", "PB_QB_References_",
-    "AquaMaps_Depth_Adjustment", "FG_Density_by_Stratum", "traits_ewe", "Ecosim", "FG_spp_Ecosim",
-    "Catches_Ecosim", "Catches_Species_Division_FG", "GFCM_Catches_by_Division", "Fleet_vs_Division_Check",
-    "Catches_ByCountryFleetSector", "STECF_FDI_Catch_by_GSA", "STECF_FDI_Effort_by_GSA", "STECF_FDI_Capacity_by_Fleet", "Effort_by_FleetType_EU3",
-    "SAU_STECF_Discard_Calibration", "GFCM_Task2_Placeholder", "GFCM_SAF_Effort_Placeholder",
-    "Unreported_Pct_by_Country", "Bycatch_Placeholder", "Fishing_Effort_by_Fleet", "STAR_RAM_Catch_CrossCheck", "DataSources_Catch",
-    "Catches_Discards_FG_ts",
-    ## Six-sheet consolidated summary (added 2026-09-16, per Andrea) -
-    ## listed here even though most of them don't exist until
-    ## 03_pbqb-traits.R runs (finalize_ecopath_ecosim_summary_sheets(),
-    ## called at its end) - target_order entries for sheets not yet in
-    ## the workbook are simply skipped (see this function's own header
-    ## comment), so this is safe to list up front rather than needing
-    ## a second finalize_workbook_sheet_order() call after 03 runs.
-    "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB", "Ecopath_traits", "Ecosim_ts"
-  )
+## Build whichever of the final summary sheets (Ecopath_L/Ecopath_Di,
+## from Catches_Discards_FG_ts.csv just written above; Ecosim_ts, if
+## Ecosim.csv/Catches_Ecosim.csv/Fishing_Effort_by_Fleet.csv already
+## exist) can be built from what's on disk so far, then trim the
+## workbook down to EXACTLY the final target sheets that exist at this
+## point in the pipeline - never any native/intermediate sheet, since
+## those are all CSV-only now. Safe to run here even if Biomass/PB_QB
+## haven't run yet this session; whichever isn't ready yet is simply
+## skipped with a message until it is. Add this same pair of calls to
+## 03_pbqb-traits.R and 04_diets.R too.
+finalize_ecopath_ecosim_summary_sheets(
+  out_path      = ECOPATH_WORKBOOK_PATH,
+  year_ecopath  = YEAR_ECOPATH
 )
+trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 message("\n=== Done (02_fisheries.R) === Wrote ", length(sheets_to_write), " sheet(s) directly, plus",
         " Catches_Ecopath/Catches_Ecosim earlier: ", paste(names(sheets_to_write), collapse = ", "),

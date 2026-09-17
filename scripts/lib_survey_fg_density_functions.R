@@ -121,7 +121,7 @@ library(sf)
 ## area filters, etc.) the same way.
 
 ## =================================================================
-## resolve_pcloud_file() - added 2026-09-16, per Andrea: pCloud data
+## resolve_pcloud_file() - added 2026-09-16, pCloud data
 ## keeps getting reorganized into "complementary" subfolders (a file
 ## that used to sit directly under pcloud_dir/data/ moves one or two
 ## levels deeper), which breaks every hardcoded `paste0(pcloud_dir,
@@ -388,11 +388,69 @@ fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
                          Order = order, Class = class, Phylum = phylum)]
 }
 
+## =================================================================
+## fetch_taxonomy_metaweb(): a THIRD taxonomy source, added 2026-09-17
+## for 04_diets.R - not an API call at all. Marta Coll's metaweb
+## workbook's own "Taxonomic_codes" tab already carries a full WoRMS-
+## derived classification (Kingdom -> ... -> Species, 3350 rows in the
+## template) for every predator/prey taxon the metaweb itself uses, so
+## for any name that came FROM that same tab (every "needed_species" in
+## 04_diets.R did, via resolve_codes()) this is a free, instant, no-
+## network lookup - not a fuzzy/fallback match, an exact one, since
+## it's the very same table the name was resolved from in the first
+## place. Also useful for a reference-file species (e.g. from
+## FG_WMed.xlsx) that HAPPENS to also appear in this tab, on a best-
+## effort case-insensitive basis - those aren't guaranteed to match.
+##
+## Same 6-column output contract as fetch_taxonomy_worms()/
+## fetch_taxonomy_fishbase() (ScientificName/Genus/Family/Order/Class/
+## Phylum) so it can be dropped into the same rank_levels-driven
+## exclusive/majority-vote fallback logic used elsewhere in this
+## project, just sourced locally instead of from an external API.
+##
+## tax_codes: the data.table read from Taxonomic_codes (must have
+## valid_name, Old_name, Genus, Family, Order, Class, Phylum columns -
+## exactly what read_metaweb()'s $tax_codes already is in 04_diets.R).
+## Matching is case-insensitive against valid_name first (the name
+## resolve_codes() actually returns), then Old_name (covers a
+## reference-file species spelled under an old/synonym name). Where a
+## name has more than one row in tax_codes (185 in the template - a
+## code's old vs. current WoRMS status can duplicate a name), the row
+## with WORMS_status == "accepted" wins if there is one, else the first
+## row - never an arbitrary/unstable pick left to match()'s default.
+## =================================================================
+fetch_taxonomy_metaweb <- function(species_names, tax_codes) {
+  rank_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  missing_cols <- setdiff(c("valid_name", "Old_name", rank_cols), names(tax_codes))
+  if (length(missing_cols) > 0) {
+    stop("fetch_taxonomy_metaweb(): tax_codes is missing expected column(s): ", paste(missing_cols, collapse = ", "),
+         " - pass the Taxonomic_codes sheet's own data.table (read_metaweb()$tax_codes), not something else.")
+  }
+  tc <- as.data.table(tax_codes)
+  tc[, is_accepted := WORMS_status == "accepted" & !is.na(WORMS_status)]
+  setorder(tc, -is_accepted)
+  
+  by_valid <- unique(tc, by = c("valid_name"))[, .(name_lower = tolower(valid_name), Genus, Family, Order, Class, Phylum)]
+  by_old   <- unique(tc, by = c("Old_name"))[, .(name_lower = tolower(Old_name), Genus, Family, Order, Class, Phylum)]
+  
+  query_lower <- tolower(species_names)
+  match_idx <- match(query_lower, by_valid$name_lower)
+  out <- by_valid[match_idx]
+  still_missing <- is.na(match_idx)
+  if (any(still_missing)) {
+    old_idx <- match(query_lower[still_missing], by_old$name_lower)
+    out[still_missing] <- by_old[old_idx]
+  }
+  out[, ScientificName := species_names]
+  setcolorder(out, c("ScientificName", rank_cols))
+  out[]
+}
+
 ## fetch_taxonomy_fishbase(): same output contract as
 ## fetch_taxonomy_worms() (ScientificName/Genus/Family/Order/Class/
 ## Phylum), but sourced from FishBase (fish) + SeaLifeBase (everything
 ## else - invertebrates, algae, etc.) via rfishbase::load_taxa(),
-## instead of WoRMS. Made the project's default per Andrea's
+## instead of WoRMS. Made the project's default per the
 ## instruction (2026-09) to keep taxonomy consistent with 04_pbqb_calc.R,
 ## which already standardized on FishBase/SeaLifeBase (via rfishbase)
 ## rather than WoRMS. load_taxa() (not species()) is used deliberately -
@@ -442,35 +500,67 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
     }
     data.table()
   }
-  ## Single-token queries ("Alloteuthis", or whatever's left of a
-  ## "Genus spp."/"Genus sp." record once fallback_match_fg_by_taxonomy()
-  ## strips that marker before calling here) are never going to equal
-  ## anything in the Species column - Species is always "Genus species" -
-  ## so they'd come back "not found" even though FishBase/SeaLifeBase
-  ## almost certainly HAS that genus. Matched against the Genus column
-  ## instead, below, using any one row of that genus (every species in a
-  ## genus shares the same Family/Order/Class/Phylum).
-  bare_names <- species_names[!grepl("\\s", species_names)]
-  
+  ## Not every query is a clean "Genus species" binomial that can equal
+  ## something in the Species column directly:
+  ##   - a bare genus ("Alloteuthis", or whatever's left of a "Genus
+  ##     spp."/"Genus sp." record once fallback_match_fg_by_taxonomy()
+  ##     strips that marker before calling here) has no species epithet
+  ##     at all;
+  ##   - a trinomial/subspecies name ("Astropecten irregularis
+  ##     pentacanthus") has ONE MORE word than Species ever does (always
+  ##     just "Genus species", never "Genus species subspecies").
+  ## Either way the exact Species match below will always miss, even
+  ## though FishBase/SeaLifeBase almost certainly has the genus (and
+  ## often the binomial) itself. Handled per-server in three tiers,
+  ## most specific first, so a name only falls through to a coarser
+  ## match when the more specific one genuinely isn't there:
+  ##   1. exact Species match (a normal, fully-resolved binomial)
+  ##   2. first-two-words match against Species (recovers a trinomial by
+  ##      dropping its subspecies word - "Astropecten irregularis
+  ##      pentacanthus" matches FishBase's "Astropecten irregularis" row)
+  ##   3. first-word match against Genus (recovers a bare genus, or
+  ##      anything tier 1/2 still missed, using any one row of that
+  ##      genus - every species in it shares the same Family/Order/
+  ##      Class/Phylum, so genus-level taxonomy is still real information
+  ##      even without a species-level hit)
   results <- rbindlist(lapply(c("fishbase", "sealifebase"), function(server) {
     tax <- fetch_one_server(server)
     if (nrow(tax) == 0) return(NULL)
     keep_cols <- intersect(c("Species", "Genus", "Family", "Order", "Class", "Phylum"), names(tax))
+    
     species_hits <- tax[Species %in% species_names, ..keep_cols]
     for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), keep_cols)) species_hits[, (missing_col) := NA_character_]
     setnames(species_hits, "Species", "ScientificName")
+    still_missing_1 <- setdiff(species_names, species_hits$ScientificName)
     
-    genus_hits <- data.table()
-    if (length(bare_names) > 0 && "Genus" %in% keep_cols) {
-      genus_cols <- setdiff(keep_cols, "Species")
-      genus_rows <- unique(tax[Genus %in% bare_names, ..genus_cols], by = "Genus")
-      if (nrow(genus_rows) > 0) {
-        genus_hits <- copy(genus_rows)
-        genus_hits[, ScientificName := Genus]
-        for (missing_col in setdiff(c("Genus", "Family", "Order", "Class", "Phylum"), names(genus_hits))) genus_hits[, (missing_col) := NA_character_]
+    first_n_words <- function(x, n) sub(paste0("^((?:\\S+\\s+){", n - 1, "}\\S+).*$"), "\\1", x)
+    
+    binomial_hits <- data.table()
+    if (length(still_missing_1) > 0 && "Species" %in% names(tax)) {
+      query_binomial <- first_n_words(still_missing_1, 2)
+      match_idx <- match(query_binomial, tax$Species)
+      hit_rows <- !is.na(match_idx)
+      if (any(hit_rows)) {
+        binomial_hits <- tax[match_idx[hit_rows], ..keep_cols]
+        binomial_hits[, ScientificName := still_missing_1[hit_rows]]
+        binomial_hits[, Species := NULL]
       }
     }
-    rbindlist(list(species_hits, genus_hits), fill = TRUE)
+    still_missing_2 <- setdiff(still_missing_1, if (nrow(binomial_hits) > 0) binomial_hits$ScientificName else character(0))
+    
+    genus_hits <- data.table()
+    if (length(still_missing_2) > 0 && "Genus" %in% keep_cols) {
+      query_genus <- first_n_words(still_missing_2, 1)
+      genus_cols <- setdiff(keep_cols, "Species")
+      genus_lookup <- unique(tax[, ..genus_cols], by = "Genus")
+      match_idx <- match(query_genus, genus_lookup$Genus)
+      hit_rows <- !is.na(match_idx)
+      if (any(hit_rows)) {
+        genus_hits <- genus_lookup[match_idx[hit_rows]]
+        genus_hits[, ScientificName := still_missing_2[hit_rows]]
+      }
+    }
+    rbindlist(list(species_hits, binomial_hits, genus_hits), fill = TRUE)
   }), fill = TRUE)
   not_found <- data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
                           Order = NA_character_, Class = NA_character_, Phylum = NA_character_)
@@ -567,14 +657,30 @@ fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
   out
 }
 
-fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_path = NULL) {
-  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names, cache_path = cache_path))
+## worms_cache_path: separate cache file for the WoRMS half of
+## taxonomy_source = "both" (or a bare "worms" call). Kept as its own
+## argument rather than reusing `cache_path` because the two sources'
+## caches are keyed on completely different lookups (FishBase/
+## SeaLifeBase load_taxa() tables vs WoRMS AphiaRecordsByNames results)
+## and mixing them into one RDS file would mean every "both" run either
+## re-queries WoRMS from scratch (if cache_path is reused verbatim, the
+## fishbase cache read/write logic in fetch_taxonomy_fishbase() would
+## never see WoRMS's own columns anyway) or silently drops the fishbase
+## cache's speedup. NULL (default) = WoRMS calls are never cached, same
+## as this function's behavior before "both" existed.
+fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_path = NULL, worms_cache_path = NULL) {
+  if (taxonomy_source == "worms") return(fetch_taxonomy_worms(species_names, cache_path = if (!is.null(worms_cache_path)) worms_cache_path else cache_path))
   if (taxonomy_source == "fishbase") return(fetch_taxonomy_fishbase(species_names, cache_path = cache_path))
   if (taxonomy_source == "both") {
     fb_tax <- fetch_taxonomy_fishbase(species_names, cache_path = cache_path)
-    still_missing <- setdiff(species_names, fb_tax[!is.na(Genus) | !is.na(Family), ScientificName])
+    ## Only what genuinely has NOTHING from FishBase/SeaLifeBase goes to
+    ## WoRMS - Phylum-only rows (e.g. a Phylum-rank bare name FishBase
+    ## can't resolve at all) still count as "nothing", so also fall
+    ## through to WoRMS for those, not just fully-blank rows.
+    still_missing <- setdiff(species_names, fb_tax[!is.na(Genus) | !is.na(Family) | !is.na(Order) | !is.na(Class) | !is.na(Phylum), ScientificName])
     if (length(still_missing) > 0) {
-      worms_tax <- fetch_taxonomy_worms(still_missing)
+      message("  ", length(still_missing), " name(s) unresolved by FishBase/SeaLifeBase - trying WoRMS as well.")
+      worms_tax <- fetch_taxonomy_worms(still_missing, cache_path = worms_cache_path)
       fb_tax <- rbindlist(list(fb_tax[!ScientificName %in% still_missing], worms_tax), fill = TRUE)
     }
     return(fb_tax)
@@ -595,7 +701,7 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_pa
 ## updates to a separate rules table.
 fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "fishbase",
                                           rank_levels = c("Genus", "Family", "Order", "Class", "Phylum"),
-                                          cache_path = NULL) {
+                                          cache_path = NULL, worms_cache_path = NULL) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
   unmatched_sci <- unique(dt[!is.na(ScientificName) & is.na(FG_num), ScientificName])
   if (length(unmatched_sci) == 0) {
@@ -619,7 +725,7 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## actually fired in production, but it's a real latent bug regardless).
   missing_rank_cols <- setdiff(rank_levels, names(fg_lookup_safe))
   if (length(missing_rank_cols) > 0) {
-    fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source, cache_path = cache_path)
+    fg_taxonomy <- fetch_taxonomy(fg_lookup_safe$ScientificName, taxonomy_source, cache_path = cache_path, worms_cache_path = worms_cache_path)
     fg_lookup_safe <- merge(fg_lookup_safe, fg_taxonomy[, c("ScientificName", missing_rank_cols), with = FALSE],
                             by = "ScientificName", all.x = TRUE)
   }
@@ -721,7 +827,7 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## lines down the same way an empty data.table() crashed elsewhere in
   ## this project (see stock_assessment_fg_year in 01_biomass.R).
   fetched <- if (length(fetch_targets) > 0) {
-    fetch_taxonomy(fetch_targets, taxonomy_source, cache_path = cache_path)
+    fetch_taxonomy(fetch_targets, taxonomy_source, cache_path = cache_path, worms_cache_path = worms_cache_path)
   } else {
     data.table(query_name = character(0), Genus = character(0), Family = character(0),
                Order = character(0), Class = character(0), Phylum = character(0))
@@ -754,7 +860,7 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
       }
     }
     if (length(ambiguous_values) > 0 && nrow(remaining) > 0) {
-      ## Per Andrea's instruction: an unmatched species can still be
+      ## By design: an unmatched species can still be
       ## assigned by its closest relative even when that genus/family
       ## spans more than one FG - assign it to whichever FG holds the
       ## MAJORITY of its already-assigned relatives at this rank (e.g.
@@ -2615,6 +2721,76 @@ upsert_workbook_sheets <- function(sheets, out_path) {
 }
 
 ## =================================================================
+## write_native_sheet_csv() / write_native_sheets_csv() / read_native_sheet_csv()
+##
+## Added 2026-09-17: the excel ecopath_ecosim file must have exactly the
+## intended sheets, trimmed script by script - every other table should be
+## saved as a csv file, not kept in the final output excel file. Every
+## table that USED TO go into the
+## shared workbook as its own native/intermediate sheet (FG_spp_Ecopath,
+## Ecopath, Ecosim, Catches_Ecopath, PB_QB, References, Ecobase, and so
+## on - none of them one of the 8 intended final
+## final workbook: info, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
+## Ecopath_traits, Ecopath_diet, Ecosim_ts) now goes here instead - a
+## plain CSV in out_dir, named after the sheet it replaces, so a LATER
+## script/function that used to read it back out of the workbook
+## (finalize_ecopath_ecosim_summary_sheets(), read_full_fg_reference(),
+## 04_diets.R's own biomass-share reader, the PB_QB_spp cross-run
+## "already has real data" guard) can still find it - just from disk
+## instead of from a workbook sheet that no longer exists there.
+##
+## out_dir is always dirname(the shared workbook's own path) - every
+## call site already has that workbook path in scope, so no new
+## argument needs threading through the numbered scripts for this.
+## =================================================================
+write_native_sheet_csv <- function(dt, name, out_dir) {
+  path <- file.path(out_dir, paste0(name, ".csv"))
+  fwrite(dt, path)
+  invisible(path)
+}
+
+write_native_sheets_csv <- function(sheets, out_dir) {
+  if (is.null(names(sheets)) || any(names(sheets) == "")) {
+    stop("write_native_sheets_csv(): every element of `sheets` needs a name (used as the CSV filename).")
+  }
+  for (nm in names(sheets)) write_native_sheet_csv(sheets[[nm]], nm, out_dir)
+  message("write_native_sheets_csv(): wrote ", length(sheets), " native/intermediate sheet(s) as CSV",
+          " in ", out_dir, " (kept OUT of the final workbook): ", paste(names(sheets), collapse = ", "))
+  invisible(sheets)
+}
+
+read_native_sheet_csv <- function(name, out_dir) {
+  path <- file.path(out_dir, paste0(name, ".csv"))
+  if (!file.exists(path)) return(NULL)
+  as.data.table(fread(path))
+}
+
+## =================================================================
+## trim_workbook_to_final_sheets()
+##
+## The single, canonical definition of "the exact intended sheets"
+## in ecopath_ecosim_inputs.xlsx - info, then the 7 Ecopath_*/Ecosim_ts
+## summary sheets, in that order, nothing else. Every numbered script
+## (01/02/03/04) now calls this at the very end of its own run, AFTER
+## writing whichever of these 8 sheets it's responsible for (native/
+## intermediate tables having already gone to write_native_sheets_csv()
+## instead) - so the workbook is trimmed to ONLY the target sheets that
+## exist so far after every single script, not just after the last one
+## to run. A target sheet that doesn't exist yet (because an earlier
+## script in the 01->02->03->04 order hasn't run against this workbook
+## yet) is simply not there yet - finalize_workbook_sheet_order() skips
+## it with a message rather than erroring, same as before.
+## =================================================================
+trim_workbook_to_final_sheets <- function(out_path) {
+  finalize_workbook_sheet_order(
+    out_path = out_path,
+    target_order = c("info", "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB",
+                     "Ecopath_traits", "Ecopath_diet", "Ecosim_ts"),
+    drop_extras = TRUE
+  )
+}
+
+## =================================================================
 ## finalize_workbook_sheet_order()
 ##
 ## Fixes sheet NAMES and ORDER in ecopath_ecosim_inputs.xlsx to a
@@ -2638,7 +2814,7 @@ upsert_workbook_sheets <- function(sheets, out_path) {
 ## their original relative order - never silently dropped, just
 ## flagged with a warning so an unexpected/forgotten sheet doesn't
 ## slip by unnoticed. Pass drop_extras = TRUE (added 2026-09-16, per
-## Andrea's request for a workbook containing ONLY the final summary
+## the request for a workbook containing ONLY the final summary
 ## sheets - "info", Ecopath_B/L/Di/PBQB/traits/diet, Ecosim_ts - not
 ## every native sheet the individual pipeline scripts wrote along the
 ## way) to instead REMOVE every sheet not in target_order. Only call
@@ -2736,24 +2912,25 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
 ## =================================================================
 ## finalize_ecopath_ecosim_summary_sheets()
 ##
-## Added 2026-09-16 per Andrea: "beside [keeping] csv files or
+## Added 2026-09-16 "beside [keeping] csv files or
 ## intermediate files ... the excel file should include the following
 ## sheets: Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
 ## Ecopath_traits, Ecosim_ts (with B, L, Di and effort)". Ecopath_traits
-## is written directly by 03_pbqb-traits.R (it's a brand-new table, not
-## sitting in another sheet already); this function builds the other
-## five by reading back sheets 01_biomass.R/02_fisheries.R/
-## 03_pbqb-traits.R already wrote NATIVELY into the same workbook, and
-## consolidating/renaming them - it does NOT remove or rewrite any of
-## those native sheets (Ecopath, Catches_Ecopath, Catches_Discards_
-## FG_ts, PB_QB, Ecosim, Catches_Ecosim, Fishing_Effort_by_Fleet all
-## stay exactly as they were). Call this ONCE, after every upstream
-## script has run at least once against out_path - same "run last"
-## rule as finalize_workbook_sheet_order(). A source sheet that hasn't
-## been written yet is skipped with a message, not an error, so this
-## is safe to call even if only some of 01/02/03 have run so far (it's
-## called automatically at the end of 03_pbqb-traits.R, so in the
-## normal run order all three have already run by the time it fires).
+## is written directly by 03_pbqb-traits.R, Ecopath_B directly by
+## export_ecopath_ecosim_excel() (01_biomass.R), and Ecopath_PBQB
+## directly by add_pbqb_to_ecopath_workbook() (03_pbqb-traits.R) - none
+## of those three need building here. This function builds the
+## remaining two, Ecopath_L/Ecopath_Di and Ecosim_ts, by reading the
+## native/intermediate CSVs 01_biomass.R/02_fisheries.R write via
+## write_native_sheets_csv() (2026-09-17 update: other sheets should be
+## saved as csv files, not kept in the final output excel file - these
+## used to be read back from native WORKBOOK sheets
+## of the same name; the source data is identical, just off disk now
+## instead of out of a sheet that no longer exists in the workbook).
+## Call this after 02_fisheries.R (for Ecopath_L/Di and the L/Di/Effort
+## parts of Ecosim_ts) and again after 03_pbqb-traits.R if anything
+## upstream changed - a source CSV that doesn't exist yet is skipped
+## with a message, not an error, so this is always safe to call.
 ##
 ## Ecopath_L/Ecopath_Di are built from Catches_Discards_FG_ts, NOT from
 ## Catches_Ecopath's own Catch_* columns - that sheet's columns can be
@@ -2764,31 +2941,12 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
 ## both new sheets actually need.
 ## =================================================================
 finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
-  if (!file.exists(out_path)) {
-    message("finalize_ecopath_ecosim_summary_sheets(): workbook not found at '", out_path, "' - nothing to do.")
-    return(invisible(NULL))
-  }
-  existing <- openxlsx::getSheetNames(out_path)
-  read_sheet <- function(nm) {
-    if (!(nm %in% existing)) return(NULL)
-    as.data.table(openxlsx::read.xlsx(out_path, sheet = nm, check.names = FALSE))
-  }
+  out_dir <- dirname(out_path)
+  read_sheet <- function(nm) read_native_sheet_csv(nm, out_dir)
   
   base_year <- year_ecopath[1]
   range_lab <- paste0(min(year_ecopath), "_", max(year_ecopath))
   out_sheets <- list()
-  
-  ## --- Ecopath_B ----------------------------------------------------
-  ecopath <- read_sheet("Ecopath")
-  if (!is.null(ecopath)) {
-    b_base_col  <- paste0("Biomass_", base_year)
-    b_range_col <- paste0("Biomass_", range_lab)
-    keep <- intersect(c("FG_num", "FG_name", b_base_col, b_range_col), names(ecopath))
-    out_sheets$Ecopath_B <- ecopath[, ..keep]
-  } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecopath' sheet not found - skipping Ecopath_B",
-            " (run 01_biomass.R against this workbook first).")
-  }
   
   ## --- Ecopath_L / Ecopath_Di, both from Catches_Discards_FG_ts ------
   cd_ts <- read_sheet("Catches_Discards_FG_ts")
@@ -2811,17 +2969,8 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
     setorder(ecopath_di, FG_num)
     out_sheets$Ecopath_Di <- ecopath_di
   } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts' sheet not found - skipping",
-            " Ecopath_L/Ecopath_Di (run 02_fisheries.R against this workbook first).")
-  }
-  
-  ## --- Ecopath_PBQB ---------------------------------------------------
-  pbqb <- read_sheet("PB_QB")
-  if (!is.null(pbqb)) {
-    out_sheets$Ecopath_PBQB <- pbqb
-  } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'PB_QB' sheet not found - skipping Ecopath_PBQB",
-            " (run 03_pbqb-traits.R against this workbook first).")
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts.csv' not found in ", out_dir,
+            " - skipping Ecopath_L/Ecopath_Di (run 02_fisheries.R against this workbook first).")
   }
   
   ## --- Ecosim_ts: B (from Ecosim) + L (from Catches_Ecosim) + Di
@@ -2885,12 +3034,12 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
     
     out_sheets$Ecosim_ts <- combined
   } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecosim' sheet not found - skipping Ecosim_ts",
-            " (run 01_biomass.R against this workbook first).")
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecosim.csv' not found in ", out_dir,
+            " - skipping Ecosim_ts (run 01_biomass.R against this workbook first).")
   }
   
   if (length(out_sheets) == 0) {
-    message("finalize_ecopath_ecosim_summary_sheets(): nothing to write - none of the source sheets were found yet.")
+    message("finalize_ecopath_ecosim_summary_sheets(): nothing to write - none of the source CSVs were found yet.")
     return(invisible(NULL))
   }
   upsert_workbook_sheets(out_sheets, out_path)
@@ -2899,7 +3048,7 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
 }
 
 ## =================================================================
-## build_info_sheet() - added 2026-09-16, per Andrea: the final
+## build_info_sheet() - added 2026-09-16, the final
 ## workbook should lead with an "info" sheet ("with data from the run,
 ## GSAs, time ecopath, time ecosim region...."). A plain Field/Value
 ## table, best-effort - every argument defaults to reading the matching
@@ -2941,10 +3090,13 @@ build_info_sheet <- function(filter_areas = NULL, target_countries = NULL, year_
 ## years) WITHOUT requiring that other sheet to have been written
 ## first - if it isn't there yet, this just returns NULL and the
 ## caller falls back to deriving its own range, order-independently.
+## 2026-09-17 update, CSV-not-workbook-sheet refactor: sheet_name
+## (e.g. "Ecosim") is now a native/intermediate table written
+## as a CSV alongside the workbook, not a workbook sheet - read from
+## there instead of openxlsx::read.xlsx().
 read_existing_ts_years <- function(out_path, sheet_name) {
-  if (!file.exists(out_path)) return(NULL)
-  if (!(sheet_name %in% openxlsx::getSheetNames(out_path))) return(NULL)
-  existing <- openxlsx::read.xlsx(out_path, sheet = sheet_name)
+  existing <- read_native_sheet_csv(sheet_name, dirname(out_path))
+  if (is.null(existing)) return(NULL)
   year_rows <- suppressWarnings(as.numeric(existing[[1]]))
   ts_years <- sort(year_rows[!is.na(year_rows)])
   if (length(ts_years) == 0) return(NULL)
@@ -3169,8 +3321,19 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                                by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
   setorder(fg_spp_ecosim_sheet, FG_num, Species)
   
-  sheets_to_write <- list(FG_spp_Ecopath = fg_spp_sheet, Ecopath = ecopath_sheet,
-                          Ecosim = ecosim_sheet, FG_spp_Ecosim = fg_spp_ecosim_sheet)
+  ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+  ## the intended sheets, trimmed script by script - every other table
+  ## should be saved as a csv file, not kept in the final output excel
+  ## file. Only Ecopath_B (the final target sheet built here) goes to the
+  ## workbook directly. FG_spp_Ecopath / Ecosim / FG_spp_Ecosim are native/
+  ## intermediate tables now written as CSV only (never as workbook
+  ## sheets), via write_native_sheets_csv() below.
+  out_dir <- dirname(out_path)
+  write_native_sheets_csv(list(FG_spp_Ecopath = fg_spp_sheet,
+                               Ecosim = ecosim_sheet,
+                               FG_spp_Ecosim = fg_spp_ecosim_sheet),
+                          out_dir)
+  sheets_to_write <- list(Ecopath_B = ecopath_sheet)
   
   ## --- PB_QB_spp scaffold (species x FG list, no PB/QB yet) --------------
   ## Written here so the PB_QB_spp sheet EXISTS after Step 1 alone, not
@@ -3193,14 +3356,15 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## always fully replaces whatever PB_QB_spp it finds (scaffold or not)
   ## via add_pbqb_to_ecopath_workbook()/upsert_workbook_sheets() - no
   ## special-casing needed on that side.
+  ## 2026-09-17 update: PB_QB_spp is a native/intermediate table (not one
+  ## of the 8 final sheets), so its cross-run "has real data" guard now
+  ## reads the CSV written by add_pbqb_to_ecopath_workbook() instead of a
+  ## workbook sheet - that CSV is the only place PB_QB_spp lives now.
   pbqb_spp_has_real_data <- FALSE
-  if (file.exists(out_path) && "PB_QB_spp" %in% openxlsx::getSheetNames(out_path)) {
-    existing_pbqb_spp <- tryCatch(openxlsx::read.xlsx(out_path, sheet = "PB_QB_spp"),
-                                  error = function(e) NULL)
-    if (!is.null(existing_pbqb_spp) && "PB" %in% names(existing_pbqb_spp) &&
-        any(!is.na(existing_pbqb_spp$PB))) {
-      pbqb_spp_has_real_data <- TRUE
-    }
+  existing_pbqb_spp <- read_native_sheet_csv("PB_QB_spp", out_dir)
+  if (!is.null(existing_pbqb_spp) && "PB" %in% names(existing_pbqb_spp) &&
+      any(!is.na(existing_pbqb_spp$PB))) {
+    pbqb_spp_has_real_data <- TRUE
   }
   
   if (!pbqb_spp_has_real_data) {
@@ -3210,21 +3374,21 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                              QB = NA_real_, prop_biomass_QB = NA_real_,
                              Note = "PB/QB not yet computed - run 04_pbqb_calc.R (Step 4) to fill in")]
     setorder(pbqb_spp_scaffold, FG_num, -Biomass)
-    sheets_to_write$PB_QB_spp <- pbqb_spp_scaffold
-    message("PB_QB_spp written as a SCAFFOLD (Species/FG_num/Biomass/prop_biomass_FG only -",
+    write_native_sheet_csv(pbqb_spp_scaffold, "PB_QB_spp", out_dir)
+    message("PB_QB_spp written as a SCAFFOLD CSV (Species/FG_num/Biomass/prop_biomass_FG only -",
             " PB/QB left blank) since Step 4 (04_pbqb_calc.R) hasn't run against this workbook",
             " yet. Run 04_pbqb_calc.R afterward to fill in real PB/QB values - it replaces this",
-            " scaffold with the full sheet automatically, no extra step needed here.")
+            " scaffold CSV with the full table automatically, no extra step needed here.")
   } else {
     message("PB_QB_spp already has real PB/QB data (04_pbqb_calc.R has already run against",
-            " this workbook) - leaving it untouched rather than overwriting it with a blank",
-            " scaffold.")
+            " this workbook) - leaving its CSV untouched rather than overwriting it with a",
+            " blank scaffold.")
   }
   
-  ## extra_sheets: named list of additional data.tables/data.frames to
-  ## include in the SAME workbook/write call - appended here rather
-  ## than requiring a separate loadWorkbook()/saveWorkbook() round-trip
-  ## after this function already wrote the file.
+  ## extra_sheets: named list of additional data.tables/data.frames the
+  ## caller wants in the FINAL workbook alongside Ecopath_B - kept as a
+  ## workbook escape hatch (not CSV) since a caller passing this argument
+  ## is explicitly asking for it to land in the deliverable workbook.
   if (!is.null(extra_sheets)) {
     dup_names <- intersect(names(extra_sheets), names(sheets_to_write))
     if (length(dup_names) > 0) {
@@ -3494,13 +3658,20 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     }
   }
   
+  ## 2026-09-17 update: Catches_Ecopath/Catches_Ecosim/Fleet_Structure are
+  ## native/intermediate tables (not final target sheets) - written as
+  ## CSV only, never to the workbook directly. Ecopath_L/Ecopath_Di (the
+  ## actual final sheets derived from catch data) are built by
+  ## finalize_ecopath_ecosim_summary_sheets() from Catches_Discards_FG_ts,
+  ## which 02_fisheries.R writes separately - not from this function's
+  ## own output - so no summary-sheet call is added here.
   sheets_to_write <- list(Catches_Ecopath = catches_ecopath, Catches_Ecosim = catches_ecosim)
   if (multi_fleet) {
     sheets_to_write$Fleet_Structure <- fleet_tbl
     message("Fleet_Structure sheet written - ", uniqueN(fleet_tbl$Fleet), " fleet(s) (",
             paste(fleet_names, collapse = ", "), ") across ", uniqueN(fleet_tbl$FG_num), " FG(s).")
   }
-  upsert_workbook_sheets(sheets_to_write, out_path)
+  write_native_sheets_csv(sheets_to_write, dirname(out_path))
   
   invisible(sheets_to_write)
 }
@@ -3546,13 +3717,15 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
 ## error) if neither sheet exists yet - callers degrade to "whatever
 ## FGs this run's own data happened to cover" the same way they always
 ## did before this existed.
+## 2026-09-17 update: other sheets should be saved as csv files, not
+## kept in the final output excel file - FG_lookup is a native
+## reference table, not one of the 8 final sheets, so it no longer
+## lives in the workbook at all (01_biomass.R now writes it via
+## write_native_sheets_csv() as FG_lookup.csv). Reads that CSV from the
+## same directory as the workbook instead of a "FG"/"FG_lookup" sheet.
 read_full_fg_reference <- function(out_path) {
-  if (!file.exists(out_path)) return(NULL)
-  existing <- openxlsx::getSheetNames(out_path)
-  sheet_nm <- intersect(c("FG", "FG_lookup"), existing)[1]
-  if (is.na(sheet_nm) || length(sheet_nm) == 0) return(NULL)
-  ref <- as.data.table(openxlsx::read.xlsx(out_path, sheet = sheet_nm))
-  if (!all(c("FG_num", "FG_name") %in% names(ref))) return(NULL)
+  ref <- read_native_sheet_csv("FG_lookup", dirname(out_path))
+  if (is.null(ref) || !all(c("FG_num", "FG_name") %in% names(ref))) return(NULL)
   unique(ref[, .(FG_num, FG_name)])
 }
 
@@ -3575,7 +3748,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   pbqb_sheet <- fg_weighted[, c("FG", "FG_name", "PB_FG", "QB_FG", optional_cols), with = FALSE]
   setnames(pbqb_sheet, "FG", "FG_num")
   
-  ## Expand to EVERY FG in the model (per Andrea: this feeds Ecopath_PBQB,
+  ## Expand to EVERY FG in the model (this feeds Ecopath_PBQB,
   ## which goes straight into the EwE software - a row missing for an
   ## FG that just happens to have had no species data THIS run breaks a
   ## direct import, since EwE expects one row per functional group in
@@ -3603,6 +3776,18 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   }
   setorder(pbqb_sheet, FG_num)
   
+  ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+  ## the intended sheets; other sheets should be saved as csv files, not
+  ## kept in the final output excel file. PB_QB (FG-level) IS one
+  ## of the 8 final target sheets - written directly to the workbook as
+  ## Ecopath_PBQB, plus a PB_QB.csv mirror for audit/back-compat naming
+  ## and so other functions (e.g. export_ecopath_ecosim_excel()'s cross-
+  ## run guard) can find it without opening the workbook. PB_QB_spp
+  ## (species-level detail) is native/intermediate - CSV only, never a
+  ## workbook sheet - built further below.
+  out_dir <- dirname(out_path)
+  write_native_sheet_csv(pbqb_sheet, "PB_QB", out_dir)
+  workbook_sheets <- list(Ecopath_PBQB = pbqb_sheet)
   sheets <- list(PB_QB = pbqb_sheet)
   
   if (is.null(species_pb_qb)) {
@@ -3669,8 +3854,9 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
             " not contribute to PB_FG/QB_FG).")
     
     sheets$PB_QB_spp <- spp_sheet
+    write_native_sheet_csv(spp_sheet, "PB_QB_spp", out_dir)
   }
   
-  upsert_workbook_sheets(sheets, out_path)
+  upsert_workbook_sheets(workbook_sheets, out_path)
   invisible(sheets)
 }
