@@ -390,7 +390,7 @@ fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
 
 ## =================================================================
 ## fetch_taxonomy_metaweb(): a THIRD taxonomy source, added 2026-09-17
-## for 04_diets.R - not an API call at all. Marta Coll's metaweb
+## for 04_diets.R - not an API call at all. The metaweb
 ## workbook's own "Taxonomic_codes" tab already carries a full WoRMS-
 ## derived classification (Kingdom -> ... -> Species, 3350 rows in the
 ## template) for every predator/prey taxon the metaweb itself uses, so
@@ -692,17 +692,92 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_pa
 ## possible", per how this was requested) - a species is matched at
 ## the first rank where its value maps to EXACTLY ONE FG among
 ## fg_lookup_safe's own species (the same "safe" rule used throughout
-## this project: a genus/family/order/class/phylum spanning multiple
-## FGs is too ecologically diverse to assign safely, and is skipped
-## rather than guessed). This is fully data-driven from fg_lookup_safe
-## - no hardcoded "Class Bivalvia -> FG Bivalves"-style rule tables
-## needed anywhere; if the FG scheme changes, these safe mappings are
-## re-derived automatically on the next run rather than needing manual
+## this project: a genus/family/order/class spanning multiple FGs is
+## too ecologically diverse to assign safely, and is skipped rather
+## than guessed). This is fully data-driven from fg_lookup_safe - no
+## hardcoded "Class Bivalvia -> FG Bivalves"-style rule tables needed
+## anywhere; if the FG scheme changes, these safe mappings are re-
+## derived automatically on the next run rather than needing manual
 ## updates to a separate rules table.
+##
+## 2026-09-17 review update (after inspecting real fallback output):
+## several systemic mismatches, fixed here rather than by hand-patching
+## individual species:
+##   - Phylum DROPPED from the default rank_levels ("phylum usually
+##     wrong" - a phylum is almost always too broad to safely stand in
+##     for one specific FG). Still usable if a caller explicitly asks
+##     for it via rank_levels, but no longer tried by default.
+##   - allow_majority_vote now defaults to FALSE ("avoid match if
+##     matched by multiple groups") - an ambiguous rank value (already-
+##     assigned relatives split across 2+ FGs) is now left unresolved
+##     rather than guessed at the FG with the most relatives. This
+##     supersedes the earlier majority-vote behavior; set
+##     allow_majority_vote = TRUE to restore it.
+##   - exclude_fg_regex (case-insensitive, matched against FG_name)
+##     removes whole FGs as fallback TARGETS - i.e. taxonomy is never
+##     used to assign an unmatched species INTO one of these FGs, no
+##     matter how exclusive the rank match looks. Default covers three
+##     confirmed-bad cases: "commercial" (e.g. "Non-commercial decapods"
+##     vs "Other commercial decapods" - a taxonomy-invisible distinction,
+##     a name/commercial-status split, not a taxonomic one - see
+##     Squilla mantis in SPECIES_EXCEPTIONS for why this matters),
+##     "jellyfish" ("jellyfish usually wrong"), and "suprabenthos"/
+##     "macrozooplankton" (ecologically-, not taxonomically-, defined
+##     groups with no real rank of their own - e.g. Suprabenthos is
+##     "small crustaceans living just above the seabed", a habitat/size
+##     definition covering parts of Isopoda/Amphipoda, not those orders
+##     whole; explicit SEED_RULES entries still assign into them by
+##     exact Order name - this exclusion only blocks the GENERIC
+##     genus/family/class fallback from also roping in unrelated
+##     relatives).
+##   - single_species_fg_broad_ranks: for these ranks (default Class,
+##     Order), an FG that currently has only ONE species already
+##     assigned is excluded as a fallback target - "if a single sp is
+##     the FG then avoid that match" (e.g. a FG that's really just "the
+##     purple sea urchin", "red coral", or "mackerels" as one specific
+##     species shouldn't absorb every other unmatched species that
+##     happens to share its Class/Order; Genus/Family fallback into a
+##     single-species FG is still allowed, since a shared genus/family
+##     is specific enough to be a real signal).
 fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "fishbase",
-                                          rank_levels = c("Genus", "Family", "Order", "Class", "Phylum"),
-                                          cache_path = NULL, worms_cache_path = NULL) {
+                                          rank_levels = c("Genus", "Family", "Order", "Class"),
+                                          cache_path = NULL, worms_cache_path = NULL,
+                                          allow_majority_vote = FALSE,
+                                          exclude_fg_regex = "commercial|jellyfish|suprabenthos|macrozooplankton",
+                                          single_species_fg_broad_ranks = c("Class", "Order")) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
+  
+  ## Excluded-FG filtering applied to fg_lookup_safe ONCE, up front - every
+  ## rank-vote/exclusive-match computation below reads from this filtered
+  ## copy, so an excluded FG can never become a fallback target via ANY
+  ## rank, and a single-species FG is blocked only for the broad ranks
+  ## listed in single_species_fg_broad_ranks (computed once here too,
+  ## since "single species" is a property of the FULL fg_lookup_safe,
+  ## not of whichever rank happens to be under consideration).
+  fg_species_counts <- unique(fg_lookup_safe[, .(ScientificName, FG_num)])[, .(n_species_in_fg = uniqueN(ScientificName)), by = FG_num]
+  excluded_fg_nums <- if (!is.null(exclude_fg_regex) && nzchar(exclude_fg_regex)) {
+    unique(fg_lookup_safe[grepl(exclude_fg_regex, FG_name, ignore.case = TRUE), FG_num])
+  } else integer(0)
+  single_species_fg_nums <- fg_species_counts[n_species_in_fg == 1, FG_num]
+  if (length(excluded_fg_nums) > 0) {
+    message("Taxonomy fallback: ", length(excluded_fg_nums), " FG(s) excluded as fallback TARGETS entirely",
+            " (name matches exclude_fg_regex = '", exclude_fg_regex, "'): ",
+            paste(unique(fg_lookup_safe[FG_num %in% excluded_fg_nums, FG_name]), collapse = ", "))
+  }
+  ## Applied to the TARGET FG only, and only AFTER ambiguity (n_fg) has
+  ## already been computed from the full, unfiltered fg_lookup_safe -
+  ## filtering excluded/single-species FGs out of the reference BEFORE
+  ## computing ambiguity would make an otherwise-ambiguous rank value
+  ## (e.g. Order Decapoda, genuinely spanning "Deep shrimps" AND two
+  ## commercial-status-named FGs) look falsely EXCLUSIVE once the
+  ## commercial FGs are removed from the candidate pool - silently
+  ## routing an unrelated decapod into "Deep shrimps" just because its
+  ## real competitors happened to be excluded. Blocking the target
+  ## after the fact instead just drops that match entirely (leaves the
+  ## species unresolved), which is what "avoid this match" means.
+  is_fg_blocked_for_rank <- function(fg_num_vec, rank) {
+    fg_num_vec %in% excluded_fg_nums | (rank %in% single_species_fg_broad_ranks & fg_num_vec %in% single_species_fg_nums)
+  }
   unmatched_sci <- unique(dt[!is.na(ScientificName) & is.na(FG_num), ScientificName])
   if (length(unmatched_sci) == 0) {
     message("No unmatched species - taxonomy fallback not needed.")
@@ -761,17 +836,26 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   name_map <- data.table(ScientificName = unmatched_sci, query_name = query_name,
                          is_bare_word = !grepl("\\s", query_name))
   
-  ## Reusable exclusive/majority resolver for one rank, built ONCE per
-  ## rank from fg_lookup_safe and reused both for the direct bare-word
-  ## match here and for the main taxonomy-driven loop just below - same
-  ## rule either way: exclusive if every already-assigned relative at
-  ## this rank agrees on one FG, majority if most (but not all, and not
-  ## tied) do.
+  ## Reusable exclusive/majority resolver for one rank, computed fresh
+  ## per rank from the full fg_lookup_safe (excluded-FG/single-species
+  ## blocking applied only at the end, to the resolved target - see
+  ## is_fg_blocked_for_rank()'s own comment at the top of this function
+  ## for why) and reused both for the direct bare-word match here and
+  ## for the main taxonomy-driven loop just below - same rule either way: exclusive
+  ## if every already-assigned relative at this rank agrees on one FG;
+  ## "majority" (most, not all, agree) is only ever returned when
+  ## allow_majority_vote = TRUE (default FALSE as of 2026-09-17 - see
+  ## this function's header comment).
   resolve_fg_votes_for_rank <- function(rank) {
     if (!rank %in% names(fg_lookup_safe)) {
       return(data.table(rank_value_lower = character(0), FG_num = numeric(0), FG_name = character(0),
                         match_type = character(0), vote_share = character(0)))
     }
+    ## Votes computed from the FULL, unfiltered fg_lookup_safe - n_fg
+    ## (genuine ambiguity) must reflect every FG that really shares this
+    ## rank value, excluded or not (see is_fg_blocked_for_rank()'s own
+    ## comment above for why). Exclusion is applied only at the very end,
+    ## to the resolved TARGET FG.
     votes <- fg_lookup_safe[!is.na(get(rank)), .(n_species = uniqueN(ScientificName)), by = c(rank, "FG_num", "FG_name")]
     if (nrow(votes) == 0) return(data.table(rank_value_lower = character(0), FG_num = numeric(0), FG_name = character(0),
                                             match_type = character(0), vote_share = character(0)))
@@ -781,10 +865,15 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
     votes[, n_fg := uniqueN(FG_num), by = rank_value_lower]
     votes[, is_top := n_species == max(n_species), by = rank_value_lower]
     tied <- unique(votes[n_fg > 1 & is_top == TRUE, .N, by = rank_value_lower][N > 1, rank_value_lower])
-    out <- votes[n_fg == 1 | (is_top == TRUE & !(rank_value_lower %in% tied))]
+    out <- if (allow_majority_vote) {
+      votes[n_fg == 1 | (is_top == TRUE & !(rank_value_lower %in% tied))]
+    } else {
+      votes[n_fg == 1]  # exclusive-only: a rank value spanning multiple FGs is never a fallback target, guessed or not
+    }
     out[, match_type := fifelse(n_fg == 1, "exclusive", "majority")]
     out[, vote_share := fifelse(match_type == "majority", paste0(n_species, "/", total_at_value), NA_character_)]
-    unique(out[, .(rank_value_lower, FG_num, FG_name, match_type, vote_share)])
+    out <- unique(out[, .(rank_value_lower, FG_num, FG_name, match_type, vote_share)])
+    out[!is_fg_blocked_for_rank(FG_num, rank)]
   }
   
   direct_matches <- data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0),
@@ -845,12 +934,18 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
     if (nrow(remaining) == 0) break
     if (!rank %in% names(fg_lookup_safe)) next
     
+    ## n_fg (true ambiguity) computed from the FULL, unfiltered
+    ## fg_lookup_safe - see is_fg_blocked_for_rank()'s own comment for
+    ## why exclusion must NOT be applied before this. The excluded-FG/
+    ## single-species-broad-rank block is applied afterward, only to
+    ## the resolved target.
     rank_fg_counts <- fg_lookup_safe[!is.na(get(rank)), .(n_fg = uniqueN(FG_num)), by = rank]
     safe_values <- rank_fg_counts[n_fg == 1, get(rank)]
     ambiguous_values <- rank_fg_counts[n_fg > 1, get(rank)]
     
     if (length(safe_values) > 0) {
       rank_safe <- unique(fg_lookup_safe[get(rank) %in% safe_values, c(rank, "FG_num", "FG_name"), with = FALSE])
+      rank_safe <- rank_safe[!is_fg_blocked_for_rank(FG_num, rank)]
       level_matches <- merge(remaining, rank_safe, by = rank)
       if (nrow(level_matches) > 0) {
         level_matches[, `:=`(match_type = "exclusive", match_rank = rank, vote_share = NA_character_)]
@@ -859,7 +954,16 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
         remaining <- remaining[!ScientificName %in% level_matches$ScientificName]
       }
     }
-    if (length(ambiguous_values) > 0 && nrow(remaining) > 0) {
+    ## 2026-09-17 update: majority-vote-among-ambiguous-relatives is now
+    ## OFF by default (allow_majority_vote = FALSE - "avoid match if
+    ## matched by multiple groups") - an unmatched species whose rank
+    ## value spans 2+ FGs among its already-assigned relatives is left
+    ## unresolved (falls through to the next, coarser rank_levels entry
+    ## or into "still_unresolved_taxonomy") rather than guessed at
+    ## whichever FG happens to hold the most relatives. Set
+    ## allow_majority_vote = TRUE on the call to restore the old
+    ## behavior.
+    if (allow_majority_vote && length(ambiguous_values) > 0 && nrow(remaining) > 0) {
       ## By design: an unmatched species can still be
       ## assigned by its closest relative even when that genus/family
       ## spans more than one FG - assign it to whichever FG holds the
@@ -875,6 +979,7 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
       votes[, is_top := n_species == max(n_species), by = rank]
       tied_values <- unique(votes[is_top == TRUE, .N, by = rank][N > 1, get(rank)])
       majority <- votes[is_top == TRUE & !(get(rank) %in% tied_values)]
+      majority <- majority[!is_fg_blocked_for_rank(FG_num, rank)]
       
       if (length(tied_values) > 0) {
         message(length(tied_values), " ", rank, "-level value(s) tied between two or more FGs with no clear",
@@ -2729,8 +2834,8 @@ upsert_workbook_sheets <- function(sheets, out_path) {
 ## table that USED TO go into the
 ## shared workbook as its own native/intermediate sheet (FG_spp_Ecopath,
 ## Ecopath, Ecosim, Catches_Ecopath, PB_QB, References, Ecobase, and so
-## on - none of them one of the 8 intended final
-## final workbook: info, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
+## on - none of them one of the 9 intended final
+## final workbook: info, FG_spp, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
 ## Ecopath_traits, Ecopath_diet, Ecosim_ts) now goes here instead - a
 ## plain CSV in out_dir, named after the sheet it replaces, so a LATER
 ## script/function that used to read it back out of the workbook
@@ -2784,8 +2889,10 @@ read_native_sheet_csv <- function(name, out_dir) {
 trim_workbook_to_final_sheets <- function(out_path) {
   finalize_workbook_sheet_order(
     out_path = out_path,
-    target_order = c("info", "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB",
-                     "Ecopath_traits", "Ecopath_diet", "Ecosim_ts"),
+    ## FG_References added 2026-09-17 - see build_fg_references_sheet()
+    ## below. 10 final sheets now, not 9.
+    target_order = c("info", "FG_spp", "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB",
+                     "Ecopath_traits", "Ecopath_diet", "Ecosim_ts", "FG_References"),
     drop_extras = TRUE
   )
 }
@@ -2889,7 +2996,19 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
     if (drop_extras) {
       message("finalize_workbook_sheet_order(): drop_extras = TRUE - removing sheet(s) not in",
               " target_order: ", paste(extra_sheets, collapse = ", "))
+      ## Pin the active sheet to 1 BEFORE removing anything. openxlsx's
+      ## Workbook keeps an "active sheet" index and tries to restore it
+      ## on save; removeWorksheet() can drop the sheet that index points
+      ## at (or shift indices below it), so by the time saveWorkbook()
+      ## runs, that stored index can point past the end of the now-
+      ## shorter sheet list - which fails with "wb$setactiveSheet(...):
+      ## N doesn't exist as sheet index." Setting it to a sheet that's
+      ## guaranteed to survive (1 = one of the target sheets, since this
+      ## whole workbook always keeps at least "info") before any removal
+      ## avoids that entirely.
+      tryCatch(openxlsx::activeSheet(wb) <- 1, error = function(e) NULL)
       for (nm in extra_sheets) openxlsx::removeWorksheet(wb, nm)
+      tryCatch(openxlsx::activeSheet(wb) <- 1, error = function(e) NULL)
     } else {
       warning("finalize_workbook_sheet_order(): sheet(s) in the workbook but NOT in target_order -",
               " kept, appended at the end rather than dropped: ", paste(extra_sheets, collapse = ", "))
@@ -2901,6 +3020,15 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
   # the ORIGINAL current_names would silently point at the wrong sheets
   final_order_names <- if (drop_extras) target_present else c(target_present, extra_sheets)
   new_position_of_current_index <- match(final_order_names, current_names)
+  ## Belt-and-suspenders: openxlsx's own worksheetOrder<-() captures
+  ## wb$ActiveSheet, reassigns the order, then tries to restore that
+  ## captured index - deleteWorksheet() never updates wb$ActiveSheet, so
+  ## a stale index (from before any sheets were removed above) can be
+  ## out of range for the CURRENT, possibly-shorter sheet list and make
+  ## that restore fail. Pinning it to 1 immediately before this call
+  ## guarantees a valid index going in, whether or not sheets were
+  ## removed just above.
+  tryCatch(openxlsx::activeSheet(wb) <- 1, error = function(e) NULL)
   openxlsx::worksheetOrder(wb) <- new_position_of_current_index
   
   openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
@@ -2940,37 +3068,32 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
 ## Catch_t/Discard_t columns at plain FG x Year grain, which is what
 ## both new sheets actually need.
 ## =================================================================
-finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
+finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
+                                                   biomass_csv_dir = NULL,
+                                                   fisheries_csv_dir = NULL) {
+  ## This function combines native CSVs written by TWO different pipeline
+  ## blocks - Ecosim (biomass block) with Catches_Discards_FG_ts/Catches_
+  ## Ecosim/Fishing_Effort_by_Fleet (fisheries block) - so it needs two
+  ## separate directories, not one. Both default to dirname(out_path) for
+  ## back-compat with the old flat-output-directory layout.
+  biomass_csv_dir   <- if (is.null(biomass_csv_dir)) dirname(out_path) else biomass_csv_dir
+  fisheries_csv_dir <- if (is.null(fisheries_csv_dir)) dirname(out_path) else fisheries_csv_dir
   out_dir <- dirname(out_path)
-  read_sheet <- function(nm) read_native_sheet_csv(nm, out_dir)
+  read_sheet <- function(nm, dir) read_native_sheet_csv(nm, dir)
   
-  base_year <- year_ecopath[1]
-  range_lab <- paste0(min(year_ecopath), "_", max(year_ecopath))
   out_sheets <- list()
   
-  ## --- Ecopath_L / Ecopath_Di, both from Catches_Discards_FG_ts ------
-  cd_ts <- read_sheet("Catches_Discards_FG_ts")
-  if (!is.null(cd_ts)) {
-    cd_ts[, Year := as.numeric(Year)]
-    
-    l_base  <- cd_ts[Year == base_year, .(FG_num, FG_name, Landings_t)]
-    l_range <- cd_ts[Year %in% year_ecopath, .(Landings_t = mean(Landings_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
-    setnames(l_base,  "Landings_t", paste0("Landings_", base_year))
-    setnames(l_range, "Landings_t", paste0("Landings_", range_lab))
-    ecopath_l <- merge(l_base, l_range, by = c("FG_num", "FG_name"), all = TRUE)
-    setorder(ecopath_l, FG_num)
-    out_sheets$Ecopath_L <- ecopath_l
-    
-    di_base  <- cd_ts[Year == base_year, .(FG_num, FG_name, Discard_t)]
-    di_range <- cd_ts[Year %in% year_ecopath, .(Discard_t = mean(Discard_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
-    setnames(di_base,  "Discard_t", paste0("Discard_", base_year))
-    setnames(di_range, "Discard_t", paste0("Discard_", range_lab))
-    ecopath_di <- merge(di_base, di_range, by = c("FG_num", "FG_name"), all = TRUE)
-    setorder(ecopath_di, FG_num)
-    out_sheets$Ecopath_Di <- ecopath_di
-  } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts.csv' not found in ", out_dir,
-            " - skipping Ecopath_L/Ecopath_Di (run 02_fisheries.R against this workbook first).")
+  ## --- Catches_Discards_FG_ts read: feeds Ecosim_ts's Discards block
+  ## below, NOT Ecopath_L/Ecopath_Di anymore. Those two final sheets are
+  ## now built and written directly in 02_fisheries.R, per FG x Fleet
+  ## (one column per fleet, from fleet_split_out's Landings_t/Discard_t)
+  ## - this FG-only, no-fleet-dimension time series can't produce that
+  ## shape, so it's no longer used for them (2026-09-17).
+  cd_ts <- read_sheet("Catches_Discards_FG_ts", fisheries_csv_dir)
+  if (is.null(cd_ts)) {
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts.csv' not found in ", fisheries_csv_dir,
+            " - skipping the Ecosim_ts Discards block (run 02_fisheries.R against this workbook first).",
+            " Ecopath_L/Ecopath_Di are unaffected - they're written directly by 02_fisheries.R now.")
   }
   
   ## --- Ecosim_ts: B (from Ecosim) + L (from Catches_Ecosim) + Di
@@ -2981,9 +3104,9 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
   ## per-year convention every native Ecosim-format sheet already uses,
   ## so this reads as "the same kind of sheet, just with every driver
   ## in one place" rather than a different layout altogether.
-  ecosim_b <- read_sheet("Ecosim")
-  ecosim_l <- read_sheet("Catches_Ecosim")
-  effort   <- read_sheet("Fishing_Effort_by_Fleet")
+  ecosim_b <- read_sheet("Ecosim", biomass_csv_dir)
+  ecosim_l <- read_sheet("Catches_Ecosim", fisheries_csv_dir)
+  effort   <- read_sheet("Fishing_Effort_by_Fleet", fisheries_csv_dir)
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   
   if (!is.null(ecosim_b)) {
@@ -3034,7 +3157,7 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath) {
     
     out_sheets$Ecosim_ts <- combined
   } else {
-    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecosim.csv' not found in ", out_dir,
+    message("finalize_ecopath_ecosim_summary_sheets(): 'Ecosim.csv' not found in ", biomass_csv_dir,
             " - skipping Ecosim_ts (run 01_biomass.R against this workbook first).")
   }
   
@@ -3094,8 +3217,8 @@ build_info_sheet <- function(filter_areas = NULL, target_countries = NULL, year_
 ## (e.g. "Ecosim") is now a native/intermediate table written
 ## as a CSV alongside the workbook, not a workbook sheet - read from
 ## there instead of openxlsx::read.xlsx().
-read_existing_ts_years <- function(out_path, sheet_name) {
-  existing <- read_native_sheet_csv(sheet_name, dirname(out_path))
+read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
+  existing <- read_native_sheet_csv(sheet_name, if (is.null(csv_dir)) dirname(out_path) else csv_dir)
   if (is.null(existing)) return(NULL)
   year_rows <- suppressWarnings(as.numeric(existing[[1]]))
   ts_years <- sort(year_rows[!is.na(year_rows)])
@@ -3128,7 +3251,8 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                                         ts_years = NULL, out_path, species_taxonomy = NULL,
                                         extra_sheets = NULL,
                                         fg_cv_log = NULL,        ## data.table(FG_num, cv_log) for the Weight row
-                                        normalize_ts = TRUE) {   ## TRUE = rescale to reference index (first value = 1); FALSE = raw density
+                                        normalize_ts = TRUE,     ## TRUE = rescale to reference index (first value = 1); FALSE = raw density
+                                        csv_out_dir = NULL) {    ## directory for this function's own native CSV outputs - defaults to dirname(out_path) for back-compat, but 01_biomass.R passes its own "biomass" subfolder here so this block's CSVs land there instead of at the shared workbook's top level
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
   
   ## Validate expected columns upfront, by name, so a mismatch (e.g. a
@@ -3159,8 +3283,13 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   }
   
   full_fg_list <- unique(dataframe2[, .(FG_num, FG_name)]); setorder(full_fg_list, FG_num)
+  out_dir <- if (is.null(csv_out_dir)) dirname(out_path) else csv_out_dir
   
-  ## --- FG_spp sheet -----------------------------------------------------------
+  ## --- FG_spp_Ecopath (native/intermediate, CSV-only) --------------------------
+  ## NOT the final workbook's FG_spp sheet - that one is built from the
+  ## more complete union (observed + full reference catalog) in
+  ## 01_biomass.R's own STEP 11 and written directly there. This table
+  ## only covers species actually observed in species_density_regional.
   ## IMPORTANT: built from the FULL species_density_regional (every
   ## year), NOT filtered to year_ecopath first. A species genuinely
   ## belongs to its FG regardless of which years it happened to be
@@ -3213,7 +3342,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     print(prop_check[abs(total_prop - 1) > 0.01])
   }
   
-  ## --- Ecopath sheet ----------------------------------------------------------
+  ## --- Ecopath_B sheet ----------------------------------------------------------
   ## Built from full_fg_list (every FG in dataframe2), not from
   ## fg_index_regional directly - an FG with zero observed biomass in
   ## year_ecopath (e.g. nothing in that FG was caught during the base
@@ -3221,21 +3350,38 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## just with blank biomass rather than being silently absent from the
   ## whole sheet. NOT rescaled by normalize_ts - it's a single base-year
   ## snapshot, not a time series, so "first value = 1" doesn't apply.
+  ##
+  ## Final Ecopath_B sheet is exactly FG_num, FG_name, Biomass (t/km2) -
+  ## ONE biomass column, not two. The value used is the year_ecopath-
+  ## range average (mean across every year in year_ecopath, not just
+  ## year_ecopath[1]) - this matches the averaging window Ecopath_PBQB/
+  ## Ecopath_L/Ecopath_Di use elsewhere for the same base period, so all
+  ## final sheets describe the same "year_ecopath average" snapshot
+  ## rather than mixing a single-year value into one sheet and a
+  ## multi-year average into the others. The single-base-year value is
+  ## NOT dropped - it's still written out, alongside the range average,
+  ## in an audit-only CSV (biomass_by_fg_ecopath_detail.csv) for anyone
+  ## who wants to compare the two.
   base_year <- year_ecopath[1]
   ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
   ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
                                     .(Biomass_avg = mean(mean_density, na.rm = TRUE)), by = FG_num]
-  ecopath_sheet <- merge(full_fg_list, ecopath_base, by = "FG_num", all.x = TRUE)
-  ecopath_sheet <- merge(ecopath_sheet, ecopath_avg, by = "FG_num", all.x = TRUE)
-  setnames(ecopath_sheet, c("Biomass_baseyear", "Biomass_avg"),
+  ecopath_detail <- merge(full_fg_list, ecopath_base, by = "FG_num", all.x = TRUE)
+  ecopath_detail <- merge(ecopath_detail, ecopath_avg, by = "FG_num", all.x = TRUE)
+  setnames(ecopath_detail, c("Biomass_baseyear", "Biomass_avg"),
            c(paste0("Biomass_", base_year), paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath))))
+  setorder(ecopath_detail, FG_num)
+  write_native_sheet_csv(ecopath_detail, "biomass_by_fg_ecopath_detail", out_dir)
+  
+  ecopath_sheet <- ecopath_detail[, .(FG_num, FG_name,
+                                      Biomass = get(paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath))))]
   setorder(ecopath_sheet, FG_num)
   
-  n_fg_no_biomass <- ecopath_sheet[is.na(get(paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath)))), .N]
+  n_fg_no_biomass <- ecopath_sheet[is.na(Biomass), .N]
   if (n_fg_no_biomass > 0) {
     message(n_fg_no_biomass, " of ", nrow(ecopath_sheet), " FG(s) have no observed biomass in ",
             min(year_ecopath), "-", max(year_ecopath), " - included with blank biomass, not omitted:")
-    print(ecopath_sheet[is.na(get(paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath)))), .(FG_num, FG_name)])
+    print(ecopath_sheet[is.na(Biomass), .(FG_num, FG_name)])
   }
   
   ## --- Ecosim sheet -----------------------------------------------------------
@@ -3327,8 +3473,11 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## file. Only Ecopath_B (the final target sheet built here) goes to the
   ## workbook directly. FG_spp_Ecopath / Ecosim / FG_spp_Ecosim are native/
   ## intermediate tables now written as CSV only (never as workbook
-  ## sheets), via write_native_sheets_csv() below.
-  out_dir <- dirname(out_path)
+  ## sheets), via write_native_sheets_csv() below. (Note: the final
+  ## workbook's FG_spp sheet is written separately, from 01_biomass.R's
+  ## more complete FG_spp_Ecopath table which also includes reference-
+  ## catalog species with zero observed density - see that script's
+  ## STEP 11.)
   write_native_sheets_csv(list(FG_spp_Ecopath = fg_spp_sheet,
                                Ecosim = ecosim_sheet,
                                FG_spp_Ecosim = fg_spp_ecosim_sheet),
@@ -3357,7 +3506,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## via add_pbqb_to_ecopath_workbook()/upsert_workbook_sheets() - no
   ## special-casing needed on that side.
   ## 2026-09-17 update: PB_QB_spp is a native/intermediate table (not one
-  ## of the 8 final sheets), so its cross-run "has real data" guard now
+  ## of the 9 final sheets), so its cross-run "has real data" guard now
   ## reads the CSV written by add_pbqb_to_ecopath_workbook() instead of a
   ## workbook sheet - that CSV is the only place PB_QB_spp lives now.
   pbqb_spp_has_real_data <- FALSE
@@ -3504,7 +3653,14 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
 ##   own Fleet_Structure sheet, so the split is traceable from the
 ##   workbook alone.
 add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_ecopath, area_km2,
-                                            ts_years = NULL, fleet_structure = NULL) {
+                                            ts_years = NULL, fleet_structure = NULL,
+                                            csv_out_dir = NULL, biomass_csv_dir = NULL) {
+  ## csv_out_dir: directory for this function's OWN native CSV outputs
+  ## (Catches_Ecopath/Catches_Ecosim/Fleet_Structure) - defaults to
+  ## dirname(out_path) for back-compat. biomass_csv_dir: directory to
+  ## read Ecosim.csv from (a biomass-block output, read via
+  ## read_existing_ts_years() below) when ts_years isn't passed
+  ## explicitly - also defaults to dirname(out_path).
   
   if (missing(area_km2) || is.null(area_km2) || is.na(area_km2) || area_km2 <= 0) {
     stop("add_catches_to_ecopath_workbook(): area_km2 must be a positive number - fg_catch's",
@@ -3527,7 +3683,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])[order(FG_num)]
   
   if (is.null(ts_years)) {
-    ts_years <- read_existing_ts_years(out_path, "Ecosim")
+    ts_years <- read_existing_ts_years(out_path, "Ecosim", csv_dir = biomass_csv_dir)
     if (!is.null(ts_years)) {
       message("ts_years taken from the existing Ecosim sheet: ",
               min(ts_years), "-", max(ts_years), " (", length(ts_years), " years) -",
@@ -3671,7 +3827,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     message("Fleet_Structure sheet written - ", uniqueN(fleet_tbl$Fleet), " fleet(s) (",
             paste(fleet_names, collapse = ", "), ") across ", uniqueN(fleet_tbl$FG_num), " FG(s).")
   }
-  write_native_sheets_csv(sheets_to_write, dirname(out_path))
+  write_native_sheets_csv(sheets_to_write, if (is.null(csv_out_dir)) dirname(out_path) else csv_out_dir)
   
   invisible(sheets_to_write)
 }
@@ -3719,17 +3875,188 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
 ## did before this existed.
 ## 2026-09-17 update: other sheets should be saved as csv files, not
 ## kept in the final output excel file - FG_lookup is a native
-## reference table, not one of the 8 final sheets, so it no longer
+## reference table, not one of the 9 final sheets, so it no longer
 ## lives in the workbook at all (01_biomass.R now writes it via
 ## write_native_sheets_csv() as FG_lookup.csv). Reads that CSV from the
 ## same directory as the workbook instead of a "FG"/"FG_lookup" sheet.
-read_full_fg_reference <- function(out_path) {
-  ref <- read_native_sheet_csv("FG_lookup", dirname(out_path))
+read_full_fg_reference <- function(out_path, csv_dir = NULL) {
+  ref <- read_native_sheet_csv("FG_lookup", if (is.null(csv_dir)) dirname(out_path) else csv_dir)
   if (is.null(ref) || !all(c("FG_num", "FG_name") %in% names(ref))) return(NULL)
   unique(ref[, .(FG_num, FG_name)])
 }
 
-add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL) {
+## =================================================================
+## build_fg_references_sheet() - added 2026-09-17. Writes the final
+## workbook's "FG_References" sheet: one row per FG, consolidating
+## WHICH DATA SOURCE fed each block for that FG, so the model's data
+## provenance is reviewable FG by FG rather than scattered across each
+## block's own audit CSVs. Columns: FG_num, FG_name, ref_B (biomass
+## source), ref_fisheries (catch/discard source), ref_pbqb_traits (PB/QB
+## data source), ref_diet (diet-study citations), ref_methods (the
+## calculation METHOD/literature behind PB_FG/QB_FG - distinct from
+## ref_pbqb_traits, which is about the DATA feeding that method, not
+## the method itself).
+##
+## Each argument is a directory to read that block's own native CSV
+## outputs from (see the 2026-09-17 per-block CSV subfolder update) -
+## every one defaults to dirname(out_path) for back-compat, same
+## pattern as every other cross-block reader in this file. Safe to
+## call any time - a block that hasn't run yet simply leaves its
+## column NA for every FG, with a message, rather than erroring; run
+## it again (04_diets.R does, always last) once every block has run to
+## get a fully populated sheet.
+##
+## This is a best-effort SUMMARY, not a full audit trail - each column
+## folds together whatever distinct source values that block used
+## across every year/species/study for that FG (" | "-joined if more
+## than one). For the full detail behind any one of these, the
+## individual block's own audit CSV (biomass_source in
+## survey_fg_annual_index_regional_combined.csv, catch_source in
+## Catches_Discards_FG_ts.csv, PB_source/QB_source in PB_QB.csv,
+## dispatch_group in PB_QB_spp.csv, the Reference column in the
+## metaweb DATA_ENTRY sheet via diet_references_by_fg.csv) is what to
+## open instead.
+## =================================================================
+build_fg_references_sheet <- function(out_path,
+                                      biomass_csv_dir = NULL,
+                                      fisheries_csv_dir = NULL,
+                                      pbqb_csv_dir = NULL,
+                                      diet_csv_dir = NULL) {
+  biomass_csv_dir   <- if (is.null(biomass_csv_dir))   dirname(out_path) else biomass_csv_dir
+  fisheries_csv_dir <- if (is.null(fisheries_csv_dir)) dirname(out_path) else fisheries_csv_dir
+  pbqb_csv_dir      <- if (is.null(pbqb_csv_dir))      dirname(out_path) else pbqb_csv_dir
+  diet_csv_dir      <- if (is.null(diet_csv_dir))      dirname(out_path) else diet_csv_dir
+  
+  full_fg_ref <- read_full_fg_reference(out_path, csv_dir = biomass_csv_dir)
+  if (is.null(full_fg_ref)) {
+    message("build_fg_references_sheet(): no FG_lookup.csv found in ", biomass_csv_dir,
+            " - run 01_biomass.R against this workbook first. Skipping the FG_References sheet",
+            " for now (nothing written this call).")
+    return(invisible(NULL))
+  }
+  refs <- copy(full_fg_ref)
+  
+  ## --- ref_B: biomass_source, per FG, from 01_biomass.R's own
+  ## survey_fg_annual_index_regional_combined.csv (Year x FG_num, one
+  ## biomass_source value per row already - see 01_biomass.R's "FG
+  ## biomass-source priority" section).
+  biomass_src_path <- file.path(biomass_csv_dir, "survey_fg_annual_index_regional_combined.csv")
+  if (file.exists(biomass_src_path)) {
+    b <- fread(biomass_src_path)
+    if ("biomass_source" %in% names(b)) {
+      b_by_fg <- b[, .(ref_B = paste(sort(unique(biomass_source)), collapse = " | ")), by = FG_num]
+      refs <- merge(refs, b_by_fg, by = "FG_num", all.x = TRUE)
+    } else {
+      message("build_fg_references_sheet(): '", biomass_src_path, "' has no biomass_source column",
+              " (older run?) - ref_B left blank.")
+    }
+  } else {
+    message("build_fg_references_sheet(): '", biomass_src_path, "' not found - run 01_biomass.R",
+            " against this workbook first. ref_B left blank for now.")
+  }
+  if (!"ref_B" %in% names(refs)) refs[, ref_B := NA_character_]
+  
+  ## --- ref_fisheries: catch_source, per FG, from 02_fisheries.R's own
+  ## Catches_Discards_FG_ts.csv (native/intermediate, fixed filename -
+  ## unlike the DATASET_VERSION-suffixed CSV of the same data).
+  cd_ts <- read_native_sheet_csv("Catches_Discards_FG_ts", fisheries_csv_dir)
+  if (!is.null(cd_ts) && "catch_source" %in% names(cd_ts)) {
+    f_by_fg <- cd_ts[, .(ref_fisheries = paste(sort(unique(catch_source)), collapse = " | ")), by = FG_num]
+    refs <- merge(refs, f_by_fg, by = "FG_num", all.x = TRUE)
+  } else {
+    message("build_fg_references_sheet(): 'Catches_Discards_FG_ts.csv' not found (or has no catch_source",
+            " column) in ", fisheries_csv_dir, " - run 02_fisheries.R against this workbook first.",
+            " ref_fisheries left blank for now.")
+  }
+  if (!"ref_fisheries" %in% names(refs)) refs[, ref_fisheries := NA_character_]
+  
+  ## --- ref_pbqb_traits + ref_methods: from 03_pbqb-traits.R's own
+  ## PB_QB.csv (FG-level: PB_source/QB_source if EcoBase gap-filling
+  ## ran this session, otherwise every FG is the same "empirical"
+  ## default) and PB_QB_spp.csv (species-level: dispatch_group, which
+  ## calculation method actually ran for each species feeding that FG -
+  ## mapped below to its literature citation for ref_methods).
+  pbqb <- read_native_sheet_csv("PB_QB", pbqb_csv_dir)
+  if (!is.null(pbqb)) {
+    if (all(c("PB_source", "QB_source") %in% names(pbqb))) {
+      pbqb[, ref_pbqb_traits := paste0("PB: ", fifelse(is.na(PB_source), "n/a", PB_source),
+                                       "; QB: ", fifelse(is.na(QB_source), "n/a", QB_source))]
+    } else {
+      pbqb[, ref_pbqb_traits := "empirical (species-level PB/QB, biomass-weighted to FG) - see PB_QB_spp.csv for the species behind each FG"]
+    }
+    refs <- merge(refs, pbqb[, .(FG_num, ref_pbqb_traits)], by = "FG_num", all.x = TRUE)
+  } else {
+    message("build_fg_references_sheet(): 'PB_QB.csv' not found in ", pbqb_csv_dir,
+            " - run 03_pbqb-traits.R against this workbook first. ref_pbqb_traits left blank for now.")
+  }
+  if (!"ref_pbqb_traits" %in% names(refs)) refs[, ref_pbqb_traits := NA_character_]
+  
+  ## dispatch_group -> literature citation. Extend this lookup if
+  ## 03_pbqb-traits.R's own dispatch logic (calc_fish()/calc_invert()/
+  ## etc.) ever adds a new dispatch_group value - anything not listed
+  ## here just falls through with a generic note instead of erroring.
+  method_citation <- c(
+    fish        = "Fish P/B, Q/B from growth (VBGF) and natural/fishing mortality - method for estimating P/B and Q/B for EwE models (see pipeline_documentation.Rmd's Methodology reference)",
+    invert      = "Benthic invertebrate P/B, Q/B from empirical length/weight-based relationships",
+    cephalopod  = "Cephalopod P/B, Q/B from short-lived life-history convention",
+    literature  = "EcoBase model repository (published literature P/B, Q/B)"
+  )
+  spp <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
+  if (!is.null(spp) && "dispatch_group" %in% names(spp)) {
+    m_by_fg <- spp[!is.na(dispatch_group), .(dispatch_groups = paste(sort(unique(dispatch_group)), collapse = ",")), by = FG_num]
+    m_by_fg[, ref_methods := vapply(strsplit(dispatch_groups, ","), function(groups) {
+      hits <- unique(method_citation[groups])
+      hits <- hits[!is.na(hits)]
+      unmatched <- setdiff(groups, names(method_citation))
+      if (length(unmatched) > 0) hits <- c(hits, paste0("dispatch_group='", unmatched, "' (no citation on file)"))
+      if (length(hits) == 0) return(NA_character_)
+      paste(hits, collapse = " | ")
+    }, character(1))]
+    refs <- merge(refs, m_by_fg[, .(FG_num, ref_methods)], by = "FG_num", all.x = TRUE)
+  } else {
+    message("build_fg_references_sheet(): 'PB_QB_spp.csv' not found (or has no dispatch_group column)",
+            " in ", pbqb_csv_dir, " - run 03_pbqb-traits.R with species_pb_qb passed to",
+            " add_pbqb_to_ecopath_workbook() first. ref_methods left blank for now.")
+  }
+  if (!"ref_methods" %in% names(refs)) refs[, ref_methods := NA_character_]
+  refs[is.na(ref_methods) & !is.na(ref_pbqb_traits) & grepl("EcoBase", ref_pbqb_traits),
+       ref_methods := "EcoBase model repository (published literature P/B, Q/B)"]
+  
+  ## --- ref_diet: from 04_diets.R's own diet_references_by_fg.csv
+  ## (per-FG study citations, rolled up from the metaweb's own
+  ## Reference column via build_species_diet()/predator_references).
+  diet_refs_path <- file.path(diet_csv_dir, "diet_references_by_fg.csv")
+  if (file.exists(diet_refs_path)) {
+    d <- fread(diet_refs_path)
+    if (all(c("FG_num", "references") %in% names(d))) {
+      refs <- merge(refs, d[, .(FG_num, ref_diet = references)], by = "FG_num", all.x = TRUE)
+    } else {
+      message("build_fg_references_sheet(): '", diet_refs_path, "' is missing FG_num/references column(s) -",
+              " ref_diet left blank.")
+    }
+  } else {
+    message("build_fg_references_sheet(): '", diet_refs_path, "' not found - run 04_diets.R against this",
+            " workbook first. ref_diet left blank for now.")
+  }
+  if (!"ref_diet" %in% names(refs)) refs[, ref_diet := NA_character_]
+  refs[!is.na(ref_diet) & ref_diet == "", ref_diet := NA_character_]  # fwrite()/fread() round-trips NA as "" for character columns by default - restore true NA rather than a blank string
+  
+  refs <- refs[, .(FG_num, FG_name, ref_B, ref_fisheries, ref_pbqb_traits, ref_diet, ref_methods)]
+  setorder(refs, FG_num)
+  upsert_workbook_sheets(list(FG_References = refs), out_path)
+  n_populated <- refs[, sum(!is.na(ref_B) | !is.na(ref_fisheries) | !is.na(ref_pbqb_traits) | !is.na(ref_diet) | !is.na(ref_methods))]
+  message("build_fg_references_sheet(): wrote 'FG_References' sheet - ", nrow(refs), " FG(s), ", n_populated,
+          " with at least one reference filled in so far. Columns: ", paste(names(refs), collapse = ", "), ".")
+  invisible(refs)
+}
+
+add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL,
+                                         csv_out_dir = NULL, biomass_csv_dir = NULL) {
+  ## csv_out_dir: directory for this function's OWN native CSV outputs
+  ## (PB_QB/PB_QB_spp) - defaults to dirname(out_path) for back-compat.
+  ## biomass_csv_dir: directory to read FG_lookup.csv from (a biomass-
+  ## block output, read via read_full_fg_reference() below) - also
+  ## defaults to dirname(out_path).
   required_cols <- c("FG", "FG_name", "PB_FG", "QB_FG")
   missing_cols <- setdiff(required_cols, names(fg_weighted))
   if (length(missing_cols) > 0) {
@@ -3755,7 +4082,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   ## the model, not just the ones with a computed value). A genuinely
   ## un-computed FG still gets a row here, with PB_FG/QB_FG left NA and
   ## flagged below - "no data yet" rather than "silently absent."
-  full_fg_ref <- read_full_fg_reference(out_path)
+  full_fg_ref <- read_full_fg_reference(out_path, csv_dir = biomass_csv_dir)
   if (!is.null(full_fg_ref)) {
     n_before <- nrow(pbqb_sheet)
     pbqb_sheet <- merge(full_fg_ref, pbqb_sheet, by = "FG_num", all.x = TRUE, suffixes = c("_ref", ""))
@@ -3779,13 +4106,13 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
   ## the intended sheets; other sheets should be saved as csv files, not
   ## kept in the final output excel file. PB_QB (FG-level) IS one
-  ## of the 8 final target sheets - written directly to the workbook as
+  ## of the 9 final target sheets - written directly to the workbook as
   ## Ecopath_PBQB, plus a PB_QB.csv mirror for audit/back-compat naming
   ## and so other functions (e.g. export_ecopath_ecosim_excel()'s cross-
   ## run guard) can find it without opening the workbook. PB_QB_spp
   ## (species-level detail) is native/intermediate - CSV only, never a
   ## workbook sheet - built further below.
-  out_dir <- dirname(out_path)
+  out_dir <- if (is.null(csv_out_dir)) dirname(out_path) else csv_out_dir
   write_native_sheet_csv(pbqb_sheet, "PB_QB", out_dir)
   workbook_sheets <- list(Ecopath_PBQB = pbqb_sheet)
   sheets <- list(PB_QB = pbqb_sheet)

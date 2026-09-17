@@ -101,7 +101,18 @@ pcloud_dir <- resolve_config_dir("pcloud_dir", "/Users/daniel/pCloud Drive/EwE W
 git_dir <- resolve_config_dir("git_dir", "/Users/daniel/Documents/GitHub/WMed_EwE/",
                               "Select Github WMed_EwE Directory", "Please select the directory where you cloned the WMed_EwE repository.")  # resolve the local git repo directory
 
-ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")  # path to the EwE Ecopath/Ecosim workbook to write into
+ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")  # path to the EwE Ecopath/Ecosim workbook to write into - stays at the shared top-level out_dir since every block reads/writes it
+
+## 2026-09-17 update: this block's own native/intermediate CSV outputs
+## now go into their own "fisheries" subfolder, matching 01_biomass.R's
+## "biomass" subfolder - each block keeps its native CSVs separate,
+## with only the shared workbook staying at the top-level out_dir.
+## BIOMASS_CSV_DIR points at 01_biomass.R's subfolder for this script's
+## cross-block reads of that block's own outputs (species density,
+## strata area, Ecosim.csv, FG_lookup.csv).
+csv_out_dir <- file.path(out_dir, "fisheries")
+if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
+BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
 
 ## SOURCE-ABLE SCRIPT: as with out_dir/pcloud_dir/git_dir above, every
 ## knob below is only set to its West Med default when not already set
@@ -243,8 +254,8 @@ safe_fread_optional <- function(path, label) {
 ## Step 1's fixed-name contract files - needed for the F-for-species
 ## step only. Not another fisheries script's output; if these don't
 ## exist yet (Step 1 hasn't been run), only that one step is skipped.
-SPECIES_DENSITY_PATH <- file.path(out_dir, "species_density_regional_combined.csv")  # Step 1's contract file: species density
-STRATA_AREA_PATH     <- file.path(out_dir, "strata_area_by_area.csv")  # Step 1's contract file: strata area
+SPECIES_DENSITY_PATH <- file.path(BIOMASS_CSV_DIR, "species_density_regional_combined.csv")  # Step 1's contract file: species density (biomass block's own subfolder)
+STRATA_AREA_PATH     <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")  # Step 1's contract file: strata area (biomass block's own subfolder)
 
 N_TOP_GEARS <- 8   # effort-gears beyond the top N are folded into "Other gear" - same convention
 # 02a_fisheries_multisource.R uses for both SAU catch and FishMIP effort.
@@ -437,7 +448,7 @@ find_or_download_fao_species <- function() {
   found <- list.files(pcloud_dir, pattern = "CL_FI_SPECIES_GROUPS.csv$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)  # look for a local copy first
   if (length(found) > 0) return(found[1])
   url <- "https://data.apps.fao.org/catalog/dataset/b70c52c1-475f-4951-a8ac-de44016abd9b/resource/2c0f936d-6c36-4715-9c7f-fa5a70c00249/download/cl_fi_species_groups.csv"
-  destfile <- file.path(out_dir, "CL_FI_SPECIES_GROUPS.csv")
+  destfile <- file.path(csv_out_dir, "CL_FI_SPECIES_GROUPS.csv")
   max_retries <- 3; last_err <- NULL
   for (attempt in seq_len(max_retries)) {
     ok <- tryCatch({
@@ -511,7 +522,7 @@ resolved_final <- rbindlist(list(
 ), use.names = TRUE)  # add the manually-overridden matches back in
 
 resolved_final[, status := fifelse(is.na(FG_num), "unresolved", "resolved")]  # flag whether each species ended up matched
-fwrite(resolved_final, file.path(out_dir, "species_fg_matched.csv"))  # write the full matching result to CSV
+fwrite(resolved_final, file.path(csv_out_dir, "species_fg_matched.csv"))  # write the full matching result to CSV
 message("\n=== FINAL MATCHING SUMMARY === Resolved ", sum(resolved_final$status == "resolved"), " of ",
         nrow(resolved_final), " species (", round(100 * mean(resolved_final$status == "resolved"), 1), "%).")
 
@@ -522,7 +533,7 @@ species_to_fg <- unique(resolved_final[status == "resolved", .(Species, FG_num, 
 gfcm_species_division_fg <- merge(ts_data$species_ts, species_to_fg, by = "Species")  # attach FG to the species-level catch timeseries
 gfcm_species_division_fg <- gfcm_species_division_fg[Year >= START_YEAR & Year <= END_YEAR,
                                                      .(Landings_t = sum(Catch, na.rm = TRUE)), by = .(Year, Division, FG_num, FG_name, Species)]  # sum landings by year x division x FG x species, within the study period
-fwrite(gfcm_species_division_fg, file.path(out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # write result to CSV
+fwrite(gfcm_species_division_fg, file.path(csv_out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # write result to CSV
 message("\n[GFCM] gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv written - ",
         nrow(gfcm_species_division_fg), " Year x Division x FG x Species row(s). 'Division' here is",
         " GFCM's FAO-division resolution (37.1.1/37.1.2/37.1.3), NOT a GSA number - see this script's header.")
@@ -581,7 +592,7 @@ gfcm_catches_by_area <- ts_data$country_species_ts[
   Country %in% TARGET_COUNTRIES & Year >= START_YEAR & Year <= END_YEAR,
   .(Catch_t = sum(Catch, na.rm = TRUE)), by = .(Country, Division, Year)]  # sum catch by country x division x year
 setorder(gfcm_catches_by_area, Country, Division, Year)  # sort rows for readability
-fwrite(gfcm_catches_by_area, file.path(out_dir, paste0("gfcm_catches_by_country_division_year_", DATASET_VERSION, ".csv")))  # write result to CSV
+fwrite(gfcm_catches_by_area, file.path(csv_out_dir, paste0("gfcm_catches_by_country_division_year_", DATASET_VERSION, ".csv")))  # write result to CSV
 gfcm_catches_by_area_summary <- gfcm_catches_by_area[
   , .(Catch_t_total = sum(Catch_t, na.rm = TRUE), n_years = uniqueN(Year)), by = .(Country, Division)]  # total catch and year count per country x division
 setorder(gfcm_catches_by_area_summary, Country, -Catch_t_total)  # sort by country, largest catch first
@@ -649,7 +660,7 @@ division_by_country <- gfcm_catches_by_area_summary[
       n_divisions = uniqueN(Division)), by = Country]  # summarize which GFCM divisions have catch per country
 fleet_vs_division_check <- merge(fleet_gsa_by_country, division_by_country, by = "Country", all = TRUE)  # side-by-side comparison table
 setorder(fleet_vs_division_check, Country)  # sort by country
-fwrite(fleet_vs_division_check, file.path(out_dir, "fleet_definition_vs_gfcm_division_check.csv"))  # write result to CSV
+fwrite(fleet_vs_division_check, file.path(csv_out_dir, "fleet_definition_vs_gfcm_division_check.csv"))  # write result to CSV
 message("\n[Fleet eval] Fleet-definition-vs-GFCM-coverage check written to",
         " fleet_definition_vs_gfcm_division_check.csv - read as 'does the register's declared GSA claim",
         " look plausible given where GFCM's own catch is concentrated', NOT a resolved GSA<->Division join.")
@@ -1538,7 +1549,7 @@ if (!dir.exists(stecf_catches_dir)) {
                                               Discard_t = sum(tot_discards_tonnes, na.rm = TRUE)),
                                           by = .(Country, GSA = sub_region, FleetType, Metier, FG_num, FG_name, Year = year)]  # sum catch/discards by country x GSA x fleet x metier x FG x year
       setorder(stecf_fdi_catch_by_gsa, Country, GSA, FG_num, Year)  # sort for readability
-      fwrite(stecf_fdi_catch_by_gsa, file.path(out_dir, "stecf_fdi_catch_by_gsa_gear_year.csv"))  # write result to CSV
+      fwrite(stecf_fdi_catch_by_gsa, file.path(csv_out_dir, "stecf_fdi_catch_by_gsa_gear_year.csv"))  # write result to CSV
       message("[STECF FDI] stecf_fdi_catch_by_gsa_gear_year.csv written - ", nrow(stecf_fdi_catch_by_gsa),
               " Country x GSA x FleetType x Metier x FG x Year row(s).")
       
@@ -1605,7 +1616,7 @@ if (!file.exists(stecf_effort_file)) {
                                                        by = .(Country, GSA, FleetType, Metier, Year),
                                                        .SDcols = paste0("Effort_", effort_cols)]  # sum effort metrics by country x GSA x fleet x metier x year
     setorder(stecf_fdi_effort_by_gsa, Country, GSA, FleetType, Year)  # sort for readability
-    fwrite(stecf_fdi_effort_by_gsa, file.path(out_dir, "stecf_fdi_effort_by_gsa_gear_year.csv"))  # write result to CSV
+    fwrite(stecf_fdi_effort_by_gsa, file.path(csv_out_dir, "stecf_fdi_effort_by_gsa_gear_year.csv"))  # write result to CSV
     message("\n[STECF FDI] stecf_fdi_effort_by_gsa_gear_year.csv written - ", nrow(stecf_fdi_effort_by_gsa),
             " Country x GSA x FleetType x Metier x Year row(s), effort metric(s): ",
             paste(paste0("Effort_", effort_cols), collapse = ", "), ". Note: total_kW_days_at_sea/",
@@ -1674,7 +1685,7 @@ if (!file.exists(stecf_capacity_file)) {
     stecf_fdi_capacity_by_fleet <- Reduce(function(a, b) merge(a, b, by = c("Country", "FleetType", "Year"), all = TRUE), agg_list)  # merge sum and mean tables together
     setnames(stecf_fdi_capacity_by_fleet, capacity_cols, paste0("Capacity_", capacity_cols))  # prefix capacity metric names
     setorder(stecf_fdi_capacity_by_fleet, Country, FleetType, Year)  # sort for readability
-    fwrite(stecf_fdi_capacity_by_fleet, file.path(out_dir, "stecf_fdi_capacity_by_fleet_year.csv"))  # write result to CSV
+    fwrite(stecf_fdi_capacity_by_fleet, file.path(csv_out_dir, "stecf_fdi_capacity_by_fleet_year.csv"))  # write result to CSV
     message("\n[STECF FDI] stecf_fdi_capacity_by_fleet_year.csv written - ", nrow(stecf_fdi_capacity_by_fleet),
             " Country x FleetType x Year row(s), capacity metric(s): ", paste(paste0("Capacity_", capacity_cols), collapse = ", "),
             ". No GSA/metier resolution in this file (broader fishing_tech categories only).")
@@ -1705,7 +1716,7 @@ if (nrow(stecf_fleet_prop_by_year) > 0 && nrow(sau_fleet_prop_by_year) > 0) {
     fleet_calibration <- merge(stecf_overlap, sau_overlap, by = c("Country", "FleetType"))  # pair up FDI vs SAU shares
     fleet_calibration[, calibration_factor := fifelse(prop_fleet_sau > 0, prop_fleet_stecf / prop_fleet_sau, NA_real_)]  # ratio of FDI's share to SAU's share
     fleet_calibration <- fleet_calibration[is.finite(calibration_factor), .(Country, FleetType, calibration_factor)]  # drop non-finite factors
-    fwrite(fleet_calibration, file.path(out_dir, "sau_stecf_fleet_calibration_factors.csv"))  # write result to CSV
+    fwrite(fleet_calibration, file.path(csv_out_dir, "sau_stecf_fleet_calibration_factors.csv"))  # write result to CSV
     message("\n[Hindcast] SAU-vs-STECF FDI calibration factors, overlap years ", min(overlap_years), "-",
             max(overlap_years), ": ", nrow(fleet_calibration), " Country x FleetType factor(s) - written to",
             " sau_stecf_fleet_calibration_factors.csv, applied below to SAU's pre-", STECF_FDI_START_YEAR,
@@ -1945,7 +1956,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
     message("[Discards] discard_by_fg is in FishMIP's own f_group scheme, NOT joined onto real FG_num",
             " via FISHMIP_FG_CROSSWALK_PATH. Written separately to discards_by_fishmip_fgroup_timeseries.csv.",
             " Attempting a name-keyword AMBIGUOUS/MISMATCH 'closest FG' fallback instead of dropping it entirely.")
-    fwrite(discard_by_fg, file.path(out_dir, "discards_by_fishmip_fgroup_timeseries.csv"))  # write the FishMIP-scheme discard ratios to CSV for review
+    fwrite(discard_by_fg, file.path(csv_out_dir, "discards_by_fishmip_fgroup_timeseries.csv"))  # write the FishMIP-scheme discard ratios to CSV for review
     
     ## Build every (fishmip_f_group, FG_num) pair where the FULL word-set of
     ## the shorter label is contained in the word-set of the longer one -
@@ -2067,7 +2078,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
               " than one FishMIP f_group with DIFFERING discard ratios - averaged to a single ratio per cell",
               " rather than left as duplicate rows (which previously caused a cartesian-join error downstream).")
     }
-    fwrite(closest_fg_matches, file.path(out_dir, "discards_fishmip_closest_fg_match_REVIEW.csv"))  # write the keyword matches to CSV for manual review
+    fwrite(closest_fg_matches, file.path(csv_out_dir, "discards_fishmip_closest_fg_match_REVIEW.csv"))  # write the keyword matches to CSV for manual review
   }
   message("[Discards] discard_ratio available for ", uniqueN(discard_by_fg$FG_num), " FG(s) x ",
           uniqueN(discard_by_fg$Year), " Year(s) (Mediterranean-wide, applied uniformly across countries -",
@@ -2107,7 +2118,7 @@ if (nrow(stecf_fdi_catch_by_gsa) > 0) {
     catch_magnitude_calibration <- merge(stecf_overlap_m, gfcm_overlap_m, by = c("Country", "FG_num"))  # pair up FDI vs GFCM magnitude
     catch_magnitude_calibration[, calibration_factor := fifelse(Catch_t_gfcm > 0, Catch_t_stecf / Catch_t_gfcm, NA_real_)]  # ratio of FDI's tonnage to GFCM's
     catch_magnitude_calibration <- catch_magnitude_calibration[is.finite(calibration_factor), .(Country, FG_num, calibration_factor)]  # drop non-finite factors
-    fwrite(catch_magnitude_calibration, file.path(out_dir, "gfcm_stecf_catch_magnitude_calibration_factors.csv"))  # write result to CSV
+    fwrite(catch_magnitude_calibration, file.path(csv_out_dir, "gfcm_stecf_catch_magnitude_calibration_factors.csv"))  # write result to CSV
     message("\n[Catch magnitude] GFCM-vs-STECF FDI catch magnitude calibration, overlap years ", min(overlap_years_m), "-",
             max(overlap_years_m), ": ", nrow(catch_magnitude_calibration), " Country x FG factor(s) - applied to GFCM's",
             " own Landings_t across its WHOLE series for Spain/France/Italy (a factor > 1 means FDI's own landed",
@@ -2263,7 +2274,7 @@ if (nrow(mar_catch_by_taxon) > 0 || nrow(dza_catch_by_taxon) > 0) {
   belhabib_long <- belhabib_long[!is.na(Catch_t)]
   
   taxon_fg_matches <- match_taxon_to_fg(unique(belhabib_long$taxon), full_fg_list$FG_name, full_fg_list$FG_num)
-  fwrite(taxon_fg_matches, file.path(out_dir, "belhabib_taxon_to_fg_match_REVIEW.csv"))  # every taxon->FG attempt, for manual review
+  fwrite(taxon_fg_matches, file.path(csv_out_dir, "belhabib_taxon_to_fg_match_REVIEW.csv"))  # every taxon->FG attempt, for manual review
   n_taxon_matched <- taxon_fg_matches[n_match == 1, .N]
   message("\n[Morocco/Algeria catch] Belhabib taxon-group -> FG keyword match: ", n_taxon_matched, " of ",
           nrow(taxon_fg_matches), " taxon group(s) matched to exactly one FG (the rest matched zero or several FGs",
@@ -2271,7 +2282,7 @@ if (nrow(mar_catch_by_taxon) > 0 || nrow(dza_catch_by_taxon) > 0) {
   
   belhabib_long <- merge(belhabib_long, taxon_fg_matches[n_match == 1, .(taxon, FG_num)], by = "taxon")  # keep only cleanly-matched taxon groups
   belhabib_catch_by_fg <- belhabib_long[, .(Catch_t_belhabib = sum(Catch_t, na.rm = TRUE)), by = .(Country, FG_num, Year)]  # aggregate to Country x FG x Year
-  fwrite(belhabib_catch_by_fg, file.path(out_dir, "belhabib_catch_by_fg_timeseries.csv"))
+  fwrite(belhabib_catch_by_fg, file.path(csv_out_dir, "belhabib_catch_by_fg_timeseries.csv"))
   message("[Morocco/Algeria catch] ", nrow(belhabib_catch_by_fg), " Country x FG x Year cell(s) available from",
           " Belhabib et al.'s reconstructed catch, years ", min(belhabib_catch_by_fg$Year), "-", max(belhabib_catch_by_fg$Year), ".")
 } else {
@@ -2338,22 +2349,26 @@ setcolorder(catches_discards_fg, c("Year", "FG_num", "FG_name", "Landings_t", "C
 message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Year row(s), full West Med series.")
 
 ## =================================================================
-## # GFCM STAR + RAM Legacy stock-assessment catch/landings CROSS-CHECK
+## # GFCM STAR + RAM Legacy stock-assessment catch/landings figures
 ## (2026-09), using the combine_STAR_RAMlegacy.R /
 ## analysis_STAR.R scripts (GFCM STAR Power BI scrape + RAM Legacy stock
 ## database) - these give a SECOND, independent catch/landings series
-## for the subset of species that actually have a real stock assessment.
-## Wired in here as a CROSS-CHECK against the GFCM/FDI/SAU-built catch
-## series above, NOT a replacement or an override: STAR/RAM only cover
-## assessed stocks (a handful of commercially important species, e.g.
-## hake, red mullet, sardine, anchovy, deep-water rose shrimp), while
-## catches_discards_fg above covers every species/FG GFCM's STATLANT
-## capture-production reports at all - far broader coverage, just not
-## independently verified. Where the two disagree meaningfully for an
-## assessed FG's Year, that's a real signal worth a human look (a
-## discard/misreporting gap in one source, or a stock-assessment-vs-
-## STATLANT methodology difference) - never silently averaged or
-## blended into Catch_t itself.
+## for the subset of species that actually have a real stock assessment
+## (a handful of commercially important species/stocks, e.g. hake, red
+## mullet, sardine, anchovy, deep-water rose shrimp, and - notably -
+## highly-migratory large pelagics like tuna/swordfish that ICCAT/GFCM
+## assess directly but that GFCM's own STATLANT capture-production
+## product resolves only weakly).
+##
+## Built here first purely as comparison columns against the GFCM/FDI/
+## SAU-built catch series above (star_catch_pct_diff/
+## star_discard_ratio_diff_pp below); a SEPARATE step further down
+## ("Stock-assessment catch/landings PRIORITY") then actually REPLACES
+## Catch_t/Landings_t/Discard_t with STAR/RAM's own figures, but only
+## for single-species/stanza assessed FGs (2026-09-17 update - see that
+## section's own header for the exact rule) - every other FG's
+## comparison here stays a cross-check only, never blended into
+## Catch_t.
 ##
 ## Species -> FG matching reuses fg_lookup's own exact-name-then-genus
 ## cascade (same convention already used for SAU's species -> FG match
@@ -2430,7 +2445,7 @@ if (nrow(star_ram_combined) > 0) {
   star_catch_by_fg[, star_discard_ratio := fifelse(
     star_catches_t > 0 & star_landings_t > 0, (star_catches_t - star_landings_t) / star_catches_t, NA_real_
   )]
-  fwrite(star_catch_by_fg, file.path(out_dir, "star_ram_catch_by_fg_crosscheck.csv"))
+  fwrite(star_catch_by_fg, file.path(csv_out_dir, "star_ram_catch_by_fg_crosscheck.csv"))
   message("[STAR/RAM cross-check] star_catch_by_fg: ", nrow(star_catch_by_fg), " FG x Year row(s) with an assessed-stock",
           " catch figure (", uniqueN(star_catch_by_fg$FG_num), " FG(s) total) - written to star_ram_catch_by_fg_crosscheck.csv.")
 }
@@ -2463,11 +2478,76 @@ if (nrow(star_catch_by_fg) > 0) {
           " STAR/RAM cross-check figure; ", n_flagged, " of those disagree with this pipeline's own Catch_t by",
           " more than 50% - see star_catch_pct_diff. Of the cells with an implied STAR/RAM discard ratio (Catches",
           " and Landings both > 0), ", n_flagged_discard, " disagree with this pipeline's own discard_ratio by more",
-          " than 15 percentage points - see star_discard_ratio_diff_pp. Both are cross-checks only - neither",
-          " overrides Catch_t or discard_ratio.")
+          " than 15 percentage points - see star_discard_ratio_diff_pp. These comparisons are computed against",
+          " Catch_t/discard_ratio BEFORE the stock-assessment PRIORITY override below runs - for single-species/",
+          " stanza assessed FGs, Catch_t/discard_ratio are then replaced with STAR/RAM's own figures; for every",
+          " other FG, these stay cross-checks only.")
 } else {
   catches_discards_fg[, `:=`(star_catch_pct_diff = NA_real_, star_discard_ratio_diff_pp = NA_real_)]
 }
+
+## =================================================================
+## Stock-assessment catch/landings PRIORITY for single-species/stanza
+## assessed FGs (2026-09-17) - e.g. tuna, swordfish, and any other
+## highly-migratory or otherwise individually-assessed large pelagic
+## whose real Mediterranean-stock catch record is its own GFCM STAR/
+## RAM Legacy stock assessment, not GFCM's STATLANT capture-production
+## aggregate. Mirrors the biomass-side priority rule already
+## implemented in 01_biomass.R (single-species/stanza FG + a real
+## stock-assessment value -> use it, else fall back) - applied here to
+## Catch_t/Landings_t/Discard_t instead of biomass density, and no
+## longer just a cross-check column (star_catches_t/star_landings_t
+## above): for exactly the FG x Year cells that qualify, STAR/RAM's own
+## Catches/Landings figures REPLACE the GFCM/FDI/SAU-derived Catch_t/
+## Landings_t/Discard_t.
+##
+## Qualifies = single-species FG (n_species_in_fg == 1, same FG
+## resolution as fg_lookup above - computed independently here rather
+## than read back from 01_biomass.R's fg_ecology_classification.csv,
+## so this script keeps working standalone) AND a real
+## star_catches_t > 0 for that specific Year. Every other cell is
+## untouched - including OTHER years of the SAME single-species FG
+## where STAR/RAM simply has no value for that year; those still fall
+## back to the GFCM-derived figure, same row-wise (never blanket)
+## fallback principle as the biomass cascade.
+##
+## Landings_t: uses star_landings_t directly where STAR/RAM reports a
+## real (>0) landings figure; where STAR/RAM only reports Catches (no
+## usable landings breakdown that Year), Landings_t is backed out
+## using this pipeline's own discard_ratio for that FG/Year if
+## available, else assumed equal to Catch_t (discard_ratio = 0) -
+## flagged via catch_source either way, never silently blended with
+## the GFCM Catch_t itself.
+## =================================================================
+n_species_in_fg_catch <- unique(fg_lookup[, .(ScientificName, FG_num)])[, .(n_species_in_fg = uniqueN(ScientificName)), by = FG_num]
+catches_discards_fg <- merge(catches_discards_fg, n_species_in_fg_catch, by = "FG_num", all.x = TRUE)
+catches_discards_fg[, catch_source := "GFCM/FDI/SAU-derived (default)"]
+
+if (nrow(star_catch_by_fg) > 0) {
+  use_star <- catches_discards_fg[, !is.na(n_species_in_fg) & n_species_in_fg == 1 & !is.na(star_catches_t) & star_catches_t > 0]
+  n_overridden <- sum(use_star, na.rm = TRUE)
+  if (n_overridden > 0) {
+    catches_discards_fg[use_star, `:=`(
+      Catch_t    = star_catches_t,
+      Landings_t = fifelse(!is.na(star_landings_t) & star_landings_t > 0, star_landings_t,
+                           star_catches_t * (1 - fifelse(is.na(discard_ratio), 0, discard_ratio))),
+      catch_source = paste0("stock assessment (STAR/RAM, ", star_sources, ") - single species/stanza FG")
+    )]
+    catches_discards_fg[use_star, Discard_t := Catch_t - Landings_t]
+    message("\n[Catches] Stock-assessment PRIORITY applied: ", n_overridden, " FG x Year cell(s) (",
+            uniqueN(catches_discards_fg[use_star == TRUE, FG_num]), " single-species/stanza assessed FG(s)) now use",
+            " STAR/RAM's own Catches/Landings directly as Catch_t/Landings_t/Discard_t, replacing the",
+            " GFCM/FDI/SAU-derived value for exactly those cells - see catch_source. Every other cell (including",
+            " other Years for the SAME FG where no star value exists) is untouched.")
+  } else {
+    message("\n[Catches] No FG qualifies for the stock-assessment catch-priority override (needs a single-species",
+            " FG AND a real star_catches_t > 0 for at least one Year) - catches_discards_fg stays fully",
+            " GFCM/FDI/SAU-derived. If tuna/swordfish/other assessed stocks were expected to qualify, check",
+            " they're each their own single-species FG in the FG reference AND have a matching row in",
+            " combined_medbs_star_ramlegacy.csv (exact species name or genus).")
+  }
+}
+catches_discards_fg[, n_species_in_fg := NULL]
 
 ## --- Catches_Ecopath / Catches_Ecosim (FG-only) -------------------------
 ## Same structure/units as Biomass's own Ecopath/Ecosim sheets (t/km^2/
@@ -2483,7 +2563,9 @@ add_catches_to_ecopath_workbook(  # write Catches_Ecopath/Catches_Ecosim sheets 
   year_ecopath    = YEAR_ECOPATH,
   area_km2        = Total_Area_km2,
   ts_years        = START_YEAR:END_YEAR,
-  fleet_structure = NULL
+  fleet_structure = NULL,
+  csv_out_dir     = csv_out_dir,      # this block's own native CSVs (Catches_Ecopath/Catches_Ecosim/Fleet_Structure) go under output/fisheries/
+  biomass_csv_dir = BIOMASS_CSV_DIR   # ts_years is passed explicitly above so this isn't actually used this call, but set for correctness if that ever changes
 )
 
 ## =================================================================
@@ -2607,7 +2689,7 @@ if (nrow(RECREATIONAL_EFFORT_MANUAL) > 0) {
     effort_source = "manual override - see source_citation"
   )]  # overwrite the default wherever a manual override row exists for that Country x Year
 }
-fwrite(recreational_effort_placeholder, file.path(out_dir, "recreational_effort_placeholder.csv"))  # write result to CSV
+fwrite(recreational_effort_placeholder, file.path(csv_out_dir, "recreational_effort_placeholder.csv"))  # write result to CSV
 message("\n[Recreational effort] ", sum(recreational_effort_placeholder$effort_source == "manual override - see source_citation"), " of ",
         nrow(recreational_effort_placeholder), " Country x Year cell(s) manually overridden from RECREATIONAL_EFFORT_MANUAL;",
         " the rest default to ", RECREATIONAL_EFFORT_DEFAULT, " (no adjustment) - written to recreational_effort_placeholder.csv,",
@@ -2976,7 +3058,7 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
             " hindcasted rows are left uncorrected since they carry no kW-days figure to begin with.")
   }
   
-  fwrite(effort_by_fleettype_eu3, file.path(out_dir, "effort_by_fleettype_eu3_hindcast.csv"))  # write result to CSV
+  fwrite(effort_by_fleettype_eu3, file.path(csv_out_dir, "effort_by_fleettype_eu3_hindcast.csv"))  # write result to CSV
   message("[Effort hindcast] effort_by_fleettype_eu3: ", nrow(effort_by_fleettype_eu3), " Country x FleetType x",
           " Year row(s) for Spain/France/Italy (FDI's own effort 2014+, SAU-hindcasted before that) - written",
           " to effort_by_fleettype_eu3_hindcast.csv / Effort_by_FleetType_EU3. FishMIP's Fishing_Effort_by_Fleet",
@@ -2998,9 +3080,46 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
 ## as before - only cells with a real number are added in.
 ## =================================================================
 ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & (Sector != "Recreational" | !is.na(Catch_t)),
-                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
+                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE), Discard_t_avg = mean(Discard_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch AND discards by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
 ecopath_fleet_long[, `:=`(Fleet = paste(Country, FleetType, sep = " - "),
-                          Catch_t_km2_avg = Catch_t_avg / Total_Area_km2)]  # build the Fleet label and convert catch to density
+                          Catch_t_km2_avg = Catch_t_avg / Total_Area_km2,
+                          Discard_t_km2_avg = Discard_t_avg / Total_Area_km2,
+                          Landings_t_km2_avg = (Catch_t_avg - Discard_t_avg) / Total_Area_km2)]  # build the Fleet label and convert catch/discards/landings (Catch_t = gross catch = Landings + Discards) to density
+
+## --- Ecopath_L / Ecopath_Di: FG x Fleet, one column PER FLEET -------
+## Final workbook sheets, per spec: "FG_number, FG_name, landings/
+## discards, each column a fleet". Built the same way as
+## catches_ecopath_by_fleet_wide below (dcast to one column per Fleet,
+## then completed to every FG in full_fg_list with 0-fill) but kept as
+## their own tables since Ecopath_L/Ecopath_Di are landings-only/
+## discards-only, not gross catch.
+landings_ecopath_by_fleet_wide <- dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet,
+                                        value.var = "Landings_t_km2_avg", fill = 0)
+landings_ecopath_by_fleet_wide <- merge(full_fg_list, landings_ecopath_by_fleet_wide, by = c("FG_num", "FG_name"), all.x = TRUE)
+landings_fleet_cols <- setdiff(names(landings_ecopath_by_fleet_wide), c("FG_num", "FG_name"))
+for (cc in landings_fleet_cols) landings_ecopath_by_fleet_wide[is.na(get(cc)), (cc) := 0]
+setorder(landings_ecopath_by_fleet_wide, FG_num)
+
+discards_ecopath_by_fleet_wide <- dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet,
+                                        value.var = "Discard_t_km2_avg", fill = 0)
+discards_ecopath_by_fleet_wide <- merge(full_fg_list, discards_ecopath_by_fleet_wide, by = c("FG_num", "FG_name"), all.x = TRUE)
+discards_fleet_cols <- setdiff(names(discards_ecopath_by_fleet_wide), c("FG_num", "FG_name"))
+for (cc in discards_fleet_cols) discards_ecopath_by_fleet_wide[is.na(get(cc)), (cc) := 0]
+setorder(discards_ecopath_by_fleet_wide, FG_num)
+
+message("\n[Ecopath by fleet] Ecopath_L/Ecopath_Di: ", nrow(landings_ecopath_by_fleet_wide), " FG(s) x ",
+        length(landings_fleet_cols), " fleet(s) (t/km^2/year), averaged over ", paste(range(YEAR_ECOPATH), collapse = "-"),
+        " - Landings_t = Catch_t - Discard_t per fleet, same fleet columns as Ecopath_B's catches_ecopath_by_fleet_wide.")
+
+## Written directly to the workbook here (not via
+## finalize_ecopath_ecosim_summary_sheets(), which used to build these
+## two sheets from the FG-only Catches_Discards_FG_ts CSV - that had no
+## fleet dimension at all, so it can't produce the per-fleet columns
+## the final spec requires).
+upsert_workbook_sheets(
+  list(Ecopath_L = landings_ecopath_by_fleet_wide, Ecopath_Di = discards_ecopath_by_fleet_wide),
+  ECOPATH_WORKBOOK_PATH
+)
 
 catches_ecopath_by_fleet_wide <- dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet,
                                        value.var = "Catch_t_km2_avg", fill = 0)  # reshape to one column per fleet
@@ -3065,7 +3184,7 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   message("[F] F_by_FG (", paste(range(YEAR_ECOPATH), collapse = "-"), " average): ", nrow(f_by_fg), " FG(s).",
           " F undefined (NA/Inf) where Catch_t_avg is 0 (no GFCM catch matched to that FG for those years)",
           " or Biomass_density_avg is 0/NA (FG not observed in the survey).")
-  fwrite(f_by_fg, file.path(out_dir, "F_by_fg.csv"))
+  fwrite(f_by_fg, file.path(csv_out_dir, "F_by_fg.csv"))
   
   ## Species-resolved view of the same F. GFCM catch (catches_discards_fg)
   ## is only ever available at FG resolution - there is no species-level
@@ -3092,7 +3211,7 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   setcolorder(f_by_species_fg, c("FG_num", "FG_name", "Species", "Species_density_avg", "Biomass_density_avg",
                                  "prop_sp_fg", "F", "Species_catch_density_avg"))
   setorder(f_by_species_fg, FG_num, -prop_sp_fg)
-  fwrite(f_by_species_fg, file.path(out_dir, "F_by_species_fg.csv"))
+  fwrite(f_by_species_fg, file.path(csv_out_dir, "F_by_species_fg.csv"))
   message("[F] F_by_species_fg.csv written: ", nrow(f_by_species_fg), " Species x FG row(s) (F is the FG-level",
           " value repeated per species - see comment above; prop_sp_fg is each species' own share of its FG's biomass).")
 }
@@ -3307,7 +3426,7 @@ if (nrow(rousseau_mar) > 0 || nrow(rousseau_dza) > 0) {
     if (nrow(rousseau_dza) > 0) rousseau_dza[, Country := "Algeria (Mediterranean-only, no caveat)"] else NULL
   ), use.names = TRUE, fill = TRUE)
   rousseau_effort_review[, implied_creep_ratio := `Effective effort, linear-creep-adjusted (kW-days)` / `Nominal effort (kW-days)`]  # flagged as implausible, see comment above - kept for manual inspection
-  fwrite(rousseau_effort_review, file.path(out_dir, "rousseau_effort_review.csv"))
+  fwrite(rousseau_effort_review, file.path(csv_out_dir, "rousseau_effort_review.csv"))
   message("\n[Morocco/Algeria effort] Rousseau et al. (2024) effort database written to rousseau_effort_review.csv",
           " (", nrow(rousseau_effort_review), " Year x Sector x Gear row(s)) as a CROSS-CHECK only - its own",
           " implied_creep_ratio column looks implausible (see comment above) and is NOT used to replace",
@@ -3361,22 +3480,22 @@ message("\n[GFCM SAF] ", sum(!is.na(gfcm_saf_effort_placeholder$Effort_days)), "
 ## earlier by add_catches_to_ecopath_workbook() itself; everything else
 ## this script produces is written here in one pass.
 ## =================================================================
-fwrite(gfcm_species_division_fg, file.path(out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # re-write, in case anything changed above
-fwrite(gfcm_catches_by_area, file.path(out_dir, paste0("gfcm_catches_by_country_division_year_", DATASET_VERSION, ".csv")))  # re-write, in case anything changed above
-fwrite(fleet_vs_division_check, file.path(out_dir, "fleet_definition_vs_gfcm_division_check.csv"))  # re-write, in case anything changed above
-fwrite(fg_catch_timeseries, file.path(out_dir, paste0("catches_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch timeseries
-fwrite(catches_discards_fg, file.path(out_dir, paste0("catches_and_discards_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch+discards timeseries
-fwrite(fleet_split_out, file.path(out_dir, "catches_by_country_fleet_sector_year.csv"))  # write the full fleet-split table
-fwrite(bycatch_placeholder, file.path(out_dir, "bycatch_placeholder.csv"))  # write the bycatch placeholder table
-fwrite(gfcm_task2_placeholder, file.path(out_dir, "gfcm_task2_catch_placeholder.csv"))  # write the GFCM Task 2 placeholder table
-fwrite(gfcm_saf_effort_placeholder, file.path(out_dir, "gfcm_saf_effort_placeholder.csv"))  # write the GFCM SAF placeholder table
-if (nrow(stecf_fdi_catch_by_gsa) > 0) fwrite(stecf_fdi_catch_by_gsa, file.path(out_dir, "stecf_fdi_catch_by_gsa_gear_year.csv"))  # re-write, if available
-if (nrow(stecf_fdi_effort_by_gsa) > 0) fwrite(stecf_fdi_effort_by_gsa, file.path(out_dir, "stecf_fdi_effort_by_gsa_gear_year.csv"))  # re-write, if available
-fwrite(catches_ecopath_by_fleet_wide, file.path(out_dir, "catches_ecopath_by_fleet_wide.csv"))  # write the Ecopath-by-fleet snapshot table
-fwrite(fleet_structure_out, file.path(out_dir, "fleet_structure.csv"))  # write the Fleet_Structure table
-if (nrow(effort_by_fleet) > 0) fwrite(effort_by_fleet, file.path(out_dir, "fishing_effort_by_fleet_timeseries_FishMIP.csv"))  # write the FishMIP effort table, if available
-if (nrow(f_by_fg) > 0) fwrite(f_by_fg, file.path(out_dir, "F_by_FG_ecopath_years.csv"))  # write the fishing-mortality table, if available
-if (nrow(unreported_by_country) > 0) fwrite(unreported_by_country, file.path(out_dir, "unreported_pct_by_country.csv"))  # write the unreported-ratio table, if available
+fwrite(gfcm_species_division_fg, file.path(csv_out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # re-write, in case anything changed above
+fwrite(gfcm_catches_by_area, file.path(csv_out_dir, paste0("gfcm_catches_by_country_division_year_", DATASET_VERSION, ".csv")))  # re-write, in case anything changed above
+fwrite(fleet_vs_division_check, file.path(csv_out_dir, "fleet_definition_vs_gfcm_division_check.csv"))  # re-write, in case anything changed above
+fwrite(fg_catch_timeseries, file.path(csv_out_dir, paste0("catches_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch timeseries
+fwrite(catches_discards_fg, file.path(csv_out_dir, paste0("catches_and_discards_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch+discards timeseries
+fwrite(fleet_split_out, file.path(csv_out_dir, "catches_by_country_fleet_sector_year.csv"))  # write the full fleet-split table
+fwrite(bycatch_placeholder, file.path(csv_out_dir, "bycatch_placeholder.csv"))  # write the bycatch placeholder table
+fwrite(gfcm_task2_placeholder, file.path(csv_out_dir, "gfcm_task2_catch_placeholder.csv"))  # write the GFCM Task 2 placeholder table
+fwrite(gfcm_saf_effort_placeholder, file.path(csv_out_dir, "gfcm_saf_effort_placeholder.csv"))  # write the GFCM SAF placeholder table
+if (nrow(stecf_fdi_catch_by_gsa) > 0) fwrite(stecf_fdi_catch_by_gsa, file.path(csv_out_dir, "stecf_fdi_catch_by_gsa_gear_year.csv"))  # re-write, if available
+if (nrow(stecf_fdi_effort_by_gsa) > 0) fwrite(stecf_fdi_effort_by_gsa, file.path(csv_out_dir, "stecf_fdi_effort_by_gsa_gear_year.csv"))  # re-write, if available
+fwrite(catches_ecopath_by_fleet_wide, file.path(csv_out_dir, "catches_ecopath_by_fleet_wide.csv"))  # write the Ecopath-by-fleet snapshot table
+fwrite(fleet_structure_out, file.path(csv_out_dir, "fleet_structure.csv"))  # write the Fleet_Structure table
+if (nrow(effort_by_fleet) > 0) fwrite(effort_by_fleet, file.path(csv_out_dir, "fishing_effort_by_fleet_timeseries_FishMIP.csv"))  # write the FishMIP effort table, if available
+if (nrow(f_by_fg) > 0) fwrite(f_by_fg, file.path(csv_out_dir, "F_by_FG_ecopath_years.csv"))  # write the fishing-mortality table, if available
+if (nrow(unreported_by_country) > 0) fwrite(unreported_by_country, file.path(csv_out_dir, "unreported_pct_by_country.csv"))  # write the unreported-ratio table, if available
 
 sheets_to_write <- list(
   Catches_Species_Division_FG   = gfcm_species_division_fg,
@@ -3408,28 +3527,30 @@ if (nrow(star_catch_by_fg) > 0) sheets_to_write$STAR_RAM_Catch_CrossCheck <- cat
 ## sheets - kept as a plain FG x Year table (not the Ecopath/Ecosim-
 ## specific meta-row format) since it's meant to be read back
 ## programmatically, not opened as an Ecopath forcing function itself.
-sheets_to_write$Catches_Discards_FG_ts <- catches_discards_fg[, .(Year, FG_num, FG_name, Landings_t, Catch_t, Discard_t)]
+sheets_to_write$Catches_Discards_FG_ts <- catches_discards_fg[, .(Year, FG_num, FG_name, Landings_t, Catch_t, Discard_t, catch_source)]  # catch_source kept here too (not just in the DATASET_VERSION-suffixed CSV) so build_fg_references_sheet() can read it back under this fixed filename
 
 ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
 ## the intended sheets, trimmed script by script; other sheets should
 ## be saved as csv files, not kept in the final output excel file.
 ## Every table above (native/intermediate - none of these are among the
-## 8 final target sheets) is written as CSV only, never to the workbook.
-write_native_sheets_csv(sheets_to_write, out_dir)  # write/replace all these tables as CSV, never in the workbook
+## 9 final target sheets) is written as CSV only, never to the workbook.
+write_native_sheets_csv(sheets_to_write, csv_out_dir)  # write/replace all these tables as CSV, never in the workbook - lands in output/fisheries/
 
-## Build whichever of the final summary sheets (Ecopath_L/Ecopath_Di,
-## from Catches_Discards_FG_ts.csv just written above; Ecosim_ts, if
-## Ecosim.csv/Catches_Ecosim.csv/Fishing_Effort_by_Fleet.csv already
-## exist) can be built from what's on disk so far, then trim the
-## workbook down to EXACTLY the final target sheets that exist at this
-## point in the pipeline - never any native/intermediate sheet, since
-## those are all CSV-only now. Safe to run here even if Biomass/PB_QB
-## haven't run yet this session; whichever isn't ready yet is simply
-## skipped with a message until it is. Add this same pair of calls to
+## Ecopath_L/Ecopath_Di were already written directly to the workbook
+## above (per FG x Fleet, from fleet_split_out). What's left to build
+## here is just Ecosim_ts, if Ecosim.csv/Catches_Ecosim.csv/
+## Fishing_Effort_by_Fleet.csv already exist - then trim the workbook
+## down to EXACTLY the final target sheets that exist at this point in
+## the pipeline - never any native/intermediate sheet, since those are
+## all CSV-only now. Safe to run here even if Biomass/PB_QB haven't run
+## yet this session; whichever isn't ready yet is simply skipped with a
+## message until it is. Add this same pair of calls to
 ## 03_pbqb-traits.R and 04_diets.R too.
 finalize_ecopath_ecosim_summary_sheets(
-  out_path      = ECOPATH_WORKBOOK_PATH,
-  year_ecopath  = YEAR_ECOPATH
+  out_path           = ECOPATH_WORKBOOK_PATH,
+  year_ecopath       = YEAR_ECOPATH,
+  biomass_csv_dir    = BIOMASS_CSV_DIR,
+  fisheries_csv_dir  = csv_out_dir
 )
 trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 

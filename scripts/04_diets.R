@@ -1,7 +1,7 @@
 ## =================================================================
 ## PIPELINE STEP 4 of 4 (optional) - run AFTER 01_biomass.R
 ## Builds an EwE-format functional-group (FG) diet-composition matrix
-## from Marta Coll's Mediterranean trophic metaweb database (DATA_ENTRY
+## from the Mediterranean trophic metaweb database (DATA_ENTRY
 ## + Taxonomic_codes + Non_taxonomic_groups tabs), instead of from a
 ## stomach-content Access export or a FishBase/SeaLifeBase pull (those
 ## were the two source paths the earlier diet_to_ewe.R supported - see
@@ -75,13 +75,21 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # for upsert_workbook_sheets() - writes Ecopath_diet into the same shared workbook
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")   # same shared workbook 01_biomass.R/02_fisheries.R/03_pbqb-traits.R write to
-if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) METAWEB_XLSX_PATH        <- file.path(pcloud_dir, "data/data_entry_metaweb.xlsx")   # Marta Coll's Mediterranean trophic metaweb database
+
+## 2026-09-17 update: this block's own native/intermediate CSV outputs
+## go into their own "diet" subfolder, matching the other three blocks.
+## BIOMASS_CSV_DIR points at 01_biomass.R's subfolder for this script's
+## cross-block read of biomass_proportion_by_species_fg.csv.
+if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "diet")
+if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
+if (!exists("BIOMASS_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
+if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) METAWEB_XLSX_PATH        <- file.path(pcloud_dir, "data/Complementary data/data_entry_metaweb_empty.xlsx")   # Mediterranean trophic metaweb database - currently empty (template only, no DATA_ENTRY rows yet), but this is the file to read once it's populated
 if (!exists("FG_REFERENCE_XLSX_PATH",   envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_XLSX_PATH   <- file.path(pcloud_dir, "data/FG_WMed.xlsx")   # same fg_file 01_biomass.R reads - sheet 4: ESPECIE/GF/FG_name
 if (!exists("FG_REFERENCE_SHEET",       envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_SHEET       <- 4               # sheet index/name within FG_REFERENCE_XLSX_PATH - matches 01_biomass.R's `read_excel(fg_file, sheet = 4)`
 if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_XLSX_PATH; ok if the file doesn't exist (treated as empty)
 if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_BIOMASS_IN_FG_CSV_PATH <- file.path(pcloud_dir, "data/species_biomass_in_fg_missing.csv")   # species, fg_name, biomass_proportion - ONLY for species x FG pairs not covered by ECOPATH_WORKBOOK_PATH's own FG_spp_Ecopath sheet; ok if the file doesn't exist
 if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # group_number, group_name, is_predator - row/column order for the output matrix
-if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(out_dir, "diet_composition_ewe.csv")
+if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
 
 ## Which diet metric to use, in priority order, when a DATA_ENTRY row
 ## has more than one filled in (a study rarely reports all of them for
@@ -215,7 +223,16 @@ build_species_diet <- function(data_entry, lookup) {
   ), by = .(predator_name, prey_name)]
   
   species_diet[, proportion := proportion / sum(proportion), by = predator_name]
-  species_diet[]
+  
+  ## predator_references (added 2026-09-17): the distinct study
+  ## citations (metaweb's own "Reference" column) actually used for
+  ## each predator - carried separately from species_diet itself
+  ## (which only keeps a study COUNT, n_studies) so run_pipeline() can
+  ## roll this up to per-FG citations for the final workbook's
+  ## References sheet (ref_diet column) without re-reading DATA_ENTRY.
+  predator_references <- dt[, .(references = paste(sort(unique(Reference)), collapse = "; ")), by = predator_name]
+  
+  list(species_diet = species_diet[], predator_references = predator_references[])
 }
 
 ## =================================================================
@@ -375,8 +392,10 @@ build_species_to_fg <- function(needed_species, reference_path, missing_csv_path
 ## neither source still gets a sane default inside build_fg_diet()
 ## itself (an equal split among that FG's other mapped species).
 ## =================================================================
-read_biomass_proportion_from_workbook <- function(workbook_path, csv_name = "biomass_proportion_by_species_fg") {
-  csv_path <- file.path(dirname(workbook_path), paste0(csv_name, ".csv"))
+read_biomass_proportion_from_workbook <- function(workbook_path, csv_name = "biomass_proportion_by_species_fg",
+                                                  biomass_csv_dir = NULL) {
+  csv_path <- file.path(if (is.null(biomass_csv_dir)) dirname(workbook_path) else biomass_csv_dir,
+                        paste0(csv_name, ".csv"))
   if (!file.exists(csv_path)) {
     message("[04_diets.R] ", csv_path, " not found - run 01_biomass.R against this same output ",
             "folder first to get real biomass shares. Falling back to SPECIES_BIOMASS_IN_FG_CSV_PATH only ",
@@ -393,8 +412,8 @@ read_biomass_proportion_from_workbook <- function(workbook_path, csv_name = "bio
   out[!is.na(species) & species != ""]
 }
 
-build_biomass_in_fg <- function(needed_species_fg, workbook_path, fallback_csv_path) {
-  from_workbook <- read_biomass_proportion_from_workbook(workbook_path)
+build_biomass_in_fg <- function(needed_species_fg, workbook_path, fallback_csv_path, biomass_csv_dir = NULL) {
+  from_workbook <- read_biomass_proportion_from_workbook(workbook_path, biomass_csv_dir = biomass_csv_dir)
   covered_pairs <- from_workbook[, paste(species, fg_name)]
   still_missing <- needed_species_fg[!paste(species, fg_name) %in% covered_pairs]
   
@@ -537,9 +556,11 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                          group_table_path = EWE_GROUP_TABLE_CSV_PATH,
                          workbook_path = ECOPATH_WORKBOOK_PATH,
                          out_path = OUTPUT_CSV_PATH) {
-  metaweb       <- read_metaweb(metaweb_path)
-  lookup        <- build_code_lookup(metaweb$tax_codes, metaweb$nontax_groups)
-  species_diet  <- build_species_diet(metaweb$data_entry, lookup)
+  metaweb        <- read_metaweb(metaweb_path)
+  lookup         <- build_code_lookup(metaweb$tax_codes, metaweb$nontax_groups)
+  species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
+  species_diet   <- species_diet_result$species_diet
+  predator_references <- species_diet_result$predator_references
   
   all_named     <- unique(c(species_diet$predator_name, species_diet$prey_name))
   generic_names <- unique(metaweb$nontax_groups$Group_name)   # source of truth for "generic category, not a real species" - see build_code_lookup()'s own header comment for why lookup$is_group isn't used here
@@ -551,32 +572,78 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   }
   
   species_to_fg <- build_species_to_fg(needed_species, fg_reference_path, species_to_fg_missing_path, tax_codes = metaweb$tax_codes)
-  biomass_in_fg <- build_biomass_in_fg(unique(species_to_fg[, .(species, fg_name)]), workbook_path, biomass_fallback_path)
+  biomass_in_fg <- build_biomass_in_fg(unique(species_to_fg[, .(species, fg_name)]), workbook_path, biomass_fallback_path,
+                                       biomass_csv_dir = BIOMASS_CSV_DIR)
   fg_diet       <- build_fg_diet(species_diet, species_to_fg, biomass_in_fg)
   group_table   <- as.data.table(read.csv(group_table_path, stringsAsFactors = FALSE))
+  
+  ## diet_references_by_fg.csv (added 2026-09-17): rolls predator_references
+  ## (per-PREDATOR study citations, from build_species_diet() above) up to
+  ## per-FG, via the same species_to_fg mapping used for the diet matrix
+  ## itself - every species that maps (even partially) into an FG as a
+  ## PREDATOR contributes its citations to that FG's set. Read back by
+  ## build_fg_references_sheet() (lib_survey_fg_density_functions.R) to
+  ## populate the final workbook's References sheet's ref_diet column.
+  ## Joined against FG_lookup.csv (01_biomass.R's own output, read from
+  ## BIOMASS_CSV_DIR) to resolve FG_num, matching by FG_name text - same
+  ## join key build_biomass_in_fg() above already relies on.
+  pred_fg_refs <- merge(species_to_fg[, .(species, fg_name)], predator_references,
+                        by.x = "species", by.y = "predator_name")
+  diet_refs_by_fgname <- pred_fg_refs[, .(references = paste(sort(unique(unlist(strsplit(references, "; ")))), collapse = "; ")), by = fg_name]
+  fg_lookup_for_refs <- read_full_fg_reference(workbook_path, csv_dir = BIOMASS_CSV_DIR)
+  if (!is.null(fg_lookup_for_refs)) {
+    diet_refs_by_fg <- merge(fg_lookup_for_refs, diet_refs_by_fgname, by.x = "FG_name", by.y = "fg_name", all.x = TRUE)
+    diet_refs_by_fg <- diet_refs_by_fg[, .(FG_num, FG_name, references)]
+    setorder(diet_refs_by_fg, FG_num)
+    fwrite(diet_refs_by_fg, file.path(csv_out_dir, "diet_references_by_fg.csv"))
+    message("[04_diets.R] Saved diet_references_by_fg.csv (", diet_refs_by_fg[!is.na(references), .N],
+            " of ", nrow(diet_refs_by_fg), " FG(s) have at least one diet-study citation).")
+  } else {
+    message("[04_diets.R] No FG_lookup.csv found in ", BIOMASS_CSV_DIR, " (run 01_biomass.R first) -",
+            " diet_references_by_fg.csv not written this run; the References sheet's ref_diet column",
+            " will be blank until it is.")
+  }
   
   export_ewe_matrix_csv(fg_diet, group_table, out_path)
   ecopath_diet_sheet <- build_ecopath_diet_sheet(fg_diet, group_table)
   upsert_workbook_sheets(list(Ecopath_diet = ecopath_diet_sheet), workbook_path)
   message("[04_diets.R] Wrote Ecopath_diet sheet to ", workbook_path, ".")
   
-  ## --- Final workbook trim (2026-09-17 update) --------------
+  ## --- Final workbook trim (2026-09-17 update, revised) --------------
   ## 04_diets.R is the LAST script in the documented run order (01 -> 02
   ## -> 03 -> 04), so this is where the workbook gets reduced to EXACTLY
-  ## the 8 final target sheets: "info" (run metadata)
-  ## plus the seven Ecopath_*/Ecosim_ts summary sheets. Every native/
-  ## intermediate table the individual scripts wrote along the way
-  ## (Ecopath, Catches_Ecopath, PB_QB, Ecosim, Catches_Ecosim,
-  ## Fishing_Effort_by_Fleet, FG_spp_Ecopath, FG_spp_Ecosim, FG_lookup,
-  ## traits_ewe, PB_QB_spp, References, Ecobase, Catches_Discards_FG_ts,
-  ## ...) lives only as CSV now (never a workbook sheet), so there's
-  ## nothing left to drop here except whatever leftovers an older run of
-  ## this workbook might still be carrying - trim_workbook_to_final_sheets()
+  ## the 10 final target sheets: "info" (run metadata), "FG_spp" (FG x
+  ## species x taxonomy list, written by 01_biomass.R), "FG_References"
+  ## (built just above by build_fg_references_sheet()), plus the seven
+  ## Ecopath_*/Ecosim_ts summary sheets. Every native/intermediate table
+  ## the individual scripts wrote along the way (Ecopath, Catches_Ecopath,
+  ## PB_QB, Ecosim, Catches_Ecosim, Fishing_Effort_by_Fleet, FG_spp_Ecopath,
+  ## FG_spp_Ecosim, FG_lookup, traits_ewe, fg_traits_weighted, PB_QB_spp,
+  ## References (species-parameter-level, 03_pbqb-traits.R's own CSV -
+  ## not the same table as the FG_References workbook sheet above),
+  ## Ecobase, Catches_Discards_FG_ts, diet_references_by_fg, ...) lives
+  ## only as CSV now (never a workbook sheet), so there's nothing left
+  ## to drop here except whatever leftovers an older run of this
+  ## workbook might still be carrying - trim_workbook_to_final_sheets()
   ## (drop_extras = TRUE) handles that regardless.
   info_sheet <- build_info_sheet()
   upsert_workbook_sheets(list(info = info_sheet), workbook_path)
+  
+  ## References sheet (added 2026-09-17): one row per FG, consolidating
+  ## which data source/citation fed each block - see build_fg_references_
+  ## sheet()'s own header comment (lib_survey_fg_density_functions.R) for
+  ## exactly what each column is read from. Run here (04_diets.R, always
+  ## last) so it picks up whichever of 01/02/03's outputs exist by now,
+  ## same "safe to run any time, skips what's not ready yet" convention
+  ## as finalize_ecopath_ecosim_summary_sheets().
+  build_fg_references_sheet(workbook_path,   # writes the "FG_References" sheet
+                            biomass_csv_dir   = BIOMASS_CSV_DIR,
+                            fisheries_csv_dir = file.path(out_dir, "fisheries"),
+                            pbqb_csv_dir      = file.path(out_dir, "pbqb-traits"),
+                            diet_csv_dir      = csv_out_dir)
+  
   trim_workbook_to_final_sheets(workbook_path)
-  message("[04_diets.R] Final workbook trimmed to the 8 final target sheets (whichever exist so far).")
+  message("[04_diets.R] Final workbook trimmed to the 9 final target sheets (whichever exist so far).")
   
   fg_diet[]
 }

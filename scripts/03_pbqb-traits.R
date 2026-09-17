@@ -350,7 +350,18 @@ if (!exists("SPECIES_DF_SOURCE", envir = .GlobalEnv, inherits = FALSE)) SPECIES_
 ## SURVEY_OUT_DIR removed - it duplicated out_dir from STEP 1 above
 ## (both pointed at the same ".../WMed EwE Model/output/" folder).
 ## out_dir is used directly everywhere below instead.
-SURVEY_DENSITY_CSV <- file.path(out_dir, "species_density_regional_combined.csv")
+## 2026-09-17 update: this block's own native/intermediate CSV outputs
+## go into their own "pbqb-traits" subfolder (matching 01_biomass.R's
+## "biomass" and 02_fisheries.R's "fisheries" subfolders); the shared
+## workbook stays at the top-level out_dir. BIOMASS_CSV_DIR/
+## FISHERIES_CSV_DIR point at the other two blocks' subfolders for this
+## script's cross-block reads.
+csv_out_dir <- file.path(out_dir, "pbqb-traits")
+if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
+BIOMASS_CSV_DIR   <- file.path(out_dir, "biomass")
+FISHERIES_CSV_DIR <- file.path(out_dir, "fisheries")
+
+SURVEY_DENSITY_CSV <- file.path(BIOMASS_CSV_DIR, "species_density_regional_combined.csv")
 
 ## Same shared workbook 01_biomass.R and 02_fao_catches.R
 ## write to (order-independent - this can run before, after, or
@@ -444,7 +455,7 @@ YIELD_SOURCE <- if (!is.null(FISHERIES_DATA_SOURCE) && FISHERIES_DATA_SOURCE %in
 ## Raw/reference data - lives under pcloud_dir, same convention as
 ## 01_biomass.R's own fg_file/tm_list_file.
 LANDINGS_CSV_PATH <- if (!is.null(FISHERIES_DATA_SOURCE) && FISHERIES_DATA_SOURCE %in% c("SAU", "SAU_no_unreported")) {
-  file.path(out_dir, paste0("landings_by_species_gsa_year_", FISHERIES_DATA_SOURCE, ".csv"))
+  file.path(csv_out_dir, paste0("landings_by_species_gsa_year_", FISHERIES_DATA_SOURCE, ".csv"))
 } else {
   file.path(pcloud_dir, "data/landings_by_species_gsa_year.csv")
 }
@@ -542,7 +553,7 @@ attach_yield_from_landings <- function(species_df, landings_csv_path, area_looku
 if (YIELD_SOURCE == "landings_csv") {
   species_df <- attach_yield_from_landings(
     species_df, LANDINGS_CSV_PATH,
-    file.path(out_dir, "strata_area_by_area.csv"),
+    file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv"),
     YEAR_ECOPATH
   )
 } else {
@@ -602,15 +613,15 @@ FG_YIELD_SOURCE <- if (!is.null(FISHERIES_DATA_SOURCE)) "fg_catch_csv" else "non
 ## FAO_GFCM_DATASET_VERSION_FOR_04 above (not this line) if 02_fao_
 ## catches.R's own DATASET_VERSION ever changes from that default.
 FG_CATCH_CSV_PATH <- if (is.null(FISHERIES_DATA_SOURCE) || FISHERIES_DATA_SOURCE == "FAO_GFCM") {
-  file.path(out_dir, paste0("fg_catch_timeseries_", FAO_GFCM_DATASET_VERSION_FOR_04, ".csv"))
+  file.path(FISHERIES_CSV_DIR, paste0("fg_catch_timeseries_", FAO_GFCM_DATASET_VERSION_FOR_04, ".csv"))
 } else {
-  file.path(out_dir, paste0("fg_catch_timeseries_", FISHERIES_DATA_SOURCE, ".csv"))
+  file.path(FISHERIES_CSV_DIR, paste0("fg_catch_timeseries_", FISHERIES_DATA_SOURCE, ".csv"))
 }
 
 species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
 
 if (FG_YIELD_SOURCE == "fg_catch_csv") {
-  area_lookup_path <- file.path(out_dir, "strata_area_by_area.csv")
+  area_lookup_path <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")
   
   if (!file.exists(FG_CATCH_CSV_PATH)) {
     message("FG_YIELD_SOURCE = 'fg_catch_csv' but no file found at '", FG_CATCH_CSV_PATH,
@@ -2027,7 +2038,7 @@ message("\nTop invertebrate species by biomass - worth a manual Brey (2012) cros
         " accurate than the Tumbiolo & Downing/Gascuel fallback used here, but isn't",
         " automatable (no accessible weights or R package):")
 print(brey_candidates[, .(Species, FG, Biomass, PB, PB_method)])
-fwrite(brey_candidates, file.path(out_dir, "invertebrates_for_brey_manual_check.csv"))
+fwrite(brey_candidates, file.path(csv_out_dir, "invertebrates_for_brey_manual_check.csv"))
 
 message("\n=== Species-level PB/QB - which method was CHOSEN for FG weighting ===")
 print(results[, .N, by = PB_method])
@@ -2122,7 +2133,7 @@ setnames(fg_traits_weighted, "FG", "FG_num")
 ## happened to cover this run, but Ecopath_traits (like Ecopath_PBQB)
 ## feeds straight into EwE, which needs one row per model FG regardless
 ## of whether this particular run had trait data for it.
-full_fg_ref_traits <- read_full_fg_reference(ECOPATH_WORKBOOK_PATH)
+full_fg_ref_traits <- read_full_fg_reference(ECOPATH_WORKBOOK_PATH, csv_dir = BIOMASS_CSV_DIR)
 if (!is.null(full_fg_ref_traits)) {
   n_before_traits <- nrow(fg_traits_weighted)
   fg_traits_weighted <- merge(full_fg_ref_traits, fg_traits_weighted, by = "FG_num", all.x = TRUE, suffixes = c("_ref", ""))
@@ -2173,9 +2184,9 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
 ## Export
 ## =================================================================
 
-fwrite(results, file.path(out_dir, "species_pb_qb_by_taxon_group.csv"))
-fwrite(fg_weighted, file.path(out_dir, "fg_pb_qb_weighted.csv"))
-fwrite(phyto_flagged, file.path(out_dir, "phytoplankton_needs_separate_method.csv"))
+fwrite(results, file.path(csv_out_dir, "species_pb_qb_by_taxon_group.csv"))
+fwrite(fg_weighted, file.path(csv_out_dir, "fg_pb_qb_weighted.csv"))
+fwrite(phyto_flagged, file.path(csv_out_dir, "phytoplankton_needs_separate_method.csv"))
 
 ## =================================================================
 ## Supplement with EcoBase literature values (03b_ecobase.R output)
@@ -2191,7 +2202,7 @@ fwrite(phyto_flagged, file.path(out_dir, "phytoplankton_needs_separate_method.cs
 ## averaged across all matching EcoBase models per FG_name first, so
 ## one FG doesn't get weighted toward whichever model happened to have
 ## the most rows.
-ECOBASE_CSV_PATH <- file.path(out_dir, "ecobase_literature_pb_qb_simple.csv")
+ECOBASE_CSV_PATH <- file.path(csv_out_dir, "ecobase_literature_pb_qb_simple.csv")
 
 if (ENABLE_ECOBASE_QUERY) {
   fetch_ecobase_literature_pb_qb(out_dir = out_dir, force_refresh = ECOBASE_FORCE_REFRESH)
@@ -2269,7 +2280,7 @@ if (ENABLE_ECOBASE_QUERY && file.exists(ECOBASE_CSV_PATH)) {
           " PB_FG_filled/QB_FG_filled are what's recommended for the Ecopath basic input",
           " where an empirical estimate wasn't available.")
   
-  fwrite(fg_weighted_ecobase, file.path(out_dir, "fg_pb_qb_weighted_with_ecobase.csv"))
+  fwrite(fg_weighted_ecobase, file.path(csv_out_dir, "fg_pb_qb_weighted_with_ecobase.csv"))
   message("Saved fg_pb_qb_weighted_with_ecobase.csv.")
   
   ## Dedicated Ecobase sheet in the shared workbook - the raw per-FG
@@ -2302,7 +2313,7 @@ if (ENABLE_ECOBASE_QUERY && file.exists(ECOBASE_CSV_PATH)) {
   ## Ecobase/Ecobase_by_Model are native/intermediate reference tables,
   ## not final target sheets - written as CSV only.
   write_native_sheets_csv(list(Ecobase = ecobase_sheet, Ecobase_by_Model = ecobase_by_model),
-                          out_dir)
+                          csv_out_dir)
   
   ## downstream Ecopath export (below) uses the gap-filled values so FGs
   ## with no empirical estimate aren't just left blank when a literature
@@ -2362,7 +2373,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
           " matched at all stay M-only - if one of those is commercially fished, check",
           " species_fg_matched.csv for an 'unresolved' status or a naming mismatch.")
   
-  fwrite(fg_weighted, file.path(out_dir, "fg_pb_qb_weighted_with_F.csv"))
+  fwrite(fg_weighted, file.path(csv_out_dir, "fg_pb_qb_weighted_with_F.csv"))
   message("Saved fg_pb_qb_weighted_with_F.csv.")
 } else {
   message("\nFG_YIELD_SOURCE = 'none' (or catch data wasn't found earlier) - fg_weighted's",
@@ -2393,17 +2404,23 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
 ## workbook entirely.
 ## =================================================================
 add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKBOOK_PATH,
-                             species_pb_qb = results)
+                             species_pb_qb = results,
+                             csv_out_dir = csv_out_dir, biomass_csv_dir = BIOMASS_CSV_DIR)
 
 ## =================================================================
-## Ecopath_traits + the six-sheet consolidated summary (2026-09-16):
-## "beside [keeping] csv files or intermediate files...
-## the excel file should include ... Ecopath_B, Ecopath_L, Ecopath_Di,
-## Ecopath_PBQB, Ecopath_traits, Ecosim_ts". Ecopath_traits is written
-## directly (it's this script's own new fg_traits_weighted table, not
-## something already sitting in another sheet); the other five are
-## consolidated from sheets 01_biomass.R/02_fisheries.R/this script
-## already wrote natively, via finalize_ecopath_ecosim_summary_sheets()
+## Final-sheet consolidation (2026-09-17, revised): the excel file's
+## Ecopath_traits sheet is the FG_name/species-level traits table "as
+## it was saved" - 01_biomass.R writes that directly (from
+## traits_reconciled, see its STEP 12). This script's OWN
+## fg_traits_weighted table (biomass-weighted average of those same
+## traits, rolled up to one row per FG) is a different, coarser shape -
+## useful for review, but not the final Ecopath_traits sheet, and
+## writing it under that same sheet name here would just overwrite
+## whatever 01_biomass.R already wrote depending on run order. Written
+## as an audit-only CSV instead. The other final sheets this script can
+## help complete (Ecopath_L, Ecopath_Di, Ecosim_ts) are consolidated
+## from sheets 01_biomass.R/02_fisheries.R/this script already wrote
+## natively, via finalize_ecopath_ecosim_summary_sheets()
 ## (lib_survey_fg_density_functions.R) - additive, every native sheet
 ## (Ecopath, Catches_Ecopath, Catches_Discards_FG_ts, PB_QB, Ecosim,
 ## Catches_Ecosim, Fishing_Effort_by_Fleet) stays in the workbook
@@ -2412,20 +2429,18 @@ add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKB
 ## least once against this same out_path (a sheet whose source hasn't
 ## run yet is simply skipped with a message, not an error).
 ## =================================================================
-## Ecopath_traits IS one of the 8 final target sheets - written directly
-## to the workbook (unchanged). finalize_ecopath_ecosim_summary_sheets()
-## builds whichever of Ecopath_L/Ecopath_Di/Ecosim_ts can be built from
-## the native CSVs 01_biomass.R/02_fisheries.R already wrote (see that
-## function's own header comment) - additive, run-order-independent.
-upsert_workbook_sheets(list(Ecopath_traits = fg_traits_weighted), ECOPATH_WORKBOOK_PATH)
-finalize_ecopath_ecosim_summary_sheets(out_path = ECOPATH_WORKBOOK_PATH, year_ecopath = YEAR_ECOPATH)
+write_native_sheet_csv(fg_traits_weighted, "fg_traits_weighted", csv_out_dir)
+finalize_ecopath_ecosim_summary_sheets(out_path = ECOPATH_WORKBOOK_PATH, year_ecopath = YEAR_ECOPATH,
+                                       biomass_csv_dir = BIOMASS_CSV_DIR, fisheries_csv_dir = FISHERIES_CSV_DIR)
 
 ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
 ## the intended sheets, trimmed script by script - trim the workbook
-## down to EXACTLY whichever of the 8 final target sheets exist at this
-## point in the pipeline - drops every native/intermediate sheet (all
-## CSV-only now). Safe/idempotent to call again here even if
-## 01_biomass.R/02_fisheries.R already trimmed it earlier this session.
+## down to EXACTLY whichever of the 9 final target sheets (info,
+## FG_spp, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
+## Ecopath_traits, Ecopath_diet, Ecosim_ts) exist at this point in the
+## pipeline - drops every native/intermediate sheet (all CSV-only now).
+## Safe/idempotent to call again here even if 01_biomass.R/
+## 02_fisheries.R already trimmed it earlier this session.
 trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 ## =================================================================
@@ -2515,7 +2530,7 @@ reference_table <- merge(reference_table, species_df[, .(Species, dispatch_group
 setcolorder(reference_table, c("Species", "dispatch_group", "parameter_type", "Locality", "Year", "Reference"))
 setorder(reference_table, Species, parameter_type)
 
-fwrite(reference_table, file.path(out_dir, "species_parameter_references.csv"))
+fwrite(reference_table, file.path(csv_out_dir, "species_parameter_references.csv"))
 message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
         " rows - which study/locality/year backs each species' growth,",
         " length-weight, and maturity parameters)")
@@ -2530,7 +2545,7 @@ message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
 ## into this species-level table.
 ## 2026-09-17 update: native/intermediate reference table, not a final
 ## target sheet - written as CSV only.
-write_native_sheets_csv(list(References = reference_table), out_dir)
+write_native_sheets_csv(list(References = reference_table), csv_out_dir)
 
 ## =================================================================
 ## OUTPUT 1b: METHOD_REFERENCES - which published equation/method
@@ -2604,7 +2619,7 @@ METHOD_REFERENCES <- data.table::data.table(
   )
 )
 
-fwrite(METHOD_REFERENCES, file.path(out_dir, "pbqb_method_references.csv"))
+fwrite(METHOD_REFERENCES, file.path(csv_out_dir, "pbqb_method_references.csv"))
 message("\nSaved: pbqb_method_references.csv (", nrow(METHOD_REFERENCES),
         " rows - the published equation/method behind every M_*/PB_*/QB_* column this",
         " script can produce, across fish/marine mammals/seabirds/invertebrates). ",
@@ -2618,7 +2633,7 @@ message("\nSaved: pbqb_method_references.csv (", nrow(METHOD_REFERENCES),
 ## study backs this species' trait value".
 ## 2026-09-17 update: native/intermediate reference table, not a final
 ## target sheet - written as CSV only.
-write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), out_dir)
+write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_out_dir)
 
 ## =================================================================
 ## Load the full FG reference (FGnum -> FGname) once, used both by the
@@ -2986,7 +3001,7 @@ if (n_missing > 0) {
   print(ecopath_ready[is.na(PB_FG) | (is.na(QB_FG) & !is_primary_producer), .(FG_num, FG_name)])
 }
 
-fwrite(ecopath_final, file.path(out_dir, "ecopath_ready_PB_QB.csv"), quote = "auto")
+fwrite(ecopath_final, file.path(csv_out_dir, "ecopath_ready_PB_QB.csv"), quote = "auto")
 message("\nSaved: ecopath_ready_PB_QB.csv (", nrow(ecopath_final), " FG rows,",
         " FG_num ", min(ecopath_ready$FG_num), "-", max(ecopath_ready$FG_num), ") -",
         " formatted to match Ecopath's real Basic Input structure",
