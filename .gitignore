@@ -48,3 +48,14 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 .positai
+
+# --- Added: WMed EwE pipeline's Shiny data cache -----------------------
+# pipeline_documentation_shiny.qmd's one-time data cache, saved right next
+# to that .qmd file (inside scripts/, this repo). Holds a full per-sample
+# MEDITS table plus the GSA shapefile - easily tens of MB. *_cache/ above
+# would actually match this directory's NAME going forward, but it can't
+# retroactively un-track a copy that was already committed before this
+# rule existed - see the git rm --cached step below.
+shiny_cache/
+*.rds
+.RDataTmp1

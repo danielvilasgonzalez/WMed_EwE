@@ -1,4 +1,6 @@
-# WMed_EwE pipeline
+# WMed EwE Pipeline
+
+Created by: Daniel Vilas
 
 An R pipeline that turns fishery-independent survey data and catch/effort
 records into ready-to-use input sheets for an Ecopath-with-Ecosim (EwE)
@@ -119,11 +121,19 @@ sheet.
   `out_dir`/`pcloud_dir`/`git_dir` at that region's own data — no other
   code changes needed. GSA-specific corrections (e.g. the Alboran
   longitude-sign fix) are harmless no-ops outside GSA 1–3.
-- **A fully custom, non-GSA region anywhere in the Mediterranean**: use
-  `01_survey_density_custom.R` directly, with `AREA_NAME`,
-  `CUSTOM_AREA_TYPE` (`"bbox"` or `"shapefile"`), and
-  `CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH` set to the target boundary — no
-  GSA-specific code path runs at all.
+- **A fully custom, non-GSA region anywhere in the Mediterranean**: set
+  `AREA_MODE <- "custom"` before sourcing `01_biomass.R`, plus
+  `AREA_NAME`, `CUSTOM_AREA_TYPE` (`"bbox"` (default), `"shapefile"`,
+  or `"gsa"` for a custom GSA subset/grouping), and
+  `CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH`/`CUSTOM_GSA_IDS` set to the
+  target boundary — see `01_biomass.R`'s own "Configuration" section
+  for the full set of `AREA_MODE`/`CUSTOM_*` variables. `AREA_MODE ==
+  "custom"` skips MEDIAS acoustic survey and GFCM stock-assessment
+  biomass (both are West-Med-subregion-scoped data sources with no
+  meaning outside named GSAs) and runs MEDITS-only — everything else
+  (FG matching, density weighting, PB/QB, diet) is unchanged.
+  (`01_survey_density_custom.R`, the old separate script for this, is
+  deprecated — it now just stops with a pointer back here.)
 - `YEAR_ECOPATH` (the Ecopath snapshot years) and `TS_YEARS` (the Ecosim
   time-series range) are read by every script and must stay consistent
   across all of them — set them once in a driver script before sourcing

@@ -1,7 +1,7 @@
 ---
 title: "Biomass, Fisheries, PB/QB-Traits & Diet Pipeline"
 subtitle: "Code documentation for the four EwE input-building scripts — biomass, fisheries, PB/QB & traits, diet — for any GFCM GSA subset or user-defined region in the Mediterranean"
-author: "Documentation generated with Claude"
+author: "Daniel Vilas"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -103,8 +103,9 @@ The scripts as delivered are configured for the **Western Mediterranean**
 `export_gsa_boundaries.R` and `fig_WMed_basemap.R` currently point at, and
 what a few reference tables (e.g. the MEDIAS Handbook area crosswalk) are
 currently populated for. The underlying mechanism — GSA-based selection via
-`FILTER_AREAS`, or an arbitrary region via `01_survey_density_custom.R` — is
-not Western-Med-specific; see [Adapting this pipeline to a different region]
+`FILTER_AREAS`, or an arbitrary custom region via `01_biomass.R`'s
+`AREA_MODE <- "custom"` switch — is not Western-Med-specific; see
+[Adapting this pipeline to a different region]
 below for exactly what to change to point the same pipeline at another part
 of the Mediterranean.
 
@@ -235,12 +236,15 @@ flowchart LR
 </div>
 ```
 
-**Step 1 — pick ONE:**
+**Step 1 — one script, `AREA_MODE` picks the region:**
 
-* `01_biomass.R`
-  (MEDITS + MEDIAS, GFCM GSA areas), **or**
-* `01_survey_density_custom.R`
-  (MEDITS only, custom bbox/shapefile)
+* `01_biomass.R`, `AREA_MODE <- "westmed"` (default)
+  — MEDITS + MEDIAS, GFCM GSA areas, **or**
+* `01_biomass.R`, `AREA_MODE <- "custom"`
+  — MEDITS only, custom bbox/shapefile/custom-GSA grouping
+
+(`01_survey_density_custom.R`, the old separate script for the second case,
+is deprecated — its logic now lives in `01_biomass.R` behind `AREA_MODE`.)
 
 &#8595; produces `species_density_regional_combined.csv`,
 `strata_area_by_area.csv`, and sheets `FG_spp_Ecopath`, `Ecopath`, `Ecosim`,
@@ -289,7 +293,7 @@ Two more files are **not** part of the numbered pipeline, but support it:
 
 | Step | Script | Depends on | Must run before |
 |---|---|---|---|
-| 1 | `01_biomass.R` **or** `01_survey_density_custom.R` (pick one) | nothing | 2, 4 |
+| 1 | `01_biomass.R` (`AREA_MODE` picks westmed vs. custom) | nothing | 2, 4 |
 | 2 | `02_fao_catches.R` | Step 1's `strata_area_by_area.csv` | — |
 | 2a | `02a_fisheries_multisource.R` (optional, alongside Step 2) | Step 1's `strata_area_by_area.csv` and FG reference; optionally Step 2's `fg_catch_timeseries_*.csv` for the FAO-GFCM source | 4 (optional input, via `FISHERIES_DATA_SOURCE`) |
 | 3 | `03b_ecobase.R` | nothing (independent web query) | 4 (optional input) |
@@ -303,11 +307,12 @@ does this itself at its own final step).
 
 # Script 1a — `01_biomass.R`
 
-**Role:** Pipeline Step 1 of 4, GFCM-GSA-based version — the general
-mechanism for **any GSA subset anywhere in the Mediterranean**, not just the
-Western Med. Run this **or** `01_survey_density_custom.R`, not both, as Step
-1. No dependency on the other numbered scripts; `02_fao_catches.R` and
-`03_pbqb-traits.R` both require this step's output to exist first.
+**Role:** Pipeline Step 1 of 4 — a single script for **any region in the
+Mediterranean**, GSA-based or fully custom, picked by the `AREA_MODE`
+config variable (`"westmed"`, the default, or `"custom"` — see
+[`AREA_MODE == "custom"`] below). No dependency on the other numbered
+scripts; `02_fao_catches.R` and `03_pbqb-traits.R` both require this step's
+output to exist first, regardless of which `AREA_MODE` produced it.
 
 Runs two independent surveys over the same GSAs/FG scheme (MEDITS bottom
 trawl + MEDIAS acoustic) and combines both into one set of Ecopath/Ecosim
@@ -416,8 +421,9 @@ Implemented in `lib_aquamaps_depth_extension.R` (species → AquaMaps
 `SpeciesID` resolution, envelope fetch, envelope math, pseudo-strata
 construction) — see that file's own header for the full mechanism.
 Requires `STRATA <- TRUE` (errors clearly if not — there's no unstratified
-equivalent). **Not yet wired into `01_survey_density_custom.R`** — only
-`01_biomass.R` has this option so far.
+equivalent). Available under **either** `AREA_MODE` — the adjustment
+operates on species depth envelopes and strata generically, with no
+GSA-specific assumptions, so it applies the same way to a custom region.
 
 Two outputs make the strata (real + derived) inspectable directly,
 independent of `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT` — they cover whichever
@@ -525,7 +531,7 @@ optional):
 ```{r sample-coverage-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_sample_map() output — MEDITS sample coverage by area."}
 safe_include_graphics(
   "figures/survey_sample_coverage_map.png",
-  script = "01_biomass.R (or 01_survey_density_custom.R)",
+  script = "01_biomass.R",
   out_dir_note = "<out_dir>/plots/survey_sample_coverage_map.png"
 )
 ```
@@ -568,7 +574,7 @@ safe_include_graphics(
    ```{r fg-timeseries-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_fg_timeseries_by_area() output — MEDITS trawl survey density by FG and area (strata-weighted)."}
    safe_include_graphics(
      "figures/survey_fg_density_timeseries.png",
-     script = "01_biomass.R (or 01_survey_density_custom.R)",
+     script = "01_biomass.R",
      out_dir_note = "<out_dir>/plots/survey_fg_density_timeseries.png"
    )
    ```
@@ -576,7 +582,7 @@ safe_include_graphics(
    ```{r strata-profile-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_strata_profile() output — raw per-sample density across depth strata, by FG."}
    safe_include_graphics(
      "figures/survey_fg_depth_strata_profile.png",
-     script = "01_biomass.R (or 01_survey_density_custom.R)",
+     script = "01_biomass.R",
      out_dir_note = "<out_dir>/plots/survey_fg_depth_strata_profile.png"
    )
    ```
@@ -645,80 +651,92 @@ safe_include_graphics(
 
 ---
 
-# Script 1b — `01_survey_density_custom.R`
+# `AREA_MODE == "custom"` — a fully custom study area, in `01_biomass.R`
 
-**Role:** Alternative Step 1, for **any study area anywhere in the
-Mediterranean that doesn't line up with GSA boundaries** — a single custom
-bounding box or shapefile (e.g. one EwE model's own footprint, a bay, an
-MPA, or a region spanning parts of several GSAs, in any part of the basin).
-This is the general-purpose route for a fully user-defined region; Script 1a
-above is the general-purpose route for any GSA-aligned region instead. Run
-this **instead of** `01_biomass.R`, never both. MEDITS-only —
-does not run the MEDIAS acoustic survey.
+**Role:** Not a separate script — a config switch inside `01_biomass.R`
+(`AREA_MODE <- "custom"`, instead of the `"westmed"` default) for **any
+study area anywhere in the Mediterranean that doesn't line up with GSA
+boundaries** — a single custom bounding box or shapefile (e.g. one EwE
+model's own footprint, a bay, an MPA, or a region spanning parts of several
+GSAs, in any part of the basin), or a custom subset/grouping of real GSAs.
 
-Structurally identical to `01_biomass.R` for the MEDITS
-loading and FG-matching stages (Steps 1–4 use the exact same shared-library
-functions). What's genuinely different:
+**2026-09-19: merged from a separate script.** This used to be a second
+script, `01_survey_density_custom.R`, run *instead of* `01_biomass.R`. It's
+now merged into `01_biomass.R` itself, so there's one script and one set of
+fixes/improvements both regions benefit from — see `01_biomass.R`'s own
+header comment. `01_survey_density_custom.R` still exists on disk but only
+`stop()`s with a pointer back here; it is not maintained.
 
+Structurally identical to `AREA_MODE == "westmed"` for the MEDITS loading
+and FG-matching stages (Steps 1–4 use the exact same shared-library
+functions, unconditionally). What's genuinely different:
+
+* **MEDIAS acoustic survey and GFCM stock-assessment biomass are skipped**
+  (Step 9, and the stock-assessment/priority blocks right after it) —
+  both are West-Med-subregion-scoped data sources (MEDIAS Handbook Table 1
+  areas, STAR/RAM Legacy species-by-GSA assessments) with no defined
+  meaning outside the named GSAs they're built around. `fg_index_regional_combined`/
+  `species_density_regional_combined`/`fg_cv_log_combined` — the same
+  variable names Step 10 onward reads either way — are built as plain
+  MEDITS-only aliases instead.
 * **`AREA_NAME`** — a user-supplied label for this custom study area (typed
   interactively via `rstudioapi::showPrompt()`, or hardcoded for the
   `daniel` user). Used to build a **dedicated output subfolder**
-  (`out_dir/<AREA_NAME>/`) and to suffix every output filename via helper
-  functions `af()`/`pf()`, so two different custom-region runs (different
-  `AREA_NAME`s) never collide or overwrite each other's outputs, and never
-  collide with `01_biomass.R`'s own `out_dir`.
-* **Study-area definition (Step 1b)** — `CUSTOM_AREA_TYPE <- "bbox"` (a
+  (`out_dir/<AREA_NAME>/`), so a custom-region run never collides with the
+  default Western-Med `out_dir` or with another custom run under a
+  different `AREA_NAME`.
+* **Study-area definition** — `CUSTOM_AREA_TYPE <- "bbox"` (default; a
   rectangle defined by `CUSTOM_BBOX <- c(xmin, xmax, ymin, ymax)`),
   `"shapefile"` (an arbitrary `sf` polygon read via `st_read()`), or **`"gsa"`**
-  (one or more GFCM GSAs, picked out of the same GSA shapefile
-  `01_biomass.R` downloads, via `CUSTOM_GSA_IDS <- c(...)` —
-  e.g. a single GSA, or a different regional grouping than that script's
-  fixed `1:11` Western-Med range). For `"bbox"`/`"shapefile"` the result is a
+  (one or more GFCM GSAs, picked out of the same GSA shapefile downloaded
+  for `AREA_MODE == "westmed"`, via `CUSTOM_GSA_IDS <- c(...)` — e.g. a
+  single GSA, or a different regional grouping than the fixed `1:11`
+  Western-Med range). For `"bbox"`/`"shapefile"` the result is a
   single-feature `area_shp` with `AREA_ID_COL = "area_id"`, always
   `area_id = 1` — there is no GSA sub-division inside a custom region unless
   the user builds one. For `"gsa"`, `area_shp` can have **one row per
   selected GSA**, each keeping its own `gsa_num` as `area_id` (same
-  convention as Script 1a), so a multi-GSA custom region is NOT forced down
-  to a single `area_id = 1`.
+  convention as `AREA_MODE == "westmed"`), so a multi-GSA custom region is
+  NOT forced down to a single `area_id = 1`.
 * **`AreaID` is derived spatially** for `"bbox"`/`"shapefile"`, not read off
   MEDITS' own `area` (GSA) column — every sample gets `AreaID = 1`, then
   `filter_samples_by_area()` drops everything outside the custom boundary.
-  For `"gsa"`, `AreaID` follows the selected GSA(s) directly, same as Script
-  1a.
+  For `"gsa"`, `AreaID` follows the selected GSA(s) directly, same as
+  `AREA_MODE == "westmed"`.
 * **Strata-area computation (Step 6)** — `compute_strata_area_by_area()`
-  called with `area_ids = 1` for `"bbox"`/`"shapefile"` (a single custom
-  polygon), or with the selected `CUSTOM_GSA_IDS` for `"gsa"` (one or more
-  named GSAs) — the function itself is agnostic to this distinction either
-  way.
+  called with whichever `AreaID`s are actually in scope (a single custom
+  polygon for `"bbox"`/`"shapefile"`, or the selected `CUSTOM_GSA_IDS` for
+  `"gsa"`) — the function itself is agnostic to this distinction either way,
+  no branch needed.
 
-**Exception to the `AREA_NAME` filename-suffixing rule:** three files stay at
-plain, unsuffixed names on purpose, because `02_fao_catches.R` and
-`03_pbqb-traits.R` read them by that exact fixed name regardless of which
-Step-1 script produced them: `species_density_regional_combined.csv`,
+Three files stay at plain, unsuffixed names regardless of `AREA_MODE`,
+because `02_fao_catches.R` and `03_pbqb-traits.R` read them by that exact
+fixed name: `species_density_regional_combined.csv`,
 `ecopath_ecosim_inputs.xlsx`, `strata_area_by_area.csv`. The dedicated
-`AREA_NAME` subfolder is what keeps these three from colliding with another
-run's copies.
+`AREA_NAME` output subfolder (not a filename suffix) is what keeps a custom
+run's copies of these three from colliding with the default run's.
 
 ## Inputs
 
-Same as `01_biomass.R` minus the MEDIAS/ASFIS/GSA-shapefile
-inputs, plus (for `CUSTOM_AREA_TYPE = "shapefile"`) a user-supplied boundary
-shapefile.
+Same as `AREA_MODE == "westmed"` minus the MEDIAS/ASFIS inputs (the GSA
+shapefile is still downloaded when `CUSTOM_AREA_TYPE == "gsa"`), plus (for
+`CUSTOM_AREA_TYPE == "shapefile"`) a user-supplied boundary shapefile.
 
 ## Processing steps
 
-Steps 1–5 mirror `01_biomass.R` (see above) using the custom
-`area_shp`. Steps 6–12 are the same Excel-export / `FG_spp_Ecopath` /
-`traits_ewe` / sheet-order-finalization logic, applied to a single-area
-result. (Since this script skips MEDIAS, its `species_density_regional`
-table is MEDITS-only — no MEDITS+MEDIAS averaging step.)
+Steps 1–8 and 11–13 are identical code to `AREA_MODE == "westmed"` (see
+above), running against the custom `area_shp`/`AreaID`. Step 9 (MEDIAS +
+stock-assessment + priority combine) is skipped entirely — its `else{}`
+branch aliases `fg_index_regional`/`species_density_regional`/
+`fg_cv_log_medits` (already computed in Steps 5–7) as the `*_combined`
+tables instead, so the `species_density_regional` table feeding Step 10 is
+MEDITS-only — no MEDITS+MEDIAS averaging step.
 
 ## Outputs
 
-Same file set and workbook sheets as `01_biomass.R`
-(see above), written to `out_dir/<AREA_NAME>/` with most filenames suffixed
-`_<AREA_NAME>`, except the three contract files listed above which stay
-unsuffixed.
+Same file set and workbook sheets as `AREA_MODE == "westmed"` (see above),
+written to `out_dir/<AREA_NAME>/`, with the three contract files above
+staying unsuffixed.
 
 ---
 
@@ -1497,6 +1515,54 @@ flowchart LR
 | `fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms", rank_levels = c("Genus","Family","Order","Class","Phylum"))` | Data-driven rank fallback — a rank value is used only if it maps to exactly one FG among reference species | `dt`, with `attr(dt,"fetched_taxonomy")` and `attr(dt,"still_unresolved_taxonomy")` attached |
 | `apply_seed_fg_rules(dt, dataframe2, seed_rules, species_exceptions = NULL)` | Explicit small rule table for FGs with **zero** reference species (nothing for the automatic fallback to learn from); species-level exceptions applied first | `dt` |
 | `summarize_unresolved_species(dt, taxonomy = NULL)` | Mean biomass + appearance count per still-unmatched species, sorted by appearance count | summary `data.table` |
+| `build_fg_manual_review_template(csv_out_dir, out_path = file.path(csv_out_dir, "FG_manual_review_template.xlsx"))` | Combines `survey_unmatched_for_manual_review.csv` + `medias_unmatched_for_manual_review.csv` into one de-duplicated review workbook, with blank `GF`/`FG_name` columns ready to hand-fill | invisibly returns the combined `data.table`; writes an `.xlsx` |
+
+`build_fg_manual_review_template()` is a one-off, run-it-yourself helper, not
+part of the automated pipeline — nothing calls it from `01_biomass.R` itself.
+After a run leaves species unmatched, call it against that run's
+`output/biomass/` folder to get one workbook (a `README` sheet plus a
+`For_review` sheet, sorted by how often each species actually showed up in
+the data — review the highest-impact species first). Its `ESPECIE`/`GF`/
+`FG_name` columns deliberately use the exact same names as `FG_WMed.xlsx`'s
+own sheet 4 (`fg_wmed_95`) — fill in `GF`/`FG_name` for whichever species you
+want to resolve, then copy columns A:C straight into a **new** version of
+that sheet (never overwrite the original in place), and point `fg_file` at
+the new file for the next run. There's no code path that writes the filled-in
+review back into `FG_WMed.xlsx` automatically — that hand-off is deliberately
+manual, since it's a genuine judgment call about which FG a given species
+belongs to.
+
+| `snapshot_full_extent_species(matched_dt, species_taxonomy, source_label, csv_out_dir, sci_name_col = "ScientificName")` | One row per distinct species a source's own FG-matching step saw, taken BEFORE that source's `FILTER_AREAS`/year restriction — i.e. every species anywhere in the raw file(s) that source loaded, independent of this run's config. Called once each for MEDITS (Steps 3-4), MEDIAS (Step 9), and stock assessment | writes `all_species_<source>_full_extent.csv` |
+| `build_full_fg_species_catalog(csv_out_dir, out_path = file.path(csv_out_dir, "FG_WMed_full_species_catalog.csv"))` | Combines the three `all_species_*_full_extent.csv` snapshots above into ONE species catalog — matched species (a real `FG_number`/`FG_name`) and still-unmatched species (`FG_number`/`FG_name` blank) together, with a `sources` column (e.g. `"MEDITS+MEDIAS"`) showing which source(s) actually observed each one. Note the column is named `FG_number` here (not `GF`, as in `FG_WMed.xlsx`/`build_fg_manual_review_template()` above) since this catalog spans all three sources rather than being a direct fill-in template for the Excel sheet | invisibly returns the combined `data.table`; writes a CSV |
+
+`01_biomass.R` calls `build_full_fg_species_catalog(csv_out_dir)` itself,
+near the very end (Step 14, right after `trim_workbook_to_final_sheets()`)
+— **`FG_WMed_full_species_catalog.csv`** lands in `output/biomass/` on every
+run without any extra step. It's a candidate "sheet 4" replacement covering
+every species — matched (`status = "matched"`, already correctly resolved)
+and unmatched (`status = "needs review"`, blank) — in one file, sorted with
+matched rows first. Same read-only relationship to `FG_WMed.xlsx` as
+`build_fg_manual_review_template()` above — nothing writes back into it
+automatically.
+
+Unlike the matched/unmatched CSVs everything else in this script reads and
+writes, the three `all_species_*_full_extent.csv` snapshots — and so this
+catalog — are **NOT scoped by `FILTER_AREAS`/`YEAR_ECOPATH`/`TS_YEARS`**, by
+construction: `snapshot_full_extent_species()` is called right after each
+source's own FG-matching step and *before* that source's own area
+restriction (MEDITS: before `dt <- dt[AreaID %in% FILTER_AREAS]`; MEDIAS:
+`acoustic_matched` itself is never restricted in place, only derived summary
+tables are; stock assessment: `star_wm` is already the whole West Med
+subregion, not this run's `FILTER_AREAS`). So this catalog always covers the
+**whole available survey extent** — every GSA and year the raw MEDITS/
+MEDIAS/stock-assessment files actually contain — on every run, regardless
+of what region/years that particular run happens to be configured for. A
+source's snapshot (and its contribution to the catalog) simply won't exist
+for a run where that source didn't execute at all — `AREA_MODE == "custom"`
+skips MEDIAS and stock assessment entirely, so a custom run's catalog is
+MEDITS-only there, which is a real limit of that mode (no MEDIAS/stock-
+assessment data exists to catalog), not something a wider `FILTER_AREAS`
+would fix.
 
 ## Area / stratum / density functions
 
@@ -1795,11 +1861,14 @@ a template:
   new region, otherwise skip both entirely (nothing downstream needs them).
 
 **To model a fully custom (non-GSA) region anywhere in the Mediterranean**,
-use `01_survey_density_custom.R` directly: set `AREA_NAME`, `CUSTOM_AREA_TYPE`
-(`"bbox"` or `"shapefile"`), and `CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH` to the
-target boundary — no GSA-specific code path is involved at all in this
-script (the Alboran-sign fix is present but is a documented no-op outside
-GSA 1–3).
+set `AREA_MODE <- "custom"` before sourcing `01_biomass.R`, plus `AREA_NAME`,
+`CUSTOM_AREA_TYPE` (`"bbox"` (default), `"shapefile"`, or `"gsa"`), and
+`CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH`/`CUSTOM_GSA_IDS` set to the target
+boundary — see [`AREA_MODE == "custom"`] above. No GSA-specific code path
+is involved for `"bbox"`/`"shapefile"` (the Alboran-sign fix is present but
+is a documented no-op outside GSA 1–3); MEDIAS and stock-assessment biomass
+are skipped entirely under `AREA_MODE == "custom"`, regardless of
+`CUSTOM_AREA_TYPE`.
 
 Everything downstream of Step 1 — `02_fao_catches.R`, `03b_ecobase.R`,
 `03_pbqb-traits.R`, and the shared library's Excel-export/PB-QB functions — is

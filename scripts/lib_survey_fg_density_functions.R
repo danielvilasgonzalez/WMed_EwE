@@ -1,4 +1,5 @@
 ## =================================================================
+## Created by: Daniel Vilas
 ## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
 ## sourced automatically by the numbered pipeline scripts (01-04) -
 ## do not run this directly, it has no top-level driver code of its own.
@@ -1192,6 +1193,272 @@ summarize_unresolved_species <- function(dt, taxonomy = NULL) {
           " (sorted by number of appearances, most first):")
   print(summary_dt)
   summary_dt
+}
+
+## =================================================================
+## build_fg_manual_review_template() - added 2026-09-18. Turns the two
+## per-source "still unmatched, needs manual review" exports written
+## above (survey_unmatched_for_manual_review.csv from 01_biomass.R's
+## MEDITS pass, medias_unmatched_for_manual_review.csv from its MEDIAS
+## pass) into ONE combined, de-duplicated review workbook, with GF/
+## FG_name columns ready to hand-fill.
+##
+## Uses the exact same 3 column names FG_WMed.xlsx's own sheet 4
+## (fg_wmed_95) uses - ESPECIE, GF, FG_name (see `dataframe2 <-
+## fg_raw[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)]` near
+## the top of 01_biomass.R) - so once GF/FG_name are filled in, columns
+## A:C of the "For_review" sheet can be copy-pasted straight into that
+## sheet with no renaming.
+##
+## Deliberately does NOT try to write the filled-in result back into
+## FG_WMed.xlsx itself, or merge it into FG_spp automatically.
+## FG_WMed.xlsx is the literal master species catalog every run reads
+## fresh from pCloud (fg_file in 01_biomass.R's Configuration section) -
+## the intended workflow is manual and one-directional: fill in GF/
+## FG_name here, paste columns A:C into a NEW version of FG_WMed.xlsx's
+## sheet 4, point future runs at that new file. That new file is then
+## the single source of truth - there is nothing here to keep in sync
+## with it afterward.
+##
+## csv_out_dir: the `output/biomass/` folder both unmatched CSVs were
+## written into by 01_biomass.R (either file may be absent - e.g. if
+## only one of MEDITS/MEDIAS has been run so far - handled gracefully).
+## out_path: where to write the review workbook; defaults alongside
+## csv_out_dir.
+## =================================================================
+
+## combine_unmatched_review_csvs() - shared helper factored out of
+## build_fg_manual_review_template() on 2026-09-19 so
+## build_full_fg_species_catalog() (below) can reuse the exact same
+## read/merge/de-duplicate logic for its own "needs review" tail,
+## rather than a second, driftable copy of it. Returns NULL if
+## neither unmatched CSV exists. Does NOT add ESPECIE/GF/FG_name -
+## callers add those themselves, since the two callers want slightly
+## different final column sets.
+combine_unmatched_review_csvs <- function(csv_out_dir) {
+  taxonomy_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  
+  read_one <- function(fname, source_label) {
+    fpath <- file.path(csv_out_dir, fname)
+    if (!file.exists(fpath)) {
+      message("'", fname, "' not found in '", csv_out_dir, "' - skipping (run the matching ",
+              "01_biomass.R pass first if you expected species from this source here).")
+      return(NULL)
+    }
+    dt <- fread(fpath)
+    if (nrow(dt) == 0) return(NULL)
+    setnames(dt, "mean_biomass", paste0("mean_biomass_", source_label))
+    setnames(dt, "n_appearances", paste0("n_appearances_", source_label))
+    dt
+  }
+  
+  survey_dt <- read_one("survey_unmatched_for_manual_review.csv", "survey")
+  medias_dt <- read_one("medias_unmatched_for_manual_review.csv", "medias")
+  
+  if (is.null(survey_dt) && is.null(medias_dt)) return(NULL)
+  
+  if (!is.null(survey_dt) && !is.null(medias_dt)) {
+    ## Full outer join on ScientificName. Taxonomy columns are coalesced
+    ## afterward, not joined on - both sources should agree on a given
+    ## species' taxonomy, and joining on those columns risks silently
+    ## dropping a row over a formatting mismatch (e.g. trailing whitespace).
+    shared_taxonomy <- intersect(taxonomy_cols, intersect(names(survey_dt), names(medias_dt)))
+    medias_for_merge <- if (length(shared_taxonomy) > 0) {
+      medias_dt[, setdiff(names(medias_dt), shared_taxonomy), with = FALSE]
+    } else {
+      medias_dt
+    }
+    combined <- merge(survey_dt, medias_for_merge, by = "ScientificName", all = TRUE)
+    for (col in shared_taxonomy) {
+      medias_lookup <- medias_dt[[col]][match(combined$ScientificName, medias_dt$ScientificName)]
+      filled <- ifelse(is.na(combined[[col]]) | combined[[col]] == "", medias_lookup, combined[[col]])
+      set(combined, j = col, value = filled)
+    }
+  } else {
+    combined <- if (!is.null(survey_dt)) copy(survey_dt) else copy(medias_dt)
+  }
+  
+  n_cols <- intersect(c("n_appearances_survey", "n_appearances_medias"), names(combined))
+  combined[, n_appearances_total := rowSums(as.data.frame(combined)[, n_cols, drop = FALSE], na.rm = TRUE)]
+  setorder(combined, -n_appearances_total)
+  combined
+}
+
+build_fg_manual_review_template <- function(csv_out_dir,
+                                            out_path = file.path(csv_out_dir, "FG_manual_review_template.xlsx")) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("openxlsx is required to write '", out_path, "'.")
+  }
+  
+  taxonomy_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  
+  combined <- combine_unmatched_review_csvs(csv_out_dir)
+  if (is.null(combined)) {
+    stop("Neither survey_unmatched_for_manual_review.csv nor medias_unmatched_for_manual_review.csv",
+         " was found in '", csv_out_dir, "' - nothing to build a review template from.",
+         " Run 01_biomass.R first.")
+  }
+  
+  ## GF/FG_name go right after the species name, using FG_WMed.xlsx sheet 4's
+  ## own raw column names verbatim - see the function header comment above.
+  combined[, ESPECIE := ScientificName]
+  combined[, GF := NA_character_]
+  combined[, FG_name := NA_character_]
+  
+  present_taxonomy <- intersect(taxonomy_cols, names(combined))
+  ordered_cols <- c("ESPECIE", "GF", "FG_name", "n_appearances_total",
+                    intersect(c("n_appearances_survey", "mean_biomass_survey",
+                                "n_appearances_medias", "mean_biomass_medias"), names(combined)),
+                    present_taxonomy)
+  review <- combined[, ordered_cols, with = FALSE]
+  
+  readme <- data.table(
+    Step = 1:5,
+    Instructions = c(
+      paste0("This sheet lists every species 01_biomass.R could not match to a Functional ",
+             "Group this run, combined across MEDITS and MEDIAS and de-duplicated by scientific name."),
+      "Sorted by n_appearances_total (most-observed species first) - review those first, they carry the most weight in the model.",
+      "For each row, fill in GF (the FG number) and FG_name (must match an existing FG_name exactly, or be a deliberate new one) on the 'For_review' sheet.",
+      "Once filled in, copy columns A:C (ESPECIE, GF, FG_name) and paste them as new rows into FG_WMed.xlsx's own sheet 4 (fg_wmed_95). Save that as a NEW version of FG_WMed.xlsx - don't overwrite the original in place.",
+      "Point fg_file (in 01_biomass.R's Configuration section) at the new FG_WMed.xlsx and re-run - these species will no longer appear in survey_unmatched_for_manual_review.csv / medias_unmatched_for_manual_review.csv."
+    )
+  )
+  
+  openxlsx::write.xlsx(
+    list(README = readme, For_review = review),
+    file = out_path,
+    colNames = TRUE
+  )
+  message("Wrote ", nrow(review), " unmatched species to '", out_path, "'.")
+  invisible(review)
+}
+
+## =================================================================
+## snapshot_full_extent_species() - added 2026-09-19, rewritten
+## 2026-09-20. Writes ONE row per distinct species a given source's
+## FG-matching step actually saw - BEFORE that source's own
+## FILTER_AREAS/year restriction, i.e. every species anywhere in the
+## raw file(s) that source loaded (every GSA, every year the raw data
+## covers), independent of whatever FILTER_AREAS/YEAR_ECOPATH/TS_YEARS
+## THIS run of 01_biomass.R happens to be configured for. Called once
+## per source (MEDITS, MEDIAS, stock assessment) at the call site right
+## after that source's own matching step - see each call site's own
+## comment in 01_biomass.R for exactly where and why that point is
+## already before any area/year restriction.
+##
+## matched_dt: the source's own post-matching table (dt for MEDITS,
+## acoustic_matched for MEDIAS, etc.) - must have a scientific-name
+## column (sci_name_col) plus FG_num/FG_name (NA where unmatched).
+## species_taxonomy: the run's already-built taxonomy lookup
+## (ScientificName + Genus/Family/Order/Class/Phylum) to attach by
+## left join - built once per run, reused across every source's
+## snapshot rather than re-fetched per source.
+## =================================================================
+snapshot_full_extent_species <- function(matched_dt, species_taxonomy, source_label, csv_out_dir,
+                                         sci_name_col = "ScientificName") {
+  taxonomy_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  
+  snap <- unique(matched_dt[!is.na(get(sci_name_col)), c(sci_name_col, "FG_num", "FG_name"), with = FALSE])
+  if (sci_name_col != "ScientificName") setnames(snap, sci_name_col, "ScientificName")
+  
+  present_taxonomy <- intersect(taxonomy_cols, names(species_taxonomy))
+  if (length(present_taxonomy) > 0) {
+    snap <- merge(snap, unique(species_taxonomy[, c("ScientificName", present_taxonomy), with = FALSE]),
+                  by = "ScientificName", all.x = TRUE)
+  }
+  snap[, source := source_label]
+  
+  out_path <- file.path(csv_out_dir, paste0("all_species_", tolower(source_label), "_full_extent.csv"))
+  fwrite(snap, out_path)
+  message("Saved ", nrow(snap), " distinct species (", source_label, ", full available extent -",
+          " every GSA/year the raw data covers, independent of this run's FILTER_AREAS/",
+          "YEAR_ECOPATH/TS_YEARS) to '", out_path, "'.")
+  invisible(snap)
+}
+
+## =================================================================
+## build_full_fg_species_catalog() - added 2026-09-19, rewritten
+## 2026-09-20 to (a) cover MEDITS + MEDIAS + stock assessment, not just
+## MEDITS+MEDIAS, (b) always reflect the whole available extent
+## regardless of this run's FILTER_AREAS/YEAR_ECOPATH/TS_YEARS - not
+## something that requires a special "widest FILTER_AREAS" run - and
+## (c) write a plain CSV instead of an .xlsx workbook.
+##
+## Reads back the three all_species_<source>_full_extent.csv snapshots
+## snapshot_full_extent_species() writes during Steps 3-4 (MEDITS), 9
+## (MEDIAS), and the stock-assessment block (all BEFORE that source's
+## own area/year restriction - see each snapshot call site in
+## 01_biomass.R) - never the FILTER_AREAS-scoped FG_spp_Ecopath.csv or
+## the per-run unmatched-review CSVs, which is what made the OLD version
+## of this function only reflect one run's configured region/years.
+## A source's snapshot simply won't exist for a run where that source
+## didn't execute at all (AREA_MODE == "custom" skips MEDIAS and stock
+## assessment entirely - see 01_biomass.R's STEP 9 header comment) -
+## handled gracefully below, same convention as combine_unmatched_review_csvs().
+##
+## One row per distinct species across whichever sources exist:
+## ESPECIE/FG_number/FG_name (FG_number mirrors FG_WMed.xlsx sheet 4's
+## "GF" column under a clearer name), status ("matched" if any source
+## resolved it to an FG, else "needs
+## review"), sources (which of MEDITS/MEDIAS/stock assessment actually
+## observed it - e.g. "MEDITS+MEDIAS"), and taxonomy.
+##
+## csv_out_dir: `output/biomass/` from any 01_biomass.R run (any
+## AREA_MODE/FILTER_AREAS/YEAR_ECOPATH - see above). out_path: where to
+## write the catalog; defaults alongside csv_out_dir.
+## =================================================================
+build_full_fg_species_catalog <- function(csv_out_dir,
+                                          out_path = file.path(csv_out_dir, "FG_WMed_full_species_catalog.csv")) {
+  taxonomy_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  sources <- c(medits = "MEDITS", medias = "MEDIAS", stock_assessment = "stock_assessment")
+  
+  snapshots <- lapply(names(sources), function(key) {
+    fpath <- file.path(csv_out_dir, paste0("all_species_", key, "_full_extent.csv"))
+    if (!file.exists(fpath)) {
+      message("'", basename(fpath), "' not found in '", csv_out_dir, "' - skipping ", sources[[key]],
+              " (either this run's AREA_MODE doesn't run that source, or 01_biomass.R hasn't been",
+              " run yet).")
+      return(NULL)
+    }
+    fread(fpath)
+  })
+  names(snapshots) <- names(sources)
+  snapshots <- snapshots[!vapply(snapshots, is.null, logical(1))]
+  if (length(snapshots) == 0) {
+    stop("None of the all_species_*_full_extent.csv snapshots were found in '", csv_out_dir,
+         "' - run 01_biomass.R first (these are written during Steps 3-4/9/stock-assessment,",
+         " each right after that source's own FG-matching step).")
+  }
+  all_snapshots <- rbindlist(snapshots, fill = TRUE)
+  
+  ## One row per species: FG_num/FG_name coalesced across sources (they
+  ## should agree - same fg_lookup_safe matching cascade everywhere -
+  ## first non-NA value wins if they ever don't), taxonomy coalesced the
+  ## same way, sources joined into one "MEDITS+MEDIAS"-style label.
+  present_taxonomy <- intersect(taxonomy_cols, names(all_snapshots))
+  full_catalog <- all_snapshots[, c(
+    list(
+      FG_number = FG_num[which(!is.na(FG_num))[1]],
+      FG_name   = FG_name[which(!is.na(FG_name))[1]],
+      sources   = paste(sort(unique(source)), collapse = "+")
+    ),
+    lapply(present_taxonomy, function(col) {
+      vals <- get(col)
+      vals[which(!is.na(vals) & vals != "")[1]]
+    }) |> setNames(present_taxonomy)
+  ), by = ScientificName]
+  
+  setnames(full_catalog, "ScientificName", "ESPECIE")
+  full_catalog[, status := ifelse(!is.na(FG_number), "matched", "needs review")]
+  setcolorder(full_catalog, c("ESPECIE", "FG_number", "FG_name", "status", "sources", present_taxonomy))
+  setorder(full_catalog, status, FG_number, ESPECIE)
+  
+  fwrite(full_catalog, out_path)
+  n_matched <- full_catalog[status == "matched", .N]
+  message("Wrote ", nrow(full_catalog), " species (", n_matched, " matched, ",
+          nrow(full_catalog) - n_matched, " needing review) from ", paste(names(snapshots), collapse = "+"),
+          " to '", out_path, "'.")
+  invisible(full_catalog)
 }
 
 ## =================================================================

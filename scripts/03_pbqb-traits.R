@@ -1,4 +1,5 @@
 ## =================================================================
+## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 - run LAST
 ## REQUIRES Step 1's species_density_regional_combined.csv. OPTIONALLY
 ## uses Step 2's fg_catch_timeseries CSV (FG_YIELD_SOURCE toggle, near

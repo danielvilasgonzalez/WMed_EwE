@@ -1,0 +1,578 @@
+---
+title: "Biomass Pipeline — Live Explorer"
+subtitle: "A Shiny-powered companion to pipeline_documentation.qmd: pick a year range and a set of GSAs, and the figures below actually re-run against real per-sample MEDITS data — not just a generated config block."
+author: "Daniel Vilas"
+format: html
+server: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+suppressWarnings(suppressMessages({
+  library(shiny)
+  library(data.table)
+  library(leaflet)
+  library(ggplot2)
+  library(sf)
+}))
+
+## Resolve every relative path below against THIS DOCUMENT's own directory,
+## not whatever the current working directory happens to be when the R
+## process starts. quarto/knitr USUALLY sets the working directory to match
+## already, but "usually" isn't "always" - it depends on `execute.dir` in a
+## _quarto.yml (if this file is part of a project), and on exactly where/how
+## `quarto serve`/`quarto preview` was invoked from. A relative path silently
+## resolving against the wrong directory is exactly the kind of failure that
+## surfaces as a LATER, unrelated-looking error (e.g. deep in a Shiny
+## reactive) rather than a clear "file not found" right here - anchoring
+## explicitly removes that ambiguity, and every error message below prints
+## the full resolved path so a real "it's genuinely not there" case is easy
+## to tell apart from a "wrong base directory" case.
+DOC_DIR <- tryCatch({
+  ci <- knitr::current_input(dir = TRUE)
+  if (is.null(ci) || !nzchar(ci)) stop("knitr::current_input() returned nothing")
+  dirname(normalizePath(ci, mustWork = TRUE))
+}, error = function(e) {
+  message("[pipeline_documentation_shiny] Could not resolve this document's own directory via ",
+          "knitr::current_input() (", conditionMessage(e), ") - falling back to the current ",
+          "working directory instead. If LIB_PATH/CACHE_PATH below can't be found, try running ",
+          "quarto from this .qmd's own folder, or set LIB_PATH/CACHE_PATH to absolute paths.")
+  getwd()
+})
+message("[pipeline_documentation_shiny] Resolving paths relative to: ", DOC_DIR)
+
+## This document needs the SAME library file every numbered pipeline script
+## sources, since the reactive code below calls its real aggregation/plotting
+## functions (compute_fg_densities_by_stratum(), weight_by_strata(),
+## weight_by_area(), plot_fg_timeseries_by_area(), plot_fg_timeseries_regional(),
+## plot_strata_profile(), plot_sample_map()) - NOT a reimplementation of them.
+## Adjust this path if lib_survey_fg_density_functions.R lives somewhere else
+## relative to this .qmd (an absolute path works too - DOC_DIR is only
+## prepended to a RELATIVE path, via file.path() below).
+LIB_PATH <- file.path(DOC_DIR, "lib_survey_fg_density_functions.R")
+if (!file.exists(LIB_PATH)) {
+  stop("Can't find '", LIB_PATH, "' (resolved from this document's own directory, '", DOC_DIR,
+       "') - set LIB_PATH above to wherever lib_survey_fg_density_functions.R actually is, ",
+       "relative to this file or as an absolute path.")
+}
+source(LIB_PATH)
+
+## The data cache 01_biomass.R optionally writes when SAVE_SHINY_CACHE_PATH is
+## set (see that variable's own comment in 01_biomass.R's Configuration
+## section) - the final per-sample MEDITS table (FG-matched, area/stratum-
+## assigned, catchability-corrected, outliers already resolved), plus the GSA
+## shapefile and strata definition needed to re-aggregate it. Building this
+## cache is a one-time step, done by running 01_biomass.R itself once (ideally
+## with FILTER_AREAS/YEAR_ECOPATH/TS_YEARS set to their full available extent,
+## so this app has the widest possible range to explore) - see the callout
+## below for the exact steps.
+##
+## Missing cache is NOT a stop() here on purpose - unlike LIB_PATH above
+## (genuinely fatal; there's no app at all without the shared functions),
+## a missing cache is the normal state the FIRST time anyone opens this
+## document, before they've run 01_biomass.R once. CACHE_AVAILABLE gates
+## every reactive/render block below via shiny::validate(need(...)), which
+## Shiny displays as a clean inline message in place of that output - not
+## an uncaught error that kills the whole `quarto serve` process. The app
+## still starts and shows the "Before you start" instructions either way.
+CACHE_PATH <- file.path(DOC_DIR, "shiny_cache/survey_density_raw.rds")
+CACHE_AVAILABLE <- file.exists(CACHE_PATH)
+CACHE_MISSING_MSG <- paste0(
+  "Data cache not found at '", CACHE_PATH, "' (resolved from this document's own directory, '",
+  DOC_DIR, "'). See \"Before you start\" above for how to build it by running 01_biomass.R once ",
+  "with SAVE_SHINY_CACHE_PATH set, then reload this page. If you DID build it and it's still not ",
+  "found here, check it actually landed in a 'shiny_cache/' folder next to THIS .qmd file, not ",
+  "next to 01_biomass.R's own out_dir - those are not the same directory unless you put this ",
+  "document there too."
+)
+
+## AUTO_BUILD_CACHE: if TRUE (the default) and no cache exists yet, this app
+## tries to build one itself on first load, by running 01_biomass.R once
+## with SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE set - the exact manual
+## steps in "Before you start" below, done automatically instead of by hand.
+## It runs with 01_biomass.R's own built-in defaults (AREA_MODE = "westmed",
+## every GSA 1-11, the full 1994-1996 base years and 1995-2023 time series -
+## already the widest extent that ships as this pipeline's worked example),
+## and stops right after the cache is saved (see STOP_AFTER_SHINY_CACHE's own
+## comment in 01_biomass.R) rather than continuing through MEDIAS/stock-
+## assessment/Excel-export/plot-file steps this cache doesn't need. It still
+## needs the same pCloud data access 01_biomass.R normally needs, and can
+## take a few minutes (GSA shapefile + bathymetry downloads, MEDITS loading,
+## FG matching) - that wait only happens ONCE, the first time this app is
+## opened with no cache yet; every reload after that reads the cache
+## instantly, exactly like before. Set AUTO_BUILD_CACHE <- FALSE below to
+## skip this and go back to just showing the manual "Before you start"
+## instructions.
+AUTO_BUILD_CACHE <- TRUE
+
+if (!CACHE_AVAILABLE && AUTO_BUILD_CACHE) {
+  BIOMASS_SCRIPT_PATH <- file.path(DOC_DIR, "01_biomass.R")
+  if (!file.exists(BIOMASS_SCRIPT_PATH)) {
+    message("[pipeline_documentation_shiny] AUTO_BUILD_CACHE is TRUE but '", BIOMASS_SCRIPT_PATH,
+            "' isn't next to this document, so there's nothing to auto-run - falling back to the",
+            " manual instructions below.")
+  } else {
+    message("[pipeline_documentation_shiny] No cache found - building one automatically by running",
+            " 01_biomass.R once (this can take a few minutes: GSA shapefile + bathymetry downloads,",
+            " MEDITS loading, FG matching). This happens only on this first load; every reload after",
+            " it succeeds reads the saved cache instantly. Set AUTO_BUILD_CACHE <- FALSE in this",
+            " document's setup chunk to skip this and just show the manual instructions instead.")
+    auto_build_ok <- tryCatch({
+      assign("SAVE_SHINY_CACHE_PATH",   CACHE_PATH, envir = .GlobalEnv)
+      assign("STOP_AFTER_SHINY_CACHE",  TRUE,       envir = .GlobalEnv)
+      ## local = a fresh env (not .GlobalEnv) - keeps 01_biomass.R's ~2000
+      ## lines of intermediate objects (dt, area_shp, out_dir, ...) out of
+      ## this document's own environment. The two assign()s just above
+      ## still land in the REAL .GlobalEnv, which is where 01_biomass.R's
+      ## own `exists(..., envir = .GlobalEnv, inherits = FALSE)` config
+      ## checks explicitly look, regardless of where the script itself runs.
+      source(BIOMASS_SCRIPT_PATH, local = new.env(parent = globalenv()))
+      TRUE
+    }, shinyCacheStop = function(e) TRUE, error = function(e) {
+      message("[pipeline_documentation_shiny] Automatic cache build failed: ", conditionMessage(e),
+              " - falling back to the manual instructions below.")
+      FALSE
+    })
+    CACHE_AVAILABLE <- isTRUE(auto_build_ok) && file.exists(CACHE_PATH)
+    if (CACHE_AVAILABLE) {
+      message("[pipeline_documentation_shiny] Automatic cache build succeeded - loading it now.")
+    }
+  }
+}
+
+## build_demo_cache(): a small, entirely synthetic stand-in for a real
+## SAVE_SHINY_CACHE_PATH cache - same list shape 01_biomass.R saves
+## (dt/area_shp/area_id_col/strata_def), but with made-up polygons,
+## strata and FGs instead of real MEDITS/GSA data. Its only purpose is
+## to give this app SOMETHING to show - populated sliders, a real map,
+## real (if meaningless) figures - the moment it's opened, even before
+## any real cache exists or an automatic build has had a chance to
+## succeed. Every value in it is fabricated; IS_DEMO_DATA (set where
+## this is used, below) is what tells the UI to say so.
+##
+## Deliberately does NOT call compute_strata_area_by_area() - that
+## function downloads REAL NOAA bathymetry for whatever polygon it's
+## given, which would either fail outright or return nonsense for a
+## hand-drawn square that isn't really seafloor. Its output shape
+## (AreaID/Stratum/area_km2/prop) is instead hand-built directly here.
+build_demo_cache <- function() {
+  set.seed(42)
+
+  ## Two small square "GSA-like" polygons, far enough apart to look
+  ## like distinct areas on the map, both with an explicit CRS (plot_
+  ## sample_map() stop()s without one - see its own comment).
+  poly1 <- sf::st_polygon(list(rbind(c(3, 40), c(4, 40), c(4, 41), c(3, 41), c(3, 40))))
+  poly2 <- sf::st_polygon(list(rbind(c(5.5, 39.5), c(6.5, 39.5), c(6.5, 40.5), c(5.5, 40.5), c(5.5, 39.5))))
+  demo_area_shp <- sf::st_sf(AreaID = c(1, 2), geometry = sf::st_sfc(poly1, poly2, crs = 4326))
+
+  demo_strata_def <- data.table(stratum_num = 1:3, depth_min = c(0, 50, 100), depth_max = c(50, 100, 200))
+  demo_fgs <- data.table(FG_num = 1:3, FG_name = c("Demo hake-like FG", "Demo shrimp-like FG", "Demo mullet-like FG"))
+  demo_years <- 2015:2023
+  n_samples_per_area_year <- 25
+
+  samples <- rbindlist(lapply(list(list(id = 1, poly = poly1), list(id = 2, poly = poly2)), function(a) {
+    bb <- sf::st_bbox(a$poly)
+    rbindlist(lapply(demo_years, function(yr) {
+      n <- n_samples_per_area_year
+      data.table(
+        SampleID = paste0("DEMO_", a$id, "_", yr, "_", seq_len(n)),
+        AreaID   = a$id,
+        Year     = yr,
+        Stratum  = sample(1:3, n, replace = TRUE, prob = c(0.5, 0.3, 0.2)),
+        Lon      = stats::runif(n, bb["xmin"], bb["xmax"]),
+        Lat      = stats::runif(n, bb["ymin"], bb["ymax"])
+      )
+    }))
+  }))
+
+  ## Cross each sample with every demo FG (one density observation per
+  ## sample/FG, some genuinely zero - a real haul rarely catches every
+  ## FG), with a mild upward trend over the demo years for FG 1 only,
+  ## so plot_fg_timeseries_by_area()/plot_fg_timeseries_regional() have
+  ## something visibly non-flat to draw.
+  demo_dt <- samples[rep(seq_len(.N), each = nrow(demo_fgs))]
+  demo_dt[, FG_num := rep(demo_fgs$FG_num, times = nrow(samples))]
+  demo_dt <- merge(demo_dt, demo_fgs, by = "FG_num")
+  demo_dt[, Density := round(stats::rexp(.N, rate = 1 / 4) * (stats::runif(.N) > 0.25), 2)]
+  demo_dt[FG_num == 1, Density := round(Density * (1 + 0.06 * (Year - min(demo_years))), 2)]
+
+  ## Hand-built strata areas (km2) - fabricated but internally
+  ## consistent (prop sums to 1 within each AreaID), exactly the shape
+  ## weight_by_strata()/weight_by_area() expect from a real
+  ## compute_strata_area_by_area() call.
+  demo_strata_area_by_area <- data.table(
+    AreaID    = rep(c(1, 2), each = 3),
+    Stratum   = rep(1:3, times = 2),
+    area_km2  = c(900, 500, 260, 700, 480, 220)
+  )
+  demo_strata_area_by_area[, prop := area_km2 / sum(area_km2), by = AreaID]
+
+  list(
+    dt                         = demo_dt,
+    area_shp                   = demo_area_shp,
+    area_id_col                = "AreaID",
+    strata_def                 = demo_strata_def,
+    species_taxonomy           = NULL,
+    cached_at                  = Sys.time(),
+    filter_areas_at_cache_time = c(1, 2),
+    year_range_at_cache_time   = range(demo_years),
+    strata_area_by_area_demo   = demo_strata_area_by_area
+  )
+}
+
+IS_DEMO_DATA <- FALSE
+
+if (CACHE_AVAILABLE) {
+  cache <- readRDS(CACHE_PATH)
+
+  ## Bathymetry-derived strata areas are the slow part (one bathymetry
+  ## download per GSA) and depend ONLY on which areas exist in the cache,
+  ## never on the year range or GSA selection the user picks interactively -
+  ## computed once here at startup, not inside a reactive(), so changing the
+  ## year slider or the GSA checkboxes never re-triggers a bathymetry
+  ## download.
+  ALL_AREA_IDS <- sort(unique(cache$dt$AreaID))
+  STRATA_AREA_BY_AREA_FULL <- compute_strata_area_by_area(
+    area_ids   = ALL_AREA_IDS,
+    area_shp   = cache$area_shp,
+    area_id_col = cache$area_id_col,
+    strata_def = cache$strata_def
+  )
+
+  YEAR_MIN <- min(cache$dt$Year, na.rm = TRUE)
+  YEAR_MAX <- max(cache$dt$Year, na.rm = TRUE)
+} else {
+  ## Final fallback: no real cache, and either AUTO_BUILD_CACHE is off or
+  ## its attempt above failed. Rather than showing an empty "no data yet"
+  ## state on first load, fall back to a small synthetic demo dataset
+  ## (built purely in-memory, in a few milliseconds - no downloads, no
+  ## pCloud access) so every control and figure below has SOMETHING real
+  ## to react to immediately. CACHE_AVAILABLE is set TRUE here on purpose:
+  ## every validate(need(CACHE_AVAILABLE, ...)) guard downstream means
+  ## "is there ANY data to show" (real or demo) - IS_DEMO_DATA is the
+  ## separate flag the UI uses to say which one it actually is.
+  message("[pipeline_documentation_shiny] ", CACHE_MISSING_MSG,
+          " Falling back to a small synthetic demo dataset so this app shows",
+          " something immediately - see the banner in the app itself once it",
+          " loads. Build a real cache (see \"Before you start\" above) and",
+          " reload this page to replace it with your actual MEDITS data.")
+  demo_cache <- tryCatch(build_demo_cache(), error = function(e) {
+    message("[pipeline_documentation_shiny] Building the synthetic demo dataset also failed (",
+            conditionMessage(e), ") - falling back to the plain \"no data yet\" message instead.")
+    NULL
+  })
+
+  if (!is.null(demo_cache)) {
+    cache <- demo_cache
+    IS_DEMO_DATA <- TRUE
+    CACHE_AVAILABLE <- TRUE
+
+    ALL_AREA_IDS <- sort(unique(cache$dt$AreaID))
+    STRATA_AREA_BY_AREA_FULL <- cache$strata_area_by_area_demo
+    YEAR_MIN <- min(cache$dt$Year, na.rm = TRUE)
+    YEAR_MAX <- max(cache$dt$Year, na.rm = TRUE)
+  } else {
+    cache <- NULL
+    ALL_AREA_IDS <- integer(0)
+    STRATA_AREA_BY_AREA_FULL <- NULL
+    YEAR_MIN <- 1990L
+    YEAR_MAX <- 2023L
+  }
+}
+```
+
+:::: {.callout-warning}
+## Before you start: this needs a live R session, and a one-time data cache
+
+Unlike `pipeline_documentation.qmd`, this file is **not** a static document
+you can just open in a browser. `server: shiny` in the YAML above means it
+needs an actual R process running behind it - open it with `quarto preview
+pipeline_documentation_shiny.qmd` (or `quarto serve`) from a machine with R,
+Shiny, and this pipeline's packages installed, or deploy it to
+shinyapps.io / Posit Connect / your own Shiny Server. Double-clicking a
+rendered `.html` file will not work - there's no R behind a plain HTML file.
+
+It also needs a **one-time data cache** before it can show anything - but
+you shouldn't have to build that by hand. **The first time you open this
+app with no cache yet, it builds one itself**: it runs `01_biomass.R` once,
+automatically, using that script's own built-in defaults (`AREA_MODE =
+"westmed"`, every GSA 1-11, its full available year range) and stops right
+after the cache is saved - it does *not* run the rest of the pipeline
+(MEDIAS, stock assessment, Excel export, plot files) just for this. That
+first run still needs the same pCloud data access `01_biomass.R` normally
+needs, and can take a few minutes (GSA shapefile + bathymetry downloads,
+MEDITS loading, FG matching) - you'll see progress messages in the R
+console it's running in. Every reload after that succeeds is instant, since
+it just reads the saved cache.
+
+**You don't have to wait for any of that to see how this app works.** If
+no real cache exists yet and the automatic build above hasn't finished (or
+fails - no pCloud access from wherever this is running, `01_biomass.R` not
+sitting next to this `.qmd`, etc.), the app falls back to a small,
+entirely synthetic demo dataset - fabricated GSAs, strata, functional
+groups and samples, built in-memory in milliseconds - so every control and
+figure below is already populated and interactive the first time you open
+this page. A grey banner above the controls says plainly when you're
+looking at that demo data instead of your real MEDITS results. Once a
+real cache exists (auto-built or built by hand), reload the page and the
+demo banner disappears in favor of the real thing.
+
+If you'd rather build the real cache yourself instead of waiting on the
+automatic build, the manual steps are the same ones it runs under the
+hood:
+
+1. In `01_biomass.R`'s Configuration section, temporarily set
+   `FILTER_AREAS` to every GSA you have MEDITS data for (not just your usual
+   region) and `YEAR_ECOPATH`/`TS_YEARS` to your full available year range -
+   the widest extent you want this app to be able to explore later.
+2. Set `SAVE_SHINY_CACHE_PATH <- "shiny_cache/survey_density_raw.rds"`
+   (relative to wherever `01_biomass.R` writes `out_dir`) and run the script
+   once, in full.
+3. Copy (or symlink) the resulting `shiny_cache/survey_density_raw.rds` to
+   sit next to this `.qmd` file - `CACHE_PATH` in the setup chunk above
+   expects it there.
+4. Revert `FILTER_AREAS`/`YEAR_ECOPATH`/`TS_YEARS`/`SAVE_SHINY_CACHE_PATH`
+   back to their normal values for `01_biomass.R`'s regular use - this cache
+   is a frozen snapshot for THIS document only, not something the numbered
+   pipeline scripts read back.
+
+Either way, the cache is a snapshot: it does not update itself if the
+underlying MEDITS data changes. Delete `shiny_cache/survey_density_raw.rds`
+and reload this app (to trigger another automatic build) - or repeat steps
+1-3 by hand - whenever you want it reflecting newer data. To turn off the
+automatic build entirely and always require the manual steps, set
+`AUTO_BUILD_CACHE <- FALSE` in this document's setup chunk.
+::::
+
+## What's actually live here, and what isn't
+
+Changing the **year range** or the **GSAs included** below genuinely
+re-runs the pipeline's own strata-weighting cascade
+(`compute_fg_densities_by_stratum()` → `weight_by_strata()` →
+`weight_by_area()`) against the cached per-sample data, and the four figures
+re-render from that real result - not a lookup of a pre-rendered image.
+
+Three of the static form's other options don't carry over as live toggles,
+for reasons worth being upfront about rather than silently shipping a
+control that doesn't really do anything:
+
+* **`DROP_OUTLIERS`** - outlier removal already ran once, at cache-build
+  time (`01_biomass.R`'s own Step, before this document's cache is saved).
+  Toggling it here would need the raw pre-outlier-removal samples cached
+  too, which this cache deliberately doesn't keep (it's already large
+  enough as the full per-sample extent).
+* **`STRATA`** - `weight_by_area()` (needed for the region-wide figure)
+  only implements the strata-weighted path; the unstratified
+  (`simple_area_density()`) path has no region-wide aggregation wired up in
+  the shared library today. This app always uses `STRATA = TRUE`
+  to keep the region-wide figure working; the by-area figure would be the
+  only one affected by `STRATA = FALSE` in any case.
+* **Custom bounding box** - re-deriving a custom polygon's strata *areas*
+  live would mean a fresh bathymetry download per input change, which is
+  far too slow for an interactive control. GSA selection is live because
+  `STRATA_AREA_BY_AREA_FULL` above is precomputed once for every GSA in the
+  cache; a live bbox would need that recomputed on the fly instead.
+
+The **"Generate config block"** panel at the bottom still works exactly like
+the static version - it always reflects your current picks above, ready to
+paste into `01_biomass.R`, `DROP_OUTLIERS`/`STRATA`/bbox included, even
+though only year range and GSA selection also drive the figures live.
+
+```{r ui-inputs}
+if (!CACHE_AVAILABLE) {
+  div(
+    style = paste(
+      "padding: 1em 1.25em; margin: 0.5em 0 1.5em; border: 1px solid #f0ad4e;",
+      "border-radius: 6px; background: #fcf8e3; color: #664d03;"
+    ),
+    strong("This app has no data to show yet."), br(),
+    CACHE_MISSING_MSG
+  )
+} else {
+  tagList(
+    if (isTRUE(IS_DEMO_DATA)) {
+      div(
+        style = paste(
+          "padding: 0.75em 1.25em; margin: 0.5em 0 1em; border: 1px solid #6c757d;",
+          "border-radius: 6px; background: #f1f1f1; color: #333;"
+        ),
+        strong("You're viewing synthetic demo data, not real MEDITS data."), br(),
+        "No real cache was found (and either the automatic build above hasn't finished or ",
+        "it failed) - so every control and figure below is running against a small, ",
+        "made-up dataset (fabricated GSAs, strata, functional groups and samples) just so ",
+        "you can see how this app works before your own data is ready. Build a real cache ",
+        "(see \"Before you start\" above) and reload this page to replace this with your ",
+        "actual MEDITS-derived results."
+      )
+    },
+    fluidRow(
+    column(
+      width = 4,
+      sliderInput("year_range", "Ecosim time-series years (TS_YEARS)",
+                  min = YEAR_MIN, max = YEAR_MAX,
+                  value = c(YEAR_MIN, YEAR_MAX), step = 1, sep = ""),
+      checkboxGroupInput("filter_areas", "GSA numbers to include (FILTER_AREAS)",
+                          choices = ALL_AREA_IDS, selected = ALL_AREA_IDS, inline = TRUE),
+      hr(),
+      checkboxInput("drop_outliers", "DROP_OUTLIERS (config block only - see note above)", value = TRUE),
+      checkboxInput("normalize_ts", "NORMALIZE_TS (config block only)", value = TRUE),
+      checkboxInput("strata_config", "STRATA (config block only - figures always use TRUE)", value = TRUE),
+      hr(),
+      numericInput("year_ecopath_start", "Ecopath base year, start", value = 1994),
+      numericInput("year_ecopath_end", "Ecopath base year, end", value = 1996),
+      hr(),
+      downloadButton("download_config", "Download config block (.R)")
+    ),
+    column(
+      width = 8,
+      leafletOutput("gsa_map", height = 320)
+    )
+    )
+  )
+}
+```
+
+```{r reactive-pipeline}
+## req(CACHE_AVAILABLE) first in every reactive here - without it, a
+## reactive further down the chain (e.g. filtered_dt(), which touches
+## cache$dt) would be the first thing to notice the cache is missing,
+## with a less clear error than the validate(need(...)) message each
+## render*() block below already shows. This just makes the failure
+## point explicit and identical everywhere.
+selected_areas <- reactive({
+  req(CACHE_AVAILABLE, input$filter_areas)
+  as.numeric(input$filter_areas)
+})
+
+filtered_dt <- reactive({
+  cache$dt[Year >= input$year_range[1] & Year <= input$year_range[2] &
+             AreaID %in% selected_areas()]
+})
+
+per_group_fg <- reactive({
+  compute_fg_densities_by_stratum(filtered_dt(), strata = TRUE)
+})
+
+n_samples_by_stratum <- reactive({
+  filtered_dt()[!is.na(Stratum), .(n_samples = uniqueN(SampleID)), by = .(AreaID, Year, Stratum)]
+})
+
+strata_area_selected <- reactive({
+  STRATA_AREA_BY_AREA_FULL[AreaID %in% selected_areas()]
+})
+
+fg_index <- reactive({
+  weight_by_strata(per_group_fg(), n_samples_by_stratum(), strata_area_selected())
+})
+
+fg_index_regional <- reactive({
+  weight_by_area(fg_index())
+})
+```
+
+## Sample coverage
+
+```{r plot-sample-map}
+renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_sample_map(filtered_dt(), cache$area_shp, cache$area_id_col,
+                   selected_areas = selected_areas())
+})
+```
+
+## FG density by area
+
+```{r plot-by-area}
+renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_fg_timeseries_by_area(fg_index())
+})
+```
+
+## FG density, region-wide
+
+```{r plot-regional}
+renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_fg_timeseries_regional(fg_index_regional())
+})
+```
+
+## Density by depth stratum
+
+```{r plot-strata}
+renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_strata_profile(fg_index(), cache$strata_def)
+})
+```
+
+```{r map-render, context="server"}
+## context="server" is required here, not optional - this is the actual
+## fix for "Error: object 'output' not found" at this chunk. Quarto's
+## Shiny engine evaluates every chunk WITHOUT context="server" during an
+## initial render pass that only builds the static UI, where `output`
+## (and `session`) don't exist yet - that pass is what raised the error.
+## reactive()/renderPlot() calls elsewhere in this document survive that
+## pass because they just build a promise object to return into the UI;
+## an explicit `output$x <- ...` assignment needs `output` to actually
+## exist, which only happens inside the live server function - i.e. in a
+## context="server" chunk. (config-download below needs the same fix,
+## for the same reason - it also assigns into `output`.)
+##
+## No leafletOutput("gsa_map") even exists in the UI when !CACHE_AVAILABLE
+## (see ui-inputs above), so neither block below ever actually runs in
+## that case - guarded anyway so this chunk fails the same explicit way
+## as everything else if that ever changes, rather than silently.
+output$gsa_map <- renderLeaflet({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  shp <- cache$area_shp
+  leaflet(shp) |>
+    addTiles() |>
+    addPolygons(
+      fillColor = ~ifelse(get(cache$area_id_col) %in% isolate(selected_areas()), "#0d6efd", "#cccccc"),
+      fillOpacity = 0.35, color = "#555555", weight = 1,
+      label = ~paste("GSA", get(cache$area_id_col))
+    )
+})
+
+observe({
+  req(CACHE_AVAILABLE)
+  shp <- cache$area_shp
+  leafletProxy("gsa_map", data = shp) |>
+    clearShapes() |>
+    addPolygons(
+      fillColor = ~ifelse(get(cache$area_id_col) %in% selected_areas(), "#0d6efd", "#cccccc"),
+      fillOpacity = 0.35, color = "#555555", weight = 1,
+      label = ~paste("GSA", get(cache$area_id_col))
+    )
+})
+```
+
+```{r config-download, context="server"}
+## context="server" required here too - this chunk assigns into
+## output$download_config, same reason as map-render above.
+##
+## downloadButton("download_config") only exists in the UI when
+## CACHE_AVAILABLE (see ui-inputs above), so this is unreachable
+## otherwise - req() guard kept for the same reason as map-render.
+config_text <- reactive({
+  req(CACHE_AVAILABLE)
+  paste(
+    '## --- generated by "Live Explorer" - 01_biomass.R ---',
+    paste0("FILTER_AREAS  <- c(", paste(selected_areas(), collapse = ", "), ")"),
+    paste0("STRATA        <- ", if (input$strata_config) "TRUE" else "FALSE"),
+    paste0("YEAR_ECOPATH  <- ", input$year_ecopath_start, ":", input$year_ecopath_end),
+    paste0("TS_YEARS      <- ", input$year_range[1], ":", input$year_range[2]),
+    paste0("DROP_OUTLIERS <- ", if (input$drop_outliers) "TRUE" else "FALSE"),
+    paste0("NORMALIZE_TS  <- ", if (input$normalize_ts) "TRUE" else "FALSE"),
+    sep = "\n"
+  )
+})
+
+output$download_config <- downloadHandler(
+  filename = function() "biomass_config_block.R",
+  content = function(file) writeLines(config_text(), file)
+)
+```

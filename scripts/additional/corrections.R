@@ -26,6 +26,10 @@
 # remove Sea ball of Posidonia oceanica, shell debris, Leaves of Posidonia oceanica
 # there are some groups that cannot be match because they belong to small groups with no taoxnomic definition, like suprabenthos (isopoda, amphipoda) and macrozooplankton (euphasiacea)
 
+·······
+#check map line from disolve region GSA
+#check shiny app
+#juvenile adults with multistanza groups how to pick them up from survey
 
 #compile validation section:
 # - GFW effort (at least at regional level)

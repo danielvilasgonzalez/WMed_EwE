@@ -1,4 +1,5 @@
 ## =================================================================
+## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 (optional) - run AFTER 01_biomass.R
 ## Builds an EwE-format functional-group (FG) diet-composition matrix
 ## from the Mediterranean trophic metaweb database (DATA_ENTRY
