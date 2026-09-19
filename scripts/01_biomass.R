@@ -213,8 +213,22 @@ source(paste0(git_dir,"/scripts/lib_survey_fg_density_functions.R"))
 source(paste0(git_dir,"/scripts/lib_worms_taxonomy_lookup.R"))
 
 #files in pcloud
-#fg_file should be correctly reference the species scientific name with the FG_name and FG_num
-fg_file          <- resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed.xlsx"), pcloud_dir)
+## fg_species_file: the species -> FG reference (ScientificName/FG_num/FG_name +
+## taxonomy) used to build dataframe2. As of the 2026 review this is a CSV
+## (FG_WMed_2026.csv - the columns are species/FG_number/FG_name/Genus/Family/
+## Order/Class/Phylum/source/status - the same shape build_full_fg_species_
+## catalog() in the shared library writes, since that's what this file was
+## reviewed from), not the old FG_WMed.xlsx sheet 4. Point this at wherever the
+## current reviewed CSV lives; the code below (STEP 2) reads it with fread(),
+## not readxl::read_excel().
+fg_species_file  <- resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed_2026.csv"), pcloud_dir)
+## fg_traits_file: UNCHANGED from before - still the Excel workbook with the
+## "traits_ewe" sheet (species-level life-history/ecology traits), read at
+## STEP 12 below. The 2026 species/FG reference above is a CSV and has no
+## traits_ewe sheet at all, so this stays pointed at the old xlsx file
+## specifically for that sheet - the two files serve genuinely different
+## purposes now, not just a rename of the same one.
+fg_traits_file   <- resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed.xlsx"), pcloud_dir)
 #taxonomy list of MEDITS and MEDIAS species and code species
 #downloaded from MEDITS website
 tm_list_file     <- resolve_pcloud_file(paste0(pcloud_dir,"/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/TM_list_(April_2019).xlsx"), pcloud_dir)
@@ -474,8 +488,12 @@ if (AREA_MODE == "westmed") {
 ## standardized dataframe1/dataframe2 format
 ## =================================================================
 ## --- dataframe2: species -> FG reference ------------------------------------
-fg_raw <- as.data.table(readxl::read_excel(fg_file, sheet = 4))
-dataframe2 <- unique(fg_raw[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)])
+## fread(), not readxl::read_excel() - fg_species_file is the 2026 reviewed
+## CSV (species/FG_number/FG_name/taxonomy/source/status), not the old
+## FG_WMed.xlsx sheet 4 (ESPECIE/GF/FG_name). Column names differ accordingly:
+## species -> ScientificName, FG_number -> FG_num, same FG_name either way.
+fg_raw <- fread(fg_species_file)
+dataframe2 <- unique(fg_raw[, .(ScientificName = species, FG_num = FG_number, FG_name)])
 
 ## --- dataframe1: MEDITS' TA.csv (samples/hauls) + TB.csv (catch) -----------
 ta <- read_csv(file.path(pcloud_dir,"data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/TA.csv"), show_col_types = FALSE)
@@ -2085,10 +2103,13 @@ upsert_workbook_sheets(
 ## traits (Organism, Ecology, Occurrence status, Biomass/Catch
 ## contribution, IUCN status, Exploitation status, Vulnerability
 ## index, Mean/Max length, Mean weight, Mean life span), read from
-## fg_file's own "traits_ewe" sheet and reconciled against dataframe2
-## before being written into ecopath_ecosim_inputs.xlsx.
+## fg_traits_file's own "traits_ewe" sheet and reconciled against
+## dataframe2 before being written into ecopath_ecosim_inputs.xlsx.
+## (fg_traits_file, not fg_species_file - the 2026 CSV has no traits_ewe
+## sheet; this still reads the older FG_WMed.xlsx workbook - see that
+## variable's own comment in the Configuration section.)
 ##
-## fg_file's traits_ewe sheet alternates: a "N: Group Name" header row
+## fg_traits_file's traits_ewe sheet alternates: a "N: Group Name" header row
 ## (blank index column) followed by one data row per species in that
 ## FG - the index column on species rows is a running species ID, NOT
 ## the FG number; the FG number only exists in the header row's text
@@ -2106,7 +2127,7 @@ fill_down <- function(x) {
   out
 }
 
-traits_raw <- as.data.table(readxl::read_excel(fg_file, sheet = "traits_ewe", col_names = TRUE))
+traits_raw <- as.data.table(readxl::read_excel(fg_traits_file, sheet = "traits_ewe", col_names = TRUE))
 setnames(traits_raw, 1, "row_index")
 setnames(traits_raw, "Species", "Species_col")
 
@@ -2114,7 +2135,7 @@ is_header_row <- is.na(traits_raw$row_index) &
   str_detect(traits_raw$Species_col, "^\\d+:\\s*")
 if (sum(is_header_row) == 0) {
   stop("No FG header rows (pattern 'N: Group name') found in traits_ewe - the sheet ",
-       "layout may have changed. Check fg_file's traits_ewe sheet by eye before proceeding.")
+       "layout may have changed. Check fg_traits_file's traits_ewe sheet by eye before proceeding.")
 }
 
 header_num  <- rep(NA_real_, nrow(traits_raw))

@@ -87,24 +87,32 @@ CACHE_MISSING_MSG <- paste0(
   "document there too."
 )
 
-## AUTO_BUILD_CACHE: if TRUE (the default) and no cache exists yet, this app
-## tries to build one itself on first load, by running 01_biomass.R once
-## with SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE set - the exact manual
-## steps in "Before you start" below, done automatically instead of by hand.
-## It runs with 01_biomass.R's own built-in defaults (AREA_MODE = "westmed",
-## every GSA 1-11, the full 1994-1996 base years and 1995-2023 time series -
-## already the widest extent that ships as this pipeline's worked example),
-## and stops right after the cache is saved (see STOP_AFTER_SHINY_CACHE's own
-## comment in 01_biomass.R) rather than continuing through MEDIAS/stock-
-## assessment/Excel-export/plot-file steps this cache doesn't need. It still
-## needs the same pCloud data access 01_biomass.R normally needs, and can
-## take a few minutes (GSA shapefile + bathymetry downloads, MEDITS loading,
-## FG matching) - that wait only happens ONCE, the first time this app is
-## opened with no cache yet; every reload after that reads the cache
-## instantly, exactly like before. Set AUTO_BUILD_CACHE <- FALSE below to
-## skip this and go back to just showing the manual "Before you start"
-## instructions.
-AUTO_BUILD_CACHE <- TRUE
+## AUTO_BUILD_CACHE: if TRUE and no cache exists yet, this app tries to
+## build one itself on first load, by running 01_biomass.R once with
+## SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE set - the exact manual steps
+## in "Before you start" below, done automatically instead of by hand.
+##
+## Defaults to FALSE now - NOT because it doesn't work, but because of
+## WHERE it runs: the code below is the document's own setup chunk, which
+## Quarto/Shiny evaluates synchronously, once, before this page can render
+## ANYTHING - no controls, no plots, not even the demo-data banner below.
+## A real 01_biomass.R run needs pCloud access and can take several minutes
+## (GSA shapefile + bathymetry downloads, MEDITS loading, FG matching) even
+## when everything goes right; if pCloud isn't reachable from wherever
+## `quarto serve`/`quarto preview` is running, or the run hits any problem
+## slow enough to not fail cleanly and quickly, the browser tab just sits
+## blank for however long that takes (or indefinitely) - which is exactly
+## what "opens to a blank page, nothing shows" looks like from the outside,
+## and is indistinguishable from the app being broken. Leaving this FALSE
+## means the page always paints immediately: no cache yet -> straight to
+## the synthetic demo dataset below (milliseconds, no network), never
+## blocked on a live pipeline run. Set AUTO_BUILD_CACHE <- TRUE here only
+## if you specifically want that automatic build attempt back (e.g. you
+## know pCloud is reachable from this machine and are fine waiting) -
+## otherwise build the real cache by running 01_biomass.R yourself (see
+## "Before you start" below) and this app will pick it up on the next
+## reload, same as always.
+AUTO_BUILD_CACHE <- FALSE
 
 if (!CACHE_AVAILABLE && AUTO_BUILD_CACHE) {
   BIOMASS_SCRIPT_PATH <- file.path(DOC_DIR, "01_biomass.R")
@@ -293,34 +301,29 @@ Shiny, and this pipeline's packages installed, or deploy it to
 shinyapps.io / Posit Connect / your own Shiny Server. Double-clicking a
 rendered `.html` file will not work - there's no R behind a plain HTML file.
 
-It also needs a **one-time data cache** before it can show anything - but
-you shouldn't have to build that by hand. **The first time you open this
-app with no cache yet, it builds one itself**: it runs `01_biomass.R` once,
-automatically, using that script's own built-in defaults (`AREA_MODE =
-"westmed"`, every GSA 1-11, its full available year range) and stops right
-after the cache is saved - it does *not* run the rest of the pipeline
-(MEDIAS, stock assessment, Excel export, plot files) just for this. That
-first run still needs the same pCloud data access `01_biomass.R` normally
-needs, and can take a few minutes (GSA shapefile + bathymetry downloads,
-MEDITS loading, FG matching) - you'll see progress messages in the R
-console it's running in. Every reload after that succeeds is instant, since
-it just reads the saved cache.
+It also needs a **one-time data cache** before it can show your real
+MEDITS results - but you should never see a blank page waiting on that.
+**The moment you open this app with no real cache yet, it shows a small
+synthetic demo dataset instead** - fabricated GSAs, strata, functional
+groups and samples, built in-memory in milliseconds, no network or pCloud
+access needed - so every control and figure below is already populated
+and interactive on first load. A grey banner above the controls says
+plainly when you're looking at that demo data rather than your real
+results.
 
-**You don't have to wait for any of that to see how this app works.** If
-no real cache exists yet and the automatic build above hasn't finished (or
-fails - no pCloud access from wherever this is running, `01_biomass.R` not
-sitting next to this `.qmd`, etc.), the app falls back to a small,
-entirely synthetic demo dataset - fabricated GSAs, strata, functional
-groups and samples, built in-memory in milliseconds - so every control and
-figure below is already populated and interactive the first time you open
-this page. A grey banner above the controls says plainly when you're
-looking at that demo data instead of your real MEDITS results. Once a
-real cache exists (auto-built or built by hand), reload the page and the
-demo banner disappears in favor of the real thing.
+Building the real cache is a separate, deliberate step - it is **not**
+attempted automatically by default, on purpose: a real `01_biomass.R` run
+needs pCloud access and can take several minutes (GSA shapefile +
+bathymetry downloads, MEDITS loading, FG matching), and running that
+synchronously inside this document's own startup code would block the
+page from rendering anything at all until it finishes - which looks
+identical to the app being broken if pCloud isn't reachable from wherever
+`quarto serve`/`quarto preview` is running, or the run is simply slow.
+(If you'd rather have that automatic attempt back anyway - e.g. you know
+pCloud is reachable here and are fine waiting - set `AUTO_BUILD_CACHE <-
+TRUE` in this document's setup chunk.)
 
-If you'd rather build the real cache yourself instead of waiting on the
-automatic build, the manual steps are the same ones it runs under the
-hood:
+The manual steps to build a real cache yourself:
 
 1. In `01_biomass.R`'s Configuration section, temporarily set
    `FILTER_AREAS` to every GSA you have MEDITS data for (not just your usual
@@ -337,12 +340,11 @@ hood:
    is a frozen snapshot for THIS document only, not something the numbered
    pipeline scripts read back.
 
-Either way, the cache is a snapshot: it does not update itself if the
-underlying MEDITS data changes. Delete `shiny_cache/survey_density_raw.rds`
-and reload this app (to trigger another automatic build) - or repeat steps
-1-3 by hand - whenever you want it reflecting newer data. To turn off the
-automatic build entirely and always require the manual steps, set
-`AUTO_BUILD_CACHE <- FALSE` in this document's setup chunk.
+The cache is a snapshot either way: it does not update itself if the
+underlying MEDITS data changes. Repeat steps 1-3 (or, with
+`AUTO_BUILD_CACHE <- TRUE`, delete `shiny_cache/survey_density_raw.rds`
+and reload to trigger another automatic build) whenever you want it
+reflecting newer data.
 ::::
 
 ## What's actually live here, and what isn't
@@ -433,7 +435,19 @@ if (!CACHE_AVAILABLE) {
 }
 ```
 
-```{r reactive-pipeline}
+```{r reactive-pipeline, context="server"}
+## context="server" is required here - confirmed the hard way: without it,
+## this chunk's reactives (selected_areas, filtered_dt, fg_index, ...) get
+## created in Quarto's static-UI-build pass, a DIFFERENT environment from
+## the one context="server" chunks (map-render, config-download, and now
+## plot-render below) actually run in per session. The visible symptom was
+## "Error in selected_areas: could not find function 'selected_areas'"
+## from inside output$gsa_map's renderLeaflet() and its observe() block -
+## the map/plot code could see cache/CACHE_AVAILABLE (those are plain
+## objects from the setup chunk, same environment either way) but not
+## these reactive()-wrapped functions, because they simply didn't exist in
+## the environment those context="server" chunks execute in.
+##
 ## req(CACHE_AVAILABLE) first in every reactive here - without it, a
 ## reactive further down the chain (e.g. filtered_dt(), which touches
 ## cache$dt) would be the first thing to notice the cache is missing,
@@ -473,36 +487,60 @@ fg_index_regional <- reactive({
 
 ## Sample coverage
 
-```{r plot-sample-map}
-renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  plot_sample_map(filtered_dt(), cache$area_shp, cache$area_id_col,
-                   selected_areas = selected_areas())
-})
+```{r plot-sample-map-ui}
+## Bare plotOutput() (not a renderPlot() call) - a plain UI placeholder tag,
+## the same way you'd declare it in ui.R. This chunk has NO context="server"
+## on purpose: it only needs to exist as static HTML, not run per-session -
+## the actual renderPlot() logic lives in plot-render below, in
+## context="server", where the reactives from reactive-pipeline are
+## visible. Splitting UI-placeholder from server-logic this way avoids
+## relying on Quarto's implicit "a bare renderPlot() becomes an output"
+## behavior, which is exactly what silently failed to update here before.
+plotOutput("plot_sample_map")
 ```
 
 ## FG density by area
 
-```{r plot-by-area}
-renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  plot_fg_timeseries_by_area(fg_index())
-})
+```{r plot-by-area-ui}
+plotOutput("plot_by_area")
 ```
 
 ## FG density, region-wide
 
-```{r plot-regional}
-renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  plot_fg_timeseries_regional(fg_index_regional())
-})
+```{r plot-regional-ui}
+plotOutput("plot_regional")
 ```
 
 ## Density by depth stratum
 
-```{r plot-strata}
-renderPlot({
+```{r plot-strata-ui}
+plotOutput("plot_strata")
+```
+
+```{r plot-render, context="server"}
+## All four figures' actual rendering logic, together in one
+## context="server" chunk so they share the same live environment as
+## reactive-pipeline above (selected_areas(), filtered_dt(), fg_index(),
+## fg_index_regional() all need to be reachable here) - each output feeds
+## the plotOutput() placeholder of the matching id declared just above its
+## own section heading.
+output$plot_sample_map <- renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_sample_map(filtered_dt(), cache$area_shp, cache$area_id_col,
+                   selected_areas = selected_areas())
+})
+
+output$plot_by_area <- renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_fg_timeseries_by_area(fg_index())
+})
+
+output$plot_regional <- renderPlot({
+  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_fg_timeseries_regional(fg_index_regional())
+})
+
+output$plot_strata <- renderPlot({
   validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
   plot_strata_profile(fg_index(), cache$strata_def)
 })
@@ -520,6 +558,12 @@ renderPlot({
 ## exist, which only happens inside the live server function - i.e. in a
 ## context="server" chunk. (config-download below needs the same fix,
 ## for the same reason - it also assigns into `output`.)
+##
+## Also depends on reactive-pipeline above ALSO being context="server" -
+## without that, selected_areas() below would fail with "could not find
+## function 'selected_areas'" (confirmed live) even with this chunk's own
+## context="server" fix in place, since a reactive created in a non-server
+## chunk isn't visible from a context="server" chunk's environment.
 ##
 ## No leafletOutput("gsa_map") even exists in the UI when !CACHE_AVAILABLE
 ## (see ui-inputs above), so neither block below ever actually runs in
