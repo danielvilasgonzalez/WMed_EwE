@@ -720,17 +720,30 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_pa
 ##     matter how exclusive the rank match looks. Default covers three
 ##     confirmed-bad cases: "commercial" (e.g. "Non-commercial decapods"
 ##     vs "Other commercial decapods" - a taxonomy-invisible distinction,
-##     a name/commercial-status split, not a taxonomic one - see
-##     Squilla mantis in SPECIES_EXCEPTIONS for why this matters),
+##     a name/commercial-status split, not a taxonomic one - Squilla
+##     mantis is the real-world example: it needed to resolve to "Other
+##     commercial decapods" despite being Order Stomatopoda, which this
+##     exclusion keeps this fallback from getting wrong. [2026-09-22:
+##     Squilla mantis is now listed by name in FG_WMed_2026.csv itself,
+##     so it resolves via the ordinary direct scientific-name match
+##     before this fallback ever runs - the SPECIES_EXCEPTIONS override
+##     that used to guard this case has been removed entirely, see
+##     01_biomass.R's "Seed FG rules: REMOVED ENTIRELY" comment]),
 ##     "jellyfish" ("jellyfish usually wrong"), and "suprabenthos"/
 ##     "macrozooplankton" (ecologically-, not taxonomically-, defined
 ##     groups with no real rank of their own - e.g. Suprabenthos is
 ##     "small crustaceans living just above the seabed", a habitat/size
 ##     definition covering parts of Isopoda/Amphipoda, not those orders
-##     whole; explicit SEED_RULES entries still assign into them by
-##     exact Order name - this exclusion only blocks the GENERIC
-##     genus/family/class fallback from also roping in unrelated
-##     relatives).
+##     whole - this exclusion blocks the GENERIC genus/family/class
+##     fallback from roping in unrelated relatives. [2026-09-22: the
+##     SEED_RULES mechanism that used to separately hand-assign a few
+##     species into these excluded FGs by exact Order name has been
+##     removed entirely - see 01_biomass.R's "Seed FG rules: REMOVED
+##     ENTIRELY" comment. A species that only this exclusion blocks
+##     from an automatic match now surfaces as genuinely unresolved
+##     (manual review), same as everything else this fallback can't
+##     safely resolve on its own - it is no longer assigned anywhere
+##     by this file.]
 ##   - single_species_fg_broad_ranks: for these ranks (default Class,
 ##     Order), an FG that currently has only ONE species already
 ##     assigned is excluded as a fallback target - "if a single sp is
@@ -782,6 +795,22 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   unmatched_sci <- unique(dt[!is.na(ScientificName) & is.na(FG_num), ScientificName])
   if (length(unmatched_sci) == 0) {
     message("No unmatched species - taxonomy fallback not needed.")
+    ## Still set the SAME attributes a normal run sets (all empty, same
+    ## column structure as the non-empty case below) rather than
+    ## returning bare dt (2026-09-22 fix). Every caller of this function
+    ## treats these attributes as always-present, not conditional on
+    ## whether a fetch actually happened - apply_seed_fg_rules() in
+    ## particular hard-requires 'fetched_taxonomy' and errors if it's
+    ## missing. Before this fix, a run where the FG reference already
+    ## matched every species directly (zero unmatched here) hit exactly
+    ## that error downstream, even though "everything already matched"
+    ## is a SUCCESS case, not a reason to skip setting the attribute.
+    empty_taxonomy <- data.table(ScientificName = character(0), Genus = character(0), Family = character(0),
+                                 Order = character(0), Class = character(0), Phylum = character(0))
+    attr(dt, "fetched_taxonomy") <- empty_taxonomy
+    attr(dt, "still_unresolved_taxonomy") <- empty_taxonomy
+    attr(dt, "fallback_match_detail") <- data.table(ScientificName = character(0), FG_num = numeric(0), FG_name = character(0),
+                                                    match_type = character(0), match_rank = character(0), vote_share = character(0))
     return(dt)
   }
   message(length(unmatched_sci), " distinct species have no direct FG match -",
@@ -1051,117 +1080,6 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## audit trail of which FG assignments came from real data vs. an
   ## inferred closest-relative guess.
   attr(dt, "fallback_match_detail") <- fallback_matches
-  dt
-}
-
-## =================================================================
-## Seed FG rules - for the genuine remainder fallback_match_fg_
-## by_taxonomy() can't resolve: FGs with NO species already assigned
-## to them in dataframe2 at all (e.g. "Other macro-benthos", a bucket
-## FG with nothing pre-listed against it to learn an exclusive mapping
-## from). This is a real, unavoidable limitation of the data-driven
-## approach, not a bug - if the FG reference never assigns any species
-## to a bucket FG, there is nothing in the data to infer that mapping
-## from, and it has to come from a person who knows the scheme.
-##
-## Kept deliberately small and separate from the main fallback: only
-## for FGs confirmed to have zero reference species (check first -
-## dataframe2[FG_name %in% "X", .N] == 0 - a genuinely empty FG is why
-## this is needed; a nonzero count means the automatic fallback should
-## already handle it, and adding a rule here would just be masking a
-## different problem, like an ambiguous rank elsewhere in the
-## reference, worth investigating instead of overriding).
-##
-## Resolved by FG_name text (not a hardcoded FG_num), so this survives
-## the FG scheme being renumbered - only breaks if a FG_name itself is
-## reworded, at which point the resolution check below will flag it
-## with an NA rather than silently assigning nothing.
-##
-## species_exceptions (optional): data.table with columns ScientificName,
-## fg_name_target - applied BEFORE the rank-based seed_rules, so a named
-## species is never caught by a broader rule that would be wrong for it
-## specifically. This is for the same situation as the Nephrops
-## norvegicus override used elsewhere in this project: a rank-level
-## rule is right for MOST members of that rank but wrong for one named
-## exception (e.g. Squilla mantis is commercially exploited even though
-## the rest of Stomatopoda isn't, so "Order Stomatopoda -> Non-commercial
-## decapods" would misclassify it without this).
-apply_seed_fg_rules <- function(dt, dataframe2, seed_rules, species_exceptions = NULL) {
-  dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
-  n_before <- dt[!is.na(FG_num), uniqueN(ScientificName)]
-  
-  ## IMPORTANT: both captured here, before any merge() below - merge()
-  ## strips custom attributes entirely (unlike copy(), which preserves
-  ## them), so grabbing these now and using the local variables
-  ## throughout is what keeps them available within this function, and
-  ## both are re-attached to the returned dt at the end so a caller
-  ## relying on either attribute after this function (e.g. the example
-  ## script's own use of still_unresolved_taxonomy for the manual-review
-  ## export) still finds it there.
-  taxonomy_source_data <- attr(dt, "fetched_taxonomy")
-  still_unresolved_taxonomy_data <- attr(dt, "still_unresolved_taxonomy")
-  fallback_match_detail_data <- attr(dt, "fallback_match_detail")
-  if (is.null(taxonomy_source_data)) {
-    stop("apply_seed_fg_rules() needs the 'fetched_taxonomy' attribute from",
-         " fallback_match_fg_by_taxonomy() - run that first.")
-  }
-  
-  if (!is.null(species_exceptions)) {
-    resolved_exceptions <- merge(species_exceptions, unique(dataframe2[, .(FG_num, FG_name)]),
-                                 by.x = "fg_name_target", by.y = "FG_name", all.x = TRUE)
-    message("Species-exception resolution check (FG_num should not be NA):")
-    print(resolved_exceptions)
-    
-    n_unresolved_exc <- resolved_exceptions[is.na(FG_num), .N]
-    if (n_unresolved_exc > 0) {
-      stop(n_unresolved_exc, " species_exceptions entr(y/ies) have a fg_name_target that",
-           " doesn't exactly match a real FG_name in dataframe2 - fix the entries above",
-           " before proceeding, since a silently-unresolved exception would let its",
-           " species fall through to the rank-based rule instead, exactly what this",
-           " exception mechanism exists to prevent.")
-    }
-    
-    dt <- merge(dt, resolved_exceptions[, .(ScientificName, FG_num_exc = FG_num, FG_name_exc = fg_name_target)],
-                by = "ScientificName", all.x = TRUE)
-    dt[is.na(FG_num) & !is.na(FG_num_exc), `:=`(FG_num = FG_num_exc, FG_name = FG_name_exc)]
-    dt[, c("FG_num_exc", "FG_name_exc") := NULL]
-    
-    n_after_exceptions <- dt[!is.na(FG_num), uniqueN(ScientificName)]
-    message("Species exceptions applied: ", n_after_exceptions - n_before, " species assigned/reassigned",
-            " before rank-based rules run (these will NOT be touched by seed_rules below,",
-            " even if they'd also match a rank-level rule).")
-  }
-  
-  ## seed_rules: data.table with columns rank ("Class"/"Order"/
-  ## "Phylum"/"Family"), rank_value (e.g. "Holothuroidea"), fg_name_target
-  resolved <- merge(seed_rules, unique(dataframe2[, .(FG_num, FG_name)]),
-                    by.x = "fg_name_target", by.y = "FG_name", all.x = TRUE)
-  message("Seed rule resolution check (FG_num should not be NA - if it is,",
-          " fg_name_target doesn't exactly match a real FG_name):")
-  print(resolved)
-  
-  exception_species <- if (!is.null(species_exceptions)) species_exceptions$ScientificName else character(0)
-  
-  for (i in seq_len(nrow(resolved))) {
-    rank <- resolved$rank[i]; val <- resolved$rank_value[i]
-    fg_num <- resolved$FG_num[i]; fg_name <- resolved$fg_name_target[i]
-    if (is.na(fg_num)) next
-    if (!rank %in% names(taxonomy_source_data)) next
-    
-    matching_species <- taxonomy_source_data[get(rank) == val, ScientificName]
-    ## exclude anything already handled by species_exceptions above,
-    ## regardless of whether it's currently matched or not - an
-    ## exception's own answer always wins over a rank-level rule
-    matching_species <- setdiff(matching_species, exception_species)
-    dt[ScientificName %in% matching_species & is.na(FG_num),
-       `:=`(FG_num = fg_num, FG_name = fg_name)]
-  }
-  n_after <- dt[!is.na(FG_num), uniqueN(ScientificName)]
-  message("Seed rules + exceptions together resolved ", n_after - n_before, " additional species.")
-  
-  attr(dt, "fetched_taxonomy") <- taxonomy_source_data
-  attr(dt, "still_unresolved_taxonomy") <- still_unresolved_taxonomy_data
-  attr(dt, "fallback_match_detail") <- fallback_match_detail_data
   dt
 }
 
@@ -3685,7 +3603,29 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## raw density (whatever unit fg_index_regional is in) is returned
   ## unchanged.
   build_ts_column <- function(fg_num) {
+    ## Aggregated to exactly one row per Year here (2026-09-22 fix), not
+    ## a plain column selection - fg_index_regional is grouped by
+    ## .(Year, FG_num, FG_name), so if the SAME FG_num carries more than
+    ## one literal FG_name string across its source rows (whitespace,
+    ## a stale vs. current spelling, anything upstream not yet fully
+    ## reconciled to one canonical FG_name per FG_num), filtering on
+    ## FG_num alone still lets every one of those FG_name variants
+    ## through as its OWN row for the same Year. The merge below (all
+    ## Years x all matching rows) then multiplies rows further - this is
+    ## exactly what produced "Supplied 124 items to be assigned to 37
+    ## items of column 'fg_22'": more (Year, mean_density) rows existed
+    ## for FG 22 than there are actual years in ts_years. Averaging by
+    ## Year here makes the column length depend only on ts_years, never
+    ## on how many FG_name variants happen to exist upstream for this FG_num.
     vals <- fg_index_regional[FG_num == fg_num, .(Year, mean_density)]
+    n_dupe_years <- vals[, .N, by = Year][N > 1, .N]
+    if (n_dupe_years > 0) {
+      message("FG ", fg_num, ": ", n_dupe_years, " year(s) had more than one mean_density row",
+              " (likely more than one FG_name variant sharing this FG_num upstream) - averaged",
+              " down to one value per year rather than left as-is (would otherwise misalign the",
+              " Ecosim sheet's fixed-length year column, or crash the column assignment).")
+    }
+    vals <- vals[, .(mean_density = mean(mean_density, na.rm = TRUE)), by = Year]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
@@ -4070,6 +4010,24 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
   
   build_catch_ts_column <- function(fg_num, prop = 1) {
     vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
+    ## Same "Supplied N items to be assigned to M items" failure mode as
+    ## build_ts_column() in fallback_match_fg_by_taxonomy()'s Ecosim-sheet
+    ## path (fixed 2026-09-22): if fg_catch has more than one row for the
+    ## same (Year, FG_num) - e.g. it wasn't pre-aggregated across sources/
+    ## fleets before being passed in here - merging against full_years
+    ## (exactly one row per Year) lets the duplicates through, producing
+    ## more rows than length(ts_years) and crashing the := column
+    ## assignment below with a length mismatch. Aggregate to one row per
+    ## Year first (summed - catches from multiple sources/fleets for the
+    ## same FG and year are genuinely additive, unlike a density mean).
+    n_before_agg <- nrow(vals)
+    vals <- vals[, .(Catch_t_km2 = sum(Catch_t_km2, na.rm = TRUE)), by = Year]
+    if (nrow(vals) < n_before_agg) {
+      warning("build_catch_ts_column(): FG ", fg_num, " had ", n_before_agg,
+              " (Year, Catch_t_km2) rows collapsed to ", nrow(vals), " (one per Year) -",
+              " fg_catch had duplicate Year rows for this FG (summed). Check upstream",
+              " (catches_discards_fg) for an unintended duplicate FG_name/source split.")
+    }
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[order(Year)]$Catch_t_km2 * prop

@@ -207,7 +207,16 @@ if (is.na(gfcm_data_dir_resolved)) {
 message("\n[Paths] GFCM data_dir resolved to: '", gfcm_data_dir_resolved, "'.")
 
 FAO_2020_DATA_SUBDIR  <- "data/Capture_2020"              # UNCONFIRMED - only used if DATASET_VERSION <- "FAO_2020"
-FG_REFERENCE_SUBPATH  <- "data/FG_WMed.xlsx"              # relative to pcloud_dir
+## FG_WMed_2026.csv - the reviewed 2026 species -> FG reference (species/
+## FG_number/FG_name/taxonomy/source/status), same file 01_biomass.R's own
+## fg_species_file points at - NOT the old FG_WMed.xlsx sheet 4. Read with
+## fread() below (see the `fg <- fread(...)` line further down), not
+## readxl::read_excel(). The traits_ewe sheet that's the ONE remaining
+## legitimate reason to still open FG_WMed.xlsx anywhere in this pipeline
+## (01_biomass.R's fg_traits_file, STEP 12) has nothing to do with species
+## -> FG matching, so this script - which only ever needed the species/FG
+## reference, never traits - has no reason to touch the xlsx file at all.
+FG_REFERENCE_SUBPATH  <- "data/FG_WMed_2026.csv"          # relative to pcloud_dir
 
 FISHMIP_EFFORT_PARQUET <- file.path(pcloud_dir, "data/fisheries/FishMIP/effort_histsoc_1841_2017_western-mediterranean-sea.parquet")  # FishMIP effort parquet path
 FISHMIP_CATCH_PARQUET  <- file.path(pcloud_dir, "data/fisheries/FishMIP/calibration_catch_histsoc_1850_2017_western-mediterranean-sea.parquet")  # FishMIP catch parquet path
@@ -427,7 +436,14 @@ if (nrow(ts_data$country_species_ts) == 0) {
           " country-resolved run.")
 }
 
-fg <- as.data.table(readxl::read_excel(cfg$fg_file, sheet = 4))  # load the functional-group reference table
+## fread(), not readxl::read_excel() - cfg$fg_file is FG_WMed_2026.csv
+## (species/FG_number/FG_name/taxonomy/source/status), not the old
+## FG_WMed.xlsx sheet 4 (ESPECIE/GF/FG_name). Renamed to the old
+## ESPECIE/GF column names right here so every downstream reference in
+## the matching cascade below (fg$ESPECIE, GF, ...) works unchanged -
+## same rename 01_biomass.R itself applies at its own fread() call.
+fg <- fread(cfg$fg_file)  # load the functional-group reference table
+setnames(fg, c("species", "FG_number"), c("ESPECIE", "GF"), skip_absent = TRUE)
 
 unmatched_species <- ts_data$westmed[
   !get(ts_data$species_col) %in% fg$ESPECIE,
@@ -455,20 +471,73 @@ if (nrow(blank_row) > 0) message(nrow(blank_row), " row(s) with blank Species na
 unmatched_species <- unmatched_species[!is.na(Species) & Species != ""]  # drop blank-species rows
 
 fg_lookup <- unique(fg[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)])  # build the FG reference lookup
-fg_lookup[, genus := extract_genus(ScientificName)]  # add a genus column for the genus-fallback match
 
-## Full FG catalog (FG_num x FG_name only) - fg_lookup above for the
-## matching cascade, this for add_catches_to_ecopath_workbook()'s own
-## fg_lookup argument (every FG, not just ones with a matched species).
+## Full FG catalog (FG_num x FG_name only) - built from the UN-deduplicated
+## fg_lookup above (every FG number FG_WMed_2026.csv defines, including a
+## juvenile/adult stanza FG with no catch source of its own - see the
+## stanza tie-break right below) for add_catches_to_ecopath_workbook()'s
+## own fg_lookup argument (every FG, not just ones with a matched species).
 full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])  # every FG number/name, deduplicated
 setorder(full_fg_list, FG_num)  # sort by FG number
 
+## --- Stanza tie-break (2026-09-22): FG_WMed_2026.csv deliberately maps
+## some species to MORE THAN ONE FG when it splits that species into
+## life-stage stanzas (e.g. Merluccius merluccius -> both "European hake
+## juv." and "European hake adult"). No catch/landings source in this
+## pipeline (GFCM, STECF FDI, SAU, STAR/RAM) reports an age/length-class
+## breakdown - they report one undifferentiated tonnage per species - so
+## a species-keyed match against fg_lookup is inherently ambiguous
+## wherever this happens. Two failure modes downstream if left
+## unresolved: (a) resolve_matches_safely() (the main GFCM/SAU cascade)
+## treats it as ambiguous and DROPS it entirely - both stanzas end up
+## with zero catch; (b) a plain merge() (the STAR/RAM cross-check below)
+## silently duplicates the row onto every stanza FG instead of picking
+## one. Neither is what you want: all of a stanza-split species' catch
+## should land on its ADULT stanza (the juvenile FG stays explicitly at
+## zero catch from these sources, same as any FG with no matched species
+## at all - not silently dropped, just honestly empty pending a real
+## juvenile/adult split rule). Applied ONCE here, to the copy of
+## fg_lookup every matching step below actually uses, so every cascade
+## (direct/common-name/genus/containment/STAR-RAM) agrees.
+dupe_stanza_species <- fg_lookup[, .N, by = ScientificName][N > 1, ScientificName]
+if (length(dupe_stanza_species) > 0) {
+  dupe_stanza_detail <- fg_lookup[ScientificName %in% dupe_stanza_species]
+  has_adult <- dupe_stanza_detail[, .(has_adult = any(str_detect(FG_name, regex("adult", ignore_case = TRUE)))), by = ScientificName]
+  no_adult_species <- has_adult[has_adult == FALSE, ScientificName]
+  if (length(no_adult_species) > 0) {
+    warning(length(no_adult_species), " species map to more than one FG (stanza split) but none of their FGs",
+            " is named '...adult' - keeping the FIRST FG listed for each, review by hand: ",
+            paste(no_adult_species, collapse = ", "))
+  }
+  fg_lookup[ScientificName %in% dupe_stanza_species, .keep := str_detect(FG_name, regex("adult", ignore_case = TRUE)) | ScientificName %in% no_adult_species]
+  fg_lookup <- fg_lookup[is.na(.keep) | .keep == TRUE]
+  fg_lookup[, .keep := NULL]
+  fg_lookup <- unique(fg_lookup, by = "ScientificName")  # for a no-adult species, .keep is TRUE on every row above - keep only the first
+  message("\n[Stanza tie-break] ", length(dupe_stanza_species), " species mapped to more than one FG (life-stage",
+          " stanza split) - all their catch/landings will be assigned to the '...adult' FG; the matching juvenile",
+          " FG(s) stay in full_fg_list (zero catch from these sources, not dropped) until a real juvenile/adult",
+          " split rule exists: ", paste(dupe_stanza_species, collapse = ", "))
+}
+fg_lookup[, genus := extract_genus(ScientificName)]  # add a genus column for the genus-fallback match
+
 fg_name_lookup <- unique(fg[, .(Species = FG_name, FG_num = GF, FG_name)])  # lookup keyed by FG name itself
-direct_merged <- merge(unmatched_species[, .(Species, Catch)], fg_name_lookup, by = "Species")  # try matching species name directly to an FG name
+## Case/whitespace-insensitive join key (2026-09-22) - GFCM's own Species
+## field is Name_En (a common name, not the scientific name - see
+## load_gfcm_regional()'s own comment), so this is the step that has to
+## catch "Swordfish" == "Swordfish" even if one side has different
+## capitalization or stray whitespace. A strict by="Species" merge here
+## previously required byte-for-byte identical text.
+norm_name <- function(x) str_squish(str_to_lower(x))
+unmatched_species[, .join_key := norm_name(Species)]
+fg_name_lookup[, .join_key := norm_name(Species)]
+direct_merged <- merge(unmatched_species[, .(Species, Catch, .join_key)],
+                       fg_name_lookup[, .(.join_key, FG_num, FG_name)], by = ".join_key")  # try matching species name directly to an FG name, case/whitespace-insensitive
 direct_resolved <- resolve_matches_safely(direct_merged)
 direct_matches <- direct_resolved$safe[, .(Species, FG_num, FG_name)]  # keep only the unambiguous direct matches
 direct_matches[, match_method := "direct_fg_name"]  # tag how these matches were resolved
 message("STEP - Direct Species==FG_name matches: ", nrow(direct_matches))
+unmatched_species[, .join_key := NULL]
+fg_name_lookup[, .join_key := NULL]
 
 sci_names <- unique(fg_lookup$ScientificName)  # all distinct scientific names in the FG table
 sci_names <- sci_names[str_detect(sci_names, "^[A-Z][a-z]+ [a-z]+$")]  # keep only well-formed "Genus species" names
@@ -526,6 +595,32 @@ name_col <- grep("english|name.*en$|^name$", names(fao_species), ignore.case = T
 sci_col  <- grep("scientific", names(fao_species), ignore.case = TRUE, value = TRUE)[1]  # find the scientific-name column
 setnames(fao_species, c(name_col, sci_col), c("Name_En", "Scientific_Name"), skip_absent = TRUE)  # standardize their names
 fao_species[, genus := extract_genus(Scientific_Name)]  # add a genus column
+
+## --- FAO Name_En -> Scientific_Name bridge (2026-09-22), inserted
+## BEFORE the genus fallback: a species-EXACT match, not just genus, for
+## the case that motivated this - GFCM reports "Swordfish" (Name_En),
+## FishBase's own common-names table (fb_lookup, used by the exact_merged
+## step above) may not carry that exact ComName for Xiphias gladius, so
+## the common-name step above can miss it even after the case/whitespace
+## fix to the direct step - but FAO's OWN species reference (the same
+## file GFCM itself is built from) maps "Swordfish" -> "Xiphias gladius"
+## directly and unambiguously. This bridge catches exactly that gap:
+## GFCM's common name resolved through FAO's own crosswalk to a single
+## scientific name, then joined to fg_lookup by that scientific name -
+## more precise than the genus fallback below (which would also match
+## every OTHER species in the same genus, not just this one).
+fao_sci_bridge <- merge(remaining[, .(Species, Catch)],
+                        unique(fao_species[!is.na(Scientific_Name) & Scientific_Name != "", .(Name_En, Scientific_Name)]),
+                        by.x = "Species", by.y = "Name_En")  # attach FAO's own scientific name for this common name
+fao_sci_merged <- merge(fao_sci_bridge, fg_lookup[, .(ScientificName, FG_num, FG_name)],
+                        by.x = "Scientific_Name", by.y = "ScientificName")  # attach FG via that scientific name
+fao_sci_resolved <- resolve_matches_safely(fao_sci_merged)
+fao_sci_matches <- fao_sci_resolved$safe[, .(Species, FG_num, FG_name)]  # keep only unambiguous matches
+fao_sci_matches[, match_method := "fao_scientific_name"]  # tag how these matches were resolved
+message("\nSTEP - Resolved via FAO Name_En -> Scientific_Name bridge: ", nrow(fao_sci_matches),
+        " | Ambiguous (excluded): ", uniqueN(fao_sci_resolved$ambiguous$Species))
+
+remaining <- remaining[!Species %in% fao_sci_matches$Species]  # species still unmatched after the FAO scientific-name bridge
 remaining <- merge(remaining, unique(fao_species[, .(Name_En, genus)], by = "Name_En"), by.x = "Species", by.y = "Name_En", all.x = TRUE)  # attach genus via FAO's English name
 genus_merged <- merge(remaining[!is.na(genus), .(Species, Catch, genus)], fg_lookup[!is.na(genus), .(genus, FG_num, FG_name)], by = "genus", allow.cartesian = TRUE)  # match on genus
 genus_resolved <- resolve_matches_safely(genus_merged)
@@ -565,7 +660,7 @@ if (nrow(containment_results) > 0) {
   message("\nSTEP - No word-containment matches found.")
 }
 
-all_matches <- rbindlist(list(direct_matches, exact_matches, genus_matches, containment_matches))  # combine matches from every cascade step
+all_matches <- rbindlist(list(direct_matches, exact_matches, fao_sci_matches, genus_matches, containment_matches))  # combine matches from every cascade step
 resolved <- merge(unmatched_species[, .(Species, Catch)], all_matches, by = "Species", all.x = TRUE)  # attach matches back onto every unmatched species
 
 MANUAL_OVERRIDES <- data.table(Species = c("Turbot"), CorrectScientificName = c("Scophthalmus maximus"))
@@ -3300,6 +3395,46 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
           " Year row(s) for Spain/France/Italy (FDI's own effort 2014+, SAU-hindcasted before that) - written",
           " to effort_by_fleettype_eu3_hindcast.csv / Effort_by_FleetType_EU3. FishMIP's Fishing_Effort_by_Fleet",
           " below remains the only effort source for Morocco/Algeria/Tunisia (no FDI basis to hindcast from).")
+  
+  ## --- STECF_FDI_START_YEAR boundary-consistency check (2026-09-22) -
+  ## the whole point of the Rousseau/SAU-ratio hindcast + calibration
+  ## machinery above is that Effort_days should NOT jump at the FDI
+  ## boundary - the calibration factor is chosen exactly so the
+  ## hindcast lands on FDI's own scale. This prints the actual
+  ## last-hindcast-year vs first-FDI-year ratio per Country x FleetType
+  ## so a real discontinuity (an unfired calibration, a units mismatch,
+  ## a metier double-count in the FDI side) shows up in the console
+  ## instead of only being visible later in validation plot 5.
+  boundary_check <- dcast(
+    effort_by_fleettype_eu3[Year %in% c(STECF_FDI_START_YEAR - 1, STECF_FDI_START_YEAR),
+                            .(Country, FleetType, Year, Effort_days)],
+    Country + FleetType ~ Year, value.var = "Effort_days"
+  )
+  boundary_cols <- as.character(c(STECF_FDI_START_YEAR - 1, STECF_FDI_START_YEAR))
+  if (all(boundary_cols %in% names(boundary_check))) {
+    setnames(boundary_check, boundary_cols, c("Effort_days_pre", "Effort_days_fdi"))
+    boundary_check <- boundary_check[!is.na(Effort_days_pre) & !is.na(Effort_days_fdi) & Effort_days_pre > 0]
+    boundary_check[, ratio := round(Effort_days_fdi / Effort_days_pre, 2)]
+    setorder(boundary_check, -ratio)
+    n_jump <- boundary_check[ratio > 1.5 | ratio < (1 / 1.5), .N]  # arbitrary but generous - a >50% jump either way is worth a look
+    message("\n[Effort hindcast] Boundary check, ", STECF_FDI_START_YEAR - 1, " (hindcast) -> ", STECF_FDI_START_YEAR,
+            " (FDI real), Effort_days by Country x FleetType (ratio should be close to 1 - that's exactly what the",
+            " Rousseau/SAU-ratio calibration above is meant to achieve):")
+    print(boundary_check)
+    if (n_jump > 0) {
+      message(n_jump, " Country x FleetType row(s) show a >50% jump either direction right at the boundary -",
+              " calibration likely isn't actually covering these cells (check n_calibrated_countries in the",
+              " [Hindcast] messages above - a cell using the uncalibrated SAU fallback, or Rousseau missing that",
+              " Country/Year, would show exactly this pattern). Not auto-corrected here since guessing which side",
+              " is wrong would be worse than flagging it.")
+    } else {
+      message("No Country x FleetType row shows more than a 50% jump at the boundary - the calibration is",
+              " holding across the transition for this run.")
+    }
+  } else {
+    message("\n[Effort hindcast] Boundary check skipped - Effort_days not available for both ",
+            STECF_FDI_START_YEAR - 1, " and ", STECF_FDI_START_YEAR, " in this run.")
+  }
 }
 
 ## =================================================================

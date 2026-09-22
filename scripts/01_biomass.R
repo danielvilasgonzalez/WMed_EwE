@@ -656,6 +656,18 @@ resolve_override <- function(taxon_name, rank) {
   rank_col <- switch(rank, species = "ScientificName", genus = "Genus", family = "Family", class = "Class")
   matches <- unique(fg_lookup_safe[get(rank_col) == taxon_name, .(FG_num, FG_name)])
   if (nrow(matches) != 1) return(data.table(FG_num = NA_real_, FG_name = NA_character_))
+  ## FG_num as.numeric()'d here (2026-09-22 fix): fg_lookup_safe$FG_num can
+  ## come through as integer (e.g. straight from fread()'s type-guessing
+  ## on FG_WMed_2026.csv), while the no-match branch above returns
+  ## NA_real_ (double). MANUAL_OVERRIDES[, cbind(resolve_override(...)),
+  ## by = species_code] requires every group's result to have the SAME
+  ## column type, not just the same column name - a mix of integer (this
+  ## branch, when unconverted) and double (the NA branch) across
+  ## different species_code groups throws "Column 1 of result for group
+  ## N is type 'integer' but expecting type 'double'." Forcing double
+  ## here, unconditionally, makes every group's FG_num the same type
+  ## regardless of which branch fired for it.
+  matches[, FG_num := as.numeric(FG_num)]
   matches
 }
 
@@ -735,77 +747,57 @@ dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "both"
 ## Deliberately small - only the FGs actually confirmed empty, not a
 ## full re-statement of the old CLASS_RULES/ORDER_RULES/PHYLUM_RULES
 ## tables. Resolved by FG_name text, so this survives FG_num changing.
-## 2026-09-17 review addition: three more Phylum-level entries for
-## unmatched taxa flagged after inspecting real fallback output
-## - "Rhodophyta"/"Chlorophyta" (red/green algae) -> "Seaweeds", and
-## "Ectoprocta"/"Brachiopoda"/"Scaphopoda" -> "Other macro-benthos"
-## (Ectoprocta is the modern name for the SAME phylum "Bryozoa"
-## already seeded below - added as its own explicit row rather than
-## assumed synonymous, since which name a given taxonomy source
-## returns - FishBase vs WoRMS - isn't guaranteed consistent). VERIFY
-## the "Seaweeds" FG_name spelling against the actual FG reference
-## file (fg_wmed_95) before relying on this - if that FG is named
-## something else (e.g. "Macroalgae"), this row silently no-ops
-## (apply_seed_fg_rules() only assigns rows whose fg_name_target
-## exists as a real FG_name in dataframe2) rather than erroring, so a
-## typo here won't crash the run but also won't seed anything.
+##
+## 2026-09-22 re-audit against the CURRENT FG_WMed_2026.csv, per this
+## table's own header instruction ("check with dataframe2[FG_name %in%
+## c(...), .N, by = FG_name] - if any come back with a nonzero species
+## count, the automatic fallback SHOULD already be resolving that one"):
+##   FG_name                     | species rows in FG_WMed_2026.csv
+##   Sea cucumbers               | 0   -> still a genuine seed target
+##   Bivalves                    | 0   -> still a genuine seed target
+##   Gastropods                  | 0   -> still a genuine seed target
+##   Other sea urchins           | 0   -> still a genuine seed target
+##   Other macro-benthos         | 314 -> REMOVED, fallback can learn this now
+##   Non-commercial decapods     | 200 -> REMOVED, fallback can learn this now
+##   Suprabenthos                | 9   -> REMOVED, fallback can learn this now
+##   Other benthic cephalopods   | 25  -> REMOVED, fallback can learn this now
+## Two entries were ALSO silently no-ops before this re-audit (this
+## table's own prior warning about exactly this, confirmed): the old
+## fg_name_target "Scorpaenidae+" doesn't exist as a FG_name at all in
+## FG_WMed_2026.csv (the real name is "Scorpaenidae", no "+" - it's
+## "Sparidae+"/"Labridae and serranidae+" that carry a "+"), and
+## "Seaweeds" doesn't exist either (the real name is "Macroalgae").
+## Once corrected to their real names, BOTH turn out to already have
+## real species rows too (Scorpaenidae: 22, Macroalgae: 75) - so rather
+## than fix the spelling and keep seeding them, they're removed
+## entirely, same as the other now-populated FGs above: the automatic
+## fallback can already learn Family Scorpaenidae -> Scorpaenidae and
+## Phylum Rhodophyta/Chlorophyta -> Macroalgae directly from those real
+## rows, with no seed rule needed (and no risk of a rule silently
+## drifting out of sync with FG_WMed_2026.csv's own naming again).
 SEED_RULES <- data.table(
   rank = c(
-    "Class", "Class", "Class", "Class",
     "Class", "Class",
-    "Order", "Order", "Order", "Order", "Order", "Order",
-    "Family", "Family",
-    "Phylum", "Phylum", "Phylum",
-    "Phylum", "Phylum", "Phylum", "Phylum", "Phylum"
+    "Order"
   ),
   rank_value = c(
     "Holothuroidea",
-    "Asteroidea",
-    "Echinoidea",
-    "Ophiuroidea",
     "Bivalvia",
-    "Gastropoda",
-    "Decapoda",
-    "Stomatopoda",
-    "Amphipoda",
-    "Cumacea",
-    "Tanaidacea",
-    "Mysida",
-    "Scorpaenidae",
-    "Sepiolidae",
-    "Bryozoa",
-    "Cnidaria",
-    "Porifera",
-    "Rhodophyta",
-    "Chlorophyta",
-    "Ectoprocta",
-    "Brachiopoda",
-    "Scaphopoda"
+    "Gastropoda"
   ),
   fg_name_target = c(
     "Sea cucumbers",
-    "Other macro-benthos",
-    "Other sea urchins",
-    "Other macro-benthos",
     "Bivalves",
-    "Gastropods",
-    "Non-commercial decapods",
-    "Non-commercial decapods",
-    "Suprabenthos",
-    "Suprabenthos",
-    "Suprabenthos",
-    "Suprabenthos",
-    "Scorpaenidae+",
-    "Other benthic cephalopods",
-    "Other macro-benthos",
-    "Other macro-benthos",
-    "Other macro-benthos",
-    "Seaweeds",
-    "Seaweeds",
-    "Other macro-benthos",
-    "Other macro-benthos",
-    "Other macro-benthos"
+    "Gastropods"
   ))
+## Echinoidea (Class) -> Other sea urchins: kept as its own explicit
+## entry rather than folded into the vectors above, since Echinoidea
+## also contains sea urchin species that DO belong elsewhere in the FG
+## scheme depending on how FG_WMed_2026.csv is revised next - flagged
+## here as a single line precisely so it's easy to re-audit on its own
+## the next time FG_WMed_2026.csv changes.
+SEED_RULES <- rbindlist(list(SEED_RULES, data.table(
+  rank = "Class", rank_value = "Echinoidea", fg_name_target = "Other sea urchins")))
 
 ## Species-level exceptions - applied BEFORE the rank rules above, so a
 ## named species is never caught by a broader rule that's wrong for it
