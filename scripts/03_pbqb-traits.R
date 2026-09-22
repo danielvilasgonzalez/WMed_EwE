@@ -2759,45 +2759,31 @@ write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_ou
 ## Ecopath CSV export later.
 ## =================================================================
 
-FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed.xlsx")
+## FG_WMed_2026.csv - the reviewed 2026 species -> FG reference (same
+## file 01_biomass.R's fg_species_file and 02_fisheries.R's fg_file both
+## read), NOT the old FG_WMed.xlsx. This is a pure FG_number/FG_name
+## lookup (only used for "FGnum_FGname" axis labels and the Ecopath CSV
+## below) - a plain fread(), no sheet-name ambiguity to guess at the way
+## the old xlsx had (it used to carry a SECOND, unrelated "fg_ebro
+## delta_21" sheet and duplicate FG_name-like columns within the
+## fg_wmed_95 sheet itself - none of that exists in the CSV).
+FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 
 fg_ref_unique <- NULL
 if (file.exists(FG_REFERENCE_PATH)) {
-  ## Target "fg_wmed_95" BY NAME specifically - confirmed via diagnostic
-  ## to be the Western Med FG scheme this project actually uses. NOT
-  ## safe to auto-detect by structure alone: this file also has an
-  ## "fg_ebro delta_21" sheet (a DIFFERENT model's FG numbering) that
-  ## would also structurally match a generic GF+FG_name check, and
-  ## picking it by accident would silently mislabel every FG.
-  sheet_names <- tryCatch(readxl::excel_sheets(FG_REFERENCE_PATH), error = function(e) character())
-  target_sheet <- if ("fg_wmed_95" %in% sheet_names) "fg_wmed_95" else NA
-  
-  if (!is.na(target_sheet)) {
-    candidate <- tryCatch(as.data.table(readxl::read_excel(FG_REFERENCE_PATH, sheet = target_sheet)),
-                          error = function(e) NULL)
-    if (!is.null(candidate)) {
-      ## this sheet has duplicate "FG_name" headers in the source file,
-      ## which readxl disambiguates to FG_name...2/FG_name...7 - using
-      ## GF + the first one (...2) as the best guess pending confirmation
-      ## of which duplicate is the canonical one
-      num_col <- intersect(c("GF", "FG_num"), names(candidate))[1]
-      name_col <- grep("^FG_name", names(candidate), value = TRUE)[1]
-      if (!is.na(num_col) && !is.na(name_col)) {
-        fg_ref_unique <- unique(candidate[, .(FG = as.character(as.integer(get(num_col))),
-                                              FG_name = get(name_col))])
-        message("\nFG reference loaded from sheet '", target_sheet, "' of ", FG_REFERENCE_PATH,
-                " (", nrow(fg_ref_unique), " FGs), using columns '", num_col, "' and '", name_col, "'.")
-        message("NOTE: this sheet has TWO differently-named FG_name-like columns in the source",
-                " file (readxl renamed them FG_name...2/FG_name...7) - using '", name_col,
-                "' as a best guess. If FG names in the plot/CSV look wrong, run",
-                " diagnose_fg_wmed_95_columns.R to check whether the other one should be used instead.")
-      }
-    }
-  }
-  if (is.null(fg_ref_unique)) {
+  fg_ref_raw <- fread(FG_REFERENCE_PATH)
+  num_col <- intersect(c("FG_number", "FG_num", "GF"), names(fg_ref_raw))[1]
+  name_col <- intersect("FG_name", names(fg_ref_raw))[1]
+  if (!is.na(num_col) && !is.na(name_col)) {
+    fg_ref_unique <- unique(fg_ref_raw[, .(FG = as.character(as.integer(get(num_col))),
+                                           FG_name = get(name_col))])
+    message("\nFG reference loaded from ", FG_REFERENCE_PATH, " (", nrow(fg_ref_unique),
+            " FGs), using columns '", num_col, "' and '", name_col, "'.")
+  } else {
     message("\n", strrep("!", 70))
-    message("FG_REFERENCE_PATH exists but NO sheet in it has both 'GF' and",
-            " 'FG_name' columns - checked sheets: ", paste(sheet_names, collapse = ", "), ".")
+    message("FG_REFERENCE_PATH exists but doesn't have both a FG-number-like column",
+            " (checked: FG_number, FG_num, GF) and a 'FG_name' column - found: ",
+            paste(names(fg_ref_raw), collapse = ", "), ".")
     message("FG plot axis and Ecopath CSV will use bare FG numbers, not FGnum_FGname.")
     message(strrep("!", 70))
   }
@@ -2809,6 +2795,192 @@ if (file.exists(FG_REFERENCE_PATH)) {
           " path and re-run. Until then, the FG plot axis and Ecopath CSV will",
           " use bare FG numbers instead of FGnum_FGname labels.")
   message(strrep("!", 70))
+}
+
+## =================================================================
+## traits_ewe sheet - species-level life-history/ecology traits
+## (Organism, Ecology, Occurrence status, Biomass/Catch contribution,
+## IUCN status, Exploitation status, Vulnerability index, Mean/Max
+## length, Mean weight, Mean life span).
+##
+## MOVED HERE from 01_biomass.R (2026-09-22): this script is the one
+## place FG_WMed_2026.csv (fg_ref_unique, just loaded above) and the
+## raw trait values are both in scope, so the reconciliation against
+## the CORRECT 2026 FG numbering happens here instead of trusting the
+## FG numbers baked into the traits sheet's own "N: Group Name" header
+## rows, which are stale (they still reflect the OLD FG_WMed.xlsx
+## grouping/numbering, confirmed against a user-supplied example
+## export of this sheet - the FGs themselves have since been
+## renumbered/regrouped in FG_WMed_2026.csv).
+##
+## FG_TRAITS_FILE: there is still no CSV equivalent of this sheet -
+## it is read from the old FG_WMed.xlsx workbook purely for these
+## trait VALUES (species names + trait columns), never for FG
+## numbering/grouping. FG_num/FG_name on the output come exclusively
+## from fg_ref_unique (FG_WMed_2026.csv) via species_df, never from
+## this sheet's own header rows.
+FG_TRAITS_FILE <- file.path(pcloud_dir, "data/FG_WMed.xlsx")
+
+## fg_traits_file's traits_ewe sheet alternates: a "N: Group Name"
+## header row (blank index column) followed by one data row per
+## species in that FG - the index column on species rows is a
+## running species ID, NOT the FG number; the FG number/name only
+## exist in the header row's text above it (and, per the above, are
+## stale even there). This reads that structure directly and fills
+## the FG number/name DOWN from each header row onto the species rows
+## below it (the same thing a human does visually reading the merged-
+## looking layout in Excel) purely so every species row can be
+## matched to a species NAME - the filled-down FG_num/FG_name are
+## discarded once that match is made; they are never used as the
+## output's FG assignment.
+fill_down <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) == 0) return(x)
+  rep_idx <- findInterval(seq_along(x), idx)
+  out <- x[idx][pmax(rep_idx, 1)]
+  out[rep_idx == 0] <- NA
+  out
+}
+
+if (!file.exists(FG_TRAITS_FILE)) {
+  message("\n", strrep("!", 70))
+  message("FG_TRAITS_FILE NOT FOUND: ", FG_TRAITS_FILE, " - skipping traits_ewe sheet entirely.",
+          " Ecopath_traits will not be written this run.")
+  message(strrep("!", 70))
+  traits_reconciled <- NULL
+} else {
+  
+  traits_raw <- as.data.table(readxl::read_excel(FG_TRAITS_FILE, sheet = "traits_ewe", col_names = TRUE))
+  setnames(traits_raw, 1, "row_index")
+  setnames(traits_raw, "Species", "Species_col")
+  
+  is_header_row <- is.na(traits_raw$row_index) &
+    str_detect(traits_raw$Species_col, "^\\d+:\\s*")
+  if (sum(is_header_row) == 0) {
+    stop("No FG header rows (pattern 'N: Group name') found in traits_ewe - the sheet ",
+         "layout may have changed. Check FG_TRAITS_FILE's traits_ewe sheet by eye before proceeding.")
+  }
+  
+  ## header_num/header_name are used ONLY to detect where one FG's
+  ## block of species rows ends and the next begins (fill_down splits
+  ## on any change of value) - not as the output's FG assignment.
+  header_num  <- rep(NA_real_, nrow(traits_raw))
+  header_name <- rep(NA_character_, nrow(traits_raw))
+  header_num[is_header_row]  <- as.numeric(str_match(traits_raw$Species_col[is_header_row], "^(\\d+):")[, 2])
+  header_name[is_header_row] <- trimws(sub("^\\d+:\\s*", "", traits_raw$Species_col[is_header_row]))
+  ## some header rows in the raw sheet have no "N:" prefix at all
+  ## (e.g. "European sardine", "European anchovy", "European hake") -
+  ## still valid header rows, just without a stale number to discard.
+  header_name[is_header_row & is.na(header_name)] <- trimws(traits_raw$Species_col[is_header_row & is.na(header_name)])
+  
+  traits_raw[, stale_FG_num_sheet  := fill_down(header_num)]
+  traits_raw[, stale_FG_name_sheet := fill_down(header_name)]
+  
+  ## column names cleaned up for downstream use - original header text
+  ## (with its "(?)" unit uncertainty markers) kept in a comment here
+  ## rather than silently asserting units that weren't confirmed:
+  ##   Organism, Ecology, "Occurrence status", "Biomass contribution",
+  ##   "Catch contribution", "IUCN conservation status",
+  ##   "Exploitation status", "Vulnerability index (?)",
+  ##   "Mean length (?)", "Max length (?)", "Mean weight (?)",
+  ##   "Mean life span (year)"
+  old_trait_names <- c("Organism", "Ecology", "Occurrence status", "Biomass contribution",
+                       "Catch contribution", "IUCN conservation status", "Exploitation status",
+                       "Vulnerability index (?)", "Mean length (?)", "Max length (?)",
+                       "Mean weight (?)", "Mean life span (year)")
+  new_trait_names <- c("Organism", "Ecology", "Occurrence_status", "Biomass_contribution",
+                       "Catch_contribution", "IUCN_conservation_status", "Exploitation_status",
+                       "Vulnerability_index", "Mean_length", "Max_length",
+                       "Mean_weight", "Mean_lifespan_years")
+  missing_trait_cols <- setdiff(old_trait_names, names(traits_raw))
+  if (length(missing_trait_cols) > 0) {
+    stop("traits_ewe is missing expected trait column(s): ", paste(missing_trait_cols, collapse = ", "),
+         " - the sheet layout may have changed since this step was written.")
+  }
+  setnames(traits_raw, old_trait_names, new_trait_names)
+  
+  species_traits <- traits_raw[!is.na(row_index)]
+  species_traits[, Species := trimws(Species_col)]
+  species_traits <- species_traits[, c("Species", new_trait_names), with = FALSE]
+  
+  dupe_traits_species <- species_traits[, .N, by = Species][N > 1, Species]
+  if (length(dupe_traits_species) > 0) {
+    warning(length(dupe_traits_species), " species appear MORE THAN ONCE in traits_ewe - ",
+            "keeping the first occurrence of each, review the sheet for duplicates: ",
+            paste(dupe_traits_species, collapse = ", "))
+    species_traits <- unique(species_traits, by = "Species")
+  }
+  
+  ## --- reconcile against species_df (this script's own FG_WMed_2026-
+  ## backed master, NOT the traits sheet's own stale FG numbering) ----
+  fg_master <- unique(species_df[, .(Species, FG, FG_name)])
+  traits_reconciled <- merge(fg_master, species_traits, by = "Species", all = TRUE)
+  
+  not_in_master <- traits_reconciled[is.na(FG), Species]
+  if (length(not_in_master) > 0) {
+    warning(length(not_in_master), " species have a traits_ewe row but are NOT in species_df/",
+            "FG_WMed_2026.csv (FG master) - likely a naming variant (e.g. 'Bivalvia' vs 'Bivalvia sp.') ",
+            "or a species dropped in the 2026 FG revision, rather than a genuinely new species. Kept in ",
+            "the output, flagged in_fg_master = FALSE, NOT auto-matched to a master name since guessing ",
+            "wrong here would silently mix two different species' trait rows:\n  ",
+            paste(not_in_master, collapse = ", "))
+  }
+  
+  missing_traits <- traits_reconciled[!is.na(FG) & is.na(Organism), Species]
+  non_living_fgs <- c("Detritus", "Discards")
+  missing_traits_living <- setdiff(missing_traits, non_living_fgs)
+  if (length(missing_traits_living) > 0) {
+    warning(length(missing_traits_living), " species are in the FG master but have NO traits_ewe ",
+            "row (missing_traits = TRUE in the output, not silently dropped): ",
+            paste(missing_traits_living, collapse = ", "))
+  }
+  if (length(intersect(missing_traits, non_living_fgs)) > 0) {
+    message(length(intersect(missing_traits, non_living_fgs)), " non-living FG placeholder(s) (",
+            paste(intersect(missing_traits, non_living_fgs), collapse = ", "),
+            ") have no traits_ewe row, as expected.")
+  }
+  
+  ## the stale sheet-embedded FG number/name are reported ONLY as a
+  ## diagnostic of how much the 2026 FG revision moved species around -
+  ## species_df's FG/FG_name is what's kept in the output either way.
+  fg_num_mismatch <- traits_reconciled[
+    !is.na(FG) & !is.na(stale_FG_num_sheet) & as.character(FG) != as.character(stale_FG_num_sheet),
+    .(Species, FG, FG_name, stale_FG_num_sheet, stale_FG_name_sheet)
+  ]
+  if (nrow(fg_num_mismatch) > 0) {
+    message(nrow(fg_num_mismatch), " species have a different FG in the current FG_WMed_2026.csv",
+            " master than in the traits_ewe sheet's own (stale) header - expected, since the FG",
+            " numbering/grouping has since been revised. species_df's FG is used in the output:")
+    print(fg_num_mismatch)
+  }
+  
+  traits_reconciled[, in_fg_master := !is.na(FG)]
+  traits_reconciled[, missing_traits := is.na(Organism)]
+  traits_reconciled[, c("stale_FG_num_sheet", "stale_FG_name_sheet") := NULL]
+  setorder(traits_reconciled, FG, Species, na.last = TRUE)
+  
+  message("traits_ewe reconciled: ", nrow(traits_reconciled), " species total (",
+          sum(!traits_reconciled$missing_traits), " with traits, ",
+          sum(traits_reconciled$missing_traits), " missing traits), FG/FG_name taken from",
+          " FG_WMed_2026.csv via species_df.")
+  
+  ## 2026-09-17 update, revised: Ecopath_traits is the FG_name/species-
+  ## level traits table "as it was saved" - i.e. this species-level
+  ## traits_reconciled table, not the FG-level biomass-weighted rollup
+  ## this script computes from it elsewhere. Written directly to the
+  ## workbook as the final Ecopath_traits sheet (still also kept as a
+  ## traits_ewe.csv native table below, for anything reading it by
+  ## that name). This script's own FG-level rollup is written as an
+  ## audit-only CSV instead of a workbook sheet, so nothing else
+  ## contends for the Ecopath_traits sheet name.
+  write_native_sheets_csv(
+    sheets  = list(traits_ewe = traits_reconciled),
+    out_dir = csv_out_dir
+  )
+  upsert_workbook_sheets(
+    list(Ecopath_traits = traits_reconciled),
+    ECOPATH_WORKBOOK_PATH
+  )
 }
 
 ## =================================================================
@@ -2972,7 +3144,7 @@ fg_qb_by_method <- species_qb_long[, .(
 
 ## Build "FGnum_FGname" labels - PRIORITIZES FG_name already present in
 ## species_df/results (the reliable source: known FGs hand-labeled at
-## the input stage) over the external FG_WMed.xlsx join, which is only
+## the input stage) over the external FG_WMed_2026.csv join, which is only
 ## used as a fallback for FGs where species_df didn't already have a
 ## name (e.g. a real run with many species not individually annotated).
 build_fg_label <- function(dt, label = "") {

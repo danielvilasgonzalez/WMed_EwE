@@ -9,7 +9,7 @@
 ## diet_to_ewe_tool_notes.md in the project for that history).
 ## REQUIRES 01_biomass.R to have run at least once against the SAME
 ## ECOPATH_WORKBOOK_PATH first - species->FG membership comes from
-## FG_WMed.xlsx directly (no dependency on 01_biomass.R for that part),
+## FG_WMed_2026.csv directly (no dependency on 01_biomass.R for that part),
 ## but each species' SHARE OF ITS FG's BIOMASS (needed to blend several
 ## species' diets into one FG-level diet) is read from 01_biomass.R's
 ## own biomass_proportion_by_species_fg.csv - that's "proportion
@@ -21,9 +21,10 @@
 ## =================================================================
 ## 04_diets.R
 ##
-## (2026-09-16, two rounds of changes): species->FG
-## membership is read from FG_WMed.xlsx (same file/sheet 01_biomass.R
-## reads), NOT a hand-built species_to_fg.csv, and each species' share
+## (2026-09-16, two rounds of changes; updated again to stop reading
+## FG_WMed.xlsx entirely): species->FG membership is read from
+## FG_WMed_2026.csv (same file 01_biomass.R's fg_species_file reads),
+## NOT a hand-built species_to_fg.csv and NOT the old FG_WMed.xlsx, and each species' share
 ## of its FG's biomass is read from the biomass code's own output
 ## (01_biomass.R's biomass_proportion_by_species_fg.csv, prop_sp_fg
 ## column) - NOT a hand-built species_biomass_in_fg.csv either. Both manual CSVs are
@@ -85,9 +86,12 @@ if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <-
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 if (!exists("BIOMASS_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
 if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) METAWEB_XLSX_PATH        <- file.path(pcloud_dir, "data/Complementary data/data_entry_metaweb_empty.xlsx")   # Mediterranean trophic metaweb database - currently empty (template only, no DATA_ENTRY rows yet), but this is the file to read once it's populated
-if (!exists("FG_REFERENCE_XLSX_PATH",   envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_XLSX_PATH   <- file.path(pcloud_dir, "data/FG_WMed.xlsx")   # same fg_file 01_biomass.R reads - sheet 4: ESPECIE/GF/FG_name
-if (!exists("FG_REFERENCE_SHEET",       envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_SHEET       <- 4               # sheet index/name within FG_REFERENCE_XLSX_PATH - matches 01_biomass.R's `read_excel(fg_file, sheet = 4)`
-if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_XLSX_PATH; ok if the file doesn't exist (treated as empty)
+## FG_WMed_2026.csv - same file 01_biomass.R's fg_species_file and
+## 02_fisheries.R's fg_file both read (species/FG_number/FG_name/
+## taxonomy/source/status), NOT the old FG_WMed.xlsx sheet 4. No sheet
+## parameter needed anymore - a CSV has no sheets.
+if (!exists("FG_REFERENCE_CSV_PATH",    envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH    <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
+if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_CSV_PATH; ok if the file doesn't exist (treated as empty)
 if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_BIOMASS_IN_FG_CSV_PATH <- file.path(pcloud_dir, "data/species_biomass_in_fg_missing.csv")   # species, fg_name, biomass_proportion - ONLY for species x FG pairs not covered by ECOPATH_WORKBOOK_PATH's own FG_spp_Ecopath sheet; ok if the file doesn't exist
 if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # group_number, group_name, is_predator - row/column order for the output matrix
 if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
@@ -105,7 +109,7 @@ if (!exists("DIET_METRIC_PRIORITY", envir = .GlobalEnv, inherits = FALSE)) {
 }
 
 message("[04_diets.R] Config: METAWEB_XLSX_PATH = ", METAWEB_XLSX_PATH,
-        " | FG_REFERENCE_XLSX_PATH = ", FG_REFERENCE_XLSX_PATH, " (sheet ", FG_REFERENCE_SHEET, ")",
+        " | FG_REFERENCE_CSV_PATH = ", FG_REFERENCE_CSV_PATH,
         " | ECOPATH_WORKBOOK_PATH = ", ECOPATH_WORKBOOK_PATH,
         " | SPECIES_TO_FG_MISSING_CSV_PATH = ", SPECIES_TO_FG_MISSING_CSV_PATH,
         " | SPECIES_BIOMASS_IN_FG_CSV_PATH = ", SPECIES_BIOMASS_IN_FG_CSV_PATH,
@@ -237,27 +241,33 @@ build_species_diet <- function(data_entry, lookup) {
 }
 
 ## =================================================================
-## STEP 6: Species -> FG, sourced from FG_WMed.xlsx FIRST (the
+## STEP 6: Species -> FG, sourced from FG_WMed_2026.csv FIRST (the
 ## real starting point - every species already assigned an FG there),
 ## falling back to a small manual CSV ONLY for species this diet run
 ## actually needs but aren't in that reference file at all.
 ## =================================================================
-read_species_to_fg_from_reference <- function(path, sheet = FG_REFERENCE_SHEET) {
-  fg_raw <- as.data.table(openxlsx::read.xlsx(path, sheet = sheet, detectDates = FALSE))
-  needed <- c("ESPECIE", "GF", "FG_name")
-  missing_cols <- setdiff(needed, names(fg_raw))
-  if (length(missing_cols) > 0) {
-    stop("read_species_to_fg_from_reference(): '", path, "' sheet ", sheet, " is missing expected column(s): ",
-         paste(missing_cols, collapse = ", "), " (expected the same ESPECIE/GF/FG_name layout 01_biomass.R reads).")
+read_species_to_fg_from_reference <- function(path) {
+  ## fread(), not openxlsx::read.xlsx() - path is FG_WMed_2026.csv
+  ## (species/FG_number/FG_name/taxonomy/source/status), not the old
+  ## FG_WMed.xlsx sheet 4 (ESPECIE/GF/FG_name). Accepts either column
+  ## naming so a pre-set FG_REFERENCE_CSV_PATH pointing at an older-style
+  ## file still works.
+  fg_raw <- fread(path)
+  species_col <- intersect(c("species", "ESPECIE"), names(fg_raw))[1]
+  name_col    <- intersect("FG_name", names(fg_raw))[1]
+  if (is.na(species_col) || is.na(name_col)) {
+    stop("read_species_to_fg_from_reference(): '", path, "' is missing expected column(s) - looked for a",
+         " species column (species/ESPECIE) and FG_name, found: ", paste(names(fg_raw), collapse = ", "),
+         " (expected the same species/FG_number/FG_name layout 01_biomass.R's fg_species_file reads).")
   }
-  out <- unique(fg_raw[, .(species = ESPECIE, fg_name = FG_name, proportion = 1)])
+  out <- unique(fg_raw[, .(species = get(species_col), fg_name = get(name_col), proportion = 1)])
   out <- out[!is.na(species) & species != ""]
   out
 }
 
 ## =================================================================
 ## STEP 6c (added 2026-09-17): taxonomy-based fallback for
-## species the metaweb needs but that are in NEITHER FG_WMed.xlsx NOR
+## species the metaweb needs but that are in NEITHER FG_WMed_2026.csv NOR
 ## the manual missing-species CSV. The diet database's own sheet of
 ## classification of diet items means the taxonomic classification can
 ## be used to adjust to the FG scheme: the metaweb workbook's own
@@ -268,7 +278,7 @@ read_species_to_fg_from_reference <- function(path, sheet = FG_REFERENCE_SHEET) 
 ## lib_survey_fg_density_functions.R) - no network call, no new data
 ## source to configure - to assign a still-unresolved species to
 ## whichever FG its genus/family/order/class/phylum relatives among the
-## ALREADY-assigned species (from FG_WMed.xlsx + the missing-CSV) map to
+## ALREADY-assigned species (from FG_WMed_2026.csv + the missing-CSV) map to
 ## exclusively, or by majority if most (not tied) relatives agree. Same
 ## safe rule used throughout this project (see fallback_match_fg_by_
 ## taxonomy() in the shared lib): a rank value spanning multiple FGs
@@ -278,7 +288,7 @@ read_species_to_fg_from_reference <- function(path, sheet = FG_REFERENCE_SHEET) 
 ## reusing fallback_match_fg_by_taxonomy() directly - that function's
 ## data shape is FG_num/FG_name-keyed (built for 01_biomass.R's own
 ## fg_lookup_safe), while here there's no FG_num at all, just fg_name
-## strings from FG_WMed.xlsx/the missing CSV. Same algorithm, adapted
+## strings from FG_WMed_2026.csv/the missing CSV. Same algorithm, adapted
 ## to this script's own simpler (species, fg_name) shape.
 ## =================================================================
 resolve_fg_votes_for_rank_diet <- function(reference_tax, rank) {
@@ -327,7 +337,7 @@ fallback_species_to_fg_via_taxonomy <- function(still_missing, already_assigned,
   }
   if (nrow(resolved) > 0) {
     message("[04_diets.R] ", nrow(resolved), " of ", length(still_missing), " species missing from both ",
-            "FG_WMed.xlsx and the fallback CSV were resolved via the metaweb's own Taxonomic_codes classification ",
+            "FG_WMed_2026.csv and the fallback CSV were resolved via the metaweb's own Taxonomic_codes classification ",
             "(genus/family/order/class/phylum match against already-assigned relatives): ",
             paste(head(resolved$species, 10), collapse = ", "), if (nrow(resolved) > 10) ", ..." else "")
   }
@@ -365,7 +375,7 @@ build_species_to_fg <- function(needed_species, reference_path, missing_csv_path
   
   if (length(still_missing) > 0) {
     message("[04_diets.R] ", length(still_missing), " species appear in the metaweb diet data but have ",
-            "NO FG assignment from FG_WMed.xlsx, ", missing_csv_path, ", or the metaweb's own taxonomic ",
+            "NO FG assignment from FG_WMed_2026.csv, ", missing_csv_path, ", or the metaweb's own taxonomic ",
             "classification - they'll be dropped from the FG-level diet matrix. Add them to ", missing_csv_path,
             " (species, fg_name, proportion) to include them: ", paste(still_missing, collapse = ", "))
   }
@@ -551,7 +561,7 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 ## which required a separate explicit call).
 ## =================================================================
 run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
-                         fg_reference_path = FG_REFERENCE_XLSX_PATH,
+                         fg_reference_path = FG_REFERENCE_CSV_PATH,
                          species_to_fg_missing_path = SPECIES_TO_FG_MISSING_CSV_PATH,
                          biomass_fallback_path = SPECIES_BIOMASS_IN_FG_CSV_PATH,
                          group_table_path = EWE_GROUP_TABLE_CSV_PATH,
