@@ -3382,11 +3382,27 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
     
     add_block <- function(sheet_dt, new_prefix) {
       if (is.null(sheet_dt)) return(invisible(NULL))
+      ## Matched against the reference `years` vector (from ecosim_b) BY
+      ## YEAR VALUE, not assumed to line up positionally - Catches_Ecosim.csv
+      ## (from 02_fisheries.R, new_prefix "L") can genuinely cover a
+      ## different year range/length than Ecosim.csv (01_biomass.R's own
+      ## TS_YEARS: this script has no guarantee the two ever match, and
+      ## nothing forces them to), and a straight c(meta, yrvals) positional
+      ## assignment silently assumed they always did - which is exactly
+      ## what crashed here ("Supplied 34 items to be assigned to 38 items"
+      ## the moment the two sheets' year counts differed). Missing years
+      ## are filled with NA instead, the same convention the Discards/
+      ## Effort blocks below already use for exactly this reason.
+      sheet_years <- suppressWarnings(as.numeric(sheet_dt[[1]][-seq_along(meta_labels)]))
       value_cols <- setdiff(names(sheet_dt), names(sheet_dt)[1])
       for (col in value_cols) {
         vals <- sheet_dt[[col]]
-        meta   <- vals[seq_along(meta_labels)]   # keep the source sheet's own descriptive "Name" row as-is (it's already e.g. "B_Hake"/"C_Hake") - only the combined data.table's own COLUMN KEY gets prefixed below, so B_/L_/Di_/Effort_ columns pulled from different source sheets never collide once combined into one sheet
-        yrvals <- vals[-seq_along(meta_labels)]
+        meta          <- vals[seq_along(meta_labels)]   # keep the source sheet's own descriptive "Name" row as-is (it's already e.g. "B_Hake"/"C_Hake") - only the combined data.table's own COLUMN KEY gets prefixed below, so B_/L_/Di_/Effort_ columns pulled from different source sheets never collide once combined into one sheet
+        sheet_yrvals  <- vals[-seq_along(meta_labels)]
+        yrvals <- vapply(years, function(y) {
+          idx <- which(sheet_years == y)
+          if (length(idx) == 0) NA_character_ else as.character(sheet_yrvals[idx[1]])
+        }, character(1))
         combined[, (paste0(new_prefix, "_", col)) := c(meta, yrvals)]
       }
     }

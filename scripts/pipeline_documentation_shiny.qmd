@@ -87,64 +87,82 @@ CACHE_MISSING_MSG <- paste0(
   "document there too."
 )
 
-## AUTO_BUILD_CACHE: if TRUE and no cache exists yet, this app tries to
-## build one itself on first load, by running 01_biomass.R once with
-## SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE set - the exact manual steps
-## in "Before you start" below, done automatically instead of by hand.
+## AUTO_BUILD_CACHE: if TRUE and no cache exists yet, this app builds one
+## itself automatically, by launching 01_biomass.R (with
+## SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE set) as a genuinely
+## SEPARATE background process (Rscript, via system2(..., wait = FALSE)) -
+## NOT source()'d in-process the way an earlier version of this did. That
+## distinction is exactly what makes this safe to default to TRUE: this
+## process returns immediately, so the page still paints straight away
+## (into the synthetic demo dataset below, since the real cache obviously
+## doesn't exist yet at this exact instant) instead of blocking on a
+## multi-minute pipeline run the way the old in-process approach did. A
+## background poll (see the cache-state chunk further down) then picks up
+## the real cache and swaps every control/figure over to it automatically
+## - no page reload needed - once that background process finishes (a few
+## minutes: GSA shapefile + bathymetry downloads, MEDITS loading, FG
+## matching). A grey "demo data" banner stays visible the whole time.
 ##
-## Defaults to FALSE now - NOT because it doesn't work, but because of
-## WHERE it runs: the code below is the document's own setup chunk, which
-## Quarto/Shiny evaluates synchronously, once, before this page can render
-## ANYTHING - no controls, no plots, not even the demo-data banner below.
-## A real 01_biomass.R run needs pCloud access and can take several minutes
-## (GSA shapefile + bathymetry downloads, MEDITS loading, FG matching) even
-## when everything goes right; if pCloud isn't reachable from wherever
-## `quarto serve`/`quarto preview` is running, or the run hits any problem
-## slow enough to not fail cleanly and quickly, the browser tab just sits
-## blank for however long that takes (or indefinitely) - which is exactly
-## what "opens to a blank page, nothing shows" looks like from the outside,
-## and is indistinguishable from the app being broken. Leaving this FALSE
-## means the page always paints immediately: no cache yet -> straight to
-## the synthetic demo dataset below (milliseconds, no network), never
-## blocked on a live pipeline run. Set AUTO_BUILD_CACHE <- TRUE here only
-## if you specifically want that automatic build attempt back (e.g. you
-## know pCloud is reachable from this machine and are fine waiting) -
-## otherwise build the real cache by running 01_biomass.R yourself (see
-## "Before you start" below) and this app will pick it up on the next
-## reload, same as always.
-AUTO_BUILD_CACHE <- FALSE
+## Set AUTO_BUILD_CACHE <- FALSE here only if you specifically don't want
+## this (e.g. no pCloud access at all from wherever quarto serve/preview
+## is running) - the app then just stays on demo data until you build a
+## real cache by hand (see "Before you start" below) and reload the page.
+AUTO_BUILD_CACHE <- TRUE
+
+BUILD_LOG_PATH  <- file.path(DOC_DIR, "shiny_cache", "auto_build.log")
+BUILD_LOCK_PATH <- file.path(DOC_DIR, "shiny_cache", "auto_build.lock")
 
 if (!CACHE_AVAILABLE && AUTO_BUILD_CACHE) {
   BIOMASS_SCRIPT_PATH <- file.path(DOC_DIR, "01_biomass.R")
+  ## A recent lock file means a background build is already in flight -
+  ## e.g. the user reloaded the page while an earlier build was still
+  ## running. Without this check, EVERY reload during that window would
+  ## spawn ANOTHER competing Rscript process running the full pipeline in
+  ## parallel. 30 minutes is generous slack for a crashed/killed process
+  ## that never got to remove its own lock (see the finally= below) -
+  ## past that, a fresh attempt is allowed again rather than staying
+  ## stuck forever on a stale lock.
+  lock_is_stale <- !file.exists(BUILD_LOCK_PATH) ||
+    difftime(Sys.time(), file.info(BUILD_LOCK_PATH)$mtime, units = "mins") > 30
+
   if (!file.exists(BIOMASS_SCRIPT_PATH)) {
     message("[pipeline_documentation_shiny] AUTO_BUILD_CACHE is TRUE but '", BIOMASS_SCRIPT_PATH,
-            "' isn't next to this document, so there's nothing to auto-run - falling back to the",
-            " manual instructions below.")
+            "' isn't next to this document, so there's nothing to auto-run - staying on demo data",
+            " until a real cache is built by hand (see \"Before you start\" below).")
+  } else if (!lock_is_stale) {
+    message("[pipeline_documentation_shiny] A background cache build already appears to be in",
+            " progress (lock file '", BUILD_LOCK_PATH, "' is recent) - not starting another one.",
+            " Showing demo data until it finishes; progress/errors: '", BUILD_LOG_PATH, "'.")
   } else {
-    message("[pipeline_documentation_shiny] No cache found - building one automatically by running",
-            " 01_biomass.R once (this can take a few minutes: GSA shapefile + bathymetry downloads,",
-            " MEDITS loading, FG matching). This happens only on this first load; every reload after",
-            " it succeeds reads the saved cache instantly. Set AUTO_BUILD_CACHE <- FALSE in this",
-            " document's setup chunk to skip this and just show the manual instructions instead.")
-    auto_build_ok <- tryCatch({
-      assign("SAVE_SHINY_CACHE_PATH",   CACHE_PATH, envir = .GlobalEnv)
-      assign("STOP_AFTER_SHINY_CACHE",  TRUE,       envir = .GlobalEnv)
-      ## local = a fresh env (not .GlobalEnv) - keeps 01_biomass.R's ~2000
-      ## lines of intermediate objects (dt, area_shp, out_dir, ...) out of
-      ## this document's own environment. The two assign()s just above
-      ## still land in the REAL .GlobalEnv, which is where 01_biomass.R's
-      ## own `exists(..., envir = .GlobalEnv, inherits = FALSE)` config
-      ## checks explicitly look, regardless of where the script itself runs.
-      source(BIOMASS_SCRIPT_PATH, local = new.env(parent = globalenv()))
+    dir.create(dirname(CACHE_PATH), recursive = TRUE, showWarnings = FALSE)
+    writeLines(as.character(Sys.time()), BUILD_LOCK_PATH)
+    ## Passed as a single -e expression (not a temp .R file) to keep this
+    ## self-contained in one chunk. finally= removes the lock whether the
+    ## build succeeds or fails, so a later restart isn't stuck behind it.
+    build_expr <- paste0(
+      "SAVE_SHINY_CACHE_PATH <- ", deparse(CACHE_PATH), "; ",
+      "STOP_AFTER_SHINY_CACHE <- TRUE; ",
+      "tryCatch({ source(", deparse(BIOMASS_SCRIPT_PATH), ") }, ",
+      "shinyCacheStop = function(e) invisible(NULL), ",
+      "error = function(e) cat('AUTO BUILD FAILED: ', conditionMessage(e), '\\n'), ",
+      "finally = unlink(", deparse(BUILD_LOCK_PATH), "))"
+    )
+    spawn_ok <- tryCatch({
+      system2("Rscript", args = c("-e", shQuote(build_expr)),
+              stdout = BUILD_LOG_PATH, stderr = BUILD_LOG_PATH, wait = FALSE)
       TRUE
-    }, shinyCacheStop = function(e) TRUE, error = function(e) {
-      message("[pipeline_documentation_shiny] Automatic cache build failed: ", conditionMessage(e),
-              " - falling back to the manual instructions below.")
+    }, error = function(e) {
+      message("[pipeline_documentation_shiny] Could not start the background build (",
+              conditionMessage(e), ") - is Rscript on this machine's PATH? Staying on demo data;",
+              " you can still build the cache by hand (see \"Before you start\" below).")
+      unlink(BUILD_LOCK_PATH)
       FALSE
     })
-    CACHE_AVAILABLE <- isTRUE(auto_build_ok) && file.exists(CACHE_PATH)
-    if (CACHE_AVAILABLE) {
-      message("[pipeline_documentation_shiny] Automatic cache build succeeded - loading it now.")
+    if (isTRUE(spawn_ok)) {
+      message("[pipeline_documentation_shiny] No cache found - building one automatically in the",
+              " background (a separate Rscript process, not blocking this app). This app already",
+              " shows demo data below and will switch over to your real results automatically,",
+              " with no reload needed, once that finishes. Progress/errors: '", BUILD_LOG_PATH, "'.")
     }
   }
 }
@@ -251,20 +269,24 @@ if (CACHE_AVAILABLE) {
   YEAR_MIN <- min(cache$dt$Year, na.rm = TRUE)
   YEAR_MAX <- max(cache$dt$Year, na.rm = TRUE)
 } else {
-  ## Final fallback: no real cache, and either AUTO_BUILD_CACHE is off or
-  ## its attempt above failed. Rather than showing an empty "no data yet"
-  ## state on first load, fall back to a small synthetic demo dataset
-  ## (built purely in-memory, in a few milliseconds - no downloads, no
-  ## pCloud access) so every control and figure below has SOMETHING real
-  ## to react to immediately. CACHE_AVAILABLE is set TRUE here on purpose:
-  ## every validate(need(CACHE_AVAILABLE, ...)) guard downstream means
-  ## "is there ANY data to show" (real or demo) - IS_DEMO_DATA is the
-  ## separate flag the UI uses to say which one it actually is.
+  ## Final fallback: no real cache exists (yet). If AUTO_BUILD_CACHE just
+  ## kicked off a background build above, it's still running at this exact
+  ## instant (it takes minutes; this line runs in milliseconds) - the
+  ## cache-state chunk further down polls for it and swaps rv$cache over
+  ## automatically once it's ready, no reload needed. Rather than showing
+  ## an empty "no data yet" state in the meantime, fall back to a small
+  ## synthetic demo dataset (built purely in-memory, in a few milliseconds
+  ## - no downloads, no pCloud access) so every control and figure below
+  ## has SOMETHING real to react to immediately. CACHE_AVAILABLE is set
+  ## TRUE here on purpose: every validate(need(CACHE_AVAILABLE, ...)) guard
+  ## downstream means "is there ANY data to show" (real or demo) -
+  ## IS_DEMO_DATA is the separate flag the UI uses to say which one it is.
   message("[pipeline_documentation_shiny] ", CACHE_MISSING_MSG,
           " Falling back to a small synthetic demo dataset so this app shows",
           " something immediately - see the banner in the app itself once it",
-          " loads. Build a real cache (see \"Before you start\" above) and",
-          " reload this page to replace it with your actual MEDITS data.")
+          " loads. It'll switch over automatically once a real cache is ready",
+          " (from the background build, if AUTO_BUILD_CACHE is on, or from",
+          " building one by hand - see \"Before you start\" above).")
   demo_cache <- tryCatch(build_demo_cache(), error = function(e) {
     message("[pipeline_documentation_shiny] Building the synthetic demo dataset also failed (",
             conditionMessage(e), ") - falling back to the plain \"no data yet\" message instead.")
@@ -290,6 +312,65 @@ if (CACHE_AVAILABLE) {
 }
 ```
 
+```{r cache-state, context="server"}
+## Per-session reactive mirror of the plain globals set in the setup
+## chunk above (cache/CACHE_AVAILABLE/ALL_AREA_IDS/STRATA_AREA_BY_AREA_FULL/
+## YEAR_MIN/YEAR_MAX/IS_DEMO_DATA). This exists specifically so the UI
+## (rendered via renderUI() below, not a static chunk) and every reactive/
+## output elsewhere can actually SEE these values change later - a plain
+## global can drive what the page shows on first load, but writing to it
+## again after that load does nothing to an already-rendered page; only a
+## reactiveValues() write triggers Shiny to re-render whatever depends on
+## it, which is what makes the automatic real-data swap below possible.
+rv <- reactiveValues(
+  cache                    = cache,
+  CACHE_AVAILABLE          = CACHE_AVAILABLE,
+  ALL_AREA_IDS             = ALL_AREA_IDS,
+  STRATA_AREA_BY_AREA_FULL = STRATA_AREA_BY_AREA_FULL,
+  YEAR_MIN                 = YEAR_MIN,
+  YEAR_MAX                 = YEAR_MAX,
+  IS_DEMO_DATA             = IS_DEMO_DATA
+)
+
+## Polls every 4 seconds for the background build (see setup chunk above,
+## AUTO_BUILD_CACHE) finishing - but ONLY while still on demo data
+## (req(isTRUE(rv$IS_DEMO_DATA)) - once swapped over, or if this was never
+## on demo data to begin with, this observer's own check is a no-op file.
+## exists() call, not the full pipeline. The FIRST poll (in this or any
+## other open session/tab) to see the file appear does the one genuinely
+## slow step here - compute_strata_area_by_area(), one bathymetry
+## download per GSA - and swaps THIS session's rv over; if several tabs
+## are open at once, each does this independently the next time its own
+## poll fires, which costs a few redundant bathymetry downloads but keeps
+## this simple and avoids a shared-state race between sessions.
+observe({
+  invalidateLater(4000)
+  req(isTRUE(rv$IS_DEMO_DATA))
+  if (!file.exists(CACHE_PATH)) return(NULL)
+
+  ## readRDS() can fail if the file exists but saveRDS() hasn't finished
+  ## writing it yet (a brief window) - tryCatch here just means "try
+  ## again next tick" rather than crashing this session's reactive graph.
+  real_cache <- tryCatch(readRDS(CACHE_PATH), error = function(e) NULL)
+  if (is.null(real_cache)) return(NULL)
+
+  message("[pipeline_documentation_shiny] Background build finished - switching this session over",
+          " to the real cache now (no reload needed).")
+  real_area_ids <- sort(unique(real_cache$dt$AreaID))
+  rv$cache                    <- real_cache
+  rv$ALL_AREA_IDS             <- real_area_ids
+  rv$STRATA_AREA_BY_AREA_FULL <- compute_strata_area_by_area(
+    area_ids    = real_area_ids,
+    area_shp    = real_cache$area_shp,
+    area_id_col = real_cache$area_id_col,
+    strata_def  = real_cache$strata_def
+  )
+  rv$YEAR_MIN     <- min(real_cache$dt$Year, na.rm = TRUE)
+  rv$YEAR_MAX     <- max(real_cache$dt$Year, na.rm = TRUE)
+  rv$IS_DEMO_DATA <- FALSE
+})
+```
+
 :::: {.callout-warning}
 ## Before you start: this needs a live R session, and a one-time data cache
 
@@ -302,26 +383,34 @@ shinyapps.io / Posit Connect / your own Shiny Server. Double-clicking a
 rendered `.html` file will not work - there's no R behind a plain HTML file.
 
 It also needs a **one-time data cache** before it can show your real
-MEDITS results - but you should never see a blank page waiting on that.
-**The moment you open this app with no real cache yet, it shows a small
-synthetic demo dataset instead** - fabricated GSAs, strata, functional
-groups and samples, built in-memory in milliseconds, no network or pCloud
-access needed - so every control and figure below is already populated
-and interactive on first load. A grey banner above the controls says
-plainly when you're looking at that demo data rather than your real
-results.
+MEDITS results - but you should never see a blank page waiting on that,
+and by default you don't have to lift a finger to get the real thing
+either. **The moment you open this app with no real cache yet, two things
+happen at once:** it immediately shows a small synthetic demo dataset -
+fabricated GSAs, strata, functional groups and samples, built in-memory
+in milliseconds, no network or pCloud access needed - so every control
+and figure below is already populated and interactive on first load; and,
+in the background, it launches `01_biomass.R` as a **separate** process
+(not inside this app itself) to build the real cache. A grey banner above
+the controls says plainly when you're looking at demo data - and that
+banner, along with every control and figure, **switches over to your real
+results automatically, with no page reload**, the moment that background
+build finishes (a few minutes: GSA shapefile + bathymetry downloads,
+MEDITS loading, FG matching). Progress and any errors from that
+background run land in `shiny_cache/auto_build.log`, next to this `.qmd`
+file.
 
-Building the real cache is a separate, deliberate step - it is **not**
-attempted automatically by default, on purpose: a real `01_biomass.R` run
-needs pCloud access and can take several minutes (GSA shapefile +
-bathymetry downloads, MEDITS loading, FG matching), and running that
-synchronously inside this document's own startup code would block the
-page from rendering anything at all until it finishes - which looks
-identical to the app being broken if pCloud isn't reachable from wherever
-`quarto serve`/`quarto preview` is running, or the run is simply slow.
-(If you'd rather have that automatic attempt back anyway - e.g. you know
-pCloud is reachable here and are fine waiting - set `AUTO_BUILD_CACHE <-
-TRUE` in this document's setup chunk.)
+Running that build as a genuinely separate process (rather than inside
+this document's own startup code) is what makes it safe to have on by
+default: an earlier version of this ran it in-process, which blocked the
+page from rendering anything at all until it finished - looking
+identical to the app being broken if pCloud wasn't reachable from
+wherever `quarto serve`/`quarto preview` was running, or the run was
+simply slow. If you'd rather skip the automatic background build entirely
+(e.g. no pCloud access at all from this machine), set `AUTO_BUILD_CACHE
+<- FALSE` in this document's setup chunk - the app then just stays on
+demo data until you build a real cache by hand, using the manual steps
+below.
 
 The manual steps to build a real cache yourself:
 
@@ -341,10 +430,11 @@ The manual steps to build a real cache yourself:
    pipeline scripts read back.
 
 The cache is a snapshot either way: it does not update itself if the
-underlying MEDITS data changes. Repeat steps 1-3 (or, with
-`AUTO_BUILD_CACHE <- TRUE`, delete `shiny_cache/survey_density_raw.rds`
-and reload to trigger another automatic build) whenever you want it
-reflecting newer data.
+underlying MEDITS data changes. Repeat steps 1-3 by hand, or (with
+`AUTO_BUILD_CACHE <- TRUE`, the default) just delete
+`shiny_cache/survey_density_raw.rds` and reload the page to trigger
+another automatic background build, whenever you want it reflecting
+newer data.
 ::::
 
 ## What's actually live here, and what isn't
@@ -382,57 +472,86 @@ paste into `01_biomass.R`, `DROP_OUTLIERS`/`STRATA`/bbox included, even
 though only year range and GSA selection also drive the figures live.
 
 ```{r ui-inputs}
-if (!CACHE_AVAILABLE) {
-  div(
-    style = paste(
-      "padding: 1em 1.25em; margin: 0.5em 0 1.5em; border: 1px solid #f0ad4e;",
-      "border-radius: 6px; background: #fcf8e3; color: #664d03;"
-    ),
-    strong("This app has no data to show yet."), br(),
-    CACHE_MISSING_MSG
-  )
-} else {
+## Bare uiOutput() placeholder - NOT the controls/banner content itself.
+## This chunk has no context="server" on purpose (it only needs to exist
+## as one static HTML tag), and it's entirely re-populated by the
+## controls-render chunk below (context="server", driven by rv$...) - a
+## plain static chunk here couldn't react to rv$IS_DEMO_DATA flipping
+## FALSE after the page has already loaded, which is the whole point of
+## the automatic real-data swap.
+uiOutput("controls_and_banner")
+```
+
+```{r controls-render, context="server"}
+## Rebuilds the whole controls panel (and the demo banner) whenever
+## rv$CACHE_AVAILABLE/rv$IS_DEMO_DATA/rv$YEAR_MIN/rv$YEAR_MAX/rv$
+## ALL_AREA_IDS change - in particular, right after cache-state's observe()
+## swaps from demo to real data, with no page reload. sliderInput/
+## checkboxGroupInput/leafletOutput keep the SAME ids ("year_range",
+## "filter_areas", "gsa_map") across a rebuild, which is what lets every
+## reactive/output elsewhere (reactive-pipeline, plot-render, map-render,
+## config-download) keep referencing input$year_range etc. unchanged - a
+## rebuild with new min/max/choices just looks like a normal input-value
+## change to everything downstream.
+##
+## DROP_OUTLIERS/NORMALIZE_TS/STRATA/the two Ecopath-base-year numbers
+## aren't tied to rv (they're config-block-only - see the note above this
+## section), so a swap resets them to their hardcoded defaults rather than
+## preserving whatever the user had picked against the demo data; a minor,
+## acceptable side effect of the whole panel being rebuilt around a
+## completely different dataset.
+output$controls_and_banner <- renderUI({
+  if (!isTRUE(rv$CACHE_AVAILABLE)) {
+    return(div(
+      style = paste(
+        "padding: 1em 1.25em; margin: 0.5em 0 1.5em; border: 1px solid #f0ad4e;",
+        "border-radius: 6px; background: #fcf8e3; color: #664d03;"
+      ),
+      strong("This app has no data to show yet."), br(),
+      CACHE_MISSING_MSG
+    ))
+  }
+
   tagList(
-    if (isTRUE(IS_DEMO_DATA)) {
+    if (isTRUE(rv$IS_DEMO_DATA)) {
       div(
         style = paste(
           "padding: 0.75em 1.25em; margin: 0.5em 0 1em; border: 1px solid #6c757d;",
           "border-radius: 6px; background: #f1f1f1; color: #333;"
         ),
         strong("You're viewing synthetic demo data, not real MEDITS data."), br(),
-        "No real cache was found (and either the automatic build above hasn't finished or ",
-        "it failed) - so every control and figure below is running against a small, ",
-        "made-up dataset (fabricated GSAs, strata, functional groups and samples) just so ",
-        "you can see how this app works before your own data is ready. Build a real cache ",
-        "(see \"Before you start\" above) and reload this page to replace this with your ",
-        "actual MEDITS-derived results."
+        "A real cache hasn't finished building yet - so every control and figure below is ",
+        "running against a small, made-up dataset (fabricated GSAs, strata, functional groups ",
+        "and samples) just so you can see how this app works while you wait. See \"Before you ",
+        "start\" above for how that build works. This banner disappears automatically, with no ",
+        "reload needed, the moment your real MEDITS-derived cache is ready."
       )
     },
     fluidRow(
-    column(
-      width = 4,
-      sliderInput("year_range", "Ecosim time-series years (TS_YEARS)",
-                  min = YEAR_MIN, max = YEAR_MAX,
-                  value = c(YEAR_MIN, YEAR_MAX), step = 1, sep = ""),
-      checkboxGroupInput("filter_areas", "GSA numbers to include (FILTER_AREAS)",
-                          choices = ALL_AREA_IDS, selected = ALL_AREA_IDS, inline = TRUE),
-      hr(),
-      checkboxInput("drop_outliers", "DROP_OUTLIERS (config block only - see note above)", value = TRUE),
-      checkboxInput("normalize_ts", "NORMALIZE_TS (config block only)", value = TRUE),
-      checkboxInput("strata_config", "STRATA (config block only - figures always use TRUE)", value = TRUE),
-      hr(),
-      numericInput("year_ecopath_start", "Ecopath base year, start", value = 1994),
-      numericInput("year_ecopath_end", "Ecopath base year, end", value = 1996),
-      hr(),
-      downloadButton("download_config", "Download config block (.R)")
-    ),
-    column(
-      width = 8,
-      leafletOutput("gsa_map", height = 320)
-    )
+      column(
+        width = 4,
+        sliderInput("year_range", "Ecosim time-series years (TS_YEARS)",
+                    min = rv$YEAR_MIN, max = rv$YEAR_MAX,
+                    value = c(rv$YEAR_MIN, rv$YEAR_MAX), step = 1, sep = ""),
+        checkboxGroupInput("filter_areas", "GSA numbers to include (FILTER_AREAS)",
+                            choices = rv$ALL_AREA_IDS, selected = rv$ALL_AREA_IDS, inline = TRUE),
+        hr(),
+        checkboxInput("drop_outliers", "DROP_OUTLIERS (config block only - see note above)", value = TRUE),
+        checkboxInput("normalize_ts", "NORMALIZE_TS (config block only)", value = TRUE),
+        checkboxInput("strata_config", "STRATA (config block only - figures always use TRUE)", value = TRUE),
+        hr(),
+        numericInput("year_ecopath_start", "Ecopath base year, start", value = 1994),
+        numericInput("year_ecopath_end", "Ecopath base year, end", value = 1996),
+        hr(),
+        downloadButton("download_config", "Download config block (.R)")
+      ),
+      column(
+        width = 8,
+        leafletOutput("gsa_map", height = 320)
+      )
     )
   )
-}
+})
 ```
 
 ```{r reactive-pipeline, context="server"}
@@ -448,19 +567,22 @@ if (!CACHE_AVAILABLE) {
 ## these reactive()-wrapped functions, because they simply didn't exist in
 ## the environment those context="server" chunks execute in.
 ##
-## req(CACHE_AVAILABLE) first in every reactive here - without it, a
+## req(rv$CACHE_AVAILABLE) first in every reactive here - without it, a
 ## reactive further down the chain (e.g. filtered_dt(), which touches
-## cache$dt) would be the first thing to notice the cache is missing,
+## rv$cache$dt) would be the first thing to notice the cache is missing,
 ## with a less clear error than the validate(need(...)) message each
 ## render*() block below already shows. This just makes the failure
-## point explicit and identical everywhere.
+## point explicit and identical everywhere. Reading from rv$... (not the
+## plain cache/CACHE_AVAILABLE globals) is what makes these reactives
+## automatically pick up the real data after cache-state's swap, with no
+## page reload - a plain global wouldn't re-trigger anything downstream.
 selected_areas <- reactive({
-  req(CACHE_AVAILABLE, input$filter_areas)
+  req(rv$CACHE_AVAILABLE, input$filter_areas)
   as.numeric(input$filter_areas)
 })
 
 filtered_dt <- reactive({
-  cache$dt[Year >= input$year_range[1] & Year <= input$year_range[2] &
+  rv$cache$dt[Year >= input$year_range[1] & Year <= input$year_range[2] &
              AreaID %in% selected_areas()]
 })
 
@@ -473,7 +595,7 @@ n_samples_by_stratum <- reactive({
 })
 
 strata_area_selected <- reactive({
-  STRATA_AREA_BY_AREA_FULL[AreaID %in% selected_areas()]
+  rv$STRATA_AREA_BY_AREA_FULL[AreaID %in% selected_areas()]
 })
 
 fg_index <- reactive({
@@ -525,24 +647,24 @@ plotOutput("plot_strata")
 ## the plotOutput() placeholder of the matching id declared just above its
 ## own section heading.
 output$plot_sample_map <- renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  plot_sample_map(filtered_dt(), cache$area_shp, cache$area_id_col,
+  validate(need(rv$CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_sample_map(filtered_dt(), rv$cache$area_shp, rv$cache$area_id_col,
                    selected_areas = selected_areas())
 })
 
 output$plot_by_area <- renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  validate(need(rv$CACHE_AVAILABLE, CACHE_MISSING_MSG))
   plot_fg_timeseries_by_area(fg_index())
 })
 
 output$plot_regional <- renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  validate(need(rv$CACHE_AVAILABLE, CACHE_MISSING_MSG))
   plot_fg_timeseries_regional(fg_index_regional())
 })
 
 output$plot_strata <- renderPlot({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  plot_strata_profile(fg_index(), cache$strata_def)
+  validate(need(rv$CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  plot_strata_profile(fg_index(), rv$cache$strata_def)
 })
 ```
 
@@ -565,31 +687,39 @@ output$plot_strata <- renderPlot({
 ## context="server" fix in place, since a reactive created in a non-server
 ## chunk isn't visible from a context="server" chunk's environment.
 ##
+## Reads rv$cache/rv$CACHE_AVAILABLE (not the plain globals) so this map
+## redraws with the real GSA polygons automatically once cache-state's
+## swap happens - both blocks below already depend on rv$cache via the
+## body they evaluate, so no extra req()/observe() wiring is needed for
+## that; leafletOutput("gsa_map") also gets freshly recreated by
+## controls-render's renderUI() on that same swap, which is what makes
+## renderLeaflet() below actually re-run for the new container.
+##
 ## No leafletOutput("gsa_map") even exists in the UI when !CACHE_AVAILABLE
-## (see ui-inputs above), so neither block below ever actually runs in
-## that case - guarded anyway so this chunk fails the same explicit way
+## (see controls-render above), so neither block below ever actually runs
+## in that case - guarded anyway so this chunk fails the same explicit way
 ## as everything else if that ever changes, rather than silently.
 output$gsa_map <- renderLeaflet({
-  validate(need(CACHE_AVAILABLE, CACHE_MISSING_MSG))
-  shp <- cache$area_shp
+  validate(need(rv$CACHE_AVAILABLE, CACHE_MISSING_MSG))
+  shp <- rv$cache$area_shp
   leaflet(shp) |>
     addTiles() |>
     addPolygons(
-      fillColor = ~ifelse(get(cache$area_id_col) %in% isolate(selected_areas()), "#0d6efd", "#cccccc"),
+      fillColor = ~ifelse(get(rv$cache$area_id_col) %in% isolate(selected_areas()), "#0d6efd", "#cccccc"),
       fillOpacity = 0.35, color = "#555555", weight = 1,
-      label = ~paste("GSA", get(cache$area_id_col))
+      label = ~paste("GSA", get(rv$cache$area_id_col))
     )
 })
 
 observe({
-  req(CACHE_AVAILABLE)
-  shp <- cache$area_shp
+  req(rv$CACHE_AVAILABLE)
+  shp <- rv$cache$area_shp
   leafletProxy("gsa_map", data = shp) |>
     clearShapes() |>
     addPolygons(
-      fillColor = ~ifelse(get(cache$area_id_col) %in% selected_areas(), "#0d6efd", "#cccccc"),
+      fillColor = ~ifelse(get(rv$cache$area_id_col) %in% selected_areas(), "#0d6efd", "#cccccc"),
       fillOpacity = 0.35, color = "#555555", weight = 1,
-      label = ~paste("GSA", get(cache$area_id_col))
+      label = ~paste("GSA", get(rv$cache$area_id_col))
     )
 })
 ```
@@ -599,10 +729,10 @@ observe({
 ## output$download_config, same reason as map-render above.
 ##
 ## downloadButton("download_config") only exists in the UI when
-## CACHE_AVAILABLE (see ui-inputs above), so this is unreachable
+## rv$CACHE_AVAILABLE (see controls-render above), so this is unreachable
 ## otherwise - req() guard kept for the same reason as map-render.
 config_text <- reactive({
-  req(CACHE_AVAILABLE)
+  req(rv$CACHE_AVAILABLE)
   paste(
     '## --- generated by "Live Explorer" - 01_biomass.R ---',
     paste0("FILTER_AREAS  <- c(", paste(selected_areas(), collapse = ", "), ")"),

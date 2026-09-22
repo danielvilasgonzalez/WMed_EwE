@@ -1812,7 +1812,8 @@ if (AREA_MODE == "westmed") {
   fwrite(species_density_regional_combined, file.path(csv_out_dir, "species_density_regional_combined.csv"))
   message("Saved species_density_regional_combined.csv (", nrow(species_density_regional_combined),
           " rows) - MEDITS+MEDIAS combined species-level density, all years. This is the",
-          " file lib_build_species_df_from_survey.R reads to build 03_pbqb-traits.R's species_df input.")
+          " file 03_pbqb-traits.R reads directly (SPECIES_DF_SOURCE == \"survey\") to build",
+          " its species_df input.")
   
   ## Species inventory, for review - every species that appears ANYWHERE
   ## in the combined time series (not just the Ecopath base years), one
@@ -1917,7 +1918,8 @@ if (AREA_MODE == "westmed") {
   fwrite(species_density_regional_combined, file.path(csv_out_dir, "species_density_regional_combined.csv"))
   message("Saved species_density_regional_combined.csv (", nrow(species_density_regional_combined),
           " rows) - MEDITS-only species-level density (AREA_MODE = custom), all years. This is the",
-          " file lib_build_species_df_from_survey.R reads to build 03_pbqb-traits.R's species_df input.")
+          " file 03_pbqb-traits.R reads directly (SPECIES_DF_SOURCE == \"survey\") to build",
+          " its species_df input.")
   
   species_fg_map <- unique(species_density_regional_combined[, .(FG_num, FG_name, ScientificName)])
   dupe_species_fg <- species_fg_map[, .N, by = ScientificName][N > 1, ScientificName]

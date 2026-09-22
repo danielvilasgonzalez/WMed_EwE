@@ -41,13 +41,19 @@
 ##     per-EEZ extract are all loaded/computed/downloaded directly in
 ##     this file (copied in, not sourced), exactly like the standalone
 ##     02_fisheries_catches_discards_effort.R this script supersedes.
-##   Two files DO still get read as-is, because they are this
-##   pipeline's fixed-name "contract files" from Step 1, not another
-##   fisheries script's output: species_density_regional_combined.csv
-##   and strata_area_by_area.csv (needed for the F-for-species step
-##   below only). If Step 1 hasn't been run yet, that one step is
-##   skipped with a loud message - everything else in this script
-##   still runs.
+##   One file DOES still get read as-is, because it is this pipeline's
+##   fixed-name "contract file" from Step 1, not another fisheries
+##   script's output: species_density_regional_combined.csv (needed for
+##   the F-for-species step below only). If Step 1 hasn't been run yet,
+##   that one step is skipped with a loud message - everything else in
+##   this script still runs. The study-area figure (Total_Area_km2,
+##   used to convert catch tonnes into a t/km^2 density matching
+##   Biomass's units) used to be read from Step 1's own
+##   strata_area_by_area.csv too - that's gone now, since catches have
+##   no depth-stratum dimension for a per-stratum file to matter for;
+##   it's computed directly here instead, from the official GSA
+##   shapefile's own plain geometric area (see that computation's own
+##   comment further down).
 ##
 ## WHAT THIS SCRIPT DOES NOT SOLVE - stated plainly, not papered over:
 ##   - GSA vs Division: GFCM's own raw capture data in this pipeline
@@ -110,7 +116,8 @@ ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")  # pat
 ## with only the shared workbook staying at the top-level out_dir.
 ## BIOMASS_CSV_DIR points at 01_biomass.R's subfolder for this script's
 ## cross-block reads of that block's own outputs (species density,
-## strata area, Ecosim.csv, FG_lookup.csv).
+## Ecosim.csv, FG_lookup.csv) - NOT strata area any more, see the
+## Total_Area_km2 computation further down for why.
 csv_out_dir <- file.path(out_dir, "fisheries")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
@@ -128,7 +135,18 @@ if (!exists("END_YEAR",        envir = .GlobalEnv, inherits = FALSE)) END_YEAR  
 if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps
 
 if (!exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
+
+## Which GSAs' plain geometric area to sum for the Catches<->Biomass
+## density conversion further down - defaults to the same Western Med
+## GSA 1-11 range 01_biomass.R's own AREA_MODE == "westmed" default
+## covers, but resolved independently here (NOT read from 01_biomass.R's
+## own FILTER_AREAS/area_shp) since this script must stay runnable on
+## its own - see that conversion's own comment below for why it's a
+## plain area sum now, not a read of 01_biomass.R's strata_area_by_area.csv.
+if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- 1:11   # GSA numbers
+
 message("[02_fisheries.R] Region/year config in effect: TARGET_COUNTRIES = ", paste(TARGET_COUNTRIES, collapse=", "),
+        " | FILTER_AREAS (GSA) = ", paste(range(FILTER_AREAS), collapse="-"),
         " | START_YEAR-END_YEAR = ", START_YEAR, "-", END_YEAR, " | DATASET_VERSION = ", DATASET_VERSION)
 
 ## Unreported-% adjustment (SAU reported-vs-total ratio, per country) -
@@ -252,11 +270,11 @@ safe_fread_optional <- function(path, label) {
   fread(path, encoding = "UTF-8")  # read the CSV with UTF-8 encoding
 }
 
-## Step 1's fixed-name contract files - needed for the F-for-species
-## step only. Not another fisheries script's output; if these don't
-## exist yet (Step 1 hasn't been run), only that one step is skipped.
+## Step 1's fixed-name contract file - needed for the F-for-species step
+## only. Not another fisheries script's output; if this doesn't exist
+## yet (Step 1 hasn't been run), only that one step is skipped (see its
+## own file.exists() check further down).
 SPECIES_DENSITY_PATH <- file.path(BIOMASS_CSV_DIR, "species_density_regional_combined.csv")  # Step 1's contract file: species density (biomass block's own subfolder)
-STRATA_AREA_PATH     <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")  # Step 1's contract file: strata area (biomass block's own subfolder)
 
 N_TOP_GEARS <- 8   # effort-gears beyond the top N are folded into "Other gear" - same convention
 # 02a_fisheries_multisource.R uses for both SAU catch and FishMIP effort.
@@ -277,20 +295,58 @@ FISHMIP_SAUP_TO_COUNTRY <- c(`12` = "Algeria", `250` = "France", `380` = "Italy"
 ## drift from it.
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # load shared workbook-writing helper functions
 
-## Study area for the Catches<->Biomass density conversion (t/km^2/year,
-## matching Biomass's own units) - REQUIRED from here on (same stop()
-## convention 02_fao_catches.R used for this same figure), since
-## Catches_Ecopath/Catches_Ecosim/the fleet-level Ecopath snapshot all
-## need it, not just the F step.
-if (!file.exists(STRATA_AREA_PATH)) {
-  stop("'", STRATA_AREA_PATH, "' not found - needed to convert catch tonnes into a t/km^2 density",  # abort if the required contract file is missing
-       " matching Biomass's units in the Ecopath/Ecosim sheets. Run 01_biomass.R",
-       " first (it writes this file), or check out_dir matches where it saved it.")
+## download_gfcm_gsa_shapefile() - copied in, not sourced, same
+## "no dependency on another script having run first" philosophy this
+## file's own header comment describes for its catch/discard/effort data
+## (and the identical copy 01_biomass.R and fig_WMed_basemap.R each keep
+## of their own) - this script's area figure below should never depend
+## on whether 01_biomass.R happened to run first against this out_dir.
+download_gfcm_gsa_shapefile <- function() {
+  gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
+  gsa_zip_file <- file.path(out_dir, "GFCM_GSA.zip")
+  gsa_shp_dir  <- file.path(out_dir, "GFCM_GSA_shp")
+  if (!dir.exists(gsa_shp_dir)) {
+    if (!file.exists(gsa_zip_file)) {
+      dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
+      download.file(gsa_zip_url, destfile = gsa_zip_file, mode = "wb", method = "libcurl")
+    }
+    unzip(gsa_zip_file, exdir = gsa_shp_dir)
+  }
+  gsa_shp_path <- list.files(gsa_shp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
+  shp <- st_read(gsa_shp_path, quiet = TRUE)
+  shp$gsa_num <- as.numeric(shp$SMU_CODE)
+  shp$gsa_num[shp$gsa_num %in% c(111, 112)] <- 11   # W/E Sardinia fix, same as 01_biomass.R/fig_WMed_basemap.R
+  shp
 }
-Total_Area_km2 <- fread(STRATA_AREA_PATH)[, sum(area_km2, na.rm = TRUE)]  # total study area = sum of all strata areas
+
+## Study area for the Catches<->Biomass density conversion (t/km^2/year,
+## matching Biomass's own units) - computed directly from the official
+## GSA polygons' own geometric area, NOT read from 01_biomass.R's
+## strata_area_by_area.csv. That file is a per-DEPTH-STRATUM breakdown,
+## built specifically for the MEDITS survey's stratified sampling design
+## (bathymetry-derived area within each depth band, within each area) -
+## catches have no stratum dimension at all: a catch is reported for the
+## whole area/GSA(s) a fleet fishes, then scaled to whatever area the
+## fleet actually represents (a subdivision, one GSA, or several GSAs
+## combined), never broken down by depth band the way a survey haul is.
+## Borrowing biomass's strata-level file for this figure was never the
+## right area conceptually - on top of being an avoidable dependency on
+## 01_biomass.R having run first against this same out_dir. Summing the
+## plain polygon area of every GSA in FILTER_AREAS is the correct,
+## self-contained equivalent instead.
+gsa_shp_for_area <- download_gfcm_gsa_shapefile()
+gsa_shp_for_area <- gsa_shp_for_area[gsa_shp_for_area$gsa_num %in% FILTER_AREAS, ]
+if (nrow(gsa_shp_for_area) == 0) {
+  stop("None of FILTER_AREAS (", paste(FILTER_AREAS, collapse = ", "), ") matched a GSA in the",
+       " official GFCM shapefile - check FILTER_AREAS is set to real GSA numbers (gsa_num, 1-30,",
+       " with 111/112 already folded into 11).")
+}
+Total_Area_km2 <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6  # m^2 -> km^2
 message("\n[Area] Study area for the Catches<->Biomass density conversion: ", round(Total_Area_km2, 1),
-        " km^2 (sum of strata_area_by_area.csv's area_km2 - the same figure 01_biomass.R/",
-        "03_pbqb-traits.R use).")
+        " km^2 (plain geometric area of GSA(s) ", paste(sort(FILTER_AREAS), collapse = ", "),
+        " from the official GFCM shapefile, computed directly here - NOT read from",
+        " 01_biomass.R's strata_area_by_area.csv, since catches have no depth-stratum dimension",
+        " for that file's per-stratum breakdown to matter for).")
 
 ## =================================================================
 ## # get GFCM catches by species and year and GSA
@@ -524,10 +580,98 @@ resolved_final <- rbindlist(list(
 
 resolved_final[, status := fifelse(is.na(FG_num), "unresolved", "resolved")]  # flag whether each species ended up matched
 fwrite(resolved_final, file.path(csv_out_dir, "species_fg_matched.csv"))  # write the full matching result to CSV
+
+## % of SPECIES resolved (as before) says nothing about how much CATCH
+## that represents - a handful of unresolved species can carry most of
+## the tonnage if they happen to be major stocks, while dozens of
+## unresolved minor/rare species barely move the number. Reporting both,
+## plus the actual top offenders by tonnage, is what actually lets you
+## tell "a few bycatch species didn't match, no big deal" apart from
+## "a major stock silently vanished from landings-by-FG".
+pct_species_resolved <- round(100 * mean(resolved_final$status == "resolved"), 1)
+total_catch_all <- sum(resolved_final$Catch, na.rm = TRUE)
+pct_catch_resolved <- if (total_catch_all > 0) round(100 * sum(resolved_final[status == "resolved"]$Catch, na.rm = TRUE) / total_catch_all, 1) else NA
 message("\n=== FINAL MATCHING SUMMARY === Resolved ", sum(resolved_final$status == "resolved"), " of ",
-        nrow(resolved_final), " species (", round(100 * mean(resolved_final$status == "resolved"), 1), "%).")
+        nrow(resolved_final), " species (", pct_species_resolved, "% of species, ", pct_catch_resolved,
+        "% of total GFCM catch tonnage).")
+top_unresolved <- resolved_final[status == "unresolved"][order(-Catch)][seq_len(min(15, .N))]
+if (nrow(top_unresolved) > 0) {
+  message("Top unresolved species by catch tonnage (these are the ones actually worth chasing down -",
+          " check species_fg_matched.csv for the full list):")
+  print(top_unresolved[, .(Species, Catch)])
+}
 
 species_to_fg <- unique(resolved_final[status == "resolved", .(Species, FG_num, FG_name)])  # final species->FG lookup, resolved rows only
+
+## --- Re-runnable version of the cascade above, for species that show
+## up LATER in the pipeline (FDI's own species catalog, below) but never
+## went through this cascade in the first place because GFCM itself
+## never reported catch for them. This matters specifically for ICCAT-
+## managed species (Bluefin tuna, Swordfish) - GFCM_Capture_Quantity
+## commonly has zero or near-zero West Med rows for these (ICCAT, not
+## GFCM, is their competent reporting body), so they never entered
+## unmatched_species/resolved_final above AT ALL - not because matching
+## failed, but because they were never given a chance to match. FDI DOES
+## report real landings for them, and the FDI block further down was
+## silently dropping those rows ("no FG to assign") as if matching had
+## failed, when actually no matching had been attempted yet. Reuses
+## every lookup already built above (fg_name_lookup, fb_lookup,
+## fg_lookup, fao_species, fb_with_fg, candidate_tokens,
+## resolve_matches_safely(), clean_name(), tokenize(),
+## match_by_containment()) - same cascade, same match_method tags, just
+## callable again for a different set of names.
+rerun_species_fg_cascade <- function(species_names) {
+  todo <- data.table(Species = unique(species_names))
+  todo <- todo[!is.na(Species) & Species != "" & !Species %in% species_to_fg$Species]
+  empty_out <- data.table(Species = character(), FG_num = numeric(), FG_name = character(), match_method = character())
+  if (nrow(todo) == 0) return(empty_out)
+  out <- copy(empty_out)
+  
+  dm <- merge(todo, fg_name_lookup, by = "Species")
+  if (nrow(dm) > 0) {
+    r <- resolve_matches_safely(dm)$safe[, .(Species, FG_num, FG_name)]
+    r[, match_method := "direct_fg_name_rerun"]
+    out <- rbind(out, r, fill = TRUE)
+  }
+  todo <- todo[!Species %in% out$Species]
+  
+  if (nrow(todo) > 0) {
+    todo_cn <- copy(todo)
+    todo_cn[, clean_species := clean_name(Species)]
+    em <- merge(todo_cn[, .(Species, clean_species)], fb_lookup[, .(clean_species, ScientificName)], by = "clean_species", allow.cartesian = TRUE)
+    em <- merge(em, fg_lookup[, .(ScientificName, FG_num, FG_name)], by = "ScientificName")
+    if (nrow(em) > 0) {
+      r <- resolve_matches_safely(em)$safe[, .(Species, FG_num, FG_name)]
+      r[, match_method := "fishbase_common_name_rerun"]
+      out <- rbind(out, r, fill = TRUE)
+    }
+  }
+  todo <- todo[!Species %in% out$Species]
+  
+  if (nrow(todo) > 0 && exists("fao_species")) {
+    tg <- merge(todo, unique(fao_species[, .(Name_En, genus)], by = "Name_En"), by.x = "Species", by.y = "Name_En", all.x = TRUE)
+    gm <- merge(tg[!is.na(genus), .(Species, genus)], fg_lookup[!is.na(genus), .(genus, FG_num, FG_name)], by = "genus", allow.cartesian = TRUE)
+    if (nrow(gm) > 0) {
+      r <- resolve_matches_safely(gm)$safe[, .(Species, FG_num, FG_name)]
+      r[, match_method := "fao_genus_rerun"]
+      out <- rbind(out, r, fill = TRUE)
+    }
+  }
+  todo <- todo[!Species %in% out$Species]
+  
+  if (nrow(todo) > 0) {
+    cr <- rbindlist(lapply(todo$Species, match_by_containment))
+    if (nrow(cr) > 0) {
+      cm <- merge(cr, fb_with_fg[, .(Species, FG_num, FG_name)], by.x = "candidate", by.y = "Species")
+      if (nrow(cm) > 0) {
+        r <- resolve_matches_safely(cm)$safe[, .(Species, FG_num, FG_name)]
+        r[, match_method := "word_containment_rerun"]
+        out <- rbind(out, r, fill = TRUE)
+      }
+    }
+  }
+  unique(out, by = "Species")
+}
 
 ## GFCM catches by species/FG x year x Division (all West Med reporting
 ## countries - the "by species and year and GSA[Division]" deliverable):
@@ -1513,9 +1657,78 @@ if (!dir.exists(stecf_catches_dir)) {
       species_code_ref <- safe_fread(file.path(cfg$data_dir, cfg$species_file), "species_file")[, .(SpeciesCode = `3A_Code`, Species = Name_En)]  # FAO 3-alpha code lookup
       species_code_to_fg <- unique(merge(species_code_ref, species_to_fg, by = "Species")[, .(SpeciesCode, FG_num, FG_name)])  # build a 3-alpha code -> FG lookup
       stecf_raw <- merge(stecf_raw, species_code_to_fg, by.x = "species", by.y = "SpeciesCode", all.x = TRUE)  # attach FG to each FDI row
-      n_unmatched_sp <- sum(is.na(stecf_raw$FG_num))  # rows whose species code had no FG match
-      if (n_unmatched_sp > 0) message("[STECF FDI] ", n_unmatched_sp, " row(s) with a species code not in",
-                                      " CL_FI_SPECIES_GROUPS.csv's 3A_Code - dropped (no FG to assign).")
+      
+      ## Rows still missing FG_num split into TWO genuinely different
+      ## failure modes that a single "dropped (no FG to assign)" message
+      ## used to conflate:
+      ##  (a) the species code isn't in species_code_ref at all - a
+      ##      genuinely unrecognized FAO 3-alpha code.
+      ##  (b) the code DOES resolve to a Name_En via species_code_ref,
+      ##      but that Name_En was never in species_to_fg - meaning GFCM
+      ##      itself never reported catch for that species, so it never
+      ##      even entered the species->FG matching cascade above (not
+      ##      that matching was attempted and failed). This is exactly
+      ##      what happens for ICCAT-managed species like Bluefin tuna/
+      ##      Swordfish: GFCM_Capture_Quantity commonly has zero or
+      ##      near-zero West Med rows for them (ICCAT, not GFCM, is their
+      ##      competent reporting body) even though FDI reports real
+      ##      landings - these were being silently dropped from
+      ##      landings-by-FG entirely, not because they couldn't match,
+      ##      but because nothing had tried yet.
+      ## Case (b) gets a second chance here, via rerun_species_fg_cascade()
+      ## (defined right after species_to_fg above) - the SAME direct/
+      ## common-name/genus/word-containment cascade, just run again on
+      ## whatever Name_En values these still-unmatched codes resolve to.
+      unmatched_codes <- unique(stecf_raw[is.na(FG_num)]$species)
+      code_has_name <- species_code_ref[SpeciesCode %in% unmatched_codes]
+      n_code_unknown <- length(setdiff(unmatched_codes, code_has_name$SpeciesCode))
+      if (n_code_unknown > 0) {
+        message("[STECF FDI] ", n_code_unknown, " species code(s) not found in CL_FI_SPECIES_GROUPS.csv's",
+                " 3A_Code at all - genuinely unrecognized codes, dropped: ",
+                paste(setdiff(unmatched_codes, code_has_name$SpeciesCode), collapse = ", "))
+      }
+      if (nrow(code_has_name) > 0) {
+        rerun_matches <- rerun_species_fg_cascade(unique(code_has_name$Species))
+        if (nrow(rerun_matches) > 0) {
+          message("[STECF FDI] ", nrow(rerun_matches), " species resolved to an FG on retry (FDI reports",
+                  " landings for these but GFCM never reported catch for them, so they never went through",
+                  " the matching cascade the first time): ", paste(rerun_matches$Species, collapse = ", "))
+          rerun_code_to_fg <- unique(merge(code_has_name, rerun_matches[, .(Species, FG_num, FG_name)], by = "Species")[, .(SpeciesCode, FG_num, FG_name)])
+          stecf_raw[species %in% rerun_code_to_fg$SpeciesCode, `:=`(
+            FG_num  = rerun_code_to_fg$FG_num[match(species, rerun_code_to_fg$SpeciesCode)],
+            FG_name = rerun_code_to_fg$FG_name[match(species, rerun_code_to_fg$SpeciesCode)]
+          )]
+        }
+        still_unmatched_names <- setdiff(unique(code_has_name$Species), rerun_matches$Species)
+        if (length(still_unmatched_names) > 0) {
+          ## stecf_raw has no "Species" column at all (only the lowercase
+          ## "species" 3-alpha CODE column, from FDI itself) - Name_En
+          ## only exists on code_has_name, keyed by SpeciesCode. Joining
+          ## via the code (not a nonexistent "Species" column on
+          ## stecf_raw) is what actually lets this compute real tonnage
+          ## per still-unmatched species, sorted so the worst offenders
+          ## (if any carry real tonnage) are easy to spot instead of
+          ## just dumping an alphabetical name list.
+          still_unmatched_codes <- code_has_name[Species %in% still_unmatched_names]
+          landed_by_name <- stecf_raw[species %in% still_unmatched_codes$SpeciesCode,
+                                      .(Landed_t = sum(total_live_weight_landed, na.rm = TRUE)), by = species]
+          landed_by_name <- merge(landed_by_name, still_unmatched_codes, by.x = "species", by.y = "SpeciesCode")
+          setorder(landed_by_name, -Landed_t)
+          message("[STECF FDI] ", length(still_unmatched_names), " species have a valid Name_En but still",
+                  " couldn't be matched to any FG (checked against fg's own FG names, FishBase/SeaLifeBase",
+                  " common names, FAO genus, and word containment) - dropped, by landed tonnage:")
+          print(landed_by_name[, .(Species, Landed_t)])
+          message("If any of these carry real tonnage, add them to species_fg_matched.csv's cascade",
+                  " manually (MANUAL_OVERRIDES above) rather than letting them drop silently.")
+        }
+      }
+      n_unmatched_sp <- sum(is.na(stecf_raw$FG_num))  # rows still without an FG match after the retry
+      unmatched_landed_t <- sum(stecf_raw[is.na(FG_num)]$total_live_weight_landed, na.rm = TRUE)
+      total_landed_t <- sum(stecf_raw$total_live_weight_landed, na.rm = TRUE)
+      if (n_unmatched_sp > 0) message("[STECF FDI] ", n_unmatched_sp, " row(s) still with no FG match after",
+                                      " the retry above - dropped (", round(unmatched_landed_t, 1), " t of ",
+                                      round(total_landed_t, 1), " t total landed weight, ",
+                                      round(100 * unmatched_landed_t / total_landed_t, 2), "%).")
       stecf_raw <- stecf_raw[!is.na(FG_num)]  # drop rows with no FG match
       
       ## Discards: real columns, no flag-detection needed - landed
@@ -1895,9 +2108,32 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   catch <- catch[year >= START_YEAR & year <= END_YEAR]  # restrict to the study period
   catch[, Yield_t := reported + discards]  # total yield = reported landings + discards
   
-  ## `gear` is kept through this step (it wasn't before) purely for the
-  ## ambiguous-match gear-plausibility filter further down - it plays
-  ## no role in the ratio itself, which stays Mediterranean-wide.
+  ## `gear` is kept through this step purely for the ambiguous-match
+  ## gear-plausibility filter further down (it plays no role in the
+  ## ratio itself, which stays Mediterranean-wide) - resolved against
+  ## several known column-name variants rather than assumed to be
+  ## literally "gear" (same robust-resolution pattern already used for
+  ## SAU's raw extract above), since a FishMIP catch export that doesn't
+  ## use that exact name was crashing this whole block with "object
+  ## 'gear' not found" instead of degrading gracefully. If genuinely
+  ## none of the candidates are present, gear is filled with a
+  ## placeholder instead of stopping - the gear-plausibility filter
+  ## below already has its own "keep everything unfiltered" path for
+  ## exactly that case (no gear info to filter on).
+  gear_candidates <- c("gear", "gear_type", "gear_name", "gear_group", "fishing_gear", "Gear")
+  gear_col <- gear_candidates[gear_candidates %in% names(catch)][1]
+  if (is.na(gear_col)) {
+    message("\n[Discards] FishMIP catch parquet has no recognizable gear column (looked for: ",
+            paste(gear_candidates, collapse = ", "), ", found: ", paste(names(catch), collapse = ", "),
+            ") - filling 'gear' with a placeholder. The discard ratio itself is unaffected (it's",
+            " Mediterranean-wide, not gear-specific); only the ambiguous-FG gear-plausibility filter",
+            " further down loses its ability to narrow multi-candidate matches, and will keep every",
+            " name-matched candidate unfiltered instead.")
+    catch[, gear := NA_character_]
+  } else if (gear_col != "gear") {
+    setnames(catch, gear_col, "gear")
+  }
+  
   if (!is.null(FISHMIP_FG_CROSSWALK_PATH) && file.exists(FISHMIP_FG_CROSSWALK_PATH)) {
     fg_crosswalk <- fread(FISHMIP_FG_CROSSWALK_PATH)  # load the FishMIP-group -> model-FG crosswalk
     if (!all(c("fishmip_f_group", "FG_num") %in% names(fg_crosswalk))) stop("FISHMIP_FG_CROSSWALK_PATH must have columns fishmip_f_group, FG_num.")

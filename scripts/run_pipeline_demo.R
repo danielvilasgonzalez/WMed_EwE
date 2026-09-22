@@ -52,7 +52,7 @@ pcloud_dir <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
 git_dir    <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
 
 if (RUN_MODE == "westmed_default") {
-
+  
   ## -----------------------------------------------------------------
   ## (A) WEST MED DEFAULT - do not set FILTER_AREAS/TARGET_COUNTRIES/
   ## START_YEAR/END_YEAR/YEAR_ECOPATH/TS_YEARS at all here. Each script
@@ -70,9 +70,9 @@ if (RUN_MODE == "westmed_default") {
   ## (ECOBASE_FORCE_REFRESH <- TRUE).
   ## -----------------------------------------------------------------
   message("\n=== Running WEST MED DEFAULT pipeline ===\n")
-
+  
 } else if (RUN_MODE == "custom_example") {
-
+  
   ## -----------------------------------------------------------------
   ## (B) CUSTOM REGION/YEAR EXAMPLE - Adriatic GSAs (17-18), a shorter
   ## time series, and a different YEAR_ECOPATH snapshot. Every one of
@@ -91,10 +91,10 @@ if (RUN_MODE == "westmed_default") {
   END_YEAR         <- 2020
   ENABLE_ECOBASE_QUERY  <- TRUE   # used by 03_pbqb-traits.R (sources/calls 03b_ecobase.R); FALSE skips the network call entirely
   ECOBASE_FORCE_REFRESH <- FALSE  # TRUE re-queries EcoBase even if a cached ecobase_literature_pb_qb_simple.csv already exists for this region
-
+  
   message("\n=== Running CUSTOM REGION pipeline (GSA ", paste(FILTER_AREAS, collapse=","),
           ", ", START_YEAR, "-", END_YEAR, ") ===\n")
-
+  
 } else {
   stop("Unknown RUN_MODE: '", RUN_MODE, "'. Use 'westmed_default' or 'custom_example'.")
 }

@@ -341,7 +341,7 @@ message(strrep("=", 70))
 ## SPECIES_DF_SOURCE controls where species_df comes from:
 ##  "survey" - the real MEDITS+MEDIAS combined species density from
 ##             01_biomass.R (species_density_regional_combined.csv),
-##             reshaped via lib_build_species_df_from_survey.R. This is the
+##             reshaped into species_df inline, right below. This is the
 ##             real data source - use this for actual model runs.
 ##  "test"   - the old test_species_df.rds placeholder. Kept only for
 ##             quick pipeline smoke-testing when survey outputs aren't
@@ -384,12 +384,96 @@ ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996
 
 if (SPECIES_DF_SOURCE == "survey") {
-  source(file.path(git_dir, "scripts/lib_build_species_df_from_survey.R"))
-  species_df <- build_species_df_from_survey(
-    survey_csv_path    = SURVEY_DENSITY_CSV,
-    year_ecopath_range = YEAR_ECOPATH,
-    out_rds_path        = file.path(out_dir, "survey_species_df.rds")
-  )
+  if (!file.exists(SURVEY_DENSITY_CSV)) {
+    stop("SPECIES_DF_SOURCE = 'survey' but '", SURVEY_DENSITY_CSV, "' not found - this is",
+         " species_density_regional_combined.csv, written by 01_biomass.R's Step 6 (NOT written",
+         " if 01_biomass.R was run with STOP_AFTER_SHINY_CACHE <- TRUE - see that script's own",
+         " comment on that flag). This script's species_df - the species-level table everything",
+         " below (PB, QB, Fmort, traits) is built on - is derived directly from this file, so",
+         " there is no reasonable way to keep going without it. Run 01_biomass.R first (in full,",
+         " not the Shiny-cache shortcut), or check out_dir matches where it saved this file, or",
+         " set SPECIES_DF_SOURCE <- 'test' to smoke-test this script against placeholder data",
+         " instead of real survey output.")
+  }
+  ## --- Build species_df directly from the survey density table --------
+  ## Previously sourced from lib_build_species_df_from_survey.R, but that
+  ## file was a single short function with no other callers anywhere in
+  ## the pipeline (only this block used it) and no state of its own worth
+  ## keeping separate - inlined here instead, both to drop the git_dir
+  ## dependency this was the last thing in this script actually needing
+  ## (a source()-from-git_dir path is exactly what broke when out_dir/
+  ## git_dir didn't match the caller's actual checkout layout), and
+  ## because a function this short gains nothing from living in its own
+  ## file. Reshapes species_density_regional_combined.csv (written by
+  ## 01_biomass.R) into the species_df schema the rest of this script
+  ## needs: Species/FG/Biomass (density, t/km^2, averaged over the
+  ## YEAR_ECOPATH snapshot years - the same years the Ecopath sheet's own
+  ## Biomass is drawn from, so PB/QB weighting and the Ecopath Biomass
+  ## column describe the same time snapshot) plus Yield (NA - this survey
+  ## pipeline has no catch/landings data to compute F = Yield/Biomass
+  ## from; fill in separately from landings data, matching t/km^2/year
+  ## units, if needed).
+  sp_density <- fread(SURVEY_DENSITY_CSV)
+  required_cols <- c("Year", "FG_num", "FG_name", "ScientificName", "mean_density")
+  missing_cols <- setdiff(required_cols, names(sp_density))
+  if (length(missing_cols) > 0) {
+    stop("species_density_regional_combined.csv is missing expected column(s): ",
+         paste(missing_cols, collapse = ", "),
+         " - check it wasn't regenerated with a different schema.")
+  }
+  message("Loaded ", nrow(sp_density), " species/FG/year rows from ", SURVEY_DENSITY_CSV,
+          " (", uniqueN(sp_density$ScientificName), " distinct species, ",
+          uniqueN(sp_density$FG_num), " distinct FGs, years ",
+          min(sp_density$Year), "-", max(sp_density$Year), ").")
+  
+  ## restrict to the Ecopath snapshot years, matching how the Biomass
+  ## column in the actual Ecopath Basic Input is defined
+  in_range <- sp_density[Year %in% YEAR_ECOPATH]
+  message("Restricting to YEAR_ECOPATH range (", paste(range(YEAR_ECOPATH), collapse = "-"),
+          "): ", nrow(in_range), " of ", nrow(sp_density), " rows kept.")
+  
+  species_missing_in_range <- setdiff(unique(sp_density$ScientificName), unique(in_range$ScientificName))
+  if (length(species_missing_in_range) > 0) {
+    message(length(species_missing_in_range), " species have density data outside YEAR_ECOPATH",
+            " but none within it - these will be ABSENT from species_df entirely",
+            " (no Biomass value to give PB/QB weighting), not filled from other years:")
+    print(species_missing_in_range)
+  }
+  
+  ## collapse to one Biomass value per species (mean density across the
+  ## Ecopath snapshot years; a species can appear in >1 year within that
+  ## range). Checked explicitly (rather than silently picking one) that
+  ## no species maps to more than one FG_num within the range - shouldn't
+  ## happen given how FG matching works upstream.
+  fg_per_species <- unique(in_range[, .(ScientificName, FG_num)])
+  dup_fg <- fg_per_species[, .N, by = ScientificName][N > 1, ScientificName]
+  if (length(dup_fg) > 0) {
+    stop(length(dup_fg), " species map to more than one FG_num within the Ecopath",
+         " year range - this shouldn't happen and needs investigation before",
+         " proceeding: ", paste(dup_fg, collapse = ", "))
+  }
+  
+  species_df <- in_range[
+    , .(Biomass = mean(mean_density, na.rm = TRUE)),
+    by = .(Species = ScientificName, FG = FG_num, FG_name)
+  ]
+  species_df[, Yield := NA_real_]
+  
+  message("\nBuilt species_df: ", nrow(species_df), " species x FG rows.",
+          " Yield is NA for all rows (no catch/landings data in this survey pipeline -",
+          " F = Yield/Biomass will not be computable downstream unless you fill",
+          " this in separately from landings data, in matching t/km^2/year units).")
+  
+  n_na_biomass <- species_df[is.na(Biomass), .N]
+  if (n_na_biomass > 0) {
+    message("WARNING: ", n_na_biomass, " species have NA Biomass after averaging -",
+            " check for all-NA mean_density in the source data for these rows.")
+  }
+  
+  survey_species_df_rds_path <- file.path(out_dir, "survey_species_df.rds")
+  saveRDS(species_df, survey_species_df_rds_path)
+  message("Saved species_df to ", survey_species_df_rds_path)
+  species_df <- species_df[]
 } else {
   SPECIES_DF_PATH <- file.path(out_dir, "test_species_df.rds")
   message("SPECIES_DF_SOURCE = 'test' - using placeholder test data, NOT the real",
@@ -479,11 +563,17 @@ attach_yield_from_landings <- function(species_df, landings_csv_path, area_looku
     return(species_df)
   }
   if (!file.exists(area_lookup_csv_path)) {
-    stop("Landings file found but area_lookup_csv_path is missing at '", area_lookup_csv_path,
-         "' - this should be strata_area_by_area.csv written by 01_biomass.R.",
-         " Needed to convert landings totals (t) into a density (t/km^2/year)",
-         " comparable to species_df$Biomass. Run that script first, or point this",
-         " at wherever it actually saved that file.")
+    message("Landings file found but area_lookup_csv_path is missing at '", area_lookup_csv_path,
+            "' - this should be strata_area_by_area.csv, written by 01_biomass.R's Step 6",
+            " (NOT written if 01_biomass.R was run with STOP_AFTER_SHINY_CACHE <- TRUE - see that",
+            " script's own comment on that flag). Needed to convert landings totals (t) into a",
+            " density (t/km^2/year) comparable to species_df$Biomass, so species_df$Yield stays NA",
+            " for every species instead - fishing mortality (F) will NOT be computed from landings",
+            " anywhere below, and PB will be NATURAL MORTALITY (M) ONLY via this path (the FG-level",
+            " fg_catch_csv fallback further below may still supply Fmort_FG independently). Run",
+            " 01_biomass.R first (in full, not the Shiny-cache shortcut), or point this at wherever",
+            " it actually saved that file, to get real Yield-based F.")
+    return(species_df)
   }
   
   landings <- fread(landings_csv_path)
@@ -747,7 +837,22 @@ if (length(unresolved) > 0) {
   message("\n", length(unresolved), " species had no FishBase/SeaLifeBase Class from the initial lookup -",
           " attempting synonym -> valid-name resolution via rfishbase::synonyms().")
   
-  resolve_via_synonym <- function(sp) {
+  ## resolve_valid_name() ONLY resolves each species' valid name via
+  ## rfishbase::synonyms() - it does NOT fetch taxonomy itself. That's
+  ## deliberate: the previous version called fetch_taxonomy_fishbase_
+  ## uncached() (ONE valid_name at a time) inside this same per-species
+  ## loop, and that function reloads rfishbase::load_taxa() - THE ENTIRE
+  ## FishBase table, then THE ENTIRE SeaLifeBase table - from scratch on
+  ## every single call. With up to a few hundred unresolved species, that
+  ## was up to a few hundred x 2 full-table reloads, which is what was
+  ## actually "taking forever" here - not the (much cheaper, genuinely
+  ## per-species) synonyms() lookup. Collecting every resolved valid_name
+  ## first and fetching taxonomy for ALL of them in ONE batched call
+  ## below (exactly how fetch_taxonomy_fishbase() is already called for
+  ## the full species list earlier in this script) turns that into 2
+  ## full-table loads total, regardless of how many species need this
+  ## fallback.
+  resolve_valid_name <- function(sp) {
     ## Strip trailing "spp."/"sp." the SAME way fetch_taxonomy_fishbase()'s
     ## underlying load_taxa() call needs a real binomial to match against -
     ## without this, a genus-level placeholder like "Sepiola spp." never
@@ -766,13 +871,25 @@ if (length(unresolved) > 0) {
       NA_character_
     })
     if (is.na(valid_name) || valid_name == query_term) return(NULL)
-    rec <- fetch_taxonomy_fishbase_uncached(valid_name)
-    if (nrow(rec) == 0 || is.na(rec$Class[1])) return(NULL)
-    data.table(Species = sp, Genus_r = rec$Genus[1], Family_r = rec$Family[1],
-               Order_r = rec$Order[1], Class_r = rec$Class[1], Phylum_r = rec$Phylum[1])
+    data.table(Species = sp, valid_name = valid_name)
   }
   
-  resolved <- rbindlist(lapply(unresolved, resolve_via_synonym), fill = TRUE)
+  valid_names <- rbindlist(lapply(unresolved, resolve_valid_name), fill = TRUE)
+  
+  resolved <- data.table()
+  if (nrow(valid_names) > 0) {
+    ## ONE batched taxonomy fetch for every resolved valid_name, instead
+    ## of one call per species (see comment above) - this is the actual
+    ## fix for the slowdown. No on-disk caching here (unlike the initial
+    ## fetch_taxonomy_fishbase() call above) since this is already a
+    ## small, one-off fallback batch, not the full species list.
+    valid_name_taxonomy <- fetch_taxonomy_fishbase_uncached(unique(valid_names$valid_name))
+    resolved <- merge(valid_names, valid_name_taxonomy, by.x = "valid_name", by.y = "ScientificName", all.x = TRUE)
+    resolved <- resolved[!is.na(Class)]
+    setnames(resolved, c("Genus", "Family", "Order", "Class", "Phylum"),
+             c("Genus_r", "Family_r", "Order_r", "Class_r", "Phylum_r"))
+    resolved[, valid_name := NULL]
+  }
   
   if (nrow(resolved) > 0) {
     taxonomy <- merge(taxonomy, resolved, by = "Species", all.x = TRUE)
