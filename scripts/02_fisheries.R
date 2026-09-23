@@ -470,7 +470,40 @@ blank_row <- unmatched_species[is.na(Species) | Species == ""]  # rows with no s
 if (nrow(blank_row) > 0) message(nrow(blank_row), " row(s) with blank Species name - excluded.")
 unmatched_species <- unmatched_species[!is.na(Species) & Species != ""]  # drop blank-species rows
 
-fg_lookup <- unique(fg[, .(ScientificName = ESPECIE, FG_num = GF, FG_name)])  # build the FG reference lookup
+fg_lookup <- unique(fg[, .(ScientificName = trimws(ESPECIE), FG_num = GF, FG_name)])  # build the FG reference lookup (ScientificName trimmed - stray whitespace here would silently break every EXACT-match cascade downstream, including ICCAT's own species match, without ever showing up as an "unmatched" warning since the row is just never looked for correctly)
+
+## --- FG_name canonicalization (2026-09-23): FG_WMed_2026.csv should
+## carry exactly ONE FG_name spelling per FG_num, but a few rows carry
+## a slightly different FG_name for the same FG_num (stray leading/
+## trailing whitespace, a capitalization slip, or a genuine retyped
+## label) - trimws() alone does not always catch it. Left unfixed,
+## every FG_num x FG_name COMBINATION downstream (full_fg_list,
+## fg_catch_grid's CJ() a few hundred lines below, and anything else
+## keyed on FG_name rather than FG_num alone) silently multiplies:
+## a FG_num with 2 distinct FG_name spellings becomes 2 grid rows per
+## year instead of 1, and add_catches_to_ecopath_workbook()'s
+## build_catch_ts_column() then has to collapse the resulting
+## duplicate (Year, Catch) rows back down with a warning (confirmed
+## happening for real - FG 22, 120 -> 30 rows). Fix it once, here, at
+## the source: force every FG_num onto a single canonical FG_name (the
+## most frequent trimmed spelling; ties broken alphabetically) so every
+## later FG_num x FG_name join is 1:1 the way it's meant to be.
+fg_lookup[, FG_name := trimws(FG_name)]  # strip stray leading/trailing whitespace first - the cheapest fix
+fg_name_variants <- unique(fg_lookup[, .(FG_num, FG_name)])[, .N, by = FG_num][N > 1, FG_num]  # FG_nums that still carry more than one distinct FG_name after trimming
+if (length(fg_name_variants) > 0) {
+  variant_detail <- unique(fg_lookup[FG_num %in% fg_name_variants, .(FG_num, FG_name)])
+  warning(length(fg_name_variants), " FG_num(s) map to more than one distinct FG_name in FG_WMed_2026.csv even",
+          " after trimming whitespace - collapsing each to its most frequent spelling (this used to silently",
+          " duplicate every FG_num x Year row downstream). Affected FG_num(s) and spelling(s): ",
+          paste(capture.output(print(variant_detail, row.names = FALSE)), collapse = " | "))
+  fg_name_counts <- fg_lookup[FG_num %in% fg_name_variants, .N, by = .(FG_num, FG_name)]
+  setorder(fg_name_counts, FG_num, -N, FG_name)  # most frequent spelling first per FG_num; alphabetical tie-break
+  canonical_fg_name <- fg_name_counts[, .(FG_name_canonical = FG_name[1]), by = FG_num]  # keep only the top row per FG_num
+  fg_lookup <- merge(fg_lookup, canonical_fg_name, by = "FG_num", all.x = TRUE)  # attach the canonical spelling to every row
+  fg_lookup[!is.na(FG_name_canonical), FG_name := FG_name_canonical]  # overwrite with the canonical spelling
+  fg_lookup[, FG_name_canonical := NULL]  # drop the now-unneeded helper column
+  fg_lookup <- unique(fg_lookup)  # re-collapse now-identical rows (e.g. the stanza tie-break just below relies on ScientificName duplication only, not FG_name)
+}
 
 ## Full FG catalog (FG_num x FG_name only) - built from the UN-deduplicated
 ## fg_lookup above (every FG number FG_WMed_2026.csv defines, including a
@@ -1502,14 +1535,15 @@ DCF_GEAR_CODE_TO_GROUP <- data.table(
     "GEN", "GNC", "GND", "GNF", "GNS", "GTN", "GTR", "GN",
     "HAR",
     "LA",
-    "LHM", "LHP", "LL", "LLD", "LLS", "LTL", "LVT", "LX",
+    "LHM", "LHP", "LL", "LLD", "LLS", "LTL", "LVT", "LX", "LH", "LN",
     "MDR", "MDV", "MEL", "MHI", "MIS", "MPM", "MPN", "MSP",
     "NK",
     "OTB", "OTM", "OTP", "OTT",
     "PS", "PS1",
     "PTB", "PTM",
     "SB", "SUX", "SV", "SX",
-    "TB", "TBB", "TM", "TX", "TBS"
+    "TB", "TBB", "TM", "TX", "TBS",
+    "DIV", "FOO"
   ),
   gear_group = c(
     "Dredges", "Dredges", "Dredges",
@@ -1520,7 +1554,7 @@ DCF_GEAR_CODE_TO_GROUP <- data.table(
     "Miscellaneous gear",
     "Surrounding nets",
     "Hooks and lines", "Hooks and lines", "Hooks and lines", "Hooks and lines", "Hooks and lines",
-    "Hooks and lines", "Hooks and lines", "Hooks and lines",
+    "Hooks and lines", "Hooks and lines", "Hooks and lines", "Hooks and lines", "Hooks and lines",
     "Miscellaneous gear", "Miscellaneous gear", "Miscellaneous gear", "Miscellaneous gear",
     "Miscellaneous gear", "Miscellaneous gear", "Miscellaneous gear", "Miscellaneous gear",
     "Gear Not Known or Not Specified",
@@ -1528,7 +1562,17 @@ DCF_GEAR_CODE_TO_GROUP <- data.table(
     "Surrounding nets", "Surrounding nets",
     "Trawls", "Trawls",
     "Surrounding nets", "Surrounding nets", "Seine nets", "Seine nets",
-    "Trawls", "Trawls", "Trawls", "Trawls", "Trawls"
+    "Trawls", "Trawls", "Trawls", "Trawls", "Trawls",
+    ## Added 2026-09-23 from a real FDI run's "genuinely unclassified"
+    ## list: DIV = diving (harvesting by hand/diving gear - FAO ISSCFG
+    ## "MDV"-family, grouped here with the existing hand-collection
+    ## codes' "Miscellaneous gear" label rather than a new one-off
+    ## group); FOO = "on foot" gear (shore-based hand collection, same
+    ## reasoning as DIV). LH/LN were also flagged unclassified - both
+    ## are FAO hook-and-line variants (LH = hooks and lines nei/hand,
+    ## LN = hand lines) so they join LHM/LHP/LX etc. under "Hooks and
+    ## lines" above instead of getting their own group.
+    "Miscellaneous gear", "Miscellaneous gear"
   )
 )
 
@@ -1634,7 +1678,20 @@ STECF_AMBIGUOUS_LONGLINE_SPLIT <- data.table(
 ## that's real but isn't one of FLEET_REGISTER's own named fleets; (4)
 ## 'Unclassified' for a gear code not found in either table at all.
 resolve_stecf_fleettype <- function(dt, split_cols) {
-  dt <- merge(dt, STECF_GEAR_TO_FLEETTYPE, by.x = c("Country", "gear_code"), by.y = c("Country", "gear_type"), all.x = TRUE)  # (1) try the per-country named-fleet mapping
+  ## Defensive normalization (2026-09-23): a real run showed codes like
+  ## "OTB"/"PS"/"OTM"/"PTM" - which ARE named fleets in
+  ## STECF_GEAR_TO_FLEETTYPE for the country in question - still falling
+  ## through to the broad DCF group fallback for a large share of rows.
+  ## The two tables' own vocabularies are correct; the most likely cause
+  ## is stray whitespace or inconsistent casing on Country/gear_code in
+  ## the raw FDI file breaking the exact-string join. Trim + fix case on
+  ## both sides of the join so a real match isn't missed over
+  ## formatting alone (this does not change which FleetType a genuinely
+  ## unrecognized or genuinely-uncovered code falls to).
+  dt[, `:=`(Country = trimws(Country), gear_code = trimws(toupper(gear_code)))]
+  STECF_GEAR_TO_FLEETTYPE_NORM <- copy(STECF_GEAR_TO_FLEETTYPE)
+  STECF_GEAR_TO_FLEETTYPE_NORM[, `:=`(Country = trimws(Country), gear_type = trimws(toupper(gear_type)))]
+  dt <- merge(dt, STECF_GEAR_TO_FLEETTYPE_NORM, by.x = c("Country", "gear_code"), by.y = c("Country", "gear_type"), all.x = TRUE)  # (1) try the per-country named-fleet mapping
   
   is_ambiguous <- is.na(dt$FleetType) & dt$gear_code %in% STECF_AMBIGUOUS_HOOK_GEAR_CODES &
     dt$Country %in% STECF_AMBIGUOUS_LONGLINE_SPLIT$Country  # rows with the ambiguous longline code, unmatched so far
@@ -1692,16 +1749,57 @@ STECF_VESSEL_LENGTH_ARTISANAL <- c("VL0006", "VL0612")  # <12m - EU small-scale 
 ## fishing_tech value it actually finds; check that against this table
 ## before trusting the FleetType assignment, same caution as everywhere
 ## else real FDI values were guessed wrong on the first pass.
+## Extended 2026-09-23 with the real fishing_tech codes a run's own
+## diagnostic message reported (DFN, DRB, FPO, INACTIVE, MGO, MGP,
+## PGO, PGP, PS, TM, TBB - beyond the original PMP/DTS/HOK). Added
+## only where a country's FLEET_REGISTER already names an equivalent
+## fleet at the gear-code level above (STECF_GEAR_TO_FLEETTYPE), so
+## the same per-country judgment call is reused rather than guessed
+## fresh here:
+##  - PS (pelagic seiners) -> "Purse seiners", all 3 countries - same
+##    fleet PMP already maps to; FDI's capacity file just also uses
+##    the finer PS code for some vessels.
+##  - TM (midwater trawlers) -> France has a real "Midwater trawls"
+##    fleet name; Spain lumps every trawl subtype into "Bottom
+##    trawls" (see STECF_GEAR_TO_FLEETTYPE's Spain comment); Italy is
+##    deliberately left unmapped for TM, same as at the gear-code
+##    level (FLEET_REGISTER's own comment says NOT to fold Italy's
+##    midwater trawlers into "Bottom trawls").
+##  - TBB (beam trawlers) -> Spain lumps into "Bottom trawls" (same
+##    gear-code decision); France has no beam-trawl fleet name at
+##    all and Italy is explicitly excluded - both left unmapped here
+##    too, consistent with the gear-code table.
+## Deliberately LEFT UNMAPPED for every country (falls to
+## "Unclassified", which is the semantically correct label, not a gap
+## to fill in):
+##  - INACTIVE - these vessel-years reported no activity; folding them
+##    into any active fleet's capacity would be wrong, not just
+##    imprecise.
+##  - PGO/PGP (polyvalent, passive-only / passive+active gears) and
+##    MGO/MGP (active gears other than trawls, nei) - genuinely mixed-
+##    gear vessels with no single-gear FLEET_REGISTER name to assign
+##    them to; guessing one specific named fleet would misattribute
+##    their capacity.
+##  - DFN (drift/fixed netters), DRB (dredgers), FPO (pots/traps) -
+##    none of France/Spain/Italy's FLEET_REGISTER names a gillnet,
+##    dredge, or trap fleet (same reason these gear codes fall to the
+##    DCF group name rather than a named fleet in the Catches/Effort
+##    files - see STECF_GEAR_TO_FLEETTYPE's own comments).
 FISHING_TECH_TO_FLEETTYPE <- data.table(
-  Country   = c("France", "France", "France",
-                "Spain",  "Spain",  "Spain",
+  Country   = c("France", "France", "France", "France",
+                "Spain",  "Spain",  "Spain",  "Spain",  "Spain",
                 "Italy",  "Italy",  "Italy"),
-  fishing_tech = c("PMP", "DTS", "HOK",
-                   "PMP", "DTS", "HOK",
+  fishing_tech = c("PMP", "DTS", "HOK", "TM",
+                   "PMP", "DTS", "HOK", "TM", "TBB",
                    "PMP", "DTS", "HOK"),
-  FleetType = c("Purse seiners", "Bottom trawls", "Drifting longlines",
-                "Purse seiners", "Bottom trawls", "Drifting longlines",
+  FleetType = c("Purse seiners", "Bottom trawls", "Drifting longlines", "Midwater trawls",
+                "Purse seiners", "Bottom trawls", "Drifting longlines", "Bottom trawls", "Bottom trawls",
                 "Purse seiners", "Bottom trawls", "Drifting longlines")
+)
+FISHING_TECH_TO_FLEETTYPE <- rbind(
+  FISHING_TECH_TO_FLEETTYPE,
+  data.table(Country = c("France", "Spain", "Italy"), fishing_tech = "PS",
+             FleetType = "Purse seiners")
 )
 
 stecf_fdi_catch_by_gsa <- data.table()  # placeholder, filled below if FDI data is available
@@ -2003,11 +2101,28 @@ if (!file.exists(stecf_capacity_file)) {
     message("[STECF FDI] Capacity fishing_tech value(s) found: ", paste(sort(unique(stecf_capacity_raw$fishing_tech)), collapse = ", "))
     stecf_capacity_raw <- merge(stecf_capacity_raw, FISHING_TECH_TO_FLEETTYPE, by.x = c("Country", "fishing_tech"), by.y = c("Country", "fishing_tech"), all.x = TRUE)  # map fishing_tech to FleetType
     unmatched_tech <- unique(stecf_capacity_raw[is.na(FleetType)]$fishing_tech)  # tech codes with no mapping
+    ## Codes deliberately left out of FISHING_TECH_TO_FLEETTYPE (see its
+    ## own header comment): INACTIVE (no real activity that year - correctly
+    ## excluded from any fleet's capacity) and the polyvalent/mixed-gear
+    ## codes PGO/PGP/MGO/MGP/DFN/DRB/FPO (no single FLEET_REGISTER-named
+    ## fleet they belong to without guessing). Seeing exactly these codes
+    ## here is expected, not a gap - anything ELSE in this list is new and
+    ## worth checking against the values printed above.
+    ## TBB/TM are ALSO deliberately unmapped for some countries (e.g.
+    ## Italy - see FISHING_TECH_TO_FLEETTYPE's per-country judgment
+    ## calls above) even though they ARE mapped for others (Spain/
+    ## France), so a TBB/TM row can legitimately still fall through here
+    ## for a country where no mapping was added on purpose.
+    expected_unclassified_tech <- c("INACTIVE", "PGO", "PGP", "MGO", "MGP", "DFN", "DRB", "FPO", "TBB", "TM")
+    genuinely_new_tech <- setdiff(unmatched_tech, expected_unclassified_tech)
     if (length(unmatched_tech) > 0) {
       message("[STECF FDI] fishing_tech code(s) not in FISHING_TECH_TO_FLEETTYPE (kept as 'Unclassified'",
-              " unless overridden by vessel_length below - THIS MAPPING IS A BEST GUESS, not confirmed",
-              " against a real DCF code list; check these against the values printed above): ",
-              paste(unmatched_tech, collapse = ", "))
+              " unless overridden by vessel_length below): ", paste(unmatched_tech, collapse = ", "),
+              if (length(genuinely_new_tech) == 0) ". All of these are deliberately-excluded codes" else
+                paste0(". Of these, UNEXPECTED/not yet reviewed: ", paste(genuinely_new_tech, collapse = ", "),
+                       " - THIS MAPPING IS A BEST GUESS for everything else, not confirmed against a real",
+                       " DCF code list"),
+              " (see FISHING_TECH_TO_FLEETTYPE's header comment for why each excluded code is left unmapped).")
       stecf_capacity_raw[is.na(FleetType), FleetType := "Unclassified"]  # last resort for unmapped tech codes
     }
   } else {
@@ -3050,10 +3165,42 @@ if (is.null(iccat_raw)) {
   if (!is.na(col_area)) {
     setnames(iccat_raw, col_area, "iccat_area")
     n_before_area <- nrow(iccat_raw)
-    iccat_raw <- iccat_raw[grepl("medit", iccat_area, ignore.case = TRUE) | ScientificName == "Thunnus thynnus"]
+    ## 2026-09-23 fix: ICCAT's real area/stock field is often a short
+    ## code (e.g. "MED") rather than the spelled-out word
+    ## "Mediterranean", so the original grepl("medit", ...) - which
+    ## needs a 5-letter "medit" substring - silently matched ZERO rows
+    ## for swordfish/albacore whenever the download used the short
+    ## code, even though bluefin tuna (exempted from this filter
+    ## entirely) kept working. That is the confirmed cause of "[ICCAT] 2
+    ## of the 3 requested ICCAT species have no matching FG" always
+    ## naming exactly SWO + ALB: their rows were being filtered down to
+    ## nothing here, before ever reaching the fg_lookup merge - not a
+    ## fg_lookup/ScientificName matching problem at all. "\\bmed" (word-
+    ## boundary "med") matches both the short code ("MED", "MED-SWO")
+    ## and the spelled-out word ("Mediterranean") without also matching
+    ## unrelated area codes.
+    species_before <- unique(iccat_raw[ScientificName != "Thunnus thynnus", .(ScientificName, iccat_area)])
+    iccat_raw <- iccat_raw[grepl("\\bmed", iccat_area, ignore.case = TRUE) | ScientificName == "Thunnus thynnus"]
     message("[ICCAT] Area filter: ", nrow(iccat_raw), " of ", n_before_area, " row(s) kept (Mediterranean-",
-            "labeled area/stock, or bluefin tuna - assessed as one Eastern Atlantic + Mediterranean stock with",
+            "labeled area/stock - matched on either the spelled-out word or a short code like \"MED\" -",
+            " or bluefin tuna - assessed as one Eastern Atlantic + Mediterranean stock with",
             " no separate Med breakdown, so kept unfiltered by area).")
+    ## Cross-check: if a non-bluefin species now has ZERO rows post-
+    ## filter despite having had rows pre-filter, the area filter is
+    ## still not recognizing that species' real area/stock code -
+    ## surface the actual values so this can be fixed against the real
+    ## download rather than failing silently downstream as "no matching
+    ## FG".
+    species_after <- unique(iccat_raw[, ScientificName])
+    species_zeroed <- setdiff(unique(species_before$ScientificName), species_after)
+    if (length(species_zeroed) > 0) {
+      zeroed_areas <- unique(species_before[ScientificName %in% species_zeroed, .(ScientificName, iccat_area)])
+      message("[ICCAT] WARNING: the area filter kept 0 row(s) for ", paste(species_zeroed, collapse = ", "),
+              " even though it had row(s) before filtering. Its real area/stock value(s) in this download: ",
+              paste(sprintf("%s='%s'", zeroed_areas$ScientificName, zeroed_areas$iccat_area), collapse = "; "),
+              " - none of these matched the Mediterranean pattern used above; adjust that pattern (or",
+              " ICCAT_COL_ALIASES$area) to match whatever code this download actually uses.")
+    }
   } else {
     message("[ICCAT] No area/stock column found to filter to the Mediterranean - using every row for the 3",
             " requested species as-is (ICCAT's Task I export is Atlantic-wide, so this may include non-",
@@ -3254,6 +3401,38 @@ if (nrow(star_catch_by_fg) > 0) {
   }
 }
 catches_discards_fg[, n_species_in_fg := NULL]
+
+## --- Final "expected catch but got zero" cross-check (2026-09-23) ------
+## Answers directly the question "am I losing FG data because the catch
+## data's species/groups don't match my FG list?" A FG showing zero
+## Catch_t across the WHOLE series is only "honestly empty" (see the
+## fg_catch_grid comment above) if NO species is even assigned to it in
+## FG_WMed_2026.csv, or it's a juvenile stanza whose catch is deliberately
+## folded into its adult stanza (see the stanza tie-break near fg_lookup's
+## own definition). A FG that DOES have one or more species assigned to
+## it in fg_lookup, but still ends up at zero catch in every year, is the
+## real signature of this failure mode: those species' names in the catch
+## sources (GFCM/STECF FDI/SAU/ICCAT/STAR-RAM) never matched fg_lookup's
+## spelling, so their real catch was dropped upstream (see each source's
+## own "unresolved"/"dropped" message and species_fg_matched.csv) instead
+## of ever reaching this FG.
+fg_zero_catch_ever <- catches_discards_fg[, .(total_catch = sum(Catch_t, na.rm = TRUE)), by = .(FG_num, FG_name)][total_catch == 0]
+if (nrow(fg_zero_catch_ever) > 0) {
+  fg_species_assigned <- fg_lookup[, .(species_assigned = paste(unique(ScientificName), collapse = "; ")), by = FG_num]
+  fg_zero_catch_ever <- merge(fg_zero_catch_ever, fg_species_assigned, by = "FG_num", all.x = TRUE)
+  fg_zero_catch_with_species <- fg_zero_catch_ever[!is.na(species_assigned) & species_assigned != ""]
+  fg_zero_catch_no_species <- fg_zero_catch_ever[is.na(species_assigned) | species_assigned == ""]
+  message("\n[Catches] FINAL CHECK - ", nrow(fg_zero_catch_ever), " FG(s) have ZERO total Catch_t across the",
+          " entire series. ", nrow(fg_zero_catch_no_species), " of these have NO species assigned to them at",
+          " all in FG_WMed_2026.csv (honestly empty - nothing to chase). The other ", nrow(fg_zero_catch_with_species),
+          " DO have species assigned but still show zero catch - THIS is the 'catch data doesn't match my FG",
+          " list' failure mode: check each species below against species_fg_matched.csv's 'status' column and",
+          " the console's own 'unresolved'/'dropped' messages further up (GFCM's own FINAL MATCHING SUMMARY,",
+          " STECF FDI's retry-and-drop message, SAU's, STAR/RAM's, ICCAT's) to see exactly why its catch never",
+          " reached this FG.")
+  if (nrow(fg_zero_catch_with_species) > 0) print(fg_zero_catch_with_species[, .(FG_num, FG_name, species_assigned)])
+  fwrite(fg_zero_catch_ever, file.path(csv_out_dir, "fg_zero_catch_diagnostic.csv"))  # full detail for offline review
+}
 
 ## --- Catches_Ecopath / Catches_Ecosim (FG-only) -------------------------
 ## Same structure/units as Biomass's own Ecopath/Ecosim sheets (t/km^2/
@@ -3467,12 +3646,35 @@ fleet_prop_stecf_part <- if (nrow(stecf_rows_needed) > 0) {
              prop_fleet = numeric(), fleet_split_source = character())
 }
 
-## Two-tier fallback for every cell STECF doesn't cover: (1) SAU's own
-## real year-by-year shares, hindcast/bias-corrected above - covers
-## any Country x FG x Year SAU actually has catch for, including the
-## pre-2014 years this hindcast exists for; (2) fleet_prop's flat,
-## all-years average, only for the rarer cells even SAU has zero catch
-## for in that specific year.
+## Three-tier fallback for every cell STECF doesn't cover: (1) SAU's
+## own real year-by-year shares, hindcast/bias-corrected above -
+## covers any Country x FG x Year SAU actually has catch for,
+## including the pre-2014 years this hindcast exists for; (2) STECF
+## FDI's own real fleet composition for that same Country x FG,
+## AVERAGED across whatever years FDI covers it (used as a pre-2014
+## prior wherever SAU has no data at all for that FG - see note
+## below); (3) fleet_prop's flat, all-years, all-FG average, only for
+## the rarest cells with no SAU data AND no FDI coverage of that FG in
+## any year.
+##
+## Tier (2) exists because of a bug this pipeline's boundary-
+## consistency check (STECF_FDI_START_YEAR - 1 vs STECF_FDI_START_YEAR,
+## further below) surfaced concretely: when SAU is entirely absent
+## from a run, EVERY Country x FG cell that isn't STECF-covered used
+## to fall straight to fleet_prop's flat tier, whose "no SAU data at
+## all" branch splits EQUALLY (1/.N) across a country's FleetTypes -
+## identically for every single FG regardless of that FG's actual
+## catch. Summed across many FGs to build a fleet's total pre-2014
+## catch (see catch_by_fleet_total_pre2013 below), an identical-every-
+## FG split necessarily nets out to an EXACTLY equal 1/.N share of the
+## country's whole catch for every FleetType - not just similar, but
+## bit-for-bit identical - which is exactly the "Effort_days_pre
+## identical across every FleetType" pattern the diagnostic printed.
+## Using STECF's own real, FG-specific fleet composition (even just
+## its multi-year average) as the prior instead is far better
+## grounded than a blind equal split, and it keeps pre-2014 shares
+## roughly continuous with FDI's real 2014+ shares for the same FG,
+## which directly narrows the boundary discontinuity.
 fleet_prop_hindcast_part <- if (nrow(sau_fleet_prop_by_year_hindcast) > 0) {
   merge(non_stecf_rows, sau_fleet_prop_by_year_hindcast, by = c("Country", "FG_num", "Year"))  # attach SAU's hindcasted fleet split for these cells
 } else {
@@ -3481,9 +3683,23 @@ fleet_prop_hindcast_part <- if (nrow(sau_fleet_prop_by_year_hindcast) > 0) {
              prop_fleet = numeric(), fleet_split_source = character())
 }
 hindcast_covered <- unique(fleet_prop_hindcast_part[, .(Country, FG_num, Year)])  # cells the hindcast tier actually filled
-flat_rows_needed <- non_stecf_rows[!hindcast_covered, on = c("Country", "FG_num", "Year")]  # cells still needing the flat fallback
-fleet_prop_flat_part <- if (nrow(flat_rows_needed) > 0) {
-  merge(flat_rows_needed, fleet_prop[, .(Country, FG_num, Sector, FleetType, GSA, Comment, prop_fleet, fleet_split_source)],
+flat_rows_needed <- non_stecf_rows[!hindcast_covered, on = c("Country", "FG_num", "Year")]  # cells still needing a fallback below the SAU hindcast
+
+stecf_fg_avg_part <- if (nrow(flat_rows_needed) > 0 && nrow(stecf_fleet_prop_by_year) > 0) {
+  stecf_fg_avg <- stecf_fleet_prop_by_year[, .(prop_fleet = mean(prop_fleet, na.rm = TRUE)),
+                                           by = .(Country, FG_num, Sector, FleetType, GSA, Comment)]  # FDI's own real composition for this Country x FG, averaged across every year FDI covers it
+  stecf_fg_avg[, prop_fleet := prop_fleet / sum(prop_fleet), by = .(Country, FG_num)]  # renormalize - averaging across years with different FleetType coverage can leave the sum slightly off 1
+  stecf_fg_avg[, fleet_split_source := "STECF FDI's own real fleet composition for this Country x FG, averaged across all years FDI covers it (used as a pre-2014 prior - far better grounded than an equal split when SAU has no data at all for this FG)"]
+  merge(flat_rows_needed, stecf_fg_avg, by = c("Country", "FG_num"), allow.cartesian = TRUE)  # attach FDI's own FG-specific average composition for these cells
+} else {
+  data.table(Country = character(), FG_num = integer(), Year = integer(), Sector = character(),
+             FleetType = character(), GSA = character(), Comment = character(),
+             prop_fleet = numeric(), fleet_split_source = character())
+}
+stecf_fg_avg_covered <- unique(stecf_fg_avg_part[, .(Country, FG_num)])  # Country x FG cells the FDI-average tier actually filled
+flat_rows_needed_final <- flat_rows_needed[!stecf_fg_avg_covered, on = c("Country", "FG_num")]  # cells still needing the crude flat fallback (FDI never covers this FG in any year)
+fleet_prop_flat_part <- if (nrow(flat_rows_needed_final) > 0) {
+  merge(flat_rows_needed_final, fleet_prop[, .(Country, FG_num, Sector, FleetType, GSA, Comment, prop_fleet, fleet_split_source)],
         by = c("Country", "FG_num"), allow.cartesian = TRUE)  # attach fleet_prop's flat all-years average for these cells
 } else {
   data.table(Country = character(), FG_num = integer(), Year = integer(), Sector = character(),
@@ -3491,15 +3707,19 @@ fleet_prop_flat_part <- if (nrow(flat_rows_needed) > 0) {
              prop_fleet = numeric(), fleet_split_source = character())
 }
 
-fleet_prop_final <- rbindlist(list(fleet_prop_stecf_part, fleet_prop_hindcast_part, fleet_prop_flat_part), use.names = TRUE, fill = TRUE)  # combine all three tiers into the final fleet split
+fleet_prop_final <- rbindlist(list(fleet_prop_stecf_part, fleet_prop_hindcast_part, stecf_fg_avg_part, fleet_prop_flat_part), use.names = TRUE, fill = TRUE)  # combine all four tiers into the final fleet split
 n_stecf_cells    <- nrow(unique(fleet_prop_stecf_part[, .(Country, FG_num, Year)]))  # cells sourced from FDI
 n_hindcast_cells <- nrow(hindcast_covered)  # cells sourced from the SAU hindcast
+n_fdiavg_cells   <- nrow(unique(stecf_fg_avg_part[, .(Country, FG_num, Year)]))  # cells sourced from FDI's own FG-specific multi-year average
 n_flat_cells     <- nrow(unique(fleet_prop_flat_part[, .(Country, FG_num, Year)]))  # cells sourced from the flat fallback
 message("\n[Fleet split] fleet_prop_final: ", n_stecf_cells, " cell(s) use STECF FDI's own per-year",
         " gear/metier x GSA split (2014+, Spain/France/Italy); ", n_hindcast_cells, " cell(s) use SAU's",
         " own year-by-year hindcast (bias-corrected against FDI where a calibration factor exists); ",
+        n_fdiavg_cells, " cell(s) use STECF FDI's own FG-specific multi-year average composition (pre-2014,",
+        " SAU has no data for this FG but FDI covers it in some year); ",
         n_flat_cells, " cell(s) fall all the way back to fleet_prop's flat all-years average (SAU has no",
-        " catch at all for that specific Country x FG x Year). Total: ", nrow(catch_country_fg_year), " cell(s).")
+        " catch at all for that specific Country x FG x Year, and FDI never covers that FG either).",
+        " Total: ", nrow(catch_country_fg_year), " cell(s).")
 
 fleet_split <- merge(catch_with_unreported, fleet_prop_final, by = c("Country", "FG_num", "Year"), allow.cartesian = TRUE)  # apply the fleet split to the country-level catch
 fleet_split <- fleet_split[!is.na(prop_fleet)]  # drop rows with no fleet share at all
@@ -3623,12 +3843,43 @@ if (nrow(stecf_effort_catch_ratio) > 0 && nrow(catch_by_fleet_total_pre2013) > 0
 effort_hindcast_rousseau_by_fleet <- data.table()
 if (nrow(rousseau_calibration) > 0 && nrow(catch_by_fleet_total_pre2013) > 0) {
   fleet_share <- copy(catch_by_fleet_total_pre2013)
-  fleet_share[, catch_share := Catch_t_total / sum(Catch_t_total), by = .(Country, Year)]  # each fleet's share of that country x year's total pre-2014 catch
+  ## Effort-share weight (2026-09-23 fix): use FDI's own days-per-tonne
+  ## ratio (Country x FleetType, stecf_effort_catch_ratio) to convert
+  ## each fleet's catch into an IMPLIED effort (catch x days/tonne), and
+  ## share THAT across fleets - not raw catch share. Raw catch share
+  ## badly misallocates effort across gears with very different catch-
+  ## per-day efficiency (purse seiners/trawls land far more per day than
+  ## artisanal/longline/trap gear), which was confirmed as the dominant
+  ## cause of the sharp 2013->2014 effort discontinuity in the
+  ## boundary_check diagnostic and validation plots: efficient gears'
+  ## catch share overstated their pre-2014 effort share relative to
+  ## FDI's real 2014 effort (ratio << 1), while inefficient/high-
+  ## activity gears' catch share understated theirs (ratio >> 1). Any
+  ## FleetType FDI never priced a ratio for falls back to that
+  ## Country's own mean ratio across its other FleetTypes; if a whole
+  ## Country has no ratio at all, days_per_tonne collapses to 1 and this
+  ## degenerates back to the old raw-catch-share behavior for just that
+  ## Country, rather than failing.
+  fleet_share <- merge(fleet_share, stecf_effort_catch_ratio[, .(Country, FleetType, days_per_tonne)],
+                       by = c("Country", "FleetType"), all.x = TRUE)
+  fleet_share[, days_per_tonne_country_avg := mean(days_per_tonne, na.rm = TRUE), by = Country]
+  n_no_fleet_ratio <- sum(is.na(fleet_share$days_per_tonne))
+  fleet_share[is.na(days_per_tonne), days_per_tonne := days_per_tonne_country_avg]
+  n_no_country_ratio <- sum(is.na(fleet_share$days_per_tonne))
+  fleet_share[is.na(days_per_tonne), days_per_tonne := 1]  # whole-country fallback: degenerates to raw catch share
+  fleet_share[, implied_effort := Catch_t_total * days_per_tonne]
+  fleet_share[, catch_share := implied_effort / sum(implied_effort), by = .(Country, Year)]  # effort-IMPLIED share (variable name kept as catch_share so nothing downstream needs to change)
+  fleet_share[, `:=`(days_per_tonne = NULL, days_per_tonne_country_avg = NULL, implied_effort = NULL)]
+  if (n_no_fleet_ratio > 0) {
+    message("[Effort hindcast] fleet_share: ", n_no_fleet_ratio, " Country x FleetType x Year row(s) had no FDI",
+            " days-per-tonne ratio for that FleetType - fell back to that Country's own mean ratio",
+            " across its other FleetTypes", if (n_no_country_ratio > 0) paste0(" (", n_no_country_ratio, " row(s) had no ratio anywhere in that Country and fell all the way back to raw catch share)") else "", ".")
+  }
   effort_hindcast_rousseau_by_fleet <- merge(fleet_share, rousseau_effort_cy, by = c("Country", "Year"))  # attach Rousseau's country x year total
   effort_hindcast_rousseau_by_fleet <- merge(effort_hindcast_rousseau_by_fleet, rousseau_calibration, by = "Country")  # attach the FDI-anchored calibration factor
   effort_hindcast_rousseau_by_fleet[, `:=`(
-    Effort_days = NomEffort * calib_factor * catch_share,  # FDI-anchored Rousseau total, split across fleets by catch share
-    effort_source = "Rousseau et al. 2024 NomEffort, calibrated to FDI's real level, split by FleetType's catch share (Country x FleetType, pre-2014) - see ROUSSEAU_EFFORT_PATH comment for validation caveat"
+    Effort_days = NomEffort * calib_factor * catch_share,  # FDI-anchored Rousseau total, split across fleets by FDI-implied effort share (catch x days-per-tonne), not raw catch share
+    effort_source = "Rousseau et al. 2024 NomEffort, calibrated to FDI's real level, split by FleetType's FDI-implied effort share (catch x days-per-tonne ratio, Country x FleetType, pre-2014) - see ROUSSEAU_EFFORT_PATH comment for validation caveat"
   )]
   effort_hindcast_rousseau_by_fleet <- effort_hindcast_rousseau_by_fleet[, .(Country, FleetType, Year, Effort_days, effort_source)]
   message("[Effort hindcast] effort_hindcast_rousseau_by_fleet (PRIMARY pre-", STECF_FDI_START_YEAR, " method): ",
@@ -3743,11 +3994,18 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
       effort_by_fleettype_eu3[, Effort_kWdays_per_vessel_effective := Effort_kWdays_per_vessel * creep_mult]  # apply it to the per-vessel metric too
     }
     effort_by_fleettype_eu3[, `:=`(creep_mult = NULL, gear_class = NULL)]  # drop the now-unneeded helper columns
-    creep_range <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective),
+    ## Excludes Effort_kWdays_total == 0 rows (a fleet with zero reported
+    ## kW-days that year) BEFORE computing pct - dividing by zero there
+    ## produces Inf, or NaN when the effective figure is also 0 (0/0), and
+    ## either one poisons a plain min()/max() over the whole vector into
+    ## Inf/NaN even though every OTHER row has a perfectly good percentage
+    ## (confirmed happening for real: "Cumulative effect ... NaN% to NaN%").
+    creep_range <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective) & Effort_kWdays_total != 0,
                                            .(pct = round(100 * (Effort_kWdays_total_effective / Effort_kWdays_total - 1), 1)), by = .(Country, Year)]  # % change from the raw figure, for reporting
-    creep_by_sector <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective),
+    creep_by_sector <- effort_by_fleettype_eu3[!is.na(Effort_kWdays_total_effective) & Effort_kWdays_total != 0,
                                                .(pct = round(100 * (Effort_kWdays_total_effective / Effort_kWdays_total - 1), 1)), by = .(Sector, Year)][
-                                                 , .(min_pct = min(pct), max_pct = max(pct)), by = Sector]  # cumulative range per sector, for the flow-diagram bullet
+                                                 , .(min_pct = min(pct, na.rm = TRUE), max_pct = max(pct, na.rm = TRUE)), by = Sector]  # cumulative range per sector, for the flow-diagram bullet
+    creep_range_pct <- if (nrow(creep_range) > 0) sprintf("%s%% to %s%%", min(creep_range$pct, na.rm = TRUE), max(creep_range$pct, na.rm = TRUE)) else "n/a (no row had a non-zero Effort_kWdays_total to compare against)"
     message("[Effort hindcast] Technology-creep correction applied to the PRIMARY effort metric:",
             " Effort_kWdays_total_effective = Effort_kWdays_total (kW x days x nboats) x tech_creep_multiplier(Country, Year, Sector, gear_class)",
             " (same multiplier also applied to the secondary per-vessel figure, as Effort_kWdays_per_vessel_effective).",
@@ -3757,8 +4015,8 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
             " both 1994-2013 - Damalas et al. 2015 & Tsagarakis et al. 2022), and by year (4.5%/year 2014-2023, uniform",
             " across gears - Palomares & Pauly 2019's C% = 13.8 x y^-0.511 evaluated once at y=9 - see",
             " TECH_CREEP_PERIOD_RATES for all of the above). Cumulative effect",
-            " (Industrial, EU-3) ranges from ", min(creep_range$pct), "% to ", max(creep_range$pct), "% across the",
-            " covered years; by sector: ", paste(sprintf("%s %s%% to %s%%", creep_by_sector$Sector, creep_by_sector$min_pct, creep_by_sector$max_pct), collapse = "; "),
+            " ranges from ", creep_range_pct, " across the",
+            " covered Country x Year cells; by sector: ", paste(sprintf("%s %s%% to %s%%", creep_by_sector$Sector, creep_by_sector$min_pct, creep_by_sector$max_pct), collapse = "; "),
             ". This is an ASSUMPTION-DRIVEN adjustment for both the country and sector dimensions (no fishery-specific",
             " creep rate exists for either split), applied only where FDI's own kW-days figure exists (2014+); pre-2014",
             " hindcasted rows are left uncorrected since they carry no kW-days figure to begin with.")
@@ -4384,8 +4642,21 @@ validation_plots[["03_discards_by_country_fleet"]] <- tryCatch({
   d <- fleet_split_out[Sector != "Recreational" & !is.na(Discard_t),
                        .(Discard_t = sum(Discard_t, na.rm = TRUE)), by = .(Country, FleetType, Year, discard_split_source)]  # sum discards by country x fleet x year x source
   d[, Tier := classify_source(discard_split_source)]  # classify each row's data tier for coloring
+  ## 2026-09-23 fix: a Country x FleetType x Year cell can legitimately
+  ## carry MORE THAN ONE row here - one per distinct discard_split_source
+  ## its underlying FGs used that year (e.g. some FGs get FDI's own
+  ## per-fleet discard rate, others fall back to the uniform country-
+  ## level ratio) - that's real and worth keeping visible, not a
+  ## duplicate to collapse. But geom_line(group = FleetType) alone
+  ## ignores that split and connects every one of a FleetType's points,
+  ## across both years AND tiers, into a single path - exactly the same
+  ## "connects unrelated points, draws a zigzag" bug already fixed for
+  ## plot 5's sawtooth. Grouping by FleetType x Tier together instead
+  ## gives each tier its own continuous sub-line per fleet, so a genuine
+  ## color/tier switch reads as two clean, separately-colored segments
+  ## instead of one multi-colored zigzag.
   ggplot(d, aes(x = Year, y = Discard_t, color = Tier)) +
-    geom_point(size = 0.6, alpha = 0.7) + geom_line(aes(group = FleetType), linewidth = 0.2, alpha = 0.4) +
+    geom_point(size = 0.6, alpha = 0.7) + geom_line(aes(group = interaction(FleetType, Tier)), linewidth = 0.2, alpha = 0.4) +
     facet_wrap(~ Country, scales = "free_y") +
     labs(title = "Discards by country and fleet over time", subtitle = "Colored by which data tier supplied that cell's discard rate",
          x = NULL, y = "Discard_t/year (all FG, all fleets summed per point)", color = NULL) +
