@@ -730,86 +730,40 @@ message(sum(non_taxon, na.rm = TRUE), " non-taxon row(s) (NO-prefixed, egg-capsu
 
 dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
 
-## --- Seed FG rules -----------------------------------------------------
-## For FGs that genuinely have ZERO species pre-listed in dataframe2 -
-## there's nothing for the automatic, data-driven fallback above to
-## learn an exclusive mapping from, since it can only discover a
-## Class/Order/Phylum -> FG relationship from species that are ALREADY
-## assigned to that FG. Confirmed this is the actual reason before
-## adding entries here, not just assumed - check with:
-##   dataframe2[FG_name %in% c("Sea cucumbers", "Other macro-benthos",
-##                              "Non-commercial decapods"), .N, by = FG_name]
-## If any of these come back with a nonzero species count, the
-## automatic fallback SHOULD already be resolving that one - worth
-## checking for an ambiguous rank elsewhere in the reference instead of
-## assuming a seed rule is needed.
+## --- Seed FG rules: REMOVED ENTIRELY (2026-09-22) ------------------------
+## The 4 rules that survived the previous re-audit (Holothuroidea ->
+## Sea cucumbers, Bivalvia -> Bivalves, Gastropoda -> Gastropods,
+## Echinoidea -> Other sea urchins) were kept on the reasoning that
+## those target FGs have zero species pre-listed in FG_WMed_2026.csv,
+## so the automatic taxonomy fallback has nothing to learn an exclusive
+## mapping from. That's true, but it means those 4 rules were still
+## inventing a Class -> FG assignment that has NO support anywhere in
+## FG_WMed_2026.csv - exactly the kind of code-side manual override
+## this pipeline has been moving away from all session (FG_WMed_2026.csv
+## as the single source of truth for species -> FG, not a rule baked
+## into the R script). Removed rather than kept "just in case": a
+## species that would have been seeded this way now surfaces honestly
+## as unresolved (survey_unmatched_for_manual_review.csv below), which
+## is the correct signal that FG_WMed_2026.csv itself is missing an
+## example species for that FG - the fix belongs in the CSV (add at
+## least one real Holothuroidea/Bivalvia/Gastropoda/Echinoidea species
+## under its intended FG), not in another code-side rule.
 ##
-## Deliberately small - only the FGs actually confirmed empty, not a
-## full re-statement of the old CLASS_RULES/ORDER_RULES/PHYLUM_RULES
-## tables. Resolved by FG_name text, so this survives FG_num changing.
+## SPECIES_EXCEPTIONS (Squilla mantis -> "Other commercial decapods")
+## is ALSO removed, for a different but related reason: it's already
+## dead code as of the current FG_WMed_2026.csv - Squilla mantis is
+## listed there BY NAME under "Other commercial decapods" (FG 65), so
+## it resolves via the ordinary direct scientific-name match at STEP 3
+## above, before this code ever ran. It only existed to guard against
+## the old "Order Stomatopoda -> Non-commercial decapods" seed rule,
+## which is also gone now (removed in the earlier re-audit, since
+## Non-commercial decapods already has 200 real species to learn from).
+## No manual override is needed for it any more.
 ##
-## 2026-09-22 re-audit against the CURRENT FG_WMed_2026.csv, per this
-## table's own header instruction ("check with dataframe2[FG_name %in%
-## c(...), .N, by = FG_name] - if any come back with a nonzero species
-## count, the automatic fallback SHOULD already be resolving that one"):
-##   FG_name                     | species rows in FG_WMed_2026.csv
-##   Sea cucumbers               | 0   -> still a genuine seed target
-##   Bivalves                    | 0   -> still a genuine seed target
-##   Gastropods                  | 0   -> still a genuine seed target
-##   Other sea urchins           | 0   -> still a genuine seed target
-##   Other macro-benthos         | 314 -> REMOVED, fallback can learn this now
-##   Non-commercial decapods     | 200 -> REMOVED, fallback can learn this now
-##   Suprabenthos                | 9   -> REMOVED, fallback can learn this now
-##   Other benthic cephalopods   | 25  -> REMOVED, fallback can learn this now
-## Two entries were ALSO silently no-ops before this re-audit (this
-## table's own prior warning about exactly this, confirmed): the old
-## fg_name_target "Scorpaenidae+" doesn't exist as a FG_name at all in
-## FG_WMed_2026.csv (the real name is "Scorpaenidae", no "+" - it's
-## "Sparidae+"/"Labridae and serranidae+" that carry a "+"), and
-## "Seaweeds" doesn't exist either (the real name is "Macroalgae").
-## Once corrected to their real names, BOTH turn out to already have
-## real species rows too (Scorpaenidae: 22, Macroalgae: 75) - so rather
-## than fix the spelling and keep seeding them, they're removed
-## entirely, same as the other now-populated FGs above: the automatic
-## fallback can already learn Family Scorpaenidae -> Scorpaenidae and
-## Phylum Rhodophyta/Chlorophyta -> Macroalgae directly from those real
-## rows, with no seed rule needed (and no risk of a rule silently
-## drifting out of sync with FG_WMed_2026.csv's own naming again).
-SEED_RULES <- data.table(
-  rank = c(
-    "Class", "Class",
-    "Order"
-  ),
-  rank_value = c(
-    "Holothuroidea",
-    "Bivalvia",
-    "Gastropoda"
-  ),
-  fg_name_target = c(
-    "Sea cucumbers",
-    "Bivalves",
-    "Gastropods"
-  ))
-## Echinoidea (Class) -> Other sea urchins: kept as its own explicit
-## entry rather than folded into the vectors above, since Echinoidea
-## also contains sea urchin species that DO belong elsewhere in the FG
-## scheme depending on how FG_WMed_2026.csv is revised next - flagged
-## here as a single line precisely so it's easy to re-audit on its own
-## the next time FG_WMed_2026.csv changes.
-SEED_RULES <- rbindlist(list(SEED_RULES, data.table(
-  rank = "Class", rank_value = "Echinoidea", fg_name_target = "Other sea urchins")))
-
-## Species-level exceptions - applied BEFORE the rank rules above, so a
-## named species is never caught by a broader rule that's wrong for it
-## specifically. Squilla mantis is commercially exploited even though
-## the rest of Stomatopoda isn't, so the "Order Stomatopoda ->
-## Non-commercial decapods" rule above would misclassify it without
-## this override.
-SPECIES_EXCEPTIONS <- data.table(
-  ScientificName = "Squilla mantis",
-  fg_name_target = "Other commercial decapods")
-
-dt <- apply_seed_fg_rules(dt, dataframe2, SEED_RULES, species_exceptions = SPECIES_EXCEPTIONS)
+## Net effect: dt keeps exactly what fallback_match_fg_by_taxonomy()
+## resolved above (direct match, then genus/family/order/class taxonomy
+## inference, all learned from FG_WMed_2026.csv's own real rows) - no
+## further code-side assignment happens here.
 
 ## still_unresolved_taxonomy (set inside fallback_match_fg_by_taxonomy(),
 ## before the seed rules above ran) has Genus/Family/Order/Class/
@@ -1356,17 +1310,14 @@ if (AREA_MODE == "westmed") {
   acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
   acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
   
-  ## Same manual-rules tier and manual-review export MEDITS gets above
-  ## (SEED_RULES/SPECIES_EXCEPTIONS - defined once above, reused verbatim
-  ## here since it's the same FG scheme) - previously skipped for MEDIAS,
-  ## which meant a species matchable only via a manual rule (e.g. a
-  ## zero-reference FG) silently stayed unmatched here even though the
-  ## identical species would have resolved for MEDITS, and nothing
-  ## unmatched ever got written out for review. summarize_unresolved_species()
+  ## Same manual-review export MEDITS gets above - apply_seed_fg_rules()
+  ## itself is gone now (2026-09-22, see the "Seed FG rules: REMOVED
+  ## ENTIRELY" comment above dt's own matching block): acoustic_matched
+  ## keeps exactly what fallback_match_fg_by_taxonomy() resolved just
+  ## above, no further code-side assignment. summarize_unresolved_species()
   ## expects a `Biomass` column (MEDITS' own convention) - acoustic_matched
   ## carries the same value under `total_biomass`, aliased here rather than
   ## renamed so nothing downstream that expects `total_biomass` breaks.
-  acoustic_matched <- apply_seed_fg_rules(acoustic_matched, dataframe2, SEED_RULES, species_exceptions = SPECIES_EXCEPTIONS)
   acoustic_taxonomy_context <- attr(acoustic_matched, "still_unresolved_taxonomy")
   acoustic_matched[, Biomass := total_biomass]
   medias_still_unmatched <- summarize_unresolved_species(acoustic_matched, taxonomy = acoustic_taxonomy_context)
@@ -1587,7 +1538,8 @@ if (AREA_MODE == "westmed") {
   ## condition) - this is what was hit during testing.
   stock_assessment_fg_year <- data.table(FG_num = integer(0), FG_name = character(0), Year = integer(0),
                                          star_biomass_t = numeric(0), star_n_stocks = integer(0),
-                                         star_sources = character(0), stock_assessment_density_t_km2 = numeric(0))
+                                         star_sources = character(0), stock_assessment_density_t_km2 = numeric(0),
+                                         stock_assessment_source = character(0))  # per-row source label - "STAR/RAM" or "ICCAT", see the ICCAT block below
   if (nrow(star_ram_combined) > 0) {
     ## Restrict to the West Med subregion, same convention as the
     ## fisheries-side STAR/RAM catch cross-check (02_fisheries.R).
@@ -1655,11 +1607,166 @@ if (AREA_MODE == "westmed") {
     star_biomass_by_fg[, stock_assessment_density_t_km2 := star_biomass_t / total_area_km2_biomass]
     
     stock_assessment_fg_year <- star_biomass_by_fg[star_biomass_t > 0]
+    stock_assessment_fg_year[, stock_assessment_source := "stock assessment (STAR/RAM)"]
     fwrite(stock_assessment_fg_year, file.path(csv_out_dir, "stock_assessment_biomass_by_fg.csv"))
     message("[Stock-assessment biomass] stock_assessment_fg_year: ", nrow(stock_assessment_fg_year),
             " FG x Year row(s) (", uniqueN(stock_assessment_fg_year$FG_num), " FG(s)) - written to",
             " stock_assessment_biomass_by_fg.csv. Area used for the density conversion: ",
             round(total_area_km2_biomass, 1), " km^2.")
+  }
+  
+  ## =================================================================
+  ## ICCAT stock-assessment BIOMASS (SSB) - Atlantic bluefin tuna,
+  ## Mediterranean swordfish, Mediterranean albacore (2026-09-23, added
+  ## at the user's explicit request as the biomass-side counterpart to
+  ## the ICCAT catch addition already made to 02_fisheries.R). Same 3
+  ## ICCAT-managed highly-migratory stocks, same reasoning: ICCAT is the
+  ## RFMO that actually assesses them directly (GFCM STAR/RAM Legacy's
+  ## own bluefin/swordfish coverage, on the rare years it has any, is
+  ## typically a re-publication of ICCAT's own assessment one step
+  ## removed).
+  ##
+  ## Folded into the SAME stock_assessment_fg_year table STAR/RAM built
+  ## above, rather than a parallel table with its own copy of the
+  ## priority-rule logic below - ICCAT simply wins wherever it and
+  ## STAR/RAM both cover a FG x Year cell.
+  ##
+  ## IMPORTANT (checked directly against the current FG_WMed_2026.csv,
+  ## 2026-09-23): Bluefin tuna (FG 12, Thunnus thynnus) and Swordfish
+  ## (FG 13, Xiphias gladius) are already their own single-species FGs,
+  ## so their ICCAT biomass rows attach automatically below. Albacore
+  ## (Thunnus alalunga) is NOT currently in FG_WMed_2026.csv at all - no
+  ## FG represents it yet - so its ICCAT biomass will load and
+  ## cross-check fine but has nowhere to attach until Thunnus alalunga
+  ## is added to FG_WMed_2026.csv as its own FG (same convention as
+  ## Bluefin tuna/Swordfish - see 01_biomass.R's own "Seed FG rules:
+  ## REMOVED ENTIRELY" comment elsewhere in this file for why a
+  ## code-side FG assignment isn't the right fix here either).
+  ##
+  ## Expects a small per-stock CSV at iccat_biomass_path with a year
+  ## column, a biomass/SSB-in-tonnes column, and EITHER a species-code
+  ## OR a species-name/stock column (several plausible header spellings
+  ## accepted for each - see ICCAT_BIOMASS_COL_ALIASES). ICCAT doesn't
+  ## publish SSB across every stock assessment via one uniform bulk
+  ## export the way its Task I catch database works (see the ICCAT
+  ## catch block in 02_fisheries.R) - this file is expected to be built
+  ## by hand from the relevant stock assessment's own SSB table (one
+  ## row per stock x year is all this needs). Optional - message + skip
+  ## if not found, same convention as every other optional source in
+  ## this pipeline.
+  ##
+  ## ICCAT_DIR is the same path 02_fisheries.R's own ICCAT catch block
+  ## computes, redefined here the same cheap/harmless way
+  ## STAR_RAMLEGACY_DIR already is in both scripts - this script is a
+  ## standalone SOURCE-ABLE SCRIPT with no dependency on 02_fisheries.R
+  ## having run first.
+  ## =================================================================
+  ICCAT_DIR <- file.path(pcloud_dir, "data/fisheries/ICCAT")
+  iccat_biomass_path <- file.path(ICCAT_DIR, "iccat_ssb_biomass.csv")
+  
+  ICCAT_SPECIES <- data.table(
+    iccat_code     = c("BFT", "SWO", "ALB"),
+    ScientificName = c("Thunnus thynnus", "Xiphias gladius", "Thunnus alalunga")
+  )
+  ICCAT_BIOMASS_COL_ALIASES <- list(
+    year         = c("Yearc", "YearC", "Year", "year"),
+    species      = c("Species", "SpeciesCode", "sp_code"),
+    species_name = c("SpeciesName", "SpName", "CommonName", "Stock"),
+    biomass_t    = c("SSB_t", "SSB", "Biomass_t", "Biomass", "TotalBiomass_t")
+  )
+  resolve_iccat_col <- function(dt_names, aliases) {
+    hit <- intersect(aliases, dt_names)
+    if (length(hit) == 0) NA_character_ else hit[1]
+  }
+  
+  iccat_biomass_fg_year <- data.table(FG_num = integer(0), FG_name = character(0), Year = integer(0),
+                                      iccat_biomass_t = numeric(0), iccat_sources = character(0),
+                                      stock_assessment_density_t_km2 = numeric(0))
+  if (!file.exists(iccat_biomass_path)) {
+    message("\n[ICCAT biomass] '", iccat_biomass_path, "' not found - skipping (build a small per-stock SSB",
+            " table from the relevant ICCAT stock assessment - bluefin tuna/swordfish/albacore - and place it",
+            " at iccat_biomass_path if you want ICCAT's own assessed biomass available for the priority rule",
+            " below; it takes priority over GFCM STAR/RAM Legacy wherever both cover the same FG x Year cell).")
+  } else {
+    iccat_bio_raw <- fread(iccat_biomass_path, encoding = "UTF-8")
+    col_year <- resolve_iccat_col(names(iccat_bio_raw), ICCAT_BIOMASS_COL_ALIASES$year)
+    col_bio  <- resolve_iccat_col(names(iccat_bio_raw), ICCAT_BIOMASS_COL_ALIASES$biomass_t)
+    col_sp   <- resolve_iccat_col(names(iccat_bio_raw), ICCAT_BIOMASS_COL_ALIASES$species)
+    col_spn  <- resolve_iccat_col(names(iccat_bio_raw), ICCAT_BIOMASS_COL_ALIASES$species_name)
+    if (is.na(col_year) || is.na(col_bio) || (is.na(col_sp) && is.na(col_spn))) {
+      stop("[ICCAT biomass] '", iccat_biomass_path, "' is missing required column(s) - found columns: ",
+           paste(names(iccat_bio_raw), collapse = ", "), ". Needed: a year column (tried ",
+           paste(ICCAT_BIOMASS_COL_ALIASES$year, collapse = "/"), "), a biomass column (tried ",
+           paste(ICCAT_BIOMASS_COL_ALIASES$biomass_t, collapse = "/"), "), and EITHER a species-code column",
+           " (tried ", paste(ICCAT_BIOMASS_COL_ALIASES$species, collapse = "/"), ") OR a species-name/stock",
+           " column (tried ", paste(ICCAT_BIOMASS_COL_ALIASES$species_name, collapse = "/"), "). Rename the",
+           " real column(s) to match one of these, or add the actual header spelling to",
+           " ICCAT_BIOMASS_COL_ALIASES above.")
+    }
+    setnames(iccat_bio_raw, col_year, "Year")
+    setnames(iccat_bio_raw, col_bio, "iccat_biomass_t")
+    iccat_bio_raw[, `:=`(Year = as.integer(Year), iccat_biomass_t = as.numeric(iccat_biomass_t))]
+    
+    if (!is.na(col_sp)) {
+      setnames(iccat_bio_raw, col_sp, "iccat_code")
+      iccat_bio_raw <- merge(iccat_bio_raw, ICCAT_SPECIES, by = "iccat_code")
+    } else {
+      setnames(iccat_bio_raw, col_spn, "iccat_species_name")
+      iccat_bio_name_match <- data.table(
+        iccat_species_name = c("Bluefin tuna", "Atlantic bluefin tuna", "BFT", "Swordfish", "SWO",
+                               "Albacore", "Albacore tuna", "Albacore, N Atl.", "ALB"),
+        ScientificName      = c("Thunnus thynnus", "Thunnus thynnus", "Thunnus thynnus", "Xiphias gladius", "Xiphias gladius",
+                                "Thunnus alalunga", "Thunnus alalunga", "Thunnus alalunga", "Thunnus alalunga")
+      )
+      iccat_bio_raw <- merge(iccat_bio_raw, iccat_bio_name_match, by = "iccat_species_name")
+    }
+    
+    iccat_bio_matched <- merge(unique(iccat_bio_raw[, .(ScientificName)]),
+                               fg_lookup_safe[, .(ScientificName, FG_num, FG_name)], by = "ScientificName")
+    iccat_bio_raw <- merge(iccat_bio_raw, iccat_bio_matched, by = "ScientificName")
+    
+    n_iccat_bio_unmatched <- uniqueN(ICCAT_SPECIES$ScientificName) - uniqueN(iccat_bio_matched$ScientificName)
+    if (n_iccat_bio_unmatched > 0) {
+      unmatched_sp <- setdiff(ICCAT_SPECIES$ScientificName, iccat_bio_matched$ScientificName)
+      message("[ICCAT biomass] ", n_iccat_bio_unmatched, " of the ", uniqueN(ICCAT_SPECIES$ScientificName),
+              " requested ICCAT species have no matching FG in the current FG_WMed_2026.csv, so their ICCAT",
+              " biomass rows loaded but couldn't attach anywhere: ", paste(unmatched_sp, collapse = ", "),
+              ". Add the species to FG_WMed_2026.csv as its own FG (same convention as Bluefin tuna/FG12,",
+              " Swordfish/FG13) if you want it picked up here - this loader deliberately does not invent an",
+              " FG for it.")
+    }
+    
+    iccat_biomass_fg_year <- iccat_bio_raw[, .(
+      iccat_biomass_t = sum(iccat_biomass_t, na.rm = TRUE),
+      iccat_sources   = "ICCAT stock assessment (SSB)"
+    ), by = .(FG_num, FG_name, Year)]
+    iccat_biomass_fg_year[, stock_assessment_density_t_km2 := iccat_biomass_t / sum(strata_area_by_area$area_km2, na.rm = TRUE)]
+    iccat_biomass_fg_year <- iccat_biomass_fg_year[iccat_biomass_t > 0]
+    fwrite(iccat_biomass_fg_year, file.path(csv_out_dir, "iccat_biomass_by_fg.csv"))
+    message("[ICCAT biomass] iccat_biomass_fg_year: ", nrow(iccat_biomass_fg_year), " FG x Year row(s) (",
+            uniqueN(iccat_biomass_fg_year$FG_num), " FG(s)) - written to iccat_biomass_by_fg.csv.")
+  }
+  
+  ## Merge ICCAT into stock_assessment_fg_year, ICCAT winning on overlap
+  ## (an anti-join drops any STAR/RAM row for a FG x Year cell ICCAT
+  ## also covers, before appending ICCAT's own rows for every cell it
+  ## covers, overlapping or not).
+  if (nrow(iccat_biomass_fg_year) > 0) {
+    overlap_cells <- fintersect(stock_assessment_fg_year[, .(FG_num, Year)], iccat_biomass_fg_year[, .(FG_num, Year)])
+    if (nrow(overlap_cells) > 0) {
+      message("[Stock-assessment biomass] ICCAT overrides STAR/RAM Legacy for ", nrow(overlap_cells),
+              " FG x Year cell(s) both sources cover for the same FG (ICCAT takes priority).")
+      stock_assessment_fg_year <- stock_assessment_fg_year[!overlap_cells, on = c("FG_num", "Year")]
+    }
+    stock_assessment_fg_year <- rbindlist(list(
+      stock_assessment_fg_year,
+      iccat_biomass_fg_year[, .(FG_num, FG_name, Year, stock_assessment_density_t_km2,
+                                star_biomass_t = iccat_biomass_t, star_n_stocks = NA_integer_,
+                                star_sources = iccat_sources, stock_assessment_source = "stock assessment (ICCAT)")]
+    ), use.names = TRUE, fill = TRUE)
+    message("[Stock-assessment biomass] stock_assessment_fg_year now combines STAR/RAM Legacy and ICCAT: ",
+            nrow(stock_assessment_fg_year), " FG x Year row(s) total (", uniqueN(stock_assessment_fg_year$FG_num),
+            " FG(s)) - ICCAT wins on any FG x Year overlap.")
   }
   
   ## =================================================================
@@ -1741,7 +1848,7 @@ if (AREA_MODE == "westmed") {
                                       fg_ecology_lookup[, .(FG_num, FG_ECOLOGY_TYPE)],
                                       by = "FG_num", all.x = TRUE)
   fg_index_regional_combined <- merge(fg_index_regional_combined,
-                                      stock_assessment_fg_year[, .(FG_num, Year, stock_assessment_density_t_km2)],
+                                      stock_assessment_fg_year[, .(FG_num, Year, stock_assessment_density_t_km2, stock_assessment_source)],
                                       by = c("FG_num", "Year"), all.x = TRUE)
   
   ## fcase()'s own `default=` must be a single scalar value, not a
@@ -1759,7 +1866,8 @@ if (AREA_MODE == "westmed") {
       !is.na(medits_density), medits_density
     ),
     biomass_source = fcase(
-      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2), "stock assessment (STAR/RAM) - single species/stanza FG",
+      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2),
+      paste0(stock_assessment_source, " - single species/stanza FG"),  # stock_assessment_source is now a per-row label ("stock assessment (ICCAT)" or "stock assessment (STAR/RAM)") rather than a hardcoded string - see the ICCAT biomass block above
       !is.na(medias_density), "MEDIAS (preferred over MEDITS)",
       !is.na(medits_density), "MEDITS (MEDIAS unavailable this Year)"
     )
