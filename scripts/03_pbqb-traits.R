@@ -268,9 +268,20 @@ PIPELINE_START_TIME <- Sys.time()
 ## per-species loops (which have their own finer-grained progress bars
 ## already). Call STAGE_PB$tick(tokens=list(stage_name="...")) once
 ## each labeled stage below completes.
+## 2026-09-24 fix: this list must have EXACTLY one entry per
+## STAGE_PB$tick() call below, in the same order, or the progress bar's
+## total is wrong. "Fetch 2a2: occurrence status" (the rfishbase::
+## country()-based Occurrence_status fetch, ticked at line ~1675) was
+## added without adding its stage name here, so the bar's total stayed
+## at 13 while 14 ticks actually fire - the 14th tick (at "Export CSVs
+## + generate plots") then hits progress::progress_bar's own guard
+## against ticking past 100% and crashes with "!self$finished is not
+## TRUE". If you add another STAGE_PB$tick() call anywhere, add its
+## stage name here too, in call order.
 PIPELINE_STAGES <- c(
   "Load species_df", "Taxonomic classification (WoRMS)",
-  "Fetch 2a: species() traits", "Fetch 2b: growth params",
+  "Fetch 2a: species() traits", "Fetch 2a2: occurrence status",
+  "Fetch 2b: growth params",
   "Fetch 2c: length-weight a/b", "Fetch 2d: maturity",
   "Fetch 2e: ecology/trophic level", "Fetch 2f: swimming/aspect ratio",
   "Assemble + derive traits (Froese-Binohlan)", "Raw-trait gap filling",
