@@ -12,6 +12,12 @@
 #check shiny app
 #juvenile adults with multistanza groups how to pick them up from survey
 
+#find codes for traits - to add
+#Ecology = 5
+# Occurrence_status = 1
+# IUCN_conservation_status = 3
+# Exploitation_status = 2
+
 ### create validation R section:
 # - GFW effort (at least at regional level)
 # - Visual Census regional scale

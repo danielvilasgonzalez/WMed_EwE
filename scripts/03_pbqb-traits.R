@@ -711,7 +711,67 @@ FG_CATCH_CSV_PATH <- if (is.null(FISHERIES_DATA_SOURCE) || FISHERIES_DATA_SOURCE
 
 species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
 
-if (FG_YIELD_SOURCE == "fg_catch_csv") {
+## 2026-09-23 addition: 02_fisheries.R (the actual, currently-run
+## fisheries script - NOT 02_fao_catches.R/02a_fisheries_multisource.R,
+## which this file's FG_YIELD_SOURCE/FG_CATCH_CSV_PATH logic just below
+## was written against and which aren't part of this pipeline's real
+## run order per run_pipeline_demo.R) already computes F directly -
+## F_by_species_fg.csv and F_by_fg.csv, written into FISHERIES_CSV_DIR
+## (same folder this script already points FG_CATCH_CSV_PATH at, so no
+## path fix needed there, just the wrong FILENAME). These are F itself
+## (Catch_density/Biomass_density, from GFCM catch + survey biomass, at
+## FG resolution - see 02_fisheries.R's own "# obtain F for species in
+## Ecopath years" section), not a raw catch table this script would
+## need to re-derive F from - so when present, this takes priority over
+## the legacy fg_catch_csv reconstruction below and that whole block is
+## skipped. This is the actual fix for Fmort/PB=M+F silently staying
+## M-only: FG_CATCH_CSV_PATH was pointing at a file 02_fao_catches.R
+## writes (a script that isn't part of this pipeline's run order), so
+## it was never found; F_by_species_fg.csv/F_by_fg.csv are what
+## 02_fisheries.R (the script actually run) produces.
+f_by_species_fg_path <- file.path(FISHERIES_CSV_DIR, "F_by_species_fg.csv")
+f_by_fg_path <- file.path(FISHERIES_CSV_DIR, "F_by_fg.csv")
+used_fisheries_R_f <- FALSE
+if (file.exists(f_by_species_fg_path)) {
+  f_by_species_fg <- fread(f_by_species_fg_path)
+  if (all(c("Species", "F") %in% names(f_by_species_fg))) {
+    f_lookup <- unique(f_by_species_fg[!is.na(F), .(Species, F)])
+    species_df[f_lookup, Fmort_FG := i.F, on = "Species"]
+    used_fisheries_R_f <- TRUE
+    message("[F] Read F_by_species_fg.csv from 02_fisheries.R (", f_by_species_fg_path, ") - ",
+            species_df[!is.na(Fmort_FG), .N], " of ", nrow(species_df), " species in species_df now have",
+            " an Fmort_FG value from it (F is the FG-uniform value 02_fisheries.R computed, repeated per",
+            " species in that FG - see that script's own comment on this). Legacy fg_catch_csv",
+            " reconstruction below is skipped since this is the real, current F source.")
+  } else {
+    message("[F] F_by_species_fg.csv found at ", f_by_species_fg_path, " but missing expected column(s)",
+            " 'Species'/'F' (got: ", paste(names(f_by_species_fg), collapse = ", "), ") - falling back",
+            " to F_by_fg.csv / the legacy fg_catch_csv path below.")
+  }
+}
+if (!used_fisheries_R_f && file.exists(f_by_fg_path)) {
+  f_by_fg_direct <- fread(f_by_fg_path)
+  if (all(c("FG_num", "F") %in% names(f_by_fg_direct))) {
+    f_fg_lookup <- unique(f_by_fg_direct[!is.na(F), .(FG_num, F)])
+    species_df[f_fg_lookup, Fmort_FG := i.F, on = c(FG = "FG_num")]
+    used_fisheries_R_f <- TRUE
+    message("[F] Read F_by_fg.csv from 02_fisheries.R (", f_by_fg_path, ") - ",
+            species_df[!is.na(Fmort_FG), .N], " of ", nrow(species_df), " species in species_df now have",
+            " an Fmort_FG value from it. Legacy fg_catch_csv reconstruction below is skipped.")
+  } else {
+    message("[F] F_by_fg.csv found at ", f_by_fg_path, " but missing expected column(s) 'FG_num'/'F'",
+            " (got: ", paste(names(f_by_fg_direct), collapse = ", "), ") - falling back to the legacy",
+            " fg_catch_csv path below.")
+  }
+}
+if (!used_fisheries_R_f) {
+  message("[F] Neither F_by_species_fg.csv nor F_by_fg.csv found in ", FISHERIES_CSV_DIR,
+          " - falling back to the legacy fg_catch_csv reconstruction below (FG_CATCH_CSV_PATH),",
+          " which needs 02_fao_catches.R's own output and is unlikely to exist if only",
+          " 02_fisheries.R has been run.")
+}
+
+if (!used_fisheries_R_f && FG_YIELD_SOURCE == "fg_catch_csv") {
   area_lookup_path <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")
   
   if (!file.exists(FG_CATCH_CSV_PATH)) {
@@ -781,7 +841,7 @@ if (FG_YIELD_SOURCE == "fg_catch_csv") {
             " level landings source exists) - species-level F, if ever available,",
             " always takes priority over this FG-wide rate.")
   }
-} else {
+} else if (!used_fisheries_R_f) {
   message("FG_YIELD_SOURCE = 'none' - every fish species' Fmort stays NA (M-only PB)",
           " unless a species-level Yield source is added separately above.")
 }
@@ -852,29 +912,98 @@ if (length(unresolved) > 0) {
   ## the full species list earlier in this script) turns that into 2
   ## full-table loads total, regardless of how many species need this
   ## fallback.
-  resolve_valid_name <- function(sp) {
-    ## Strip trailing "spp."/"sp." the SAME way fetch_taxonomy_fishbase()'s
-    ## underlying load_taxa() call needs a real binomial to match against -
-    ## without this, a genus-level placeholder like "Sepiola spp." never
-    ## matches any synonym record and just falls through to the
-    ## "invertebrate" default below. Querying the bare genus instead
-    ## ("Sepiola") can still succeed and return real Class/Family/Order/
-    ## Phylum via a species within that genus - all dispatch_group
-    ## classification needs, species-level resolution isn't required for
-    ## that.
-    query_term <- str_trim(str_remove(sp, "\\s+spp?\\.?$"))
-    valid_name <- tryCatch({
-      syn <- rfishbase::synonyms(query_term)
-      if (is.null(syn) || nrow(syn) == 0) NA_character_ else syn$Species[1]
-    }, error = function(e) {
-      message("  rfishbase::synonyms() failed for '", sp, "' (queried as '", query_term, "'): ", conditionMessage(e))
-      NA_character_
-    })
-    if (is.na(valid_name) || valid_name == query_term) return(NULL)
-    data.table(Species = sp, valid_name = valid_name)
-  }
+  ## Strip trailing "spp."/"sp." the SAME way fetch_taxonomy_fishbase()'s
+  ## underlying load_taxa() call needs a real binomial to match against -
+  ## without this, a genus-level placeholder like "Sepiola spp." never
+  ## matches any synonym record and just falls through to the
+  ## "invertebrate" default below. Querying the bare genus instead
+  ## ("Sepiola") can still succeed and return real Class/Family/Order/
+  ## Phylum via a species within that genus - all dispatch_group
+  ## classification needs, species-level resolution isn't required for
+  ## that.
+  query_map <- data.table(Species = unresolved, query_term = str_trim(str_remove(unresolved, "\\s+spp?\\.?$")))
+  unique_terms <- unique(query_map$query_term)
   
-  valid_names <- rbindlist(lapply(unresolved, resolve_valid_name), fill = TRUE)
+  ## 2026-09-23 fix: this used to call rfishbase::synonyms() ONE QUERY
+  ## TERM AT A TIME via lapply() - with up to a few hundred unresolved
+  ## species, that's a few hundred separate network/duckdb round trips,
+  ## which IS what was "taking ages" here (the earlier fix above only
+  ## batched the taxonomy fetch that follows synonym resolution, not this
+  ## step itself). rfishbase::synonyms(), like its other table-based
+  ## functions (species(), ecology(), morphology(), ...), accepts a
+  ## VECTOR of names and returns every matching synonym row across all of
+  ## them in ONE call - turning up to a few hundred round trips into 1.
+  ## The synonyms table's own queried-name column is literally called
+  ## "synonym" (confirmed against the real column layout returned here:
+  ## synonym, Status, SpecCode, SynCode, CoL_ID, TSN, ZooBank_ID,
+  ## TaxonLevel, Species) - Species holds the CURRENTLY VALID name for
+  ## that record. Matching "synonym" back to query_term is what maps each
+  ## result row back to the species that produced it. If the batched
+  ## call errors out, or ever returns a column layout this doesn't
+  ## recognize (e.g. a future rfishbase version renames these), this
+  ## falls back to the original slower but known-correct one-name-at-a-
+  ## time loop rather than risk a silent mismatch.
+  valid_names <- data.table(Species = character(), valid_name = character())
+  syn_all <- tryCatch(rfishbase::synonyms(unique_terms), error = function(e) {
+    message("  rfishbase::synonyms() batched call (", length(unique_terms), " name(s) in one request) failed: ",
+            conditionMessage(e), " - falling back to the slower one-name-at-a-time loop.")
+    NULL
+  })
+  if (!is.null(syn_all) && nrow(syn_all) > 0 && all(c("synonym", "Species") %in% names(syn_all))) {
+    setDT(syn_all)  # rfishbase::synonyms() returns a plain data.frame/tibble, not a data.table - the data.table `[...,by=]` syntax below silently dispatches to data.frame's own `[` (wrong result / "unused argument" error) without this
+    first_valid <- syn_all[!is.na(Species), .(valid_name = Species[1]), by = synonym]
+    valid_names <- merge(query_map, first_valid, by.x = "query_term", by.y = "synonym")
+    valid_names <- valid_names[!is.na(valid_name) & valid_name != query_term, .(Species, valid_name)]
+    message("  rfishbase::synonyms() batched call resolved ", nrow(valid_names), " of ", length(unique_terms),
+            " distinct query term(s) in one request.")
+  } else {
+    if (!is.null(syn_all)) {
+      message("  rfishbase::synonyms() batched result had an unexpected column layout (columns: ",
+              paste(names(syn_all), collapse = ", "), ") - falling back to the slower one-name-at-a-time loop.")
+    }
+    resolve_valid_name <- function(sp, query_term) {
+      valid_name <- tryCatch({
+        syn <- rfishbase::synonyms(query_term)
+        if (is.null(syn) || nrow(syn) == 0) NA_character_ else syn$Species[1]
+      }, error = function(e) {
+        message("  rfishbase::synonyms() failed for '", sp, "' (queried as '", query_term, "'): ", conditionMessage(e))
+        NA_character_
+      })
+      if (is.na(valid_name) || valid_name == query_term) return(NULL)
+      data.table(Species = sp, valid_name = valid_name)
+    }
+    
+    ## This loop only runs at all if the single batched call above
+    ## somehow failed/came back unrecognizable - a rare fallback path,
+    ## but still one network round trip per species if it does fire, so
+    ## it's parallelized across a FEW cores rather than run serially or
+    ## across every core (this machine likely runs other things too -
+    ## leaving at least half the logical cores free, capped at 4, rather
+    ## than handing rfishbase's API every core available).
+    n_cores_avail <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) 1L)
+    n_cores <- max(1, min(4, floor(n_cores_avail / 2)))
+    message("  Falling back to a one-name-at-a-time loop, parallelized across ", n_cores, " of ",
+            n_cores_avail, " available core(s) (the rest left free).")
+    if (n_cores > 1 && .Platform$OS.type == "unix") {
+      ## mclapply forks - works on macOS/Linux, not Windows.
+      valid_names_list <- parallel::mclapply(seq_len(nrow(query_map)), function(i) {
+        resolve_valid_name(query_map$Species[i], query_map$query_term[i])
+      }, mc.cores = n_cores)
+    } else if (n_cores > 1) {
+      ## Windows fallback: a small PSOCK cluster instead of forking.
+      cl <- parallel::makeCluster(n_cores)
+      tryCatch({
+        parallel::clusterEvalQ(cl, requireNamespace("rfishbase", quietly = TRUE))
+        parallel::clusterExport(cl, c("resolve_valid_name", "query_map"), envir = environment())
+        valid_names_list <- parallel::parLapply(cl, seq_len(nrow(query_map)), function(i) {
+          resolve_valid_name(query_map$Species[i], query_map$query_term[i])
+        })
+      }, finally = parallel::stopCluster(cl))
+    } else {
+      valid_names_list <- mapply(resolve_valid_name, query_map$Species, query_map$query_term, SIMPLIFY = FALSE)
+    }
+    valid_names <- rbindlist(valid_names_list, fill = TRUE)
+  }
   
   resolved <- data.table()
   if (nrow(valid_names) > 0) {
@@ -1108,7 +1237,7 @@ extract_provenance <- function(best_dt, param_type, refno_candidates = c("RefNo"
 fetch_intrinsic_traits <- function(candidates) {
   if (length(candidates) == 0) return(data.table(Species = character()))
   
-  growth_c <- select_best_rows(fetch_both(popgrowth, candidates))
+  growth_c <- select_best_rows(fetch_both(rfishbase::popgrowth, candidates))
   gt <- if (nrow(growth_c) > 0) growth_c[, .(
     Species,
     Loo  = if ("Loo" %in% names(growth_c)) Loo else NA_real_,
@@ -1117,7 +1246,7 @@ fetch_intrinsic_traits <- function(candidates) {
     tmax = if ("tmax" %in% names(growth_c)) tmax else NA_real_
   )] else data.table(Species = character())
   
-  ecol_c <- fetch_both(ecology, candidates)
+  ecol_c <- fetch_both(rfishbase::ecology, candidates)
   tl_col_c <- if (nrow(ecol_c) > 0) intersect(c("DietTroph", "FoodTroph"), names(ecol_c))[1] else NA
   et <- if (nrow(ecol_c) > 0) unique(ecol_c[, .(
     Species, TrophicLevel = if (!is.na(tl_col_c)) get(tl_col_c) else NA_real_
@@ -1131,7 +1260,7 @@ fetch_intrinsic_traits <- function(candidates) {
     Longevity = if (!is.na(lcol)) get(lcol) else NA_real_
   )], by = "Species") else data.table(Species = character())
   
-  swim_c <- fetch_both(swimming, candidates, fishbase_only = TRUE)
+  swim_c <- fetch_both(rfishbase::swimming, candidates, fishbase_only = TRUE)
   arcol <- if (nrow(swim_c) > 0) intersect(c("AspectRatio", "Aspect"), names(swim_c))[1] else NA
   swt <- if (nrow(swim_c) > 0) unique(swim_c[, .(
     Species, AspectRatio = if (!is.na(arcol)) get(arcol) else NA_real_
@@ -1352,6 +1481,25 @@ print(names(sp_table))
 weight_col <- intersect(c("Weight", "WeightMax"), names(sp_table))[1]
 length_col <- intersect(c("Length", "LengthMax"), names(sp_table))[1]
 long_col   <- intersect(c("LongevityWild", "LongevityCaptive", "MaxAge"), names(sp_table))[1]
+## Vulnerability: FishBase's own Cheung et al. intrinsic vulnerability
+## index (0-100) - added 2026-09-23 so the traits_ewe/Ecopath_traits
+## table below can populate Vulnerability_index straight from FishBase
+## instead of the retired FG_WMed.xlsx sheet.
+vuln_col   <- intersect(c("Vulnerability"), names(sp_table))[1]
+## CommonLength: FishBase's species() table separately carries a
+## "typical/common length" field (distinct from Length/LengthMax,
+## which are the MAXIMUM recorded length) - this is the field the
+## traits_ewe/Ecopath_traits table's Mean_length column is populated
+## from below. Not independently re-verified against a live FishBase
+## pull in this environment (no network access here to check the
+## exact column name rfishbase's current version returns) - if this
+## candidate list doesn't match what your version of rfishbase
+## actually returns, Mean_length will just stay NA and
+## common_length_col will print as "NONE FOUND" in the coverage
+## message a few hundred lines down, rather than error - check that
+## message on your first run and add the real column name here if
+## it's missing from this list.
+common_length_col <- intersect(c("CommonLength", "CommonLengthF", "CommonLengthM"), names(sp_table))[1]
 
 sp_traits <- if (nrow(sp_table) > 0) unique(sp_table[, .(
   Species,
@@ -1360,12 +1508,21 @@ sp_traits <- if (nrow(sp_table) > 0) unique(sp_table[, .(
   Depth = fifelse(!is.na(DepthRangeDeep) & !is.na(DepthRangeShallow),
                   (DepthRangeDeep + DepthRangeShallow) / 2,
                   fcoalesce(DepthRangeDeep, DepthRangeShallow)),
-  Longevity = if (!is.na(long_col)) get(long_col) else NA_real_
+  Longevity = if (!is.na(long_col)) get(long_col) else NA_real_,
+  Vulnerability = if (!is.na(vuln_col)) get(vuln_col) else NA_real_,
+  CommonLength = if (!is.na(common_length_col)) get(common_length_col) else NA_real_
   ## NOTE: Family deliberately NOT extracted here - it's already merged
   ## in from WoRMS taxonomy (Step 1, with proper synonym resolution),
   ## and duplicating it here would collide into Family.x/Family.y on
   ## the merge below instead of a clean single column
-)], by = "Species") else data.table(Species = character())
+)], by = "Species") else data.table(Species = character(), MaxWeight = numeric(),
+                                    MaxLength = numeric(), Depth = numeric(), Longevity = numeric(),
+                                    Vulnerability = numeric(), CommonLength = numeric())
+
+message("Coverage - Vulnerability: ", sp_traits[!is.na(Vulnerability), .N], "/", length(sp_list),
+        " (field: ", ifelse(is.na(vuln_col), "NONE FOUND", vuln_col), ")",
+        " | CommonLength (-> Mean_length): ", sp_traits[!is.na(CommonLength), .N], "/", length(sp_list),
+        " (field: ", ifelse(is.na(common_length_col), "NONE FOUND", common_length_col), ")")
 
 message("Coverage - MaxWeight: ", sp_traits[!is.na(MaxWeight), .N], "/", length(sp_list),
         " | Depth: ", sp_traits[!is.na(Depth), .N], "/", length(sp_list),
@@ -1374,7 +1531,7 @@ message("Coverage - MaxWeight: ", sp_traits[!is.na(MaxWeight), .N], "/", length(
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a: species() traits")))
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
-growth_raw <- fetch_both(popgrowth, sp_list)
+growth_raw <- fetch_both(rfishbase::popgrowth, sp_list)
 growth_best <- select_best_rows(growth_raw)
 tmax_col <- if (nrow(growth_best) > 0) intersect(c("tmax", "TMax"), names(growth_best))[1] else NA
 growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
@@ -1383,7 +1540,8 @@ growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
   K    = if ("K" %in% names(growth_best)) K else NA_real_,
   Winf = if ("Winfinity" %in% names(growth_best)) Winfinity else NA_real_,
   tmax = if (!is.na(tmax_col)) get(tmax_col) else NA_real_
-)] else data.table(Species = character())
+)] else data.table(Species = character(), Loo = numeric(), K = numeric(),
+                   Winf = numeric(), tmax = numeric())
 
 ## Capture WHERE this selected record came from (Locality/Year), not
 ## just the numeric values - needed for the reference/provenance table
@@ -1392,19 +1550,19 @@ growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)",
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
-lw_raw <- fetch_both(poplw, sp_list)
+lw_raw <- fetch_both(rfishbase::poplw, sp_list)
 lw_best <- select_best_rows(lw_raw)
 lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
   Species,
   a_lw = if ("a" %in% names(lw_best)) a else NA_real_,
   b_lw = if ("b" %in% names(lw_best)) b else NA_real_
-)] else data.table(Species = character())
+)] else data.table(Species = character(), a_lw = numeric(), b_lw = numeric())
 lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)",
                                     refno_candidates = c("LWRef", "PopLWRef", "LengthWeightRef", "RefNo", "MainRefNo"))
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b")))
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
-maturity_raw <- fetch_both(maturity, sp_list)
+maturity_raw <- fetch_both(rfishbase::maturity, sp_list)
 maturity_best <- select_best_rows(maturity_raw)
 lm_col <- if (nrow(maturity_best) > 0) intersect(c("Lm", "LengthMatMin"), names(maturity_best))[1] else NA
 tmat_col <- if (nrow(maturity_best) > 0) intersect(c("tm", "AgeMatMin"), names(maturity_best))[1] else NA
@@ -1412,7 +1570,7 @@ maturity_traits <- if (nrow(maturity_best) > 0) maturity_best[, .(
   Species,
   Lm   = if (!is.na(lm_col)) get(lm_col) else NA_real_,
   Tmat = if (!is.na(tmat_col)) get(tmat_col) else NA_real_
-)] else data.table(Species = character())
+)] else data.table(Species = character(), Lm = numeric(), Tmat = numeric())
 maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)",
                                           refno_candidates = c("MaturityRef", "MatRef", "RefNo", "MainRefNo"))
 
@@ -1421,21 +1579,21 @@ message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N],
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2d: maturity")))
 
 ## --- 2e. Ecology: trophic level ---------------------------------------
-ecol <- fetch_both(ecology, sp_list)
+ecol <- fetch_both(rfishbase::ecology, sp_list)
 tl_col <- if (nrow(ecol) > 0) intersect(c("DietTroph", "FoodTroph"), names(ecol))[1] else NA
 ecol_traits <- if (nrow(ecol) > 0) unique(ecol[, .(
   Species, TrophicLevel = if (!is.na(tl_col)) get(tl_col) else NA_real_
-)], by = "Species") else data.table(Species = character())
+)], by = "Species") else data.table(Species = character(), TrophicLevel = numeric())
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2e: ecology/trophic level")))
 
 ## --- 2f. Swimming: aspect ratio (fish-specific caudal-fin morphology -
 ## SeaLifeBase never has this, so skip that call entirely rather than
 ## waste time on a query that can never succeed) -----------------------
-swim <- fetch_both(swimming, sp_list, fishbase_only = TRUE)
+swim <- fetch_both(rfishbase::swimming, sp_list, fishbase_only = TRUE)
 ar_col <- if (nrow(swim) > 0) intersect(c("AspectRatio", "Aspect"), names(swim))[1] else NA
 swim_traits <- if (nrow(swim) > 0) unique(swim[, .(
   Species, AspectRatio = if (!is.na(ar_col)) get(ar_col) else NA_real_
-)], by = "Species") else data.table(Species = character())
+)], by = "Species") else data.table(Species = character(), AspectRatio = numeric())
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2f: swimming/aspect ratio")))
 
 ## --- assemble ----------------------------------------------------------
@@ -2323,7 +2481,15 @@ fwrite(phyto_flagged, file.path(csv_out_dir, "phytoplankton_needs_separate_metho
 ECOBASE_CSV_PATH <- file.path(csv_out_dir, "ecobase_literature_pb_qb_simple.csv")
 
 if (ENABLE_ECOBASE_QUERY) {
-  fetch_ecobase_literature_pb_qb(out_dir = out_dir, force_refresh = ECOBASE_FORCE_REFRESH)
+  ## 2026-09-23 fix: this was passing the top-level out_dir, so every
+  ## ecobase_*.csv (and the raw XML dumps) landed one level up from
+  ## where everything else in this script writes - while ECOBASE_CSV_PATH
+  ## just above already (correctly) pointed at csv_out_dir (the pbqb
+  ## subfolder). That mismatch meant a successful query's own CSV was
+  ## never found by the read-back check right below. Now both point at
+  ## csv_out_dir, so the EcoBase CSVs land inside the pbqb subfolder
+  ## alongside this script's other output.
+  fetch_ecobase_literature_pb_qb(out_dir = csv_out_dir, force_refresh = ECOBASE_FORCE_REFRESH)
 } else {
   message("ENABLE_ECOBASE_QUERY = FALSE - skipping the EcoBase literature query entirely.",
           " Continuing with empirical PB/QB only",
@@ -2770,15 +2936,36 @@ write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_ou
 FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 
 fg_ref_unique <- NULL
+## fg_species_all (2026-09-23 addition): the FULL species-level table -
+## every (Species, FG, FG_name) row FG_WMed_2026.csv defines, not just
+## the deduplicated FG-number/FG-name pairs in fg_ref_unique above.
+## Used below so the traits_ewe/Ecopath_traits output can include EVERY
+## species in the FG reference, not only the ~505 species_df happens to
+## have survey density for in the YEAR_ECOPATH window.
+fg_species_all <- NULL
 if (file.exists(FG_REFERENCE_PATH)) {
   fg_ref_raw <- fread(FG_REFERENCE_PATH)
   num_col <- intersect(c("FG_number", "FG_num", "GF"), names(fg_ref_raw))[1]
   name_col <- intersect("FG_name", names(fg_ref_raw))[1]
+  species_col <- intersect(c("species", "Species", "ESPECIE", "ScientificName"), names(fg_ref_raw))[1]
   if (!is.na(num_col) && !is.na(name_col)) {
     fg_ref_unique <- unique(fg_ref_raw[, .(FG = as.character(as.integer(get(num_col))),
                                            FG_name = get(name_col))])
     message("\nFG reference loaded from ", FG_REFERENCE_PATH, " (", nrow(fg_ref_unique),
             " FGs), using columns '", num_col, "' and '", name_col, "'.")
+    if (!is.na(species_col)) {
+      fg_species_all <- unique(fg_ref_raw[, .(Species = trimws(get(species_col)),
+                                              FG = as.character(as.integer(get(num_col))),
+                                              FG_name = get(name_col))])
+      fg_species_all <- fg_species_all[!is.na(Species) & Species != ""]
+      message("Species-level FG reference also loaded (", nrow(fg_species_all),
+              " species rows) using column '", species_col, "' - traits_ewe/Ecopath_traits will",
+              " include every one of these, not just the species_df subset.")
+    } else {
+      message("FG_REFERENCE_PATH has no recognizable species-name column (checked: species,",
+              " Species, ESPECIE, ScientificName) - traits_ewe/Ecopath_traits will fall back to",
+              " species_df's own species list only (the YEAR_ECOPATH survey subset).")
+    }
   } else {
     message("\n", strrep("!", 70))
     message("FG_REFERENCE_PATH exists but doesn't have both a FG-number-like column",
@@ -2804,184 +2991,177 @@ if (file.exists(FG_REFERENCE_PATH)) {
 ## length, Mean weight, Mean life span).
 ##
 ## MOVED HERE from 01_biomass.R (2026-09-22): this script is the one
-## place FG_WMed_2026.csv (fg_ref_unique, just loaded above) and the
-## raw trait values are both in scope, so the reconciliation against
-## the CORRECT 2026 FG numbering happens here instead of trusting the
-## FG numbers baked into the traits sheet's own "N: Group Name" header
-## rows, which are stale (they still reflect the OLD FG_WMed.xlsx
-## grouping/numbering, confirmed against a user-supplied example
-## export of this sheet - the FGs themselves have since been
-## renumbered/regrouped in FG_WMed_2026.csv).
+## place FG_WMed_2026.csv (fg_ref_unique, loaded above) and species_df's
+## own trait fetches are both in scope.
 ##
-## FG_TRAITS_FILE: there is still no CSV equivalent of this sheet -
-## it is read from the old FG_WMed.xlsx workbook purely for these
-## trait VALUES (species names + trait columns), never for FG
-## numbering/grouping. FG_num/FG_name on the output come exclusively
-## from fg_ref_unique (FG_WMed_2026.csv) via species_df, never from
-## this sheet's own header rows.
-FG_TRAITS_FILE <- file.path(pcloud_dir, "data/FG_WMed.xlsx")
+## 2026-09-23 rewrite: no longer reads the old FG_WMed.xlsx workbook at
+## all - this pipeline's only file dependencies are FG_WMed_2026.csv
+## (FG numbering/grouping AND, now, the full species list per FG) plus
+## the actual data sources/databases (surveys, FishBase/SeaLifeBase,
+## EcoBase). The table below is built directly from FG_WMed_2026.csv's
+## own species list (fg_species_all, loaded above), left-joined with
+## whatever species_df has computed for each species - so every FG and
+## every species FG_WMed_2026.csv defines is present, not just the
+## ~500 species_df has 1994-1996 survey density for. A species FG_WMed
+## _2026.csv lists but species_df doesn't cover (no survey record in
+## the YEAR_ECOPATH window) still gets its own row, with the
+## FishBase-derived columns simply blank:
+##   - Organism            <- dispatch_group (fish/invertebrate/mammal/
+##                            seabird) - only known for species_df's
+##                            own species (classified in Step 1); NA
+##                            for species outside that survey window
+##   - Max_length           <- MaxLength (FishBase species())
+##   - Mean_length           <- CommonLength (FishBase species() "typical/
+##                            common length", distinct from the MAXIMUM
+##                            Length/LengthMax field used for Max_length -
+##                            see the CommonLength comment near its
+##                            fetch in Step 2a for the caveat on this
+##                            field name)
+##   - Mean_weight           <- a_lw * Mean_length ^ b_lw (the same
+##                            length-weight regression already used
+##                            elsewhere in this script for Winf, applied
+##                            at Mean_length instead of Loo) - NA
+##                            whenever Mean_length or a_lw/b_lw is
+##                            missing, rather than guessed
+##   - Mean_lifespan_years  <- Longevity (FishBase species())
+##   - Vulnerability_index  <- Vulnerability (FishBase species(), added
+##                            in Step 2a specifically for this column)
+##   - Biomass_contribution <- this species' share of its FG's total
+##                            Biomass (survey-derived, species_df$Biomass)
+##   - Catch_contribution   <- this species' share of its FG's total
+##                            Yield (fisheries-derived, species_df$Yield -
+##                            NA whenever YIELD_SOURCE has no data, same
+##                            as species_df$Yield itself)
+## Ecology, Occurrence_status, IUCN_conservation_status and Exploitation_
+## status have NO automated source wired into this pipeline (they were
+## hand-curated in the old sheet) - kept as NA columns so the table's
+## shape/contract is unchanged for anything reading traits_ewe.csv/
+## Ecopath_traits downstream, rather than silently fabricated.
 
-## fg_traits_file's traits_ewe sheet alternates: a "N: Group Name"
-## header row (blank index column) followed by one data row per
-## species in that FG - the index column on species rows is a
-## running species ID, NOT the FG number; the FG number/name only
-## exist in the header row's text above it (and, per the above, are
-## stale even there). This reads that structure directly and fills
-## the FG number/name DOWN from each header row onto the species rows
-## below it (the same thing a human does visually reading the merged-
-## looking layout in Excel) purely so every species row can be
-## matched to a species NAME - the filled-down FG_num/FG_name are
-## discarded once that match is made; they are never used as the
-## output's FG assignment.
-fill_down <- function(x) {
-  idx <- which(!is.na(x))
-  if (length(idx) == 0) return(x)
-  rep_idx <- findInterval(seq_along(x), idx)
-  out <- x[idx][pmax(rep_idx, 1)]
-  out[rep_idx == 0] <- NA
-  out
-}
-
-if (!file.exists(FG_TRAITS_FILE)) {
-  message("\n", strrep("!", 70))
-  message("FG_TRAITS_FILE NOT FOUND: ", FG_TRAITS_FILE, " - skipping traits_ewe sheet entirely.",
-          " Ecopath_traits will not be written this run.")
-  message(strrep("!", 70))
-  traits_reconciled <- NULL
+species_universe <- if (!is.null(fg_species_all)) {
+  copy(fg_species_all)
 } else {
-  
-  traits_raw <- as.data.table(readxl::read_excel(FG_TRAITS_FILE, sheet = "traits_ewe", col_names = TRUE))
-  setnames(traits_raw, 1, "row_index")
-  setnames(traits_raw, "Species", "Species_col")
-  
-  is_header_row <- is.na(traits_raw$row_index) &
-    str_detect(traits_raw$Species_col, "^\\d+:\\s*")
-  if (sum(is_header_row) == 0) {
-    stop("No FG header rows (pattern 'N: Group name') found in traits_ewe - the sheet ",
-         "layout may have changed. Check FG_TRAITS_FILE's traits_ewe sheet by eye before proceeding.")
-  }
-  
-  ## header_num/header_name are used ONLY to detect where one FG's
-  ## block of species rows ends and the next begins (fill_down splits
-  ## on any change of value) - not as the output's FG assignment.
-  header_num  <- rep(NA_real_, nrow(traits_raw))
-  header_name <- rep(NA_character_, nrow(traits_raw))
-  header_num[is_header_row]  <- as.numeric(str_match(traits_raw$Species_col[is_header_row], "^(\\d+):")[, 2])
-  header_name[is_header_row] <- trimws(sub("^\\d+:\\s*", "", traits_raw$Species_col[is_header_row]))
-  ## some header rows in the raw sheet have no "N:" prefix at all
-  ## (e.g. "European sardine", "European anchovy", "European hake") -
-  ## still valid header rows, just without a stale number to discard.
-  header_name[is_header_row & is.na(header_name)] <- trimws(traits_raw$Species_col[is_header_row & is.na(header_name)])
-  
-  traits_raw[, stale_FG_num_sheet  := fill_down(header_num)]
-  traits_raw[, stale_FG_name_sheet := fill_down(header_name)]
-  
-  ## column names cleaned up for downstream use - original header text
-  ## (with its "(?)" unit uncertainty markers) kept in a comment here
-  ## rather than silently asserting units that weren't confirmed:
-  ##   Organism, Ecology, "Occurrence status", "Biomass contribution",
-  ##   "Catch contribution", "IUCN conservation status",
-  ##   "Exploitation status", "Vulnerability index (?)",
-  ##   "Mean length (?)", "Max length (?)", "Mean weight (?)",
-  ##   "Mean life span (year)"
-  old_trait_names <- c("Organism", "Ecology", "Occurrence status", "Biomass contribution",
-                       "Catch contribution", "IUCN conservation status", "Exploitation status",
-                       "Vulnerability index (?)", "Mean length (?)", "Max length (?)",
-                       "Mean weight (?)", "Mean life span (year)")
-  new_trait_names <- c("Organism", "Ecology", "Occurrence_status", "Biomass_contribution",
-                       "Catch_contribution", "IUCN_conservation_status", "Exploitation_status",
-                       "Vulnerability_index", "Mean_length", "Max_length",
-                       "Mean_weight", "Mean_lifespan_years")
-  missing_trait_cols <- setdiff(old_trait_names, names(traits_raw))
-  if (length(missing_trait_cols) > 0) {
-    stop("traits_ewe is missing expected trait column(s): ", paste(missing_trait_cols, collapse = ", "),
-         " - the sheet layout may have changed since this step was written.")
-  }
-  setnames(traits_raw, old_trait_names, new_trait_names)
-  
-  species_traits <- traits_raw[!is.na(row_index)]
-  species_traits[, Species := trimws(Species_col)]
-  species_traits <- species_traits[, c("Species", new_trait_names), with = FALSE]
-  
-  dupe_traits_species <- species_traits[, .N, by = Species][N > 1, Species]
-  if (length(dupe_traits_species) > 0) {
-    warning(length(dupe_traits_species), " species appear MORE THAN ONCE in traits_ewe - ",
-            "keeping the first occurrence of each, review the sheet for duplicates: ",
-            paste(dupe_traits_species, collapse = ", "))
-    species_traits <- unique(species_traits, by = "Species")
-  }
-  
-  ## --- reconcile against species_df (this script's own FG_WMed_2026-
-  ## backed master, NOT the traits sheet's own stale FG numbering) ----
-  fg_master <- unique(species_df[, .(Species, FG, FG_name)])
-  traits_reconciled <- merge(fg_master, species_traits, by = "Species", all = TRUE)
-  
-  not_in_master <- traits_reconciled[is.na(FG), Species]
-  if (length(not_in_master) > 0) {
-    warning(length(not_in_master), " species have a traits_ewe row but are NOT in species_df/",
-            "FG_WMed_2026.csv (FG master) - likely a naming variant (e.g. 'Bivalvia' vs 'Bivalvia sp.') ",
-            "or a species dropped in the 2026 FG revision, rather than a genuinely new species. Kept in ",
-            "the output, flagged in_fg_master = FALSE, NOT auto-matched to a master name since guessing ",
-            "wrong here would silently mix two different species' trait rows:\n  ",
-            paste(not_in_master, collapse = ", "))
-  }
-  
-  missing_traits <- traits_reconciled[!is.na(FG) & is.na(Organism), Species]
-  non_living_fgs <- c("Detritus", "Discards")
-  missing_traits_living <- setdiff(missing_traits, non_living_fgs)
-  if (length(missing_traits_living) > 0) {
-    warning(length(missing_traits_living), " species are in the FG master but have NO traits_ewe ",
-            "row (missing_traits = TRUE in the output, not silently dropped): ",
-            paste(missing_traits_living, collapse = ", "))
-  }
-  if (length(intersect(missing_traits, non_living_fgs)) > 0) {
-    message(length(intersect(missing_traits, non_living_fgs)), " non-living FG placeholder(s) (",
-            paste(intersect(missing_traits, non_living_fgs), collapse = ", "),
-            ") have no traits_ewe row, as expected.")
-  }
-  
-  ## the stale sheet-embedded FG number/name are reported ONLY as a
-  ## diagnostic of how much the 2026 FG revision moved species around -
-  ## species_df's FG/FG_name is what's kept in the output either way.
-  fg_num_mismatch <- traits_reconciled[
-    !is.na(FG) & !is.na(stale_FG_num_sheet) & as.character(FG) != as.character(stale_FG_num_sheet),
-    .(Species, FG, FG_name, stale_FG_num_sheet, stale_FG_name_sheet)
-  ]
-  if (nrow(fg_num_mismatch) > 0) {
-    message(nrow(fg_num_mismatch), " species have a different FG in the current FG_WMed_2026.csv",
-            " master than in the traits_ewe sheet's own (stale) header - expected, since the FG",
-            " numbering/grouping has since been revised. species_df's FG is used in the output:")
-    print(fg_num_mismatch)
-  }
-  
-  traits_reconciled[, in_fg_master := !is.na(FG)]
-  traits_reconciled[, missing_traits := is.na(Organism)]
-  traits_reconciled[, c("stale_FG_num_sheet", "stale_FG_name_sheet") := NULL]
-  setorder(traits_reconciled, FG, Species, na.last = TRUE)
-  
-  message("traits_ewe reconciled: ", nrow(traits_reconciled), " species total (",
-          sum(!traits_reconciled$missing_traits), " with traits, ",
-          sum(traits_reconciled$missing_traits), " missing traits), FG/FG_name taken from",
-          " FG_WMed_2026.csv via species_df.")
-  
-  ## 2026-09-17 update, revised: Ecopath_traits is the FG_name/species-
-  ## level traits table "as it was saved" - i.e. this species-level
-  ## traits_reconciled table, not the FG-level biomass-weighted rollup
-  ## this script computes from it elsewhere. Written directly to the
-  ## workbook as the final Ecopath_traits sheet (still also kept as a
-  ## traits_ewe.csv native table below, for anything reading it by
-  ## that name). This script's own FG-level rollup is written as an
-  ## audit-only CSV instead of a workbook sheet, so nothing else
-  ## contends for the Ecopath_traits sheet name.
-  write_native_sheets_csv(
-    sheets  = list(traits_ewe = traits_reconciled),
-    out_dir = csv_out_dir
-  )
-  upsert_workbook_sheets(
-    list(Ecopath_traits = traits_reconciled),
-    ECOPATH_WORKBOOK_PATH
-  )
+  message("fg_species_all not available (FG_WMed_2026.csv missing, or no species-name column",
+          " found in it) - traits_ewe/Ecopath_traits falls back to species_df's own species list",
+          " (the YEAR_ECOPATH survey subset) instead of every species in the FG reference.")
+  unique(species_df[, .(Species, FG, FG_name)])
 }
+## FG is character in fg_species_all (built as as.character(as.integer(...))
+## a few hundred lines up) but numeric/integer in species_df - normalize
+## both sides to character before merging on FG below, or data.table's
+## bmerge refuses with "Incompatible join types" (confirmed by an actual
+## run: x.FG integer vs i.FG character).
+species_universe[, FG := as.character(FG)]
+
+fg_totals <- species_df[, .(FG_Biomass_total = sum(Biomass, na.rm = TRUE),
+                            FG_Yield_total   = sum(Yield, na.rm = TRUE)), by = FG]
+fg_totals[, FG := as.character(FG)]
+
+traits_reconciled <- merge(species_universe,
+                           species_df[, .(Species, dispatch_group, MaxLength, CommonLength,
+                                          Longevity, Vulnerability, a_lw, b_lw, Biomass, Yield)],
+                           by = "Species", all.x = TRUE)
+traits_reconciled <- merge(traits_reconciled, fg_totals, by = "FG", all.x = TRUE)
+
+traits_reconciled[, `:=`(
+  Organism             = dispatch_group,
+  Ecology              = NA_character_,
+  Occurrence_status    = NA_character_,
+  Biomass_contribution = fifelse(!is.na(FG_Biomass_total) & FG_Biomass_total > 0,
+                                 Biomass / FG_Biomass_total, NA_real_),
+  Catch_contribution   = fifelse(!is.na(FG_Yield_total) & FG_Yield_total > 0,
+                                 Yield / FG_Yield_total, NA_real_),
+  IUCN_conservation_status = NA_character_,
+  Exploitation_status  = NA_character_,
+  Vulnerability_index  = Vulnerability,
+  Mean_length          = CommonLength,
+  Max_length           = MaxLength,
+  Mean_weight          = fifelse(!is.na(CommonLength) & !is.na(a_lw) & !is.na(b_lw),
+                                 a_lw * CommonLength ^ b_lw, NA_real_),
+  Mean_lifespan_years  = Longevity
+)]
+traits_reconciled[, c("dispatch_group", "MaxLength", "CommonLength", "Longevity", "Vulnerability",
+                      "a_lw", "b_lw", "Biomass", "Yield", "FG_Biomass_total", "FG_Yield_total") := NULL]
+traits_reconciled[, in_fg_master := Species %in% species_df$Species]
+traits_reconciled[, missing_traits := is.na(Max_length) & is.na(Mean_lifespan_years) & is.na(Vulnerability_index)]
+## FG is character (see the as.character() normalization above) -
+## sort by its NUMERIC value so FG order is 1, 2, ..., 10, not the
+## character-sort order "1", "10", "2", ... that plain setorder(FG)
+## would otherwise produce.
+traits_reconciled[, FG_sort_key := suppressWarnings(as.numeric(FG))]
+setorder(traits_reconciled, FG_sort_key, Species, na.last = TRUE)
+traits_reconciled[, FG_sort_key := NULL]
+
+message("traits_ewe built directly from FG_WMed_2026.csv + species_df: ", nrow(traits_reconciled),
+        " species total across ", uniqueN(traits_reconciled$FG), " FGs (",
+        sum(traits_reconciled$in_fg_master), " with 1994-1996 survey data in species_df, ",
+        sum(!traits_reconciled$in_fg_master), " listed in FG_WMed_2026.csv only - FishBase-derived",
+        " columns blank for those). ", sum(!traits_reconciled$missing_traits),
+        " species have at least one FishBase trait, ", sum(traits_reconciled$missing_traits), " have none.",
+        " Ecology/Occurrence_status/IUCN_conservation_status/Exploitation_status have no automated",
+        " source in this pipeline and are left blank (previously hand-curated in the retired",
+        " FG_WMed.xlsx sheet) - fill these manually if you need them.")
+
+## 2026-09-17 update, revised 2026-09-23: Ecopath_traits is the FG_name/
+## species-level traits table "as it was saved" - i.e. this species-level
+## traits_reconciled table, not the FG-level biomass-weighted rollup this
+## script computes from it elsewhere. traits_reconciled (tidy, one row
+## per species, FG/FG_name on every row) is kept as the machine-readable
+## source of truth - written as traits_ewe.csv below, for anything that
+## reads this data back programmatically. This script's own FG-level
+## rollup is written as an audit-only CSV instead of a workbook sheet, so
+## nothing else contends for the Ecopath_traits sheet name.
+write_native_sheets_csv(
+  sheets  = list(traits_ewe = traits_reconciled),
+  out_dir = csv_out_dir
+)
+
+## --- Excel-style grouped layout, now the ACTUAL Ecopath_traits sheet --
+## Mirrors the OLD FG_WMed.xlsx traits_ewe sheet's own visual convention
+## (confirmed against a user-supplied example export of that sheet): a
+## "<FG_num>: <FG_name>" header row, one blank row, then that FG's
+## species rows - repeated per FG, in FG order. 2026-09-23: Andrea
+## confirmed she wants the WORKBOOK sheet itself in this layout (not just
+## an audit-only CSV alongside a flat workbook sheet) - nothing downstream
+## in this pipeline reads the Ecopath_traits sheet back programmatically
+## (grep confirmed: only trim_workbook_to_final_sheets()'s target_order
+## and comments reference the sheet name), so it's safe to make this the
+## sheet's actual shape. traits_ewe.csv (flat, written above) remains the
+## machine-readable source of truth for anything that needs to read this
+## data back in.
+build_grouped_traits_sheet <- function(dt) {
+  trait_cols <- setdiff(names(dt), c("FG", "FG_name", "Species", "in_fg_master", "missing_traits"))
+  out_cols <- c("Species", trait_cols)
+  blank_row <- as.list(rep(NA_character_, length(out_cols) + 1))
+  names(blank_row) <- c("row_index", out_cols)
+  rows <- list()
+  for (fg in unique(dt$FG)) {
+    fg_rows <- dt[FG == fg]
+    fg_name_i <- fg_rows$FG_name[1]
+    header <- as.list(rep(NA_character_, length(out_cols) + 1))
+    names(header) <- c("row_index", out_cols)
+    header$Species <- paste0(fg, ": ", fg_name_i)
+    rows[[length(rows) + 1]] <- as.data.table(header)
+    rows[[length(rows) + 1]] <- as.data.table(blank_row)
+    species_block <- fg_rows[, ..out_cols]
+    species_block[, row_index := as.character(.I)]
+    setcolorder(species_block, c("row_index", out_cols))
+    species_block[] <- lapply(species_block, as.character)
+    rows[[length(rows) + 1]] <- species_block
+  }
+  rbindlist(rows, use.names = TRUE, fill = TRUE)
+}
+traits_grouped <- build_grouped_traits_sheet(traits_reconciled)
+fwrite(traits_grouped, file.path(csv_out_dir, "traits_ewe_grouped.csv"))
+upsert_workbook_sheets(
+  list(Ecopath_traits = traits_grouped),
+  ECOPATH_WORKBOOK_PATH
+)
+message("Saved: traits_ewe_grouped.csv and workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
+        " FG header rows + ", nrow(traits_reconciled), " species rows) - the same data as traits_ewe.csv,",
+        " laid out with a '<FG_num>: <FG_name>' header row and blank separator above each FG's species,",
+        " matching the old FG_WMed.xlsx sheet's visual convention. Anything reading this data back",
+        " programmatically should use traits_ewe.csv instead of the Ecopath_traits sheet.")
 
 ## =================================================================
 ## OUTPUT 2: Dot-whisker comparison plots - species-level (spread

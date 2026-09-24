@@ -132,7 +132,7 @@ if (!exists("START_YEAR",      envir = .GlobalEnv, inherits = FALSE)) START_YEAR
 if (!exists("END_YEAR",        envir = .GlobalEnv, inherits = FALSE)) END_YEAR   <- 2023                # GFCM_2025's full available series. FishMIP/SAU below have no
 # data past ~2017-2019 regardless - their own coverage messages
 # say so explicitly rather than truncating GFCM's longer series.
-if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps
+if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps - CONFIRMED intentional (2026-09-23): the Ecopath reference period is 1994-1996 (or 1995 alone), NOT a stale placeholder - several catch sources (ICCAT, STECF FDI, some STAR/RAM assessments) genuinely have no coverage this early, which is why quite a few commercial FGs show zero in Ecopath_L/Ecopath_Di for exactly this window even though they have real catch in later years - see species_group_fg_crosswalk.csv to check whether a given FG's species matched at all vs. simply has no data yet for 1994-1996
 
 if (!exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
 
@@ -461,8 +461,40 @@ resolve_matches_safely <- function(merged_dt, query_col = "Species", fg_col = "F
   n_fg <- merged_dt[, .(n_distinct_fg = uniqueN(get(fg_col))), by = query_col]  # count distinct FG matches per query
   safe_queries <- n_fg[n_distinct_fg == 1][[query_col]]  # queries with exactly one FG match
   ambiguous_queries <- n_fg[n_distinct_fg > 1][[query_col]]  # queries with more than one FG match
-  list(safe = unique(merged_dt[get(query_col) %in% safe_queries], by = query_col),
-       ambiguous = merged_dt[get(query_col) %in% ambiguous_queries])
+  
+  ## 2026-09-23 addition: a query that's "ambiguous" only because it
+  ## spans a commercial vs non-commercial split of the SAME taxon (e.g.
+  ## a generic name matching both "Non-commercial decapods" and "Other
+  ## commercial decapods" in FG_WMed_2026.csv) is a real, recurring
+  ## pattern here, not a genuine multi-species ambiguity - name/taxonomy
+  ## matching can't see commercial status on its own (same reasoning
+  ## 01_biomass.R's own taxonomy fallback already applies, via its
+  ## exclude_fg_regex parameter). Everything reaching this function
+  ## comes from an actual GFCM/STECF/SAU/STAR catch or landings record,
+  ## which means it WAS caught/reported - so it always belongs in a
+  ## commercial FG, never the non-commercial one. When dropping the
+  ## non-commercial candidate(s) leaves exactly ONE remaining FG, that
+  ## commercial FG is used instead of discarding the query as ambiguous.
+  ## If more than one non-non-commercial candidate remains, it's a
+  ## genuine ambiguity and still gets dropped, same as before.
+  commercial_rescued <- data.table()
+  if (length(ambiguous_queries) > 0 && "FG_name" %in% names(merged_dt)) {
+    amb_dt <- copy(merged_dt[get(query_col) %in% ambiguous_queries])
+    amb_dt[, is_noncommercial := grepl("non-commercial|noncommercial", FG_name, ignore.case = TRUE)]
+    amb_n <- amb_dt[is_noncommercial == FALSE, .(n_commercial_fg = uniqueN(get(fg_col))), by = query_col]
+    rescued_queries <- amb_n[n_commercial_fg == 1][[query_col]]
+    if (length(rescued_queries) > 0) {
+      commercial_rescued <- unique(amb_dt[get(query_col) %in% rescued_queries & is_noncommercial == FALSE], by = query_col)
+      commercial_rescued[, is_noncommercial := NULL]
+      ambiguous_queries <- setdiff(ambiguous_queries, rescued_queries)
+    }
+  }
+  
+  safe <- unique(merged_dt[get(query_col) %in% safe_queries], by = query_col)
+  if (nrow(commercial_rescued) > 0) {
+    safe <- rbindlist(list(safe, commercial_rescued), use.names = TRUE, fill = TRUE)
+  }
+  list(safe = safe, ambiguous = merged_dt[get(query_col) %in% ambiguous_queries])
 }
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
@@ -512,6 +544,19 @@ if (length(fg_name_variants) > 0) {
 ## own fg_lookup argument (every FG, not just ones with a matched species).
 full_fg_list <- unique(fg_lookup[, .(FG_num, FG_name)])  # every FG number/name, deduplicated
 setorder(full_fg_list, FG_num)  # sort by FG number
+
+## --- Species/group -> FG crosswalk, collected per data source (2026-
+## 09-23) --------------------------------------------------------------
+## Answers "which raw species/group name from which catch data source
+## matched (or failed to match) which FG?" directly, as its own CSV -
+## the excel workbook only shows the FG-level RESULT (landings/discards
+## by FG x fleet), so there was no single place to check "does the catch
+## data even contain something that should have landed in FG 13?"
+## without re-deriving it from console messages. Each source's own
+## matching block below appends one data.table here, right where that
+## source's match/no-match outcome is already known - written out as one
+## combined CSV further down, once every source has had its turn.
+species_fg_crosswalk_parts <- list()
 
 ## --- Stanza tie-break (2026-09-22): FG_WMed_2026.csv deliberately maps
 ## some species to MORE THAN ONE FG when it splits that species into
@@ -731,6 +776,30 @@ if (nrow(top_unresolved) > 0) {
 
 species_to_fg <- unique(resolved_final[status == "resolved", .(Species, FG_num, FG_name)])  # final species->FG lookup, resolved rows only
 
+# 2026-09-23: bridge GFCM's raw common/reported name through fao_species's exact
+# Name_En -> Scientific_Name lookup, same pattern used for STECF FDI below, so the
+# crosswalk's ScientificName column is populated for auditing instead of hardcoded
+# NA. This does NOT create new FG matches by itself - GFCM's own cascade (genus
+# fallback, FishBase common name, exact fao_scientific_name step already inside
+# rerun_species_fg_cascade()) already tried a scientific-name route wherever one
+# existed; this just surfaces the resolved scientific name (when one exists) next
+# to whatever FG_num/FG_name/Matched status that cascade already produced. Aggregate/
+# NEI category names (e.g. "Morays eels etc. NEI") have no single scientific name in
+# fao_species and will still show ScientificName = NA here, as expected.
+gfcm_name_to_sci <- unique(fao_species[!is.na(Scientific_Name) & Scientific_Name != "",
+                                       .(Name_En, Scientific_Name)])
+gfcm_name_to_sci[, n_distinct_sci := uniqueN(Scientific_Name), by = Name_En]
+gfcm_name_to_sci <- unique(gfcm_name_to_sci[n_distinct_sci == 1, .(Name_En, Scientific_Name)])
+
+species_fg_crosswalk_parts[["GFCM"]] <- resolved_final[, .(DataSource = "GFCM", RawIdentifier = Species,
+                                                           FG_num, FG_name,
+                                                           Matched = status == "resolved")]
+species_fg_crosswalk_parts[["GFCM"]] <- merge(species_fg_crosswalk_parts[["GFCM"]], gfcm_name_to_sci,
+                                              by.x = "RawIdentifier", by.y = "Name_En", all.x = TRUE)
+setnames(species_fg_crosswalk_parts[["GFCM"]], "Scientific_Name", "ScientificName")
+setcolorder(species_fg_crosswalk_parts[["GFCM"]],
+            c("DataSource", "RawIdentifier", "ScientificName", "FG_num", "FG_name", "Matched"))
+
 ## --- Re-runnable version of the cascade above, for species that show
 ## up LATER in the pipeline (FDI's own species catalog, below) but never
 ## went through this cascade in the first place because GFCM itself
@@ -771,6 +840,32 @@ rerun_species_fg_cascade <- function(species_names) {
     if (nrow(em) > 0) {
       r <- resolve_matches_safely(em)$safe[, .(Species, FG_num, FG_name)]
       r[, match_method := "fishbase_common_name_rerun"]
+      out <- rbind(out, r, fill = TRUE)
+    }
+  }
+  todo <- todo[!Species %in% out$Species]
+  
+  ## 2026-09-23 fix: this rerun cascade was missing the exact FAO
+  ## Name_En -> Scientific_Name bridge (fao_sci_bridge/fao_sci_merged,
+  ## lines ~658-667 above) that the ONE-TIME GFCM cascade already has -
+  ## it jumped straight from FishBase common-name matching to the much
+  ## coarser genus-level fallback below. Since this rerun cascade is the
+  ## ONLY matching STECF FDI's still-unmatched 3-alpha codes ever get
+  ## (via code_has_name$Species, further down), any code whose FAO
+  ## Name_En resolves to an exact scientific name that genus-matching
+  ## alone would miss (e.g. because match_by_containment/genus never
+  ## fires, or the genus already maps to a DIFFERENT FG so the genus
+  ## match comes out ambiguous and gets excluded) was silently staying
+  ## unresolved even though an unambiguous exact match was available.
+  if (nrow(todo) > 0 && exists("fao_species")) {
+    fsb <- merge(todo, unique(fao_species[!is.na(Scientific_Name) & Scientific_Name != "",
+                                          .(Name_En, Scientific_Name)]),
+                 by.x = "Species", by.y = "Name_En")
+    fsm <- merge(fsb, fg_lookup[, .(ScientificName, FG_num, FG_name)],
+                 by.x = "Scientific_Name", by.y = "ScientificName")
+    if (nrow(fsm) > 0) {
+      r <- resolve_matches_safely(fsm)$safe[, .(Species, FG_num, FG_name)]
+      r[, match_method := "fao_scientific_name_rerun"]
       out <- rbind(out, r, fill = TRUE)
     }
   }
@@ -1112,6 +1207,10 @@ if (length(sau_dir_files) == 0 && !file.exists(SAU_RAW_CSV)) {
                                    sau_genus_safe[, .(ScientificName, FG_num, FG_name)]), use.names = TRUE)  # combine direct and genus matches
   message("[SAU] ", nrow(sau_species_fg), " of ", nrow(sau_sci), " distinct SAU species matched to an FG.")
   
+  sau_crosswalk <- merge(sau_sci, sau_species_fg, by = "ScientificName", all.x = TRUE)  # every distinct SAU scientific name, matched or not
+  species_fg_crosswalk_parts[["SAU"]] <- sau_crosswalk[, .(DataSource = "SAU", RawIdentifier = ScientificName,
+                                                           ScientificName, FG_num, FG_name, Matched = !is.na(FG_num))]
+  
   sau_raw <- merge(sau_raw, sau_species_fg, by.x = "sci_name", by.y = "ScientificName", all.x = TRUE)  # attach FG to every SAU catch row
   
   ## Country x FG x gear catch, summed across all years SAU has -
@@ -1264,6 +1363,90 @@ if (nrow(missing_fg_split) > 0 && nrow(country_overall) > 0) {
 fleet_prop[is.na(fleet_split_source) | fleet_split_source == "", fleet_split_source :=
              "SAU (country x FG x gear, mapped to FleetType via GEAR_TO_FLEETTYPE)"]  # label the remaining rows as coming from the primary SAU mapping
 message("\n[Fleet split] fleet_prop: ", nrow(fleet_prop), " Country x FG x FleetType share row(s).")
+
+## --- GFCM Fleet Register vessel-count override (Morocco/Algeria) -----
+## 2026-09-23, per Andrea: real registered-vessel counts by gear exist
+## for every FLEET_REGISTER country in GFCM-FleetRegister.xlsx
+## (pcloud_dir/data/Complementary data/GFCM-FleetRegister.xlsx, sheet
+## "FleetRegister") - a genuine GFCM fleet-register source (checked:
+## GFCM's own public Regional Fleet Register is a view-only Power BI
+## dashboard with no bulk export, so this local copy is the only usable
+## form of it). Applied HERE only to Morocco and Algeria, per Andrea's
+## explicit scope (Tunisia intentionally excluded this round; France/
+## Spain/Italy already have a better source - STECF FDI's own real
+## per-year catch-based split). Vessel-count share is used directly as
+## prop_fleet - i.e. assumes roughly equal catch-per-vessel across gear
+## types within a country, since no per-gear catch or CPUE figure exists
+## for these two countries either; a real, country-specific GFCM
+## registry count is still a much better basis than the arbitrary flat
+## 1/N split or thin SAU country-level mix these two countries would
+## otherwise fall into. Like country_overall, this doesn't vary by FG (a
+## registered vessel's gear doesn't change per species) or by year
+## (single fixed-count snapshot, not a time series in this export) -
+## applied uniformly to every FG_num and every Year for these countries.
+##
+## Sheet layout: repeating blocks, one per country - a header row whose
+## first cell is the country name and second cell is literally
+## "Operant a:", followed by FleetType/GSA/Comments/Number-of-vessels
+## data rows, then a blank row before the next country's block.
+GFCM_FLEET_REGISTER_XLSX <- file.path(pcloud_dir, "data/Complementary data/GFCM-FleetRegister.xlsx")
+GFCM_FLEET_REGISTER_SHEET <- "FleetRegister"
+GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- c("Morocco", "Algeria")  # scope, per Andrea - add "Tunisia" here if she wants it included later
+GFCM_FLEET_REGISTER_SOURCE_LABEL <- "GFCM Fleet Register (real registered-vessel count by gear, Complementary data/GFCM-FleetRegister.xlsx) - assumes roughly equal catch-per-vessel across gears, no FG/year variation"
+
+parse_gfcm_fleet_register <- function(path, sheet) {
+  if (!file.exists(path)) return(data.table())
+  raw <- as.data.table(readxl::read_excel(path, sheet = sheet, col_names = FALSE))
+  setnames(raw, seq_len(min(4, ncol(raw))), c("c1", "c2", "c3", "c4")[seq_len(min(4, ncol(raw)))])
+  ## Not every country's block has the same header style - Morocco/
+  ## Algeria/Tunisia's blocks start with a "c2 == 'Operant a:'" sub-
+  ## header row, but France/Spain/Italy's blocks are just a bare country-
+  ## name row (c2/c3/c4 all blank) straight into data rows, confirmed
+  ## against Andrea's actual pasted sheet content (2026-09-23) - relying
+  ## on "Operant a:" alone silently mis-attributed every France/Spain/
+  ## Italy row to whichever country came right before them. Robust rule
+  ## instead: c4 (Number of vessels) is a real number ONLY on an actual
+  ## data row, in EITHER block style - so any row where c1 is non-blank
+  ## but c4 does NOT parse as numeric (the header text "Number of
+  ## vessels", or simply blank) marks the start of a new country block,
+  ## regardless of whether it also happens to carry an "Operant a:" row.
+  out <- list()
+  current_country <- NA_character_
+  for (i in seq_len(nrow(raw))) {
+    c1 <- trimws(as.character(raw$c1[i])); if (is.na(c1)) c1 <- ""
+    c2 <- trimws(as.character(raw$c2[i])); if (is.na(c2)) c2 <- ""
+    if (c1 == "") next  # blank separator row
+    n_vessels <- suppressWarnings(as.numeric(raw$c4[i]))
+    if (is.na(n_vessels)) { current_country <- c1; next }  # country-marker row (header-style or bare) - not a data row
+    if (is.na(current_country) || current_country == "") next  # a data-looking row before any country marker was seen - ignore defensively
+    out[[length(out) + 1]] <- data.table(Country = current_country, FleetType = c1, GSA = c2, N_vessels = n_vessels)
+  }
+  if (length(out) == 0) return(data.table())
+  rbindlist(out)
+}
+
+gfcm_fleet_register <- parse_gfcm_fleet_register(GFCM_FLEET_REGISTER_XLSX, GFCM_FLEET_REGISTER_SHEET)
+if (nrow(gfcm_fleet_register) == 0) {
+  message("\n[Fleet split] GFCM-FleetRegister.xlsx not found/empty at '", GFCM_FLEET_REGISTER_XLSX,
+          "' - Morocco/Algeria keep whatever fleet_prop tier they'd otherwise fall into (see message above).")
+} else {
+  fwrite(gfcm_fleet_register, file.path(csv_out_dir, "gfcm_fleet_register_vessel_counts.csv"))
+  vessel_share <- gfcm_fleet_register[Country %in% GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES]
+  vessel_share[, prop_fleet_vessels := N_vessels / sum(N_vessels), by = Country]
+  n_before <- fleet_prop[Country %in% GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES, .N]
+  fleet_prop[vessel_share, `:=`(
+    prop_fleet = i.prop_fleet_vessels,
+    fleet_split_source = GFCM_FLEET_REGISTER_SOURCE_LABEL
+  ), on = c("Country", "FleetType")]
+  n_overridden <- fleet_prop[Country %in% GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES & fleet_split_source == GFCM_FLEET_REGISTER_SOURCE_LABEL, .N]
+  untouched <- unique(fleet_prop[Country %in% GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES & fleet_split_source != GFCM_FLEET_REGISTER_SOURCE_LABEL, .(Country, FleetType)])
+  message("\n[Fleet split] GFCM Fleet Register vessel-count override: ", n_overridden, " of ", n_before,
+          " Country x FG x FleetType row(s) for ", paste(GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES, collapse = "/"),
+          " now use real registered-vessel-count shares instead of a flat/borrowed fallback.",
+          if (nrow(untouched) > 0) paste0(" ", nrow(untouched), " Country x FleetType combo(s) weren't in the",
+                                          " register and kept their previous fallback: ",
+                                          paste(paste(untouched$Country, untouched$FleetType, sep = ": "), collapse = "; "), ".") else "")
+}
 
 ## Same mapping, but keeping Year - SAU's own real year-by-year fleet
 ## shares (not the flat average above), the raw material for the
@@ -1887,9 +2070,74 @@ if (!dir.exists(stecf_catches_dir)) {
       ## Species (FAO 3-alpha code) -> FG, via the SAME reference file
       ## GFCM's own species matching used (CL_FI_SPECIES_GROUPS.csv) -
       ## FDI's species field uses the same FAO 3-alpha standard.
-      species_code_ref <- safe_fread(file.path(cfg$data_dir, cfg$species_file), "species_file")[, .(SpeciesCode = `3A_Code`, Species = Name_En)]  # FAO 3-alpha code lookup
+      species_code_ref <- unique(safe_fread(file.path(cfg$data_dir, cfg$species_file), "species_file")[, .(SpeciesCode = `3A_Code`, Species = Name_En)])  # FAO 3-alpha code lookup (unique()'d defensively - a duplicate SpeciesCode row here would fan out every merge keyed on it below)
       species_code_to_fg <- unique(merge(species_code_ref, species_to_fg, by = "Species")[, .(SpeciesCode, FG_num, FG_name)])  # build a 3-alpha code -> FG lookup
       stecf_raw <- merge(stecf_raw, species_code_to_fg, by.x = "species", by.y = "SpeciesCode", all.x = TRUE)  # attach FG to each FDI row
+      
+      ## --- ASFIS bridge (2026-09-23 addition), tried BEFORE the retry
+      ## cascade below - CL_FI_SPECIES_GROUPS.csv above is missing some
+      ## 3-alpha codes entirely (44 in a confirmed run) and doesn't carry
+      ## a genuine Scientific_Name for many others, so codes/names that
+      ## fail there never get a chance at an EXACT taxonomic match. The
+      ## full ASFIS list (FAO's actual 3-alpha code registry, distinct
+      ## from CL_FI_SPECIES_GROUPS.csv's own ISSCAAP-derived species-
+      ## groups extract) carries Alpha3_Code -> Scientific_Name directly.
+      ## Looked for locally only (no download attempted here - unlike
+      ## find_or_download_fao_species()'s CL_FI_SPECIES_GROUPS.csv, no
+      ## live download URL for this specific one has been confirmed
+      ## working from this environment) - place a copy anywhere under
+      ## pcloud_dir (e.g. ASFIS_sp_2026.1.csv, as distributed by FAO) and
+      ## it will be picked up automatically; skipped with a clear message
+      ## if none is found, falling back to CL_FI_SPECIES_GROUPS.csv/the
+      ## common-name cascade alone exactly as before.
+      asfis_path <- list.files(pcloud_dir, pattern = "^ASFIS_sp.*\\.(csv|xlsx)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+      if (length(asfis_path) == 0) {
+        message("[STECF FDI] No ASFIS_sp_*.csv/.xlsx file found under pcloud_dir - skipping the ASFIS exact-",
+                "scientific-name bridge for 3-alpha codes. Place a copy of the FAO ASFIS species list",
+                " (e.g. ASFIS_sp_2026.1.csv) anywhere under pcloud_dir to enable it.")
+      } else {
+        asfis_path <- asfis_path[1]
+        asfis_raw <- if (grepl("\\.xlsx$", asfis_path, ignore.case = TRUE)) {
+          as.data.table(readxl::read_excel(asfis_path))
+        } else {
+          fread(asfis_path, encoding = "UTF-8")
+        }
+        alpha3_col <- grep("alpha.?3|3.?a.?code|3a_code", names(asfis_raw), ignore.case = TRUE, value = TRUE)[1]
+        asfis_sci_col <- grep("scientific", names(asfis_raw), ignore.case = TRUE, value = TRUE)[1]
+        if (is.na(alpha3_col) || is.na(asfis_sci_col)) {
+          message("[STECF FDI] ASFIS file found at ", asfis_path, " but couldn't find both an alpha-3-code-like",
+                  " column and a 'scientific'-named column (got: ", paste(names(asfis_raw), collapse = ", "),
+                  ") - skipping the ASFIS bridge.")
+        } else {
+          asfis_sci_lookup <- unique(asfis_raw[, .(SpeciesCode = get(alpha3_col), Scientific_Name = get(asfis_sci_col))])
+          asfis_sci_lookup <- asfis_sci_lookup[!is.na(SpeciesCode) & SpeciesCode != "" & !is.na(Scientific_Name) & Scientific_Name != ""]
+          ## defensive, same reasoning as the STECF/GFCM crosswalk fix
+          ## above - a duplicate SpeciesCode with two different
+          ## Scientific_Name values would fan out the merge below.
+          asfis_sci_lookup[, n_distinct_sci := uniqueN(Scientific_Name), by = SpeciesCode]
+          n_dupe_codes <- uniqueN(asfis_sci_lookup[n_distinct_sci > 1]$SpeciesCode)
+          if (n_dupe_codes > 0) {
+            message("[STECF FDI] ", n_dupe_codes, " ASFIS Alpha3_Code value(s) map to more than one distinct",
+                    " Scientific_Name in the loaded file - excluded from the bridge rather than guessed.")
+          }
+          asfis_sci_lookup <- unique(asfis_sci_lookup[n_distinct_sci == 1, .(SpeciesCode, Scientific_Name)])
+          
+          still_missing_fg <- unique(stecf_raw[is.na(FG_num)]$species)
+          asfis_bridge <- merge(data.table(SpeciesCode = still_missing_fg), asfis_sci_lookup, by = "SpeciesCode")
+          asfis_bridge <- merge(asfis_bridge, fg_lookup[, .(ScientificName, FG_num, FG_name)],
+                                by.x = "Scientific_Name", by.y = "ScientificName")
+          asfis_resolved <- resolve_matches_safely(asfis_bridge, query_col = "SpeciesCode")
+          if (nrow(asfis_resolved$safe) > 0) {
+            stecf_raw[asfis_resolved$safe, `:=`(FG_num = i.FG_num, FG_name = i.FG_name), on = c(species = "SpeciesCode")]
+            message("[STECF FDI] ASFIS bridge (", asfis_path, "): ", nrow(asfis_resolved$safe), " of ",
+                    length(still_missing_fg), " still-unmatched code(s) resolved via an exact Scientific_Name",
+                    " match (", uniqueN(asfis_resolved$ambiguous$SpeciesCode), " ambiguous, excluded).")
+          } else {
+            message("[STECF FDI] ASFIS bridge (", asfis_path, "): 0 of ", length(still_missing_fg),
+                    " still-unmatched code(s) resolved.")
+          }
+        }
+      }
       
       ## Rows still missing FG_num split into TWO genuinely different
       ## failure modes that a single "dropped (no FG to assign)" message
@@ -1962,6 +2210,50 @@ if (!dir.exists(stecf_catches_dir)) {
                                       " the retry above - dropped (", round(unmatched_landed_t, 1), " t of ",
                                       round(total_landed_t, 1), " t total landed weight, ",
                                       round(100 * unmatched_landed_t / total_landed_t, 2), "%).")
+      
+      ## Crosswalk row per distinct FAO 3-alpha code, captured BEFORE the
+      ## unmatched-row filter just below so both matched and dropped codes
+      ## are represented (FG_num/FG_name here already reflect the direct
+      ## code match AND the rerun_species_fg_cascade() retry above - this
+      ## is the final per-code outcome, not just the first pass).
+      stecf_code_crosswalk <- unique(stecf_raw[, .(species, FG_num, FG_name)])
+      stecf_code_crosswalk <- merge(stecf_code_crosswalk, species_code_ref[, .(SpeciesCode, Species)],
+                                    by.x = "species", by.y = "SpeciesCode", all.x = TRUE)  # attach the FAO Name_En where the code is recognized at all
+      setnames(stecf_code_crosswalk, "Species", "CommonName")  # this is Name_En (a common name), NOT a scientific name - renamed so the column below isn't mislabeled
+      ## 2026-09-23 fix: the crosswalk's ScientificName column was being
+      ## set to the FAO common name (Name_En) above, mislabeled as a
+      ## scientific name. Bridge through fao_species (same Name_En ->
+      ## Scientific_Name lookup used for the exact-match cascade step
+      ## earlier in this file) to get the REAL taxonomic name here.
+      ##
+      ## 2026-09-23 second fix (confirmed by an actual run - "Join
+      ## results in 1295282 rows" cartesian error right here): some
+      ## Name_En values in the full FAO reference map to MORE THAN ONE
+      ## distinct Scientific_Name (generic/NEI-style common names in
+      ## particular), so a plain unique(Name_En, Scientific_Name) still
+      ## lets one CommonName join to many Scientific_Name rows -
+      ## multiplying every stecf_code_crosswalk row that shares it. The
+      ## fao_sci_bridge step earlier in this file (the one-time GFCM
+      ## cascade) avoids exactly this via resolve_matches_safely(); apply
+      ## the same unambiguous-only filter here - a Name_En with more than
+      ## one distinct Scientific_Name is dropped to NA (never guessed)
+      ## rather than silently fanning out the join.
+      name_en_to_sci <- unique(fao_species[!is.na(Scientific_Name) & Scientific_Name != "",
+                                           .(Name_En, Scientific_Name)])
+      name_en_to_sci[, n_distinct_sci := uniqueN(Scientific_Name), by = Name_En]
+      n_ambiguous_name_en <- uniqueN(name_en_to_sci[n_distinct_sci > 1]$Name_En)
+      if (n_ambiguous_name_en > 0) {
+        message("[STECF FDI] ", n_ambiguous_name_en, " FAO Name_En value(s) map to more than one distinct",
+                " Scientific_Name (e.g. generic/NEI common names shared across several taxa) - excluded from",
+                " the ScientificName bridge below rather than guessed; ScientificName stays NA for those.")
+      }
+      name_en_to_sci <- unique(name_en_to_sci[n_distinct_sci == 1, .(Name_En, Scientific_Name)])
+      stecf_code_crosswalk <- merge(stecf_code_crosswalk, name_en_to_sci,
+                                    by.x = "CommonName", by.y = "Name_En", all.x = TRUE)
+      species_fg_crosswalk_parts[["STECF_FDI"]] <- stecf_code_crosswalk[, .(DataSource = "STECF FDI", RawIdentifier = species,
+                                                                            ScientificName = Scientific_Name, FG_num, FG_name,
+                                                                            Matched = !is.na(FG_num))]
+      
       stecf_raw <- stecf_raw[!is.na(FG_num)]  # drop rows with no FG match
       
       ## Discards: real columns, no flag-detection needed - landed
@@ -2905,6 +3197,12 @@ if (nrow(star_ram_combined) > 0) {
           " assessed species matched to a FG (exact name or genus fallback); ", max(n_star_unmatched, 0),
           " species could not be matched and are excluded from this cross-check.")
   
+  star_crosswalk <- merge(data.table(species = unique(star_wm$species)),
+                          unique(star_matched[, .(species, FG_num, FG_name)]), by = "species", all.x = TRUE)
+  species_fg_crosswalk_parts[["STAR_RAM"]] <- star_crosswalk[, .(DataSource = "STAR/RAM", RawIdentifier = species,
+                                                                 ScientificName = species, FG_num, FG_name,
+                                                                 Matched = !is.na(FG_num))]
+  
   ## Sum Catches/Landings across every West Med GSA (stock assessments
   ## report an absolute total, not a density, so summing across GSAs
   ## within the model's West Med scope gives the whole-domain total
@@ -3224,6 +3522,10 @@ if (is.null(iccat_raw)) {
             " it picked up here - this loader deliberately does not invent an FG for it.")
   }
   
+  iccat_crosswalk <- merge(ICCAT_SPECIES, iccat_matched, by = "ScientificName", all.x = TRUE)  # every requested ICCAT species, matched or not
+  species_fg_crosswalk_parts[["ICCAT"]] <- iccat_crosswalk[, .(DataSource = "ICCAT", RawIdentifier = ScientificName,
+                                                               ScientificName, FG_num, FG_name, Matched = !is.na(FG_num))]
+  
   ## Sum across flags/gears to one Catch_t per FG x Year - ICCAT's Task
   ## I is reported per flag(country) x gear x year, and the whole-
   ## stock total (summed across every reporting flag) is what belongs
@@ -3434,6 +3736,96 @@ if (nrow(fg_zero_catch_ever) > 0) {
   fwrite(fg_zero_catch_ever, file.path(csv_out_dir, "fg_zero_catch_diagnostic.csv"))  # full detail for offline review
 }
 
+## --- Combined species/group -> FG crosswalk, every data source in one
+## CSV (2026-09-23) -------------------------------------------------------
+## One row per distinct raw species/group name PER SOURCE (GFCM, STECF
+## FDI, SAU, STAR/RAM, ICCAT), whether it matched an FG or not - this is
+## the direct answer to "which group in which catch/discards data source
+## is assigned to which FG", to check against the FGs that show missing
+## landings/discards in the workbook. FG_name here is the FG this
+## species/code/group name resolved to (NA if it never matched anything);
+## Matched = FALSE rows are exactly the ones worth chasing down first.
+species_fg_crosswalk_all <- rbindlist(species_fg_crosswalk_parts, use.names = TRUE, fill = TRUE)
+if (nrow(species_fg_crosswalk_all) > 0) {
+  ## 2026-09-23 addition: flag any RawIdentifier that resolves to MORE
+  ## THAN ONE distinct FG within the same DataSource - e.g. a raw
+  ## species/group name/code matched inconsistently across different
+  ## rows in that source's own matching cascade (could be a genuine
+  ## stanza split, or could be a real matching bug worth chasing - this
+  ## doesn't guess which, it just surfaces it). A name that legitimately
+  ## split into juvenile/adult stanza FGs will show up here too; check
+  ## FG_name for both rows before assuming it's an error.
+  ambiguous_matches <- species_fg_crosswalk_all[
+    Matched == TRUE, .(n_distinct_fg = uniqueN(FG_num)), by = .(DataSource, RawIdentifier)
+  ][n_distinct_fg > 1]
+  species_fg_crosswalk_all[, ambiguous_multi_FG := FALSE]
+  if (nrow(ambiguous_matches) > 0) {
+    species_fg_crosswalk_all[
+      ambiguous_matches, ambiguous_multi_FG := TRUE,
+      on = c("DataSource", "RawIdentifier")
+    ]
+  }
+  
+  ## 2026-09-23 addition: a best-effort reason for every UNMATCHED row -
+  ## not another matching attempt, just categorizing why the existing
+  ## cascades (direct FG-name, FishBase common name, FAO exact
+  ## scientific name, FAO genus, word containment) already came up
+  ## empty, so it's obvious at a glance which unmatched rows are worth
+  ## chasing (a specific, real Mediterranean species FG_WMed_2026.csv
+  ## just doesn't happen to list yet) versus which are structurally
+  ## unresolvable (a taxonomic aggregate with no single species to map
+  ## to an FG at all).
+  ## NOTE: ScientificName is only ever populated for STECF FDI/SAU/
+  ## STAR-RAM/ICCAT here - GFCM's own crosswalk row (species_fg_
+  ## crosswalk_parts[["GFCM"]] above) deliberately sets it to NA for
+  ## every row, matched or not, since resolved_final doesn't retain
+  ## which scientific name (if any) an unmatched common name resolved
+  ## to along GFCM's multi-step cascade. So the "resolved a name but no
+  ## FG" vs "nothing recognized at all" distinction below only applies
+  ## to the sources where ScientificName is actually meaningful; GFCM's
+  ## unmatched rows get the generic message instead of a guess.
+  aggregate_pattern <- "\\bnei\\b|\\betc\\b|\\bspp?\\.?$|,\\s*etc\\.?$"
+  species_fg_crosswalk_all[, Reason_unmatched := NA_character_]
+  species_fg_crosswalk_all[
+    Matched == FALSE & grepl(aggregate_pattern, RawIdentifier, ignore.case = TRUE),
+    Reason_unmatched := "Aggregate/NEI category (family- or order-level group) - no single scientific species to map to one FG"
+  ]
+  species_fg_crosswalk_all[
+    Matched == FALSE & is.na(Reason_unmatched) & DataSource == "GFCM",
+    Reason_unmatched := "No cascade step (direct FG name, FishBase common name, FAO scientific name, FAO genus, word containment) matched this common name to an FG"
+  ]
+  species_fg_crosswalk_all[
+    Matched == FALSE & is.na(Reason_unmatched) & DataSource != "GFCM" & is.na(ScientificName),
+    Reason_unmatched := "Code/name not recognized in the FAO reference at all - dropped before a scientific name could even be attempted"
+  ]
+  species_fg_crosswalk_all[
+    Matched == FALSE & is.na(Reason_unmatched),
+    Reason_unmatched := "Resolved to a scientific name, but that species/group isn't in FG_WMed_2026.csv - add it there if you want this captured (may also be a non-Mediterranean species that's genuinely out of scope)"
+  ]
+  
+  setorder(species_fg_crosswalk_all, DataSource, -Matched, FG_num, RawIdentifier)
+  fwrite(species_fg_crosswalk_all, file.path(csv_out_dir, "species_group_fg_crosswalk.csv"))
+  match_summary <- species_fg_crosswalk_all[, .(n_names = .N, n_matched = sum(Matched)), by = DataSource]
+  message("\n[Species/group -> FG crosswalk] species_group_fg_crosswalk.csv written - ", nrow(species_fg_crosswalk_all),
+          " row(s) across ", uniqueN(species_fg_crosswalk_all$DataSource), " data source(s). Matched by source:")
+  print(match_summary)
+  
+  if (nrow(ambiguous_matches) > 0) {
+    message("\n", strrep("!", 70))
+    message(nrow(ambiguous_matches), " raw species/group name(s) matched to MORE THAN ONE distinct FG",
+            " within the same data source (flagged ambiguous_multi_FG = TRUE in the CSV) - review",
+            " whether this is a genuine juvenile/adult stanza split or a real matching inconsistency:")
+    print(merge(ambiguous_matches, unique(species_fg_crosswalk_all[Matched == TRUE,
+                                                                   .(DataSource, RawIdentifier, FG_num, FG_name)]), by = c("DataSource", "RawIdentifier")))
+    message(strrep("!", 70))
+  } else {
+    message("No raw species/group name matched more than one distinct FG within the same data source.")
+  }
+} else {
+  message("\n[Species/group -> FG crosswalk] No source contributed any row - none of GFCM/STECF FDI/SAU/",
+          "STAR-RAM/ICCAT's matching blocks ran this time (check each source's own file-not-found message above).")
+}
+
 ## --- Catches_Ecopath / Catches_Ecosim (FG-only) -------------------------
 ## Same structure/units as Biomass's own Ecopath/Ecosim sheets (t/km^2/
 ## year density) - built with the SAME shared function Step 1 uses for
@@ -3538,10 +3930,78 @@ if (nrow(BYCATCH_RATE_MANUAL) > 0) {
 } else {
   bycatch_placeholder[, `:=`(bycatch_rate = NA_real_, source_citation = NA_character_)]  # no manual entries at all - leave empty
 }
-bycatch_placeholder[, data_status := fifelse(is.na(bycatch_rate), "not estimated - no source in this pipeline captures bycatch for this Country x FleetType x FG cell", "literature-sourced - see source_citation")]  # flag whether each row is filled or not
-message("\n[Bycatch] ", sum(!is.na(bycatch_placeholder$bycatch_rate)), " of ", nrow(bycatch_placeholder),
-        " Country x FleetType x FG cell(s) filled (sharks & rays x EU-3 trawl/longline, from Bargnesi et al. 2024);",
-        " the rest flagged 'not estimated'.")
+n_bargnesi_filled <- sum(!is.na(bycatch_placeholder$bycatch_rate))
+message("\n[Bycatch] ", n_bargnesi_filled, " of ", nrow(bycatch_placeholder),
+        " Country x FleetType x FG cell(s) filled from Bargnesi et al. 2024 (sharks & rays x",
+        " EU-3 trawl/longline).")
+
+## 2026-09-23 addition: for every cell Bargnesi doesn't cover, fall
+## back to this pipeline's OWN discard-rate-from-catch data, already
+## computed above from real STECF FDI/SAU/FishMIP catch+discard
+## tonnage - a discard % derived from actual reported catch for that
+## FG, rather than leaving every non-shark/ray cell "not estimated".
+## Priority (most gear/country-resolved first, same reasoning as the
+## Bargnesi table being fleet-resolved rather than country-only):
+##   1. stecf_discard_ratio_by_fleet - Country x FG x FleetType x Year,
+##      real landed/discarded tonnage from STECF FDI, fleet-resolved
+##   2. stecf_discard_ratio         - Country x FG x Year, STECF FDI,
+##      not fleet-resolved (same ratio applied to every FleetType)
+##   3. sau_discard_ratio_by_year_hindcast - Country x FG x Year, SAU's
+##      own landings-vs-discards split (calibrated against STECF where
+##      both overlap - see the calibration step above)
+##   4. discard_by_fg              - FG x Year only (FishMIP), no
+##      Country/FleetType resolution at all - broadest fallback,
+##      applied to every Country x FleetType cell for that FG
+## Each tier only fills cells still NA after the previous ones (and
+## after Bargnesi) - never overwrites a more specific/reliable value.
+if (nrow(stecf_discard_ratio_by_fleet) > 0) {
+  fleet_fill <- stecf_discard_ratio_by_fleet[, .(bycatch_rate_fill = mean(discard_ratio, na.rm = TRUE)),
+                                             by = .(Country, FG_num, FleetType)]
+  bycatch_placeholder[fleet_fill, `:=`(
+    bycatch_rate = fifelse(is.na(bycatch_rate), i.bycatch_rate_fill, bycatch_rate),
+    source_citation = fifelse(is.na(source_citation) & !is.na(i.bycatch_rate_fill),
+                              "STECF FDI (this run's own catch data) - discarded/(landed+discarded) tonnage, Country x FG x FleetType x Year, averaged over available years",
+                              source_citation)
+  ), on = c("Country", "FG_num", "FleetType")]
+}
+if (nrow(stecf_discard_ratio) > 0) {
+  country_fg_fill <- stecf_discard_ratio[, .(bycatch_rate_fill = mean(discard_ratio, na.rm = TRUE)), by = .(Country, FG_num)]
+  bycatch_placeholder[country_fg_fill, `:=`(
+    bycatch_rate = fifelse(is.na(bycatch_rate), i.bycatch_rate_fill, bycatch_rate),
+    source_citation = fifelse(is.na(source_citation) & !is.na(i.bycatch_rate_fill),
+                              "STECF FDI (this run's own catch data) - discarded/(landed+discarded) tonnage, Country x FG x Year, averaged over available years (not fleet-resolved)",
+                              source_citation)
+  ), on = c("Country", "FG_num")]
+}
+if (nrow(sau_discard_ratio_by_year_hindcast) > 0) {
+  sau_fill <- sau_discard_ratio_by_year_hindcast[, .(bycatch_rate_fill = mean(discard_ratio, na.rm = TRUE)), by = .(Country, FG_num)]
+  bycatch_placeholder[sau_fill, `:=`(
+    bycatch_rate = fifelse(is.na(bycatch_rate), i.bycatch_rate_fill, bycatch_rate),
+    source_citation = fifelse(is.na(source_citation) & !is.na(i.bycatch_rate_fill),
+                              "SAU (this run's own catch data) - discarded/(landed+discarded) tonnage, Country x FG x Year, calibrated against STECF FDI where both overlap",
+                              source_citation)
+  ), on = c("Country", "FG_num")]
+}
+if (nrow(discard_by_fg) > 0) {
+  fg_fill <- discard_by_fg[, .(bycatch_rate_fill = mean(discard_ratio, na.rm = TRUE)), by = FG_num]
+  bycatch_placeholder[fg_fill, `:=`(
+    bycatch_rate = fifelse(is.na(bycatch_rate), i.bycatch_rate_fill, bycatch_rate),
+    source_citation = fifelse(is.na(source_citation) & !is.na(i.bycatch_rate_fill),
+                              "FishMIP (this run's own catch data) - reported-vs-total catch ratio, FG x Year only, no Country/FleetType resolution - broadest fallback",
+                              source_citation)
+  ), on = "FG_num"]
+}
+
+bycatch_placeholder[, data_status := fifelse(
+  is.na(bycatch_rate), "not estimated - no source in this pipeline captures bycatch/discards for this Country x FleetType x FG cell",
+  fifelse(grepl("^Bargnesi", source_citation), "literature-sourced (elasmobranch-specific rate) - see source_citation",
+          "data-derived (this run's own catch/discard tonnage) - see source_citation")
+)]
+message("[Bycatch] After the catch-data fallback: ", sum(!is.na(bycatch_placeholder$bycatch_rate)), " of ",
+        nrow(bycatch_placeholder), " Country x FleetType x FG cell(s) filled total (", n_bargnesi_filled,
+        " literature-sourced from Bargnesi et al. 2024, ", sum(!is.na(bycatch_placeholder$bycatch_rate)) - n_bargnesi_filled,
+        " data-derived from this run's own STECF FDI/SAU/FishMIP catch+discard tonnage); the rest still",
+        " flagged 'not estimated'.")
 
 ## =================================================================
 ## # recreational fishing EFFORT - default vector + manual override
@@ -3721,8 +4181,67 @@ message("\n[Fleet split] fleet_prop_final: ", n_stecf_cells, " cell(s) use STECF
         " catch at all for that specific Country x FG x Year, and FDI never covers that FG either).",
         " Total: ", nrow(catch_country_fg_year), " cell(s).")
 
-fleet_split <- merge(catch_with_unreported, fleet_prop_final, by = c("Country", "FG_num", "Year"), allow.cartesian = TRUE)  # apply the fleet split to the country-level catch
-fleet_split <- fleet_split[!is.na(prop_fleet)]  # drop rows with no fleet share at all
+## --- Catch-preservation top-up for (Country, FG_num) pairs fleet_prop ---
+## never anticipated. 2026-09-23, per Andrea: "try to minimize leaving
+## landings out of fg or fleet countries". ROOT CAUSE: fleet_prop's own
+## cross-join (built earlier, from unique(gfcm_country_fg$FG_num) as it
+## stood AT THAT POINT) is every downstream tier's foundation, including
+## fleet_prop_flat_part's own merge against it - every one of those
+## merges is a default data.table merge() with no all.x, i.e. an INNER
+## join. A (Country, FG_num) combination that GFCM's own per-country
+## table never had a row for AT ALL simply never entered fleet_prop's
+## universe, so it silently has NO row anywhere in fleet_prop_final - not
+## an NA prop_fleet (which the very next line already dropped defensively
+## and would have caught), but a combination missing outright. catch_
+## with_unreported can still carry real catch for exactly such a
+## combination: ICCAT's Bluefin tuna/Swordfish catch, Belhabib's Morocco/
+## Algeria override, and STAR/RAM's catch-priority override can each
+## attach a catch figure for a Country x FG pair GFCM's own per-country
+## breakdown never covered - and the merge below (previously a plain
+## inner join, same default) then dropped that catch ENTIRELY, with no
+## message and no trace. Very likely why Bluefin tuna, Swordfish and
+## several other FGs showed real matched catch in the crosswalk/
+## Catches_Ecopath but zero across every fleet column in Ecopath_L.
+## Fixed by topping up fleet_prop_final here with exactly the missing
+## (Country, FG_num) pairs, using the SAME two-tier fallback fleet_prop's
+## own cascade already uses (country_overall's Country x FleetType mix,
+## then a flat equal share across that country's own named FleetTypes as
+## the last resort) - so every catch cell gets a real fleet share instead
+## of being silently dropped by the join below.
+missing_country_fg <- unique(catch_country_fg_year[, .(Country, FG_num)])
+missing_country_fg <- missing_country_fg[!unique(fleet_prop_final[, .(Country, FG_num)]), on = c("Country", "FG_num")]
+if (nrow(missing_country_fg) > 0) {
+  fleet_prop_topup <- merge(missing_country_fg, fleet_types_ref, by = "Country", allow.cartesian = TRUE)
+  if (nrow(country_overall) > 0) {
+    fleet_prop_topup <- merge(fleet_prop_topup, country_overall[, .(Country, FleetType, prop_fleet)],
+                              by = c("Country", "FleetType"), all.x = TRUE)
+  } else {
+    fleet_prop_topup[, prop_fleet := NA_real_]
+  }
+  fleet_prop_topup[, fleet_split_source := fifelse(!is.na(prop_fleet),
+                                                   "SAU country-level mix (catch-preservation top-up - GFCM's own per-country table never had this FG at all, but a later source added catch for it)",
+                                                   NA_character_)]
+  fleet_prop_topup[is.na(prop_fleet), prop_fleet := 1 / .N, by = .(Country, FG_num)]
+  fleet_prop_topup[is.na(fleet_split_source), fleet_split_source :=
+                     "no SAU data at all - equal share across this country's fleet types (catch-preservation top-up, last resort)"]
+  fleet_prop_final <- rbindlist(list(fleet_prop_final, fleet_prop_topup), use.names = TRUE, fill = TRUE)
+  message("\n[Fleet split] Catch-preservation top-up: ", nrow(missing_country_fg), " Country x FG combination(s)",
+          " had NO fleet-share row anywhere in fleet_prop_final (GFCM's own per-country table never covered them -",
+          " likely ICCAT/Belhabib/STAR-RAM catch added for a Country x FG cell GFCM itself never split by country) -",
+          " backfilled via country_overall/flat-equal-share so their catch isn't silently dropped below. Affected: ",
+          paste(unique(missing_country_fg$FG_num), collapse = ", "), ".")
+}
+
+fleet_split <- merge(catch_with_unreported, fleet_prop_final, by = c("Country", "FG_num", "Year"), all.x = TRUE, allow.cartesian = TRUE)  # LEFT join (2026-09-23 fix, was an inner join) - the top-up above should mean nothing is missing now, but all.x is kept as a defensive backstop
+n_no_fleet_share <- sum(is.na(fleet_split$prop_fleet))
+if (n_no_fleet_share > 0) {
+  dropped_catch <- fleet_split[is.na(prop_fleet), sum(Catch_t, na.rm = TRUE)]
+  message("\n[Fleet split] WARNING: ", n_no_fleet_share, " catch row(s) (", round(dropped_catch, 1), " t total) still have",
+          " no fleet share at all even after the top-up above, and will be dropped from Ecopath_L/Ecopath_Di/",
+          " fleet_split_out entirely - check fleet_types_ref for a Country with zero named FleetTypes. This total",
+          " still reaches Catches_Ecopath/the 'Other GFCM countries' residual column, just not broken out by fleet.")
+}
+fleet_split <- fleet_split[!is.na(prop_fleet)]  # drop rows with no fleet share at all (should be ~0 rows now - see WARNING above if not)
 
 ## Default: distribute the country-level catch/discard total by each
 ## fleet's catch share - this is a UNIFORM discard rate assumption
@@ -4111,9 +4630,49 @@ discards_fleet_cols <- setdiff(names(discards_ecopath_by_fleet_wide), c("FG_num"
 for (cc in discards_fleet_cols) discards_ecopath_by_fleet_wide[is.na(get(cc)), (cc) := 0]
 setorder(discards_ecopath_by_fleet_wide, FG_num)
 
+## --- Residual "Other GFCM countries" fleet column - closes the ------
+## country-scope gap Andrea flagged (2026-09-23), comparing
+## species_group_fg_crosswalk.csv against this sheet: FLEET_REGISTER only
+## defines named fleets for 6 countries (Morocco/Algeria/Tunisia/France/
+## Spain/Italy), so ecopath_fleet_long/fleet_split_out structurally has
+## NO row at all for catch attributed to any OTHER GFCM-reporting
+## Mediterranean country (Greece, Libya, Malta, Cyprus, Turkey, Egypt,
+## etc.) - that catch was silently vanishing from Ecopath_L/Ecopath_Di
+## (whole FG rows showing as all-zero) even though the SAME FG shows
+## real matched catch in the crosswalk and in the broader, all-country
+## catches_discards_fg total that Catches_Ecopath is built from (48 of
+## 63 all-zero FG rows in a real run had matched crosswalk catch - this
+## is not a small edge case). Rather than build a full per-country fleet
+## taxonomy for every other Mediterranean GFCM reporter (out of scope -
+## FLEET_REGISTER has no entry for them), add one residual column per
+## FG: whatever's left of the broader FG-level landings/discards total
+## after subtracting the 6-country fleet-split total, floored at 0. This
+## keeps Ecopath_L/Ecopath_Di's row totals consistent with
+## Catches_Ecopath's own FG totals (the same invariant already
+## documented for the 6-country fleet columns), while being explicit
+## that this slice isn't broken out by fleet/gear.
+OTHER_GFCM_COL <- "Other GFCM countries - Unclassified"
+broad_landings_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_km2_broad = mean(Landings_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
+broad_discards_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Discard_t_km2_broad = mean(Discard_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
+
+landings_ecopath_by_fleet_wide <- merge(landings_ecopath_by_fleet_wide, broad_landings_density, by = "FG_num", all.x = TRUE)
+landings_ecopath_by_fleet_wide[is.na(Landings_t_km2_broad), Landings_t_km2_broad := 0]
+landings_ecopath_by_fleet_wide[, (OTHER_GFCM_COL) := pmax(0, Landings_t_km2_broad - rowSums(.SD, na.rm = TRUE)), .SDcols = landings_fleet_cols]
+landings_ecopath_by_fleet_wide[, Landings_t_km2_broad := NULL]
+landings_fleet_cols <- c(landings_fleet_cols, OTHER_GFCM_COL)
+
+discards_ecopath_by_fleet_wide <- merge(discards_ecopath_by_fleet_wide, broad_discards_density, by = "FG_num", all.x = TRUE)
+discards_ecopath_by_fleet_wide[is.na(Discard_t_km2_broad), Discard_t_km2_broad := 0]
+discards_ecopath_by_fleet_wide[, (OTHER_GFCM_COL) := pmax(0, Discard_t_km2_broad - rowSums(.SD, na.rm = TRUE)), .SDcols = discards_fleet_cols]
+discards_ecopath_by_fleet_wide[, Discard_t_km2_broad := NULL]
+discards_fleet_cols <- c(discards_fleet_cols, OTHER_GFCM_COL)
+
+n_fg_using_residual <- sum(landings_ecopath_by_fleet_wide[[OTHER_GFCM_COL]] > 0)
 message("\n[Ecopath by fleet] Ecopath_L/Ecopath_Di: ", nrow(landings_ecopath_by_fleet_wide), " FG(s) x ",
         length(landings_fleet_cols), " fleet(s) (t/km^2/year), averaged over ", paste(range(YEAR_ECOPATH), collapse = "-"),
-        " - Landings_t = Catch_t - Discard_t per fleet, same fleet columns as Ecopath_B's catches_ecopath_by_fleet_wide.")
+        " - Landings_t = Catch_t - Discard_t per fleet, same fleet columns as Ecopath_B's catches_ecopath_by_fleet_wide.",
+        " ", n_fg_using_residual, " FG(s) carry a nonzero '", OTHER_GFCM_COL, "' column - catch attributed to a",
+        " GFCM-reporting country outside FLEET_REGISTER's 6 named countries, not broken out by fleet/gear.")
 
 ## Written directly to the workbook here (not via
 ## finalize_ecopath_ecosim_summary_sheets(), which used to build these
@@ -4124,6 +4683,53 @@ upsert_workbook_sheets(
   list(Ecopath_L = landings_ecopath_by_fleet_wide, Ecopath_Di = discards_ecopath_by_fleet_wide),
   ECOPATH_WORKBOOK_PATH
 )
+
+## --- Diagnostic: does Ecopath_L's fleet-split scope match the broader
+## FG-level catch total everyone else is built from? -------------------
+## 2026-09-23, added per Andrea: "i dont know if [it] doesnt update the
+## sheets... or that the FG are not accounted in the landings sheet,
+## because in the crosswalk i see a lot of fg with catches". Root cause:
+## Ecopath_L/Ecopath_Di are built ONLY from fleet_split_out/ecopath_fleet_long
+## - a SEPARATE, narrower GFCM-country-level fleet-split chain, restricted
+## to FLEET_REGISTER's 6 named countries (Morocco/Algeria/Tunisia/France/
+## Spain/Italy) and to Sector != "Recreational" rows that lack an SAU
+## estimate - NOT derived from catches_discards_fg, the broader all-GFCM-
+## reporting-country total that species_group_fg_crosswalk.csv,
+## Catches_Ecopath and F_by_fg.csv are all built from. Confirmed against
+## a real run: 48 of 63 FG rows that showed zero across every fleet
+## column here had real matched catch in the crosswalk - almost all of
+## it attributable to GFCM-reporting countries with no FLEET_REGISTER
+## entry (Greece, Libya, Malta, Cyprus, Turkey, Egypt, etc.), not to a
+## matching failure. FIXED just above via the "Other GFCM countries -
+## Unclassified" residual column, which now absorbs that gap so
+## Ecopath_L/Ecopath_Di's row totals match Catches_Ecopath's FG totals.
+## The workbook trim itself was never the problem - Ecopath_L/Ecopath_Di
+## are in every trim's target_order, so they always survive and get
+## freshly rewritten each run; only the sheets deliberately excluded
+## from the final 9/10-sheet contract (Catches_Ecopath, Catches_Ecosim,
+## etc.) get dropped from the xlsx, by design, staying available as CSV
+## under output/fisheries/.
+## This diagnostic now reports the SPLIT (how much of each FG's total
+## landings is broken out by named 6-country fleet vs. how much sits in
+## the unclassified residual), for visibility - not a gap to chase.
+fleet_split_fg_totals <- ecopath_fleet_long[, .(Landings_t_fleetsplit = sum(Catch_t_avg - Discard_t_avg, na.rm = TRUE)), by = FG_num]
+broad_fg_totals <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_broad = mean(Landings_t, na.rm = TRUE)), by = FG_num]
+ecopath_l_coverage_check <- merge(full_fg_list, broad_fg_totals, by = "FG_num", all.x = TRUE)
+ecopath_l_coverage_check <- merge(ecopath_l_coverage_check, fleet_split_fg_totals, by = "FG_num", all.x = TRUE)
+ecopath_l_coverage_check[, `:=`(
+  Landings_t_broad      = fifelse(is.na(Landings_t_broad), 0, Landings_t_broad),
+  Landings_t_fleetsplit = fifelse(is.na(Landings_t_fleetsplit), 0, Landings_t_fleetsplit)
+)]
+ecopath_l_coverage_check[, named_fleet_share := fifelse(Landings_t_broad > 0, Landings_t_fleetsplit / Landings_t_broad, NA_real_)]  # share broken out by named 6-country fleet, rest is the residual column
+ecopath_l_coverage_check[, mostly_other_countries := Landings_t_broad > 0 & (is.na(named_fleet_share) | named_fleet_share < 0.5)]
+setorder(ecopath_l_coverage_check, -Landings_t_broad)
+n_mostly_other <- sum(ecopath_l_coverage_check$mostly_other_countries, na.rm = TRUE)
+message("\n[Ecopath_L fleet-split coverage] ", n_mostly_other, " of ", nrow(ecopath_l_coverage_check), " FG(s) get less than",
+        " half their total landings (catches_discards_fg, ", paste(range(YEAR_ECOPATH), collapse = "-"), " average) from a",
+        " named 6-country fleet - the rest sits in Ecopath_L/Di's 'Other GFCM countries - Unclassified' column (see",
+        " ecopath_L_fg_coverage_check.csv). Totals still reconcile with Catches_Ecopath; only the fleet/gear breakdown",
+        " is coarser for these FGs.")
+write_native_sheet_csv(ecopath_l_coverage_check, "ecopath_L_fg_coverage_check", csv_out_dir)
 
 catches_ecopath_by_fleet_wide <- dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet,
                                        value.var = "Catch_t_km2_avg", fill = 0)  # reshape to one column per fleet
@@ -4490,6 +5096,39 @@ fwrite(fleet_vs_division_check, file.path(csv_out_dir, "fleet_definition_vs_gfcm
 fwrite(fg_catch_timeseries, file.path(csv_out_dir, paste0("catches_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch timeseries
 fwrite(catches_discards_fg, file.path(csv_out_dir, paste0("catches_and_discards_by_FG_timeseries_", DATASET_VERSION, ".csv")))  # write the FG-level catch+discards timeseries
 fwrite(fleet_split_out, file.path(csv_out_dir, "catches_by_country_fleet_sector_year.csv"))  # write the full fleet-split table
+
+## --- Diagnostic: how much of the fleet split is a REAL per-gear ------
+## breakdown vs. a fallback that just divides a country-level (or
+## equal-share) total evenly across that country's named fleets?
+## 2026-09-23, added per Andrea: "I cant believe all countries have
+## catches on sardine anchovy etc... and other groups" - looking at a
+## real Ecopath_L export, several FG rows show the EXACT SAME catch
+## value repeated across every one of a country's fleet columns (e.g.
+## all 5 Algeria columns identical for one FG). That's not a coincidence
+## - it's fleet_prop_final's own fallback cascade: Algeria/Tunisia/
+## Morocco have no STECF FDI coverage at all (EU-only: Spain/France/
+## Italy), so whenever SAU also has no FG-specific gear breakdown for
+## that Country x FG, the split falls back to the country's OVERALL SAU
+## gear mix (same proportions for every FG in that country - explains
+## same-country-different-FG rows looking similar), and if even THAT is
+## missing, to a flat 1/N equal share across the country's fleet types
+## (explains identical values within one FG row, exactly like Algeria's
+## repeated 1.47952894198202E-05 above). The catch TOTAL for that
+## Country x FG is still real; only the per-gear breakdown is fabricated
+## in these rows. This table quantifies how much of fleet_split_out (by
+## row count and by catch value) falls into each tier, per country, so
+## it's visible rather than discovered by eye in the wide sheet.
+fleet_split_method_summary <- fleet_split_out[, .(n_rows = .N, Catch_t_total = sum(Catch_t, na.rm = TRUE)),
+                                              by = .(Country, fleet_split_source)]
+fleet_split_method_summary[, pct_of_country_catch := round(100 * Catch_t_total / sum(Catch_t_total), 1), by = Country]
+setorder(fleet_split_method_summary, Country, -Catch_t_total)
+fwrite(fleet_split_method_summary, file.path(csv_out_dir, "fleet_split_method_by_country.csv"))
+n_flat_country <- uniqueN(fleet_split_method_summary[grepl("no SAU data at all - equal share", fleet_split_source)]$Country)
+message("\n[Fleet split method check] fleet_split_method_by_country.csv: breaks down fleet_split_out's catch",
+        " total per Country x fleet_split_source, so a same-value-across-every-fleet row (uniform 1/N last-resort",
+        " split, or a country-level mix reused across every FG) is visible instead of looking like a real per-gear",
+        " catch report. ", n_flat_country, " of ", uniqueN(fleet_split_out$Country), " country/ies have at least",
+        " one row using the deepest 'no SAU data at all - equal share' fallback.")
 fwrite(bycatch_placeholder, file.path(csv_out_dir, "bycatch_placeholder.csv"))  # write the bycatch placeholder table
 fwrite(gfcm_task2_placeholder, file.path(csv_out_dir, "gfcm_task2_catch_placeholder.csv"))  # write the GFCM Task 2 placeholder table
 fwrite(gfcm_saf_effort_placeholder, file.path(csv_out_dir, "gfcm_saf_effort_placeholder.csv"))  # write the GFCM SAF placeholder table
@@ -4588,9 +5227,14 @@ message("\n=== Done (02_fisheries.R) === Wrote ", length(sheets_to_write), " she
 ## a table that's empty because a data source wasn't found this run)
 ## never blocks the others or the rest of the script having already run.
 ## =================================================================
-VALIDATION_PLOTS_PDF <- file.path(out_dir, "fisheries_validation_plots.pdf")
-validation_png_dir <- file.path(out_dir, "validation_plots")
+## Nested under out_dir/plots/validation/fisheries/ - same "plots"
+## convention as 01_biomass.R/03_pbqb-traits.R's plot_dir (out_dir/
+## plots), with a shared "validation" subfolder (for every script's
+## validation figures) and a per-module "fisheries" subfolder under
+## that.
+validation_png_dir <- file.path(out_dir, "plots", "validation", "fisheries")
 if (!dir.exists(validation_png_dir)) dir.create(validation_png_dir, recursive = TRUE, showWarnings = FALSE)  # ensure the PNG output dir exists
+VALIDATION_PLOTS_PDF <- file.path(validation_png_dir, "fisheries_validation_plots.pdf")
 
 ## Short, consistent label for which tier actually produced a row's
 ## fleet split / discard rate - parsed from the *_source text every
