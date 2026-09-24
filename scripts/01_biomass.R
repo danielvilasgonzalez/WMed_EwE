@@ -926,9 +926,22 @@ CATCHABILITY_CSV_PATH <- resolve_pcloud_file(paste0(pcloud_dir,"/data/catchabili
 ## scheme's exact names for these groups - replace with the real
 ## FG_name values from your dataframe2 (check unique(dataframe2$FG_name)
 ## for the actual list to pick from).
+## 2026-09-24, per Andrea ("zooplankton and suprabenthos cannnot use
+## biomass from survey... need to be removed and use other sources"):
+## filled in with the real FG_name values confirmed against this
+## pipeline's own output (stock_assessment_biomass_crosscheck.csv,
+## fg_missing_ecopath_B_REVIEW.csv) - this list was a literal unfilled
+## placeholder before now, so NEITHER the catchability exemption NOR
+## (see FG_ECOLOGY_TYPE == "survey_exempt" below, the new, separate fix
+## for the SAME root problem in the biomass-source PRIORITY rule) was
+## ever actually applying to any FG. "Suprabenthos" specifically is
+## Andrea's own wording, not yet confirmed against the exact FG_name
+## spelling in FG_WMed_2026.csv - fix that one entry if it doesn't
+## match (a name here that matches nothing in your FG table is a silent
+## no-op, not an error, so a typo here won't be obvious otherwise).
 EXEMPT_FG_NAMES <- c(
-  # e.g. "Small pelagic fish", "Large pelagic fish", "Gelatinous plankton",
-  #      "Suprabenthos", "Seagrass", "Macroalgae" - REPLACE with your real FG_name values
+  "Cymodocea", "Posidonia", "Macroalgae", "Corals and gorgonians",
+  "Macro zooplankton", "Meso and micro zooplankton", "Suprabenthos"
 )
 
 if (file.exists(CATCHABILITY_CSV_PATH)) {
@@ -1734,6 +1747,82 @@ if (AREA_MODE == "westmed") {
                                fg_lookup_safe[, .(ScientificName, FG_num, FG_name)], by = "ScientificName")
     iccat_bio_raw <- merge(iccat_bio_raw, iccat_bio_matched, by = "ScientificName")
     
+    ## ---------------------------------------------------------------
+    ## Spatial allocation (2026-09-24, Andrea's explicit correction to
+    ## the naive version below): ICCAT does NOT assess a "Western
+    ## Mediterranean" stock for any of these three species - it assesses
+    ## Bluefin tuna as ONE Eastern Atlantic + Mediterranean stock, and
+    ## Swordfish/Albacore as their own whole-Mediterranean stocks. The
+    ## OLD code divided the biomass_t straight into
+    ## sum(strata_area_by_area$area_km2) (the West Med survey-strata area
+    ## ALONE) - for a stock whose real range is much bigger than the West
+    ## Med, that silently inflates density by whatever factor the real
+    ## range exceeds the West Med by. Fixed by dividing by the STOCK'S
+    ## OWN assessed range area instead (an explicit "uniform density
+    ## across the whole assessed range" assumption - itself an
+    ## approximation, but a documented and bounded one, not a silent
+    ## multiplier error) - wherever that assumption is defensible.
+    ##
+    ## Swordfish/Albacore: Mediterranean-only stock, so "uniform density
+    ## across the whole Mediterranean" is the least-bad assumption
+    ## available with no finer-grained spatial data in hand. Mediterranean
+    ## Sea total surface area ~2,510,000 km^2 (standard oceanographic
+    ## figure, e.g. Bethoux 1979-style Mediterranean physical geography
+    ## references) is used as the stock's range.
+    ##
+    ## Bluefin tuna (2026-09-24, updated per Andrea: "do what you think is
+    ## best - area weight or aerial"): area-ratio allocation across the
+    ## whole Eastern Atlantic+Mediterranean stock range is NOT used - as
+    ## explained above, the fish aren't spread evenly over that huge
+    ## range, so any area ratio would be invented, not sourced. Using
+    ## GBYP's own aerial-survey biomass density instead - a REAL, DIRECT,
+    ## regionally-specific measurement of the Balearic Sea spawning
+    ## aggregation ("A-core" survey block), not a back-calculation from
+    ## the whole-stock SSB at all:
+    ##   2017: 130.54 kg/km2, 2018: 217.84 kg/km2, 2019: 188.38 kg/km2,
+    ##   2021: 76.27 kg/km2 (CREEM's own statistical analysis of ICCAT's
+    ##   GBYP Phase 11 aerial survey, A-core area, Balearic Sea -
+    ##   https://iccat.int/GBYP/DOCS/Aerial_Survey_Phase_11_CREEM_2021_Data_Analysis.pdf)
+    ##   -> 4-year average 153.26 kg/km2 = 0.15326 t/km2, used below as
+    ##   iccat_ssb_biomass.csv's BFT row (see that file's Source_citation).
+    ## Caveats, same "closest available, flagged" spirit as every other
+    ## site-specific figure in this pipeline (matches how Posidonia/
+    ## gorgonian density is sourced from a single site and applied
+    ## domain-wide - see claude/benthic_habitat_megafauna_biomass_sourcing_guide.md):
+    ##   (a) this is a SPAWNING-SEASON snapshot (survey flown during the
+    ##       June spawning aggregation), not a year-round average - likely
+    ##       overstates the annual mean if the fish disperse to the
+    ##       Atlantic for much of the rest of the year;
+    ##   (b) it's the density WITHIN the core aggregation block itself,
+    ##       applied here as the FG's domain-wide West Med average - the
+    ##       same simplification already used for gorgonians/Posidonia;
+    ##   (c) 2017-2021 data used as a stand-in for 1995 (no aerial survey
+    ##       existed then - GBYP itself only started ~2010).
+    ## Because this is already a density (not a whole-stock tonnage/area
+    ## division like Swordfish/Albacore below), the mechanism is reused by
+    ## setting stock_area_km2 = 1 for BFT - iccat_ssb_biomass.csv's BFT
+    ## Biomass_t column is therefore expected to already BE the density in
+    ## t/km2 (dividing by 1 is a no-op), not a real tonnage figure - flagged
+    ## here so this isn't misread as an actual whole-stock biomass number.
+    ICCAT_STOCK_AREA_KM2 <- data.table(
+      iccat_code           = c("BFT", "SWO", "ALB"),
+      stock_area_km2       = c(1, 2510000, 2510000),
+      uniform_density_valid = c(TRUE, TRUE, TRUE),
+      area_note = c(
+        "GBYP aerial-survey direct density (Balearic Sea A-core spawning aggregation, 2017-2021 average) - Biomass_t IS the density already (t/km2), stock_area_km2=1 is a pass-through, not a real area",
+        "Mediterranean-only stock - approximated as uniform density across the whole Mediterranean (~2,510,000 km^2) - a flagged approximation, not a real spatial distribution model",
+        "Mediterranean-only stock - same uniform-density approximation as Swordfish"
+      )
+    )
+    if ("iccat_code" %in% names(iccat_bio_raw)) iccat_bio_raw[, iccat_code := NULL]  # re-derive fresh below regardless of which branch (col_sp vs col_spn) ran above
+    iccat_bio_raw <- merge(iccat_bio_raw, ICCAT_SPECIES, by = "ScientificName")
+    iccat_bio_raw <- merge(iccat_bio_raw, ICCAT_STOCK_AREA_KM2, by = "iccat_code", all.x = TRUE)
+    iccat_bio_raw[, row_density_t_km2 := fifelse(uniform_density_valid, iccat_biomass_t / stock_area_km2, NA_real_)]
+    for (note_code in unique(iccat_bio_raw[uniform_density_valid == FALSE, iccat_code])) {
+      message("[ICCAT biomass] '", note_code, "': ", ICCAT_STOCK_AREA_KM2[iccat_code == note_code, area_note],
+              " - biomass recorded, density left NA (excluded from the FG priority rule until fixed).")
+    }
+    
     n_iccat_bio_unmatched <- uniqueN(ICCAT_SPECIES$ScientificName) - uniqueN(iccat_bio_matched$ScientificName)
     if (n_iccat_bio_unmatched > 0) {
       unmatched_sp <- setdiff(ICCAT_SPECIES$ScientificName, iccat_bio_matched$ScientificName)
@@ -1747,9 +1836,12 @@ if (AREA_MODE == "westmed") {
     
     iccat_biomass_fg_year <- iccat_bio_raw[, .(
       iccat_biomass_t = sum(iccat_biomass_t, na.rm = TRUE),
+      ## same stock -> same stock_area_km2/uniform_density_valid for every row being summed here (one
+      ## species per FG), so summing row_density_t_km2 * iccat_biomass_t and dividing back out is
+      ## equivalent to biomass_t / stock_area_km2 even if a stock ever had >1 row per FG x Year
+      stock_assessment_density_t_km2 = fifelse(all(uniform_density_valid), sum(iccat_biomass_t, na.rm = TRUE) / stock_area_km2[1], NA_real_),
       iccat_sources   = "ICCAT stock assessment (SSB)"
     ), by = .(FG_num, FG_name, Year)]
-    iccat_biomass_fg_year[, stock_assessment_density_t_km2 := iccat_biomass_t / sum(strata_area_by_area$area_km2, na.rm = TRUE)]
     iccat_biomass_fg_year <- iccat_biomass_fg_year[iccat_biomass_t > 0]
     fwrite(iccat_biomass_fg_year, file.path(csv_out_dir, "iccat_biomass_by_fg.csv"))
     message("[ICCAT biomass] iccat_biomass_fg_year: ", nrow(iccat_biomass_fg_year), " FG x Year row(s) (",
@@ -1971,9 +2063,45 @@ if (AREA_MODE == "westmed") {
   ## baseline - reports dolphins+seabirds combined at <0.01% of total
   ## system biomass, a useful order-of-magnitude sanity check even though
   ## its reference period is 20 years later than ours).
-  MEGAFAUNA_BIOMASS_PATH <- file.path(pcloud_dir, "data/marine_megafauna_biomass.csv")
+  ## 2026-09-25, per Andrea: moved from data/ to data/Complementary data/,
+  ## alongside the other manual/cited reference files that live there
+  ## (matching where westmed_posidonia_coralligenous.shp and similar
+  ## hand-curated inputs already live).
+  MEGAFAUNA_BIOMASS_PATH <- file.path(pcloud_dir, "data/Complementary data/marine_megafauna_biomass.csv")
+  ## 2026-09-24, per Andrea (Ecopath_B still showing no cetaceans/
+  ## seabirds/sea turtles even after the fg_year_full fix): "Pinnipeds"
+  ## added as its OWN keyword group - Monk seals (FG6) matched NEITHER
+  ## Cetaceans/Seabirds/SeaTurtles before this (no "seal" keyword
+  ## anywhere), so a manual CSV would have loaded fine but Monk seals
+  ## specifically could never have received a value regardless of what
+  ## the CSV said - a real gap, not just a missing CSV.
+  ## 2026-09-25, per Andrea: real, species-specific ACCOBAMS Survey
+  ## Initiative density figures are now available for bottlenose dolphins,
+  ## "other dolphins" (striped dolphin proxy), and fin whale (see
+  ## marine_megafauna_biomass.csv below) - but the broad "Cetaceans"
+  ## bucket above matches ALL FIVE cetacean FGs by keyword (every one of
+  ## them contains "dolphin" or "whale"), so a Group="Cetaceans" row would
+  ## get its biomass SPLIT EVENLY across Bottlenose dolphins/Other
+  ## dolphins/Fin whale/Deep sea-cetacean feeders/Sperm whale regardless
+  ## of their real relative abundance - throwing away exactly the
+  ## species-specificity these new figures provide. Added five
+  ## FG-specific categories below so a CSV row can target exactly one
+  ## FG; each keyword is checked to match ONLY its intended FG_name
+  ## and no other (verified against the real FG_WMed_2026.csv text -
+  ## "bottlenose" only appears in "Bottlenose dolphins", "other dolphin"
+  ## only in "Other dolphins", etc.). "Cetaceans" is kept too, as a
+  ## fallback bucket for a future figure that's genuinely only available
+  ## at the whole-cetacean-guild level (e.g. a total abundance survey that
+  ## doesn't break out species) - it still splits evenly across all 5 FGs,
+  ## which is the correct behavior for a genuinely undifferentiated figure.
   MEGAFAUNA_TAXON_KEYWORDS <- list(
-    Cetaceans  = c("cetacean", "dolphin", "whale", "porpoise"),
+    Cetaceans              = c("cetacean", "dolphin", "whale", "porpoise"),
+    BottlenoseDolphins     = c("bottlenose"),
+    OtherDolphins          = c("other dolphin"),
+    FinWhale               = c("fin whale"),
+    SpermWhale             = c("sperm whale"),
+    DeepSeaCetaceanFeeders = c("deep sea-cetacean", "deep sea cetacean"),
+    Pinnipeds  = c("seal", "monk seal"),
     Seabirds   = c("seabird", "shearwater", "gull", "petrel", "tern", "auk", "cormorant"),
     SeaTurtles = c("turtle")
   )
@@ -2099,23 +2227,44 @@ if (AREA_MODE == "westmed") {
     if (!exists("ENABLE_SATELLITE_PHYTOPLANKTON", envir = .GlobalEnv, inherits = FALSE)) ENABLE_SATELLITE_PHYTOPLANKTON <- TRUE
     phyto_draft <- NULL
     phyto_source_label <- NA_character_
+    ## Both lib files below are sourced DEFENSIVELY - a missing file (e.g.
+    ## these two new scripts haven't been copied into your local
+    ## scripts/ folder yet alongside 01_biomass.R) degrades to a message
+    ## and moves on to the next fallback, exactly like a failed network
+    ## query does, rather than crashing the whole 01_biomass.R run over
+    ## one optional lower-trophic biomass source.
+    cmems_lib_path <- file.path(git_dir, "scripts/lib_cmems_phytoplankton_biomass.R")
+    satellite_lib_path <- file.path(git_dir, "scripts/lib_satellite_phytoplankton_biomass.R")
+    
     if (ENABLE_CMEMS_PHYTOPLANKTON) {
-      source(file.path(git_dir, "scripts/lib_cmems_phytoplankton_biomass.R"))
-      cmems_phyto <- fetch_cmems_phytoplankton_biomass(out_dir = csv_out_dir)
-      if (!is.null(cmems_phyto) && nrow(cmems_phyto) > 0) {
-        phyto_draft <- cmems_phyto
-        phyto_source_label <- "CMEMS MED BGC REANALYSIS (biogeochemical model, phytoplankton carbon)"
+      if (!file.exists(cmems_lib_path)) {
+        message("[Primary producer/plankton biomass] '", cmems_lib_path, "' not found - copy",
+                " lib_cmems_phytoplankton_biomass.R into your scripts/ folder to enable this source.",
+                " Skipping straight to the satellite fallback for this run.")
+      } else {
+        source(cmems_lib_path)
+        cmems_phyto <- fetch_cmems_phytoplankton_biomass(out_dir = csv_out_dir)
+        if (!is.null(cmems_phyto) && nrow(cmems_phyto) > 0) {
+          phyto_draft <- cmems_phyto
+          phyto_source_label <- "CMEMS MED BGC REANALYSIS (biogeochemical model, phytoplankton carbon)"
+        }
       }
     }
     if (is.null(phyto_draft) && ENABLE_SATELLITE_PHYTOPLANKTON) {
       message("[Primary producer/plankton biomass] CMEMS phytoplankton unavailable this run",
-              " (ENABLE_CMEMS_PHYTOPLANKTON = FALSE, or the query above failed/wasn't set up) -",
-              " falling back to satellite chlorophyll-a.")
-      source(file.path(git_dir, "scripts/lib_satellite_phytoplankton_biomass.R"))
-      satellite_phyto <- fetch_satellite_phytoplankton_biomass(out_dir = csv_out_dir)
-      if (!is.null(satellite_phyto) && nrow(satellite_phyto) > 0) {
-        phyto_draft <- satellite_phyto
-        phyto_source_label <- "SATELLITE CHLOROPHYLL-A (fallback - CMEMS biogeochemical model was unavailable)"
+              " (ENABLE_CMEMS_PHYTOPLANKTON = FALSE, the lib file wasn't found, or the query above",
+              " failed/wasn't set up) - falling back to satellite chlorophyll-a.")
+      if (!file.exists(satellite_lib_path)) {
+        message("[Primary producer/plankton biomass] '", satellite_lib_path, "' ALSO not found - copy",
+                " lib_satellite_phytoplankton_biomass.R into your scripts/ folder to enable this fallback.",
+                " Large/SmallPhytoplankton will fall through to the manual CSV instead this run.")
+      } else {
+        source(satellite_lib_path)
+        satellite_phyto <- fetch_satellite_phytoplankton_biomass(out_dir = csv_out_dir)
+        if (!is.null(satellite_phyto) && nrow(satellite_phyto) > 0) {
+          phyto_draft <- satellite_phyto
+          phyto_source_label <- "SATELLITE CHLOROPHYLL-A (fallback - CMEMS biogeochemical model was unavailable)"
+        }
       }
     }
     if (!is.null(phyto_draft)) {
@@ -2191,8 +2340,20 @@ if (AREA_MODE == "westmed") {
   fg_ecology_lookup <- merge(unique(fg_lookup_safe[, .(FG_num, FG_name)]), fg_species_counts, by = "FG_num", all.x = TRUE)
   
   fg_stock_assessed_nums <- if (nrow(stock_assessment_fg_year) > 0) unique(stock_assessment_fg_year$FG_num) else integer(0)
-  fg_ecology_lookup[, FG_ECOLOGY_TYPE := fifelse(
-    n_species_in_fg == 1 & FG_num %in% fg_stock_assessed_nums, "single_species_assessed", "mixed"
+  ## "survey_exempt" (2026-09-24, per Andrea): a NEW, THIRD ecology type,
+  ## checked FIRST (takes priority over single_species_assessed/mixed)
+  ## for every FG in EXEMPT_FG_NAMES above - MEDITS/MEDIAS are bottom-
+  ## trawl/acoustic surveys, not designed to sample zooplankton,
+  ## suprabenthos, macroalgae, seagrass or coralligenous fauna
+  ## representatively at all, so even a NONZERO survey density for one
+  ## of these FGs is incidental bycatch/noise, not a real measurement -
+  ## it must never be used, not even as a last-resort fallback. See the
+  ## fcase() priority rule and the avg_density backfill guard just below
+  ## for where this classification actually changes behavior.
+  fg_ecology_lookup[, FG_ECOLOGY_TYPE := fcase(
+    FG_name %in% EXEMPT_FG_NAMES, "survey_exempt",
+    n_species_in_fg == 1 & FG_num %in% fg_stock_assessed_nums, "single_species_assessed",
+    default = "mixed"
   )]
   fwrite(fg_ecology_lookup, file.path(csv_out_dir, "fg_ecology_classification.csv"))
   n_by_ecology <- fg_ecology_lookup[, .N, by = FG_ECOLOGY_TYPE]
@@ -2226,19 +2387,58 @@ if (AREA_MODE == "westmed") {
                 by = c("Year", "FG_num", "FG_name"))[order(FG_num, Year)])
   }
   
+  ## FG_name dropped from the group-by here (2026-09-24) - it's always
+  ## 1:1 with FG_num anyway (relied on already by fg_ecology_lookup's own
+  ## unique(FG_num, FG_name)), and dropping it lets fg_index_avg/
+  ## fg_index_medits_only/fg_index_medias_only key purely on (Year,
+  ## FG_num) below, which is what makes the FULL FG grid fix underneath
+  ## possible - FG_name gets re-attached exactly once, from
+  ## fg_ecology_lookup (which covers EVERY FG, not just survey-caught
+  ## ones), after that full grid exists.
   fg_index_avg <- fg_index_combined_raw[
-    , .(avg_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
-  fg_index_medits_only <- fg_index_combined_raw[Survey == "MEDITS", .(Year, FG_num, FG_name, medits_density = mean_density)]
-  fg_index_medias_only <- fg_index_combined_raw[Survey == "MEDIAS", .(Year, FG_num, FG_name, medias_density = mean_density)]
+    , .(avg_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num)]
+  fg_index_medits_only <- fg_index_combined_raw[Survey == "MEDITS", .(Year, FG_num, medits_density = mean_density)]
+  fg_index_medias_only <- fg_index_combined_raw[Survey == "MEDIAS", .(Year, FG_num, medias_density = mean_density)]
   
-  fg_index_regional_combined <- fg_index_avg
+  ## 2026-09-24 fix, per Andrea: build the FULL (FG_num, Year) row set
+  ## FIRST - every FG the SURVEY caught (fg_index_avg) UNIONED with every
+  ## FG/Year the stock-assessment/megafauna table covers
+  ## (stock_assessment_fg_year, which by this point already has ICCAT
+  ## bluefin tuna/swordfish/albacore AND the manual-cited megafauna
+  ## biomass folded into it - see merge_manual_cited_biomass() above).
+  ## BEFORE this fix, every merge below was all.x=TRUE onto fg_index_avg
+  ## ALONE, so an FG the survey has ZERO catch for (bluefin tuna,
+  ## swordfish, and every megafauna FG - none of these are ever actually
+  ## landed in a MEDITS bottom trawl or a MEDIAS acoustic transect) had
+  ## no row to attach its stock-assessment/megafauna override density
+  ## to, and silently never appeared in fg_index_regional_combined AT
+  ## ALL - not just missing PB/QB downstream (03_pbqb-traits.R), missing
+  ## from Ecopath_B itself, despite this section's own comment above
+  ## claiming these FGs' biomass "attaches automatically". Caught by
+  ## Andrea noticing bluefin tuna/swordfish/cetaceans/seabirds had no
+  ## PB/QB at all and asking why.
+  fg_year_survey <- unique(fg_index_avg[, .(FG_num, Year)])
+  fg_year_assessed <- unique(stock_assessment_fg_year[, .(FG_num, Year)])
+  fg_year_full <- unique(rbind(fg_year_survey, fg_year_assessed))
+  fg_year_assessment_only <- fsetdiff(fg_year_full, fg_year_survey)
+  if (nrow(fg_year_assessment_only) > 0) {
+    message("[FG biomass-source priority] ", nrow(fg_year_assessment_only), " (FG_num, Year) row(s) added",
+            " that the survey never sampled at all (bluefin tuna/swordfish/megafauna, etc.) - these get",
+            " mean_density ENTIRELY from stock-assessment/megafauna biomass below (medits_density/",
+            " medias_density/avg_density all genuinely NA for these rows - there was nothing for either",
+            " survey to have measured):")
+    print(merge(fg_year_assessment_only, unique(fg_lookup_safe[, .(FG_num, FG_name)]),
+                by = "FG_num")[order(FG_num, Year)])
+  }
+  
+  fg_index_regional_combined <- merge(fg_year_full, fg_index_avg, by = c("FG_num", "Year"), all.x = TRUE)
   fg_index_regional_combined <- merge(fg_index_regional_combined, fg_index_medits_only,
-                                      by = c("Year", "FG_num", "FG_name"), all.x = TRUE)
+                                      by = c("Year", "FG_num"), all.x = TRUE)
   fg_index_regional_combined <- merge(fg_index_regional_combined, fg_index_medias_only,
-                                      by = c("Year", "FG_num", "FG_name"), all.x = TRUE)
+                                      by = c("Year", "FG_num"), all.x = TRUE)
   fg_index_regional_combined <- merge(fg_index_regional_combined,
-                                      fg_ecology_lookup[, .(FG_num, FG_ECOLOGY_TYPE)],
-                                      by = "FG_num", all.x = TRUE)
+                                      fg_ecology_lookup[, .(FG_num, FG_name, FG_ECOLOGY_TYPE)],
+                                      by = "FG_num", all.x = TRUE)   # re-attaches FG_name for every row, including the assessment-only ones added above
   fg_index_regional_combined <- merge(fg_index_regional_combined,
                                       stock_assessment_fg_year[, .(FG_num, Year, stock_assessment_density_t_km2, stock_assessment_source)],
                                       by = c("FG_num", "Year"), all.x = TRUE)
@@ -2248,24 +2448,66 @@ if (AREA_MODE == "westmed") {
   ## an earlier version of this did) throws "Length of 'default' must
   ## be 1" the moment this actually runs against real (>1-row) data.
   ## Built in two steps instead: fcase() first with NO default (so any
-  ## row matching none of the three named conditions comes back NA),
+  ## row matching none of the four named conditions comes back NA),
   ## then an explicit is.na() backfill to avg_density for exactly those
   ## rows - a true row-wise fallback, which `default=` cannot express.
   fg_index_regional_combined[, `:=`(
     mean_density = fcase(
+      ## "survey_exempt" checked FIRST (2026-09-24, per Andrea): prefer
+      ## the manual/EcoBase-cited stock_assessment_density_t_km2 exactly
+      ## like single_species_assessed does, but if THAT doesn't exist
+      ## either, stop here with NA - do NOT fall through to
+      ## medias_density/medits_density/avg_density below. A trawl/
+      ## acoustic survey catching a stray zooplankton/suprabenthos/
+      ## macroalgae/seagrass/coralligenous individual is bycatch noise,
+      ## not a real density measurement for that FG - using it (as
+      ## happened before this fix - see Macro zooplankton in
+      ## stock_assessment_biomass_crosscheck.csv getting a nonsense
+      ## 2.9e-05 t/km2 from MEDITS instead of the real ~120 t/km2
+      ## EcoBase literature figure) is actively worse than leaving the
+      ## cell genuinely missing (which at least shows up in
+      ## fg_missing_ecopath_B_REVIEW.csv for review).
+      FG_ECOLOGY_TYPE == "survey_exempt" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
+      FG_ECOLOGY_TYPE == "survey_exempt", NA_real_,
       FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
       !is.na(medias_density), medias_density,
-      !is.na(medits_density), medits_density
+      !is.na(medits_density), medits_density,
+      ## 2026-09-24 fix, per Andrea: a "mixed" (multi-species)
+      ## stock-assessment/megafauna FG - e.g. a cetacean or seabird FG
+      ## that lumps several species - used to have NO fallback here at
+      ## all: FG_ECOLOGY_TYPE only equals "single_species_assessed" for
+      ## an EXCLUSIVELY single-species FG, so a mixed FG's own group-
+      ## level megafauna density was simply discarded even when it was
+      ## the ONLY density available (medias/medits/avg_density all NA
+      ## for an FG the survey never samples). This is exactly the case
+      ## load_manual_cited_biomass_group() exists for - its output IS
+      ## already the right group-level total for that whole FG, so use
+      ## it here rather than let the row fall through to NA.
+      !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2
     ),
     biomass_source = fcase(
+      FG_ECOLOGY_TYPE == "survey_exempt" & !is.na(stock_assessment_density_t_km2),
+      paste0(stock_assessment_source, " - survey-exempt FG (MEDITS/MEDIAS don't sample this representatively)"),
+      FG_ECOLOGY_TYPE == "survey_exempt", NA_character_,  # left genuinely missing on purpose - see mean_density comment above
       FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2),
       paste0(stock_assessment_source, " - single species/stanza FG"),  # stock_assessment_source is now a per-row label ("stock assessment (ICCAT)" or "stock assessment (STAR/RAM)") rather than a hardcoded string - see the ICCAT biomass block above
       !is.na(medias_density), "MEDIAS (preferred over MEDITS)",
-      !is.na(medits_density), "MEDITS (MEDIAS unavailable this Year)"
+      !is.na(medits_density), "MEDITS (MEDIAS unavailable this Year)",
+      !is.na(stock_assessment_density_t_km2),
+      paste0(stock_assessment_source, " - mixed/multi-species FG, survey has no catch of it at all")
     )
   )]
-  fg_index_regional_combined[is.na(mean_density), mean_density := avg_density]
-  fg_index_regional_combined[is.na(biomass_source), biomass_source := "MEDITS+MEDIAS average (neither MEDIAS nor MEDITS alone had a value this Year)"]
+  ## Guard (2026-09-24, per Andrea): this backfill must NEVER touch a
+  ## survey_exempt FG - avg_density is itself just a MEDITS/MEDIAS blend,
+  ## the exact survey noise this whole fix exists to keep out. Without
+  ## this guard, a survey_exempt row deliberately left NA just above
+  ## would get silently refilled with that same bycatch-noise average
+  ## right here, undoing the fix.
+  fg_index_regional_combined[is.na(mean_density) & FG_ECOLOGY_TYPE != "survey_exempt", mean_density := avg_density]
+  fg_index_regional_combined[is.na(biomass_source) & FG_ECOLOGY_TYPE != "survey_exempt",
+                             biomass_source := "MEDITS+MEDIAS average (neither MEDIAS nor MEDITS alone had a value this Year)"]
+  fg_index_regional_combined[FG_ECOLOGY_TYPE == "survey_exempt" & is.na(biomass_source),
+                             biomass_source := "MISSING - survey-exempt FG with no stock-assessment/EcoBase/literature source either (see EXEMPT_FG_NAMES) - genuinely no usable biomass yet, not filled with survey noise"]
   fg_index_regional_combined <- fg_index_regional_combined[, .(Year, FG_num, FG_name, mean_density, biomass_source, FG_ECOLOGY_TYPE)]
   
   n_by_source <- fg_index_regional_combined[, .N, by = biomass_source]
@@ -2510,17 +2752,42 @@ fg_master_species <- unique(dataframe2[, .(FG_num, FG_name, Species = Scientific
 full_species_fg <- unique(rbindlist(list(all_species_fg, fg_master_species)), by = "Species")
 
 ## --- base-year Density + within-FG proportion, zero-filled -------------
-density_in_base_years <- species_density_regional_combined[
-  Year %in% YEAR_ECOPATH, .(Density = mean(mean_density, na.rm = TRUE)),
-  by = .(FG_num, FG_name, Species = ScientificName)]
+## 2026-09-24, per Andrea: a species genuinely present in the West Med
+## (fish, cephalopod, benthos, coral, invertebrate - i.e. anything
+## MEDITS/MEDIAS actually samples between 10-800m) can show a real
+## zero/no-data density in the 1994-1996 Ecopath baseline years purely
+## from trawl catchability/rarity (patchy distribution, low encounter
+## probability), not because it was actually absent then. Where a
+## species has a zero/no-data baseline but a real (>0) density in some
+## OTHER survey year, borrow the nearest such year's value instead of
+## reporting a false zero - flagged, never silently blended into an
+## average. Skipped entirely for any FG whose name contains "Expanding"
+## (a genuinely range-expanding/colonizing group, where a real baseline
+## zero IS the correct signal and must not be papered over).
+species_baseline_fallback <- resolve_baseline_with_nearest_year_fallback(
+  species_density_regional_combined[, .(Year, FG_num, FG_name, Species = ScientificName, mean_density)],
+  id_cols = c("FG_num", "FG_name", "Species"), value_col = "mean_density",
+  baseline_years = YEAR_ECOPATH)
+density_in_base_years <- species_baseline_fallback[, .(FG_num, FG_name, Species, Density = final_value)]
 FG_spp_Ecopath <- merge(full_species_fg, density_in_base_years,
                         by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
 
+n_borrowed <- sum(species_baseline_fallback$borrowed, na.rm = TRUE)
+if (n_borrowed > 0) {
+  fwrite(species_baseline_fallback[borrowed == TRUE],
+         file.path(csv_out_dir, "species_baseline_year_borrowed_REVIEW.csv"))
+  message(n_borrowed, " species had a zero/no-data density in the ", min(YEAR_ECOPATH), "-", max(YEAR_ECOPATH),
+          " Ecopath base years but a real nonzero density in another survey year - borrowed the",
+          " nearest such year's value instead of reporting a false zero (skipped for any FG whose",
+          " name contains \"Expanding\"). See species_baseline_year_borrowed_REVIEW.csv.")
+}
+
 n_zero_density <- FG_spp_Ecopath[is.na(Density), .N]
 if (n_zero_density > 0) {
-  message(n_zero_density, " of ", nrow(FG_spp_Ecopath), " species have no observed density in the ",
-          min(YEAR_ECOPATH), "-", max(YEAR_ECOPATH), " Ecopath base years (never observed, or ",
-          "observed only in other years) - Density and prop_sp_fg set to 0 for these.")
+  message(n_zero_density, " of ", nrow(FG_spp_Ecopath), " species still have no usable density for the ",
+          min(YEAR_ECOPATH), "-", max(YEAR_ECOPATH), " Ecopath base years (never observed anywhere in the",
+          " time series, or only ever observed in a FG_name containing \"Expanding\", which is deliberately",
+          " excluded from the borrow-fallback above) - Density and prop_sp_fg set to 0 for these.")
 }
 FG_spp_Ecopath[is.na(Density), Density := 0]
 
@@ -2696,10 +2963,82 @@ build_full_fg_species_catalog(csv_out_dir)
 ## assessment, ICCAT, marine megafauna, or primary producer/plankton),
 ## regardless of which fallback ultimately would have applied.
 ## =================================================================
-fg_biomass_base_year <- fg_index_regional_combined[Year %in% YEAR_ECOPATH,
-                                                   .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
+## 2026-09-24: mirrors the same nearest-year borrow fallback applied to
+## Ecopath_B itself (export_ecopath_ecosim_excel()) so this check
+## doesn't wrongly flag an FG that the fallback already fixed - an FG
+## still counted "missing" here has no usable biomass even AFTER
+## borrowing from another survey year (or is a real "Expanding" group,
+## deliberately excluded from the fallback).
+fg_biomass_base_year_fallback <- resolve_baseline_with_nearest_year_fallback(
+  fg_index_regional_combined[, .(Year, FG_num, FG_name, mean_density)],
+  id_cols = c("FG_num", "FG_name"), value_col = "mean_density", baseline_years = YEAR_ECOPATH)
+fg_biomass_base_year <- fg_biomass_base_year_fallback[, .(FG_num, FG_name, mean_density = final_value)]
 fg_missing_biomass <- merge(full_fg_list, fg_biomass_base_year, by = c("FG_num", "FG_name"), all.x = TRUE)
 fg_missing_biomass <- fg_missing_biomass[is.na(mean_density) | mean_density == 0]
+
+## =================================================================
+## STEP 15b: EcoBase last-resort fallback for whatever's still missing
+## (2026-09-24, per Andrea: "try to get biomass from other models
+## [EcoBase] for the ones without estimates" - bluefin tuna is the
+## motivating case, deliberately left with no density earlier in this
+## script rather than a guessed spatial split - see the ICCAT block's
+## own comment). Unlike the EARLIER, narrowly-scoped EcoBase call above
+## (fixed list: zooplankton/macroalgae/seagrass/gorgonians+corals),
+## this one runs against WHATEVER is still in fg_missing_biomass at
+## this point, regardless of which FG it is - keywords are derived
+## automatically from the FG's own name (split into words) plus its
+## ScientificName where it's a single-species FG, so no hardcoded
+## species list needs maintaining here. Same "closest available, not a
+## real measurement, flagged not guessed" principle as every other
+## EcoBase use in this pipeline - every filled value is written to its
+## own REVIEW csv naming the source model, and this only patches the
+## Ecopath_B baseline-year snapshot (fg_biomass_base_year) - it does
+## NOT backfill the full Ecosim_ts time series for these FG(s), which
+## will still show NA/0 outside YEAR_ECOPATH unless a real time series
+## is sourced separately (known, flagged scope limit, not an oversight).
+## =================================================================
+if (nrow(fg_missing_biomass) > 0 &&
+    (!exists("ENABLE_ECOBASE_BIOMASS_QUERY", envir = .GlobalEnv, inherits = FALSE) || ENABLE_ECOBASE_BIOMASS_QUERY)) {
+  missing_fg_keywords <- lapply(seq_len(nrow(fg_missing_biomass)), function(i) {
+    fg_num_i <- fg_missing_biomass$FG_num[i]
+    words <- unique(tolower(strsplit(fg_missing_biomass$FG_name[i], "[^A-Za-z]+")[[1]]))
+    words <- words[nchar(words) >= 4]  # drop tiny fragments ("and", "of", "sp", ...) that would over-match
+    sci_words <- if (exists("fg_lookup_safe")) tolower(unique(fg_lookup_safe[FG_num == fg_num_i, ScientificName])) else character(0)
+    unique(c(words, sci_words))
+  })
+  names(missing_fg_keywords) <- as.character(fg_missing_biomass$FG_num)
+  missing_fg_keywords <- missing_fg_keywords[lengths(missing_fg_keywords) > 0]
+  
+  if (length(missing_fg_keywords) > 0) {
+    ecobase_missing_fill <- fetch_ecobase_literature_biomass(
+      out_dir = csv_out_dir, force_refresh = FALSE,
+      target_fg_keywords = missing_fg_keywords, target_year = round(mean(YEAR_ECOPATH))
+    )
+    if (!is.null(ecobase_missing_fill) && nrow(ecobase_missing_fill) > 0) {
+      ecobase_missing_fill[, FG_num := as.integer(TargetGroup)]
+      ecobase_missing_fill[, Biomass_t := Biomass_t_km2 * sum(strata_area_by_area$area_km2, na.rm = TRUE)]
+      fwrite(ecobase_missing_fill[, .(FG_num, Biomass_t_km2, Biomass_t, EwE_model, ecosystem_name, year, Source_citation)],
+             file.path(csv_out_dir, "fg_missing_biomass_ecobase_fallback_REVIEW.csv"))
+      fg_biomass_base_year[ecobase_missing_fill, on = "FG_num",
+                           mean_density := fifelse(is.na(mean_density) | mean_density == 0, i.Biomass_t_km2, mean_density)]
+      message("\n[Completeness check] EcoBase fallback (other published Mediterranean models, keyword-matched",
+              " on each missing FG's own name/scientific name) filled ", nrow(ecobase_missing_fill), " of the ",
+              nrow(fg_missing_biomass), " FG(s) that had no biomass from any other source - see",
+              " fg_missing_biomass_ecobase_fallback_REVIEW.csv for exactly which model/year each came from.",
+              " These are AUTO-DRAFT, closest-available-OTHER-MODEL figures, not measurements for this study",
+              " area/year - review before trusting. This patches Ecopath_B's baseline-year value only; the",
+              " full Ecosim_ts series for these FG(s) is NOT backfilled by this step.")
+      fg_missing_biomass <- merge(full_fg_list, fg_biomass_base_year, by = c("FG_num", "FG_name"), all.x = TRUE)
+      fg_missing_biomass <- fg_missing_biomass[is.na(mean_density) | mean_density == 0]
+    } else {
+      message("\n[Completeness check] EcoBase fallback found no matching group for any of the ",
+              nrow(fg_missing_biomass), " still-missing FG(s) - see ecobase_literature_biomass_full.csv to",
+              " check the keyword match by hand (auto-derived keywords from the FG's own name can miss",
+              " EcoBase's actual group naming convention).")
+    }
+  }
+}
+
 if (nrow(fg_missing_biomass) > 0) {
   fwrite(fg_missing_biomass[, .(FG_num, FG_name)], file.path(csv_out_dir, "fg_missing_ecopath_B_REVIEW.csv"))
   message("\n[Completeness check] ", nrow(fg_missing_biomass), " of ", nrow(full_fg_list),

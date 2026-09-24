@@ -38,6 +38,14 @@ new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
+## rfishbase - OPTIONAL here (unlike 03_pbqb-traits.R, which hard-stops
+## on a missing/too-old install): the FishBase/SeaLifeBase diet()
+## fallback added below (STEP 3b) is a best-effort tier below the real
+## metaweb, not this script's core purpose, so a missing/broken
+## rfishbase install just disables that one tier (message(), not
+## stop()) rather than blocking the whole diet run the way it does in
+## 03_pbqb-traits.R.
+
 ## =================================================================
 ## STEP 1: Configuration - SOURCE-ABLE SCRIPT, same convention as
 ## 01_biomass.R/02_fisheries.R/03_pbqb-traits.R: out_dir/pcloud_dir/
@@ -75,6 +83,7 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 }
 
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # for upsert_workbook_sheets() - writes Ecopath_diet into the same shared workbook
+source(file.path(git_dir, "scripts/03b_ecobase.R"))  # for fetch_ecobase_raw_inputs()/WESTMED_BBOX (biomass/PB-QB fallback machinery, reused here - STEP 3c - for the EcoBase diet-matrix fallback) and fetch_ecobase_diet_matrix() added below in that same file
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")   # same shared workbook 01_biomass.R/02_fisheries.R/03_pbqb-traits.R write to
 
@@ -107,6 +116,16 @@ if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) O
 if (!exists("DIET_METRIC_PRIORITY", envir = .GlobalEnv, inherits = FALSE)) {
   DIET_METRIC_PRIORITY <- c("IRI", "WEIGHT", "NUMBER", "FREQUENCY", "Presence_(no_number_data)")
 }
+
+## --- Fallback tiers (added 2026-09-24) for predators the metaweb has
+## NO usable DATA_ENTRY rows for - see STEP 3b/3c below and the
+## run_pipeline() rewrite at the bottom. Metaweb rows always win where
+## they exist; these only ever fill a GAP, never override a real
+## metaweb entry, and every predator's diet is tagged with which of
+## the three tiers (or "still missing") it actually came from.
+if (!exists("DIET_FALLBACK_ENABLE_FISHBASE", envir = .GlobalEnv, inherits = FALSE)) DIET_FALLBACK_ENABLE_FISHBASE <- TRUE
+if (!exists("DIET_FALLBACK_ENABLE_ECOBASE",  envir = .GlobalEnv, inherits = FALSE)) DIET_FALLBACK_ENABLE_ECOBASE  <- TRUE
+if (!exists("DIET_STILL_MISSING_CSV_PATH",   envir = .GlobalEnv, inherits = FALSE)) DIET_STILL_MISSING_CSV_PATH   <- file.path(csv_out_dir, "diet_still_missing_REVIEW.csv")
 
 message("[04_diets.R] Config: METAWEB_XLSX_PATH = ", METAWEB_XLSX_PATH,
         " | FG_REFERENCE_CSV_PATH = ", FG_REFERENCE_CSV_PATH,
@@ -211,7 +230,21 @@ build_species_diet <- function(data_entry, lookup) {
   }
   
   dt <- dt[!is.na(diet_value)]
-  if (nrow(dt) == 0) stop("No usable diet records after applying DIET_METRIC_PRIORITY - check DATA_ENTRY has real data (the empty metaweb template ships with none).")
+  if (nrow(dt) == 0) {
+    ## 2026-09-24 change: no longer a hard stop() - the empty metaweb
+    ## template genuinely ships with zero usable DATA_ENTRY rows, and
+    ## run_pipeline() now has two more fallback tiers (FishBase/
+    ## SeaLifeBase diet(), then EcoBase - see STEP 3b/3c below) it can
+    ## try per-predator instead of failing the whole diet block. An
+    ## empty result here just means "the metaweb tier contributes
+    ## nothing this run", which is a normal, expected state, not an error.
+    message("[04_diets.R] build_species_diet(): no usable diet records after applying DIET_METRIC_PRIORITY - ",
+            "the metaweb DATA_ENTRY tab has no real diet-study rows yet (the empty template ships with none). ",
+            "Falling through to the FishBase/SeaLifeBase and EcoBase fallback tiers for every predator.")
+    return(list(species_diet = data.table(predator_name = character(), prey_name = character(),
+                                          proportion = numeric(), n_studies = integer()),
+                predator_references = data.table(predator_name = character(), references = character())))
+  }
   
   dt[, predator_name := resolve_codes(Code_predator, lookup)]
   dt[, prey_name     := resolve_codes(Code_prey, lookup)]
@@ -238,6 +271,193 @@ build_species_diet <- function(data_entry, lookup) {
   predator_references <- dt[, .(references = paste(sort(unique(Reference)), collapse = "; ")), by = predator_name]
   
   list(species_diet = species_diet[], predator_references = predator_references[])
+}
+
+## =================================================================
+## STEP 3b (added 2026-09-24): FishBase/SeaLifeBase diet() fallback for
+## predators with NO usable metaweb DATA_ENTRY rows. Same rfishbase
+## dependency 03_pbqb-traits.R already uses (see that file's own
+## version-pinning check - NOT repeated here since this tier is
+## optional/best-effort, not required for this script to run at all).
+##
+## rfishbase::diet() itself: returns one row per (species, prey item)
+## for whatever stomach-content studies FishBase/SeaLifeBase have
+## digitized. Its exact column layout has changed across rfishbase
+## versions (confirmed by 03_pbqb-traits.R's own comments elsewhere in
+## this pipeline about schema drift) - NOT independently verified from
+## this session (no network access here, no R environment either), so
+## every column this function needs is resolved DEFENSIVELY from a
+## small set of candidate names, with whatever is actually found
+## printed so a wrong guess is visible immediately rather than a silent
+## empty/garbage result. Known/likely candidates, based on rfishbase's
+## documented diet() table: a prey-item text field (FoodI/FoodII/
+## FoodIII/Foodname/PreyStage), a study identifier (DietCode/StudyDuration/
+## SampleStage or similar - used the same way metaweb's "Reference"
+## groups records into one study), and a proportion field
+## (DietPercent/Percentage/PropDietCompo - FishBase reports this on a
+## 0-100 %Weight-or-%Volume-ish scale, hence the /100 below).
+##
+## Output shape matches build_species_diet()'s own return EXACTLY
+## (list(species_diet, predator_references), same columns) so nothing
+## downstream (build_species_to_fg/build_biomass_in_fg/build_fg_diet)
+## needs to change - the fallback is a drop-in additional row source,
+## not a parallel code path.
+fetch_fishbase_diet_for_species <- function(species_names) {
+  empty_result <- list(species_diet = data.table(predator_name = character(), prey_name = character(),
+                                                 proportion = numeric(), n_studies = integer()),
+                       predator_references = data.table(predator_name = character(), references = character()))
+  if (length(species_names) == 0) return(empty_result)
+  if (!requireNamespace("rfishbase", quietly = TRUE)) {
+    message("[04_diets.R] fetch_fishbase_diet_for_species(): 'rfishbase' package not installed - skipping the ",
+            "FishBase/SeaLifeBase diet fallback for ", length(species_names), " predator(s): ",
+            paste(head(species_names, 10), collapse = ", "), if (length(species_names) > 10) ", ..." else "")
+    return(empty_result)
+  }
+  
+  fetch_one_server <- function(server) {
+    tryCatch(as.data.table(rfishbase::diet(species_names, server = server)),
+             error = function(e) {
+               message("[04_diets.R] rfishbase::diet(server = '", server, "') failed: ", conditionMessage(e))
+               data.table()
+             })
+  }
+  diet_raw <- rbindlist(list(fetch_one_server("fishbase"), fetch_one_server("sealifebase")), fill = TRUE)
+  if (nrow(diet_raw) == 0) {
+    message("[04_diets.R] fetch_fishbase_diet_for_species(): rfishbase::diet() returned no rows for any of the ",
+            length(species_names), " predator(s) queried (checked both fishbase and sealifebase servers).")
+    return(empty_result)
+  }
+  
+  message("[04_diets.R] rfishbase::diet() columns available (resolving defensively - schema drifts across ",
+          "rfishbase versions): ", paste(names(diet_raw), collapse = ", "))
+  
+  species_col  <- intersect(c("Species", "SpecCode", "sciname"), names(diet_raw))[1]
+  prey_col     <- intersect(c("FoodI", "FoodII", "FoodIII", "Foodname", "PreyStage", "Prey"), names(diet_raw))[1]
+  pct_col      <- intersect(c("DietPercent", "Percentage", "PropDietCompo", "PercentFood"), names(diet_raw))[1]
+  study_col    <- intersect(c("DietCode", "StudyDuration", "SampleStage", "C_Code", "StockCode"), names(diet_raw))[1]
+  
+  if (is.na(species_col) || is.na(prey_col)) {
+    message("[04_diets.R] fetch_fishbase_diet_for_species(): couldn't find a usable species and/or prey-item ",
+            "column in rfishbase::diet()'s output (columns present: ", paste(names(diet_raw), collapse = ", "),
+            ") - skipping this fallback tier. Update the candidate names above once the real column is known.")
+    return(empty_result)
+  }
+  if (is.na(pct_col)) {
+    message("[04_diets.R] fetch_fishbase_diet_for_species(): no diet-percentage column found (looked for ",
+            "DietPercent/Percentage/PropDietCompo/PercentFood among: ", paste(names(diet_raw), collapse = ", "),
+            ") - treating every returned prey item as an equal-split PRESENCE record instead (same fallback rule ",
+            "build_species_diet() uses for the metaweb's own Presence_(no_number_data) column).")
+  }
+  if (is.na(study_col)) study_col <- NA_character_  # no per-study grouping available - treat every row as its own "study"
+  
+  dt <- copy(diet_raw)
+  setnames(dt, species_col, "predator_name")
+  setnames(dt, prey_col, "prey_name")
+  dt <- dt[!is.na(predator_name) & predator_name != "" & !is.na(prey_name) & prey_name != ""]
+  if (nrow(dt) == 0) return(empty_result)
+  
+  dt[, study_id := if (!is.na(study_col)) as.character(get(study_col)) else paste(predator_name, seq_len(.N))]
+  
+  if (!is.na(pct_col)) {
+    dt[, diet_value := suppressWarnings(as.numeric(get(pct_col)))]
+  } else {
+    dt[, diet_value := NA_real_]
+  }
+  ## Presence-only fallback (no usable % column, or a % value missing on
+  ## some rows) - equal split among that predator+study's present prey,
+  ## same rule as build_species_diet()'s STEP 5 Presence handling.
+  dt[, n_present := .N, by = .(predator_name, study_id)]
+  dt[is.na(diet_value), diet_value := 1 / n_present]
+  
+  dt <- dt[!is.na(diet_value) & diet_value > 0]
+  if (nrow(dt) == 0) return(empty_result)
+  
+  dt[, study_total := sum(diet_value), by = .(predator_name, study_id)]
+  dt <- dt[study_total > 0]
+  dt[, diet_norm := diet_value / study_total]
+  
+  species_diet <- dt[, .(
+    proportion = mean(diet_norm),
+    n_studies  = uniqueN(study_id)
+  ), by = .(predator_name, prey_name)]
+  species_diet[, proportion := proportion / sum(proportion), by = predator_name]
+  
+  predator_references <- dt[, .(references = paste0("FishBase/SeaLifeBase diet() [", uniqueN(study_id), " study record(s)]")), by = predator_name]
+  
+  message("[04_diets.R] FishBase/SeaLifeBase diet() fallback resolved ", uniqueN(species_diet$predator_name),
+          " of ", length(species_names), " requested predator(s): ",
+          paste(head(unique(species_diet$predator_name), 10), collapse = ", "),
+          if (uniqueN(species_diet$predator_name) > 10) ", ..." else "")
+  
+  list(species_diet = species_diet[], predator_references = predator_references[])
+}
+
+## =================================================================
+## STEP 3c (added 2026-09-24): EcoBase diet-matrix fallback, for
+## predator FGs still uncovered after metaweb + FishBase/SeaLifeBase
+## (STEP 3b above). Unlike those two tiers, this one operates at the
+## FG level directly (predator_fg/prey_fg/weight - the SAME shape
+## build_fg_diet() itself returns), rather than at species level, since
+## EcoBase's own <group> nodes are already FG-like model compartments,
+## not individual species - there's no meaningful species_to_fg step to
+## run for an EcoBase match. fetch_ecobase_diet_by_keyword()
+## (03b_ecobase.R) does the actual query/matching (same keyword-match-
+## against-other-Mediterranean-models + closest-model-year pattern as
+## fetch_ecobase_literature_biomass()); this just reshapes its output
+## and is where the "diet matrix field may not exist on this endpoint
+## at all" caveat (see 03b_ecobase.R's own header comment on this) is
+## surfaced to the caller.
+fetch_ecobase_diet_for_predator_fgs <- function(predator_fg_names, out_dir, target_year = NULL) {
+  empty_result <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric(), diet_ref = character())
+  if (length(predator_fg_names) == 0) return(empty_result)
+  
+  keywords <- setNames(lapply(predator_fg_names, function(nm) unique(tolower(strsplit(nm, "[^A-Za-z0-9]+")[[1]]))), predator_fg_names)
+  keywords <- lapply(keywords, function(k) k[nchar(k) >= 4])   # drop short/uninformative tokens (e.g. "sp", "of")
+  keywords <- keywords[lengths(keywords) > 0]
+  if (length(keywords) == 0) {
+    message("[04_diets.R] fetch_ecobase_diet_for_predator_fgs(): no usable keyword could be derived from the ",
+            length(predator_fg_names), " predator FG name(s) needing this fallback - skipping.")
+    return(empty_result)
+  }
+  
+  matches <- tryCatch(fetch_ecobase_diet_by_keyword(out_dir, target_predator_keywords = keywords, target_year = target_year),
+                      error = function(e) {
+                        message("[04_diets.R] fetch_ecobase_diet_for_predator_fgs(): fetch_ecobase_diet_by_keyword() failed - ",
+                                conditionMessage(e))
+                        NULL
+                      })
+  if (is.null(matches) || nrow(matches) == 0) {
+    message("[04_diets.R] EcoBase diet fallback found nothing usable for any of the ", length(predator_fg_names),
+            " predator FG(s) still missing a diet source: ", paste(predator_fg_names, collapse = ", "))
+    return(empty_result)
+  }
+  
+  ## Resolve prey-name/value columns defensively (see 03b_ecobase.R's
+  ## fetch_ecobase_diet_matrix_for_model() header - the nested field
+  ## names it parses are unverified guesses).
+  prey_col  <- intersect(c("group_name", "prey_group_name", "prey_name", "Prey_name"), names(matches))[1]
+  value_col <- intersect(c("value", "diet_proportion", "percent", "Percent", "DC"), names(matches))[1]
+  if (is.na(prey_col) || is.na(value_col)) {
+    message("[04_diets.R] fetch_ecobase_diet_for_predator_fgs(): EcoBase diet rows were found but have no ",
+            "recognizable prey-name/value column pair (columns: ", paste(names(matches), collapse = ", "),
+            ") - can't turn them into FG diet rows. Update the candidate names once the real field is known.")
+    return(empty_result)
+  }
+  
+  dt <- copy(matches)
+  setnames(dt, prey_col, "prey_fg")
+  setnames(dt, value_col, "raw_value")
+  dt[, raw_value := suppressWarnings(as.numeric(raw_value))]
+  dt <- dt[!is.na(raw_value) & raw_value > 0]
+  if (nrow(dt) == 0) return(empty_result)
+  
+  dt[, weight := raw_value / sum(raw_value), by = TargetPredatorFG]
+  if (!"Source_citation" %in% names(dt)) dt[, Source_citation := paste0("EcoBase model_id ", model_id)]
+  
+  out <- dt[, .(predator_fg = TargetPredatorFG, prey_fg, weight, diet_ref = Source_citation)]
+  message("[04_diets.R] EcoBase diet fallback resolved ", uniqueN(out$predator_fg), " of ", length(predator_fg_names),
+          " predator FG(s): ", paste(unique(out$predator_fg), collapse = ", "))
+  out[]
 }
 
 ## =================================================================
@@ -569,9 +789,40 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                          out_path = OUTPUT_CSV_PATH) {
   metaweb        <- read_metaweb(metaweb_path)
   lookup         <- build_code_lookup(metaweb$tax_codes, metaweb$nontax_groups)
+  group_table    <- as.data.table(read.csv(group_table_path, stringsAsFactors = FALSE))   # moved up from STEP 9's old position - the fallback tiers below need the predator FG list before the diet matrix is built, not just at export time
+  predator_fg_names_all <- unique(group_table[is_predator == TRUE | is_predator == 1]$group_name)
+  
   species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
   species_diet   <- species_diet_result$species_diet
   predator_references <- species_diet_result$predator_references
+  if (nrow(predator_references) > 0) predator_references[, source := "metaweb"]
+  metaweb_predators <- unique(species_diet$predator_name)
+  message("[04_diets.R] Metaweb (DATA_ENTRY) tier: ", uniqueN(metaweb_predators), " predator(s) with real diet-study rows.")
+  
+  ## --- Fallback tier 1: FishBase/SeaLifeBase diet() (STEP 3b) --------
+  ## "Predators needing this fallback" = every real species mapped (via
+  ## FG_WMed_2026.csv) into a predator FG that the metaweb tier above did
+  ## NOT already cover - independent of whether the metaweb has ANY rows
+  ## at all (needed for the current empty-template case, where
+  ## metaweb_predators is empty and every predator needs a fallback).
+  species_to_fg_reference_only <- read_species_to_fg_from_reference(fg_reference_path)
+  all_predator_species <- unique(species_to_fg_reference_only[fg_name %in% predator_fg_names_all]$species)
+  missing_after_metaweb <- setdiff(all_predator_species, metaweb_predators)
+  message("[04_diets.R] ", length(missing_after_metaweb), " of ", length(all_predator_species),
+          " predator species (per ", fg_reference_path, ") have no metaweb diet-study rows and are candidates",
+          " for the FishBase/SeaLifeBase and EcoBase fallback tiers.")
+  
+  fb_predators <- character(0)
+  if (DIET_FALLBACK_ENABLE_FISHBASE && length(missing_after_metaweb) > 0) {
+    fb_result <- fetch_fishbase_diet_for_species(missing_after_metaweb)
+    if (nrow(fb_result$predator_references) > 0) fb_result$predator_references[, source := "fishbase_sealifebase"]
+    species_diet         <- rbind(species_diet, fb_result$species_diet, fill = TRUE)
+    predator_references  <- rbind(predator_references, fb_result$predator_references, fill = TRUE)
+    fb_predators          <- unique(fb_result$species_diet$predator_name)
+  } else if (!DIET_FALLBACK_ENABLE_FISHBASE) {
+    message("[04_diets.R] DIET_FALLBACK_ENABLE_FISHBASE is FALSE - skipping the FishBase/SeaLifeBase diet fallback tier.")
+  }
+  missing_after_fishbase <- setdiff(missing_after_metaweb, fb_predators)
   
   all_named     <- unique(c(species_diet$predator_name, species_diet$prey_name))
   generic_names <- unique(metaweb$nontax_groups$Group_name)   # source of truth for "generic category, not a real species" - see build_code_lookup()'s own header comment for why lookup$is_group isn't used here
@@ -585,33 +836,90 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   species_to_fg <- build_species_to_fg(needed_species, fg_reference_path, species_to_fg_missing_path, tax_codes = metaweb$tax_codes)
   biomass_in_fg <- build_biomass_in_fg(unique(species_to_fg[, .(species, fg_name)]), workbook_path, biomass_fallback_path,
                                        biomass_csv_dir = BIOMASS_CSV_DIR)
-  fg_diet       <- build_fg_diet(species_diet, species_to_fg, biomass_in_fg)
-  group_table   <- as.data.table(read.csv(group_table_path, stringsAsFactors = FALSE))
+  fg_diet       <- if (nrow(species_diet) > 0) build_fg_diet(species_diet, species_to_fg, biomass_in_fg) else data.table(predator_fg = character(), prey_fg = character(), weight = numeric())
   
-  ## diet_references_by_fg.csv (added 2026-09-17): rolls predator_references
-  ## (per-PREDATOR study citations, from build_species_diet() above) up to
-  ## per-FG, via the same species_to_fg mapping used for the diet matrix
-  ## itself - every species that maps (even partially) into an FG as a
-  ## PREDATOR contributes its citations to that FG's set. Read back by
-  ## build_fg_references_sheet() (lib_survey_fg_density_functions.R) to
-  ## populate the final workbook's References sheet's ref_diet column.
-  ## Joined against FG_lookup.csv (01_biomass.R's own output, read from
-  ## BIOMASS_CSV_DIR) to resolve FG_num, matching by FG_name text - same
-  ## join key build_biomass_in_fg() above already relies on.
-  pred_fg_refs <- merge(species_to_fg[, .(species, fg_name)], predator_references,
-                        by.x = "species", by.y = "predator_name")
-  diet_refs_by_fgname <- pred_fg_refs[, .(references = paste(sort(unique(unlist(strsplit(references, "; ")))), collapse = "; ")), by = fg_name]
+  ## --- Fallback tier 2: EcoBase diet matrix (STEP 3c) ----------------
+  ## Operates at the FG level directly (see that function's own header)
+  ## and only for predator FGs that STILL have zero coverage after the
+  ## metaweb + FishBase/SeaLifeBase tiers above - i.e. not one single
+  ## mapped species contributed a diet row to fg_diet for that FG.
+  predator_fg_covered   <- unique(fg_diet$predator_fg)
+  predator_fg_missing    <- setdiff(predator_fg_names_all, predator_fg_covered)
+  ecobase_diet_rows <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric(), diet_ref = character())
+  if (DIET_FALLBACK_ENABLE_ECOBASE && length(predator_fg_missing) > 0) {
+    target_year_ecobase <- if (exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) round(mean(YEAR_ECOPATH)) else NULL
+    ecobase_diet_rows <- fetch_ecobase_diet_for_predator_fgs(predator_fg_missing, out_dir = csv_out_dir, target_year = target_year_ecobase)
+    if (nrow(ecobase_diet_rows) > 0) {
+      fg_diet <- rbind(fg_diet, ecobase_diet_rows[, .(predator_fg, prey_fg, weight)], fill = TRUE)
+    }
+  } else if (!DIET_FALLBACK_ENABLE_ECOBASE) {
+    message("[04_diets.R] DIET_FALLBACK_ENABLE_ECOBASE is FALSE - skipping the EcoBase diet-matrix fallback tier.")
+  }
+  predator_fg_still_missing <- setdiff(predator_fg_missing, unique(ecobase_diet_rows$predator_fg))
+  
+  ## --- Provenance ("diet_ref") per predator FG, and the still-missing -
+  ## REVIEW list (per the task: proceed with a clearly flagged partial
+  ## matrix rather than hard-stopping, UNLESS truly nothing covers a
+  ## predator FG anywhere - that case is written out below for a human
+  ## to fix, not silently guessed at). This mirrors the existing
+  ## predator_references mechanism (build_species_diet()'s own STEP 5
+  ## comment) but rolled up to FG level and across all three tiers.
+  species_source_by_fg <- if (nrow(predator_references) > 0) {
+    merge(species_to_fg[, .(species, fg_name)], predator_references, by.x = "species", by.y = "predator_name")
+  } else data.table(species = character(), fg_name = character(), references = character(), source = character())
+  fg_source_tags <- if (nrow(species_source_by_fg) > 0) {
+    species_source_by_fg[, .(diet_ref = paste(sort(unique(unlist(strsplit(references, "; ")))), collapse = "; "),
+                             diet_source = paste(sort(unique(source)), collapse = "+")), by = fg_name]
+  } else data.table(fg_name = character(), diet_ref = character(), diet_source = character())
+  if (nrow(ecobase_diet_rows) > 0) {
+    ecobase_tags <- unique(ecobase_diet_rows[, .(fg_name = predator_fg, diet_ref = diet_ref, diet_source = "ecobase_model")])
+    fg_source_tags <- rbind(fg_source_tags, ecobase_tags, fill = TRUE)
+  }
+  diet_provenance_by_fg <- data.table(FG_name = predator_fg_names_all)
+  diet_provenance_by_fg <- merge(diet_provenance_by_fg, fg_source_tags, by.x = "FG_name", by.y = "fg_name", all.x = TRUE)
+  diet_provenance_by_fg[is.na(diet_source), diet_source := "still_missing"]
+  fwrite(diet_provenance_by_fg, file.path(csv_out_dir, "diet_provenance_by_predator_fg.csv"))
+  message("[04_diets.R] Saved diet_provenance_by_predator_fg.csv - source breakdown: ",
+          paste(capture.output(print(diet_provenance_by_fg[, .N, by = diet_source])), collapse = " | "))
+  
+  if (length(predator_fg_still_missing) > 0) {
+    still_missing_dt <- data.table(
+      predator_fg = predator_fg_still_missing,
+      example_species = vapply(predator_fg_still_missing, function(fg) {
+        sp <- species_to_fg_reference_only[fg_name == fg]$species
+        paste(head(sp, 5), collapse = "; ")
+      }, character(1))
+    )
+    fwrite(still_missing_dt, DIET_STILL_MISSING_CSV_PATH)
+    message("[04_diets.R] WARNING - ", nrow(still_missing_dt), " predator FG(s) have NO diet source at all ",
+            "(metaweb, FishBase/SeaLifeBase, AND EcoBase all came up empty) - written to ",
+            DIET_STILL_MISSING_CSV_PATH, " for manual review/hand entry. Proceeding with a PARTIAL diet matrix ",
+            "(these FG(s) will be all-zero/absent in Ecopath_diet): ", paste(predator_fg_still_missing, collapse = ", "))
+  } else if (file.exists(DIET_STILL_MISSING_CSV_PATH)) {
+    file.remove(DIET_STILL_MISSING_CSV_PATH)   # clean up a stale review file from an earlier, less-complete run
+  }
+  
+  ## diet_references_by_fg.csv (added 2026-09-17; 2026-09-24: now also
+  ## folds in the FishBase/SeaLifeBase + EcoBase fallback tiers'
+  ## citations, not just the metaweb's) - rolls predator_references up
+  ## to per-FG, via the same species_to_fg mapping used for the diet
+  ## matrix itself. Read back by build_fg_references_sheet()
+  ## (lib_survey_fg_density_functions.R) to populate the final
+  ## workbook's FG_References sheet's diet_ref column. Joined against
+  ## FG_lookup.csv (01_biomass.R's own output, read from BIOMASS_CSV_DIR)
+  ## to resolve FG_num, matching by FG_name text - same join key
+  ## build_biomass_in_fg() above already relies on.
   fg_lookup_for_refs <- read_full_fg_reference(workbook_path, csv_dir = BIOMASS_CSV_DIR)
   if (!is.null(fg_lookup_for_refs)) {
-    diet_refs_by_fg <- merge(fg_lookup_for_refs, diet_refs_by_fgname, by.x = "FG_name", by.y = "fg_name", all.x = TRUE)
-    diet_refs_by_fg <- diet_refs_by_fg[, .(FG_num, FG_name, references)]
+    diet_refs_by_fg <- merge(fg_lookup_for_refs, fg_source_tags, by.x = "FG_name", by.y = "fg_name", all.x = TRUE)
+    diet_refs_by_fg <- diet_refs_by_fg[, .(FG_num, FG_name, references = diet_ref)]
     setorder(diet_refs_by_fg, FG_num)
     fwrite(diet_refs_by_fg, file.path(csv_out_dir, "diet_references_by_fg.csv"))
     message("[04_diets.R] Saved diet_references_by_fg.csv (", diet_refs_by_fg[!is.na(references), .N],
-            " of ", nrow(diet_refs_by_fg), " FG(s) have at least one diet-study citation).")
+            " of ", nrow(diet_refs_by_fg), " FG(s) have at least one diet-study citation, across all three tiers).")
   } else {
     message("[04_diets.R] No FG_lookup.csv found in ", BIOMASS_CSV_DIR, " (run 01_biomass.R first) -",
-            " diet_references_by_fg.csv not written this run; the References sheet's ref_diet column",
+            " diet_references_by_fg.csv not written this run; the FG_References sheet's diet_ref column",
             " will be blank until it is.")
   }
   

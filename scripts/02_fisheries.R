@@ -498,6 +498,99 @@ resolve_matches_safely <- function(merged_dt, query_col = "Species", fg_col = "F
 }
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
+## =================================================================
+## Bare taxonomic-rank matching + biomass-weighted FG split (2026-09-24,
+## per Andrea: "in the scientific name, sometimes appear family or
+## order or class or phylum ... matching with taxonomy in FG_WMed_2026
+## could get more[/less] the FGs that this catch belongs and we can
+## split if multiple"). Both GFCM's own cascade and STECF FDI's (via
+## rerun_species_fg_cascade()) already resolve a "scientific name" for
+## many still-unmatched common names/codes via FAO's own Name_En ->
+## Scientific_Name reference - but for an aggregate/NEI code, that
+## "Scientific_Name" is sometimes not a real species binomial at all,
+## it's literally a bare Family/Order/Class/Phylum Latin name (e.g.
+## "Sparidae", "Rajiformes"). Joining that straight against fg_lookup's
+## real per-SPECIES ScientificName column (what every existing cascade
+## step does) always misses - there's no row named "Sparidae" in
+## fg_lookup. This reference lets a bare rank name be matched instead
+## against every FG that rank's already-assigned SURVEY species belong
+## to (from 01_biomass.R's species_inventory_with_taxonomy.csv), and -
+## since a Family/Order/Class/Phylum can span more than one FG - split
+## the catch across them by RELATIVE BIOMASS (biomass_proportion_by_
+## species_fg.csv) rather than picking one FG or dropping it.
+##
+## Silently degrades to "skip this step" (same as every other optional
+## cross-block read in this file) if 01_biomass.R hasn't been run
+## against this out_dir yet - every species just stays unmatched as
+## before, nothing errors.
+TAXONOMY_RANK_REF_PATH  <- file.path(BIOMASS_CSV_DIR, "species_inventory_with_taxonomy.csv")
+BIOMASS_WEIGHT_REF_PATH <- file.path(BIOMASS_CSV_DIR, "biomass_proportion_by_species_fg.csv")
+taxonomy_rank_ref <- NULL
+if (!file.exists(TAXONOMY_RANK_REF_PATH) || !file.exists(BIOMASS_WEIGHT_REF_PATH)) {
+  message("\n[Taxonomy rank split] '", TAXONOMY_RANK_REF_PATH, "' and/or '", BIOMASS_WEIGHT_REF_PATH, "' not found -",
+          " run 01_biomass.R against this out_dir first. Bare-rank (Family/Order/Class/Phylum) matching for",
+          " GFCM/STECF FDI aggregate names is skipped this run - they'll still show up as unmatched, same as before.")
+} else {
+  taxonomy_rank_ref <- fread(TAXONOMY_RANK_REF_PATH)
+  biomass_weight_ref <- fread(BIOMASS_WEIGHT_REF_PATH)
+  ## Attach each species x FG's real observed biomass (Density) onto the
+  ## taxonomy reference, so a candidate FG's weight for a matched rank is
+  ## the summed biomass of exactly the species sharing that rank AND
+  ## sitting in that FG - not the FG's whole, mostly-unrelated biomass.
+  taxonomy_rank_ref <- merge(taxonomy_rank_ref, biomass_weight_ref[, .(FG_num, Species, Density)],
+                             by.x = c("FG_num", "ScientificName"), by.y = c("FG_num", "Species"), all.x = TRUE)
+  taxonomy_rank_ref[is.na(Density), Density := 0]
+  message("\n[Taxonomy rank split] Loaded ", uniqueN(taxonomy_rank_ref$ScientificName), " species' taxonomy (",
+          nrow(taxonomy_rank_ref), " species x FG row(s)) for bare Family/Order/Class/Phylum rank matching.")
+}
+
+strip_rank_suffixes <- function(x) {
+  ## same normalization STECF's own aggregate_pattern/clean_name() use
+  ## elsewhere in this file - strips parentheticals and the "nei"/"spp"/
+  ## "sp"/"etc" filler words a bare rank name is often still wrapped in
+  ## (e.g. "Sparidae spp." -> "Sparidae").
+  x <- str_remove(x, "\\(.*\\)")
+  x <- str_remove_all(x, regex("\\b(nei|spp|sp|etc)\\b\\.?", ignore_case = TRUE))  # \\b BEFORE the optional trailing dot, not after - a \\b right after "\\.?" fails to match when the dot IS present (non-word char on both sides isn't a boundary), silently leaving the dot behind
+  str_squish(x)
+}
+
+## match_bare_rank_to_fg(): tiered most-specific-first (Genus > Family >
+## Order > Class > Phylum - same tiering 01_biomass.R's own
+## fallback_match_fg_by_taxonomy() uses), case-insensitive exact match
+## against taxonomy_rank_ref's rank columns. Returns NULL if nothing
+## matches at any rank, else one row per distinct candidate FG with that
+## rank's summed real biomass among just the species sharing it (for
+## split_by_biomass() below) and which rank actually matched.
+match_bare_rank_to_fg <- function(query_clean, taxonomy_ref) {
+  if (is.null(taxonomy_ref) || is.null(query_clean) || is.na(query_clean) || query_clean == "") return(NULL)
+  for (rank in c("Genus", "Family", "Order", "Class", "Phylum")) {
+    if (!rank %in% names(taxonomy_ref)) next
+    hits <- taxonomy_ref[!is.na(get(rank)) & tolower(get(rank)) == tolower(query_clean)]
+    if (nrow(hits) > 0) {
+      fg_weights <- hits[, .(fg_biomass = sum(Density, na.rm = TRUE)), by = .(FG_num, FG_name)]
+      fg_weights[, matched_rank := rank]
+      return(fg_weights)
+    }
+  }
+  NULL
+}
+
+## split_by_biomass(): normalizes match_bare_rank_to_fg()'s candidate FG
+## set into Split_weight rows summing to 1 - proportional to fg_biomass
+## where any candidate FG actually has real biomass among that rank's
+## species, falling back to an equal split across candidates otherwise
+## (never drops a query to zero rows just because biomass data happens
+## to be thin for every candidate FG).
+split_by_biomass <- function(fg_weights) {
+  total <- sum(fg_weights$fg_biomass, na.rm = TRUE)
+  if (total > 0) {
+    fg_weights[, Split_weight := fg_biomass / total]
+  } else {
+    fg_weights[, Split_weight := 1 / .N]
+  }
+  fg_weights[, .(FG_num, FG_name, Split_weight, matched_rank)]
+}
+
 blank_row <- unmatched_species[is.na(Species) | Species == ""]  # rows with no species name at all
 if (nrow(blank_row) > 0) message(nrow(blank_row), " row(s) with blank Species name - excluded.")
 unmatched_species <- unmatched_species[!is.na(Species) & Species != ""]  # drop blank-species rows
@@ -773,17 +866,56 @@ if (nrow(containment_results) > 0) {
   message("\nSTEP - No word-containment matches found.")
 }
 
-all_matches <- rbindlist(list(direct_matches, exact_matches, fao_sci_matches, genus_matches, containment_matches))  # combine matches from every cascade step
-resolved <- merge(unmatched_species[, .(Species, Catch)], all_matches, by = "Species", all.x = TRUE)  # attach matches back onto every unmatched species
+remaining <- remaining[!Species %in% containment_matches$Species]  # species still unmatched after word containment
+
+## --- Bare taxonomic-rank match + biomass-weighted split (2026-09-24) -
+## only reached for whatever's still unmatched after every other cascade
+## step - i.e. exactly the "Aggregate/NEI category" bucket that used to
+## just get dropped. Reuses fao_sci_bridge's own resolved Scientific_Name
+## (already computed above, just never matched fg_lookup's real per-
+## species column) rather than the raw common name - that's genuinely
+## more likely to BE a bare Family/Order/Class/Phylum Latin name for one
+## of these aggregate codes.
+rank_split_matches <- data.table(Species = character(), FG_num = numeric(), FG_name = character(),
+                                 Split_weight = numeric(), match_method = character())
+if (!is.null(taxonomy_rank_ref) && nrow(remaining) > 0) {
+  rank_candidates <- unique(fao_sci_bridge[Species %in% remaining$Species, .(Species, Scientific_Name)])
+  if (nrow(rank_candidates) > 0) {
+    rank_candidates[, query_clean := strip_rank_suffixes(Scientific_Name)]
+    for (i in seq_len(nrow(rank_candidates))) {
+      fg_weights <- match_bare_rank_to_fg(rank_candidates$query_clean[i], taxonomy_rank_ref)
+      if (!is.null(fg_weights)) {
+        split_rows <- split_by_biomass(copy(fg_weights))
+        split_rows[, `:=`(Species = rank_candidates$Species[i], match_method = paste0("taxonomy_", matched_rank, "_split"))]
+        rank_split_matches <- rbind(rank_split_matches,
+                                    split_rows[, .(Species, FG_num, FG_name, Split_weight, match_method)], fill = TRUE)
+      }
+    }
+  }
+  if (nrow(rank_split_matches) > 0) {
+    n_split_species <- uniqueN(rank_split_matches$Species)
+    n_multi_fg <- rank_split_matches[, .N, by = Species][N > 1, .N]
+    message("\nSTEP - Resolved via bare taxonomic-rank match (Family/Order/Class/Phylum), biomass-weighted split: ",
+            n_split_species, " species/group name(s) (", n_multi_fg, " split across more than one FG):")
+    print(rank_split_matches[, .(Species, FG_num, FG_name, Split_weight, match_method)])
+  } else {
+    message("\nSTEP - No bare taxonomic-rank matches found.")
+  }
+}
+
+all_matches <- rbindlist(list(direct_matches, exact_matches, fao_sci_matches, genus_matches, containment_matches), fill = TRUE)  # combine matches from every cascade step - none of these tables has a Split_weight column yet
+all_matches <- rbindlist(list(all_matches, rank_split_matches), use.names = TRUE, fill = TRUE)  # add the (possibly multi-FG, fractional-weight) taxonomy-rank matches - this is what actually CREATES the Split_weight column (via rank_split_matches), filling NA for every row from the steps above
+all_matches[is.na(Split_weight), Split_weight := 1]  # every step above resolves to exactly one FG (resolve_matches_safely() already excludes/rescues ambiguous ones), so its NA Split_weight becomes 1 here
+resolved <- merge(unmatched_species[, .(Species, Catch)], all_matches, by = "Species", all.x = TRUE, allow.cartesian = TRUE)  # attach matches back onto every unmatched species - allow.cartesian since a species can now fan out into more than one FG row (taxonomy-rank split)
 
 MANUAL_OVERRIDES <- data.table(Species = c("Turbot"), CorrectScientificName = c("Scophthalmus maximus"))
 overrides_resolved <- merge(MANUAL_OVERRIDES, fg_lookup[, .(ScientificName, FG_num, FG_name)], by.x = "CorrectScientificName", by.y = "ScientificName")  # resolve manual overrides to their FG
-overrides_resolved[, match_method := "manual_override"]  # tag how these matches were resolved
+overrides_resolved[, `:=`(match_method = "manual_override", Split_weight = 1)]  # tag how these matches were resolved
 resolved_final <- resolved[!Species %in% overrides_resolved$Species]  # drop species that a manual override will replace
 resolved_final <- rbindlist(list(
   resolved_final,
   merge(unmatched_species[Species %in% overrides_resolved$Species, .(Species, Catch)],
-        overrides_resolved[, .(Species, FG_num, FG_name, match_method)], by = "Species")
+        overrides_resolved[, .(Species, FG_num, FG_name, match_method, Split_weight)], by = "Species")
 ), use.names = TRUE)  # add the manually-overridden matches back in
 
 resolved_final[, status := fifelse(is.na(FG_num), "unresolved", "resolved")]  # flag whether each species ended up matched
@@ -809,7 +941,7 @@ if (nrow(top_unresolved) > 0) {
   print(top_unresolved[, .(Species, Catch)])
 }
 
-species_to_fg <- unique(resolved_final[status == "resolved", .(Species, FG_num, FG_name)])  # final species->FG lookup, resolved rows only
+species_to_fg <- unique(resolved_final[status == "resolved", .(Species, FG_num, FG_name, Split_weight)])  # final species->FG lookup, resolved rows only - Split_weight is 1 for every normal (single-FG) match and a real fraction (<1, summing to 1 per Species) for a taxonomy-rank-split aggregate/NEI name (2026-09-24)
 
 # 2026-09-23: bridge GFCM's raw common/reported name through fao_species's exact
 # Name_En -> Scientific_Name lookup, same pattern used for STECF FDI below, so the
@@ -855,7 +987,7 @@ setcolorder(species_fg_crosswalk_parts[["GFCM"]],
 rerun_species_fg_cascade <- function(species_names) {
   todo <- data.table(Species = unique(species_names))
   todo <- todo[!is.na(Species) & Species != "" & !Species %in% species_to_fg$Species]
-  empty_out <- data.table(Species = character(), FG_num = numeric(), FG_name = character(), match_method = character())
+  empty_out <- data.table(Species = character(), FG_num = numeric(), FG_name = character(), match_method = character(), Split_weight = numeric())
   if (nrow(todo) == 0) return(empty_out)
   out <- copy(empty_out)
   
@@ -928,14 +1060,40 @@ rerun_species_fg_cascade <- function(species_names) {
       }
     }
   }
-  unique(out, by = "Species")
+  todo <- todo[!Species %in% out$Species]
+  
+  ## Bare taxonomic-rank match + biomass-weighted split (2026-09-24,
+  ## per Andrea) - same step as the main GFCM cascade above, just
+  ## callable again here since this rerun cascade is the ONLY matching
+  ## STECF FDI's still-unmatched codes ever go through (via
+  ## code_has_name$Species, further down in this script).
+  if (nrow(todo) > 0 && exists("fao_species") && !is.null(taxonomy_rank_ref)) {
+    fsb2 <- merge(todo, unique(fao_species[!is.na(Scientific_Name) & Scientific_Name != "",
+                                           .(Name_En, Scientific_Name)]),
+                  by.x = "Species", by.y = "Name_En")
+    if (nrow(fsb2) > 0) {
+      fsb2[, query_clean := strip_rank_suffixes(Scientific_Name)]
+      for (i in seq_len(nrow(fsb2))) {
+        fg_weights <- match_bare_rank_to_fg(fsb2$query_clean[i], taxonomy_rank_ref)
+        if (!is.null(fg_weights)) {
+          split_rows <- split_by_biomass(copy(fg_weights))
+          split_rows[, `:=`(Species = fsb2$Species[i], match_method = paste0("taxonomy_", matched_rank, "_split_rerun"))]
+          out <- rbind(out, split_rows[, .(Species, FG_num, FG_name, Split_weight, match_method)], fill = TRUE)
+        }
+      }
+    }
+  }
+  todo <- todo[!Species %in% out$Species]
+  
+  out[is.na(Split_weight), Split_weight := 1]  # every earlier step here resolves to exactly one FG
+  unique(out, by = c("Species", "FG_num"))  # 2026-09-24: was by = "Species" alone - collapsed a taxonomy-rank split's multiple FG rows for the same species down to just one, silently dropping the split
 }
 
 ## GFCM catches by species/FG x year x Division (all West Med reporting
 ## countries - the "by species and year and GSA[Division]" deliverable):
-gfcm_species_division_fg <- merge(ts_data$species_ts, species_to_fg, by = "Species")  # attach FG to the species-level catch timeseries
+gfcm_species_division_fg <- merge(ts_data$species_ts, species_to_fg, by = "Species", allow.cartesian = TRUE)  # attach FG to the species-level catch timeseries - allow.cartesian since a taxonomy-rank-split species (2026-09-24) now fans out into more than one FG row
 gfcm_species_division_fg <- gfcm_species_division_fg[Year >= START_YEAR & Year <= END_YEAR,
-                                                     .(Landings_t = sum(Catch, na.rm = TRUE)), by = .(Year, Division, FG_num, FG_name, Species)]  # sum landings by year x division x FG x species, within the study period
+                                                     .(Landings_t = sum(Catch * Split_weight, na.rm = TRUE)), by = .(Year, Division, FG_num, FG_name, Species)]  # sum landings by year x division x FG x species, within the study period - Catch scaled by Split_weight (1 for a normal match, so unchanged) before summing so a split species' catch is divided across its candidate FGs, not counted in full against each one
 fwrite(gfcm_species_division_fg, file.path(csv_out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # write result to CSV
 message("\n[GFCM] gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv written - ",
         nrow(gfcm_species_division_fg), " Year x Division x FG x Species row(s). 'Division' here is",
@@ -945,9 +1103,9 @@ message("\n[GFCM] gfcm_catches_by_species_year_division_", DATASET_VERSION, ".cs
 ## the fleet/sector split, discard, and unreported steps below):
 gfcm_country_fg <- data.table()
 if (nrow(ts_data$country_species_ts) > 0) {
-  gfcm_country_fg <- merge(ts_data$country_species_ts, species_to_fg, by = "Species")  # attach FG to the country-level catch timeseries
+  gfcm_country_fg <- merge(ts_data$country_species_ts, species_to_fg, by = "Species", allow.cartesian = TRUE)  # attach FG to the country-level catch timeseries - allow.cartesian since a taxonomy-rank-split species (2026-09-24) now fans out into more than one FG row
   gfcm_country_fg <- gfcm_country_fg[Country %in% TARGET_COUNTRIES & Year >= START_YEAR & Year <= END_YEAR,
-                                     .(Landings_t = sum(Catch, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Year)]  # sum landings by country x FG x year, target countries and study period only
+                                     .(Landings_t = sum(Catch * Split_weight, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Year)]  # sum landings by country x FG x year, target countries and study period only - Catch scaled by Split_weight (1 for a normal match, so unchanged) before summing
   message("[GFCM] Country x FG x Year backbone: ", nrow(gfcm_country_fg), " row(s), ",
           uniqueN(gfcm_country_fg$Country), " of ", length(TARGET_COUNTRIES), " target countries present.")
   missing_countries <- setdiff(TARGET_COUNTRIES, unique(gfcm_country_fg$Country))  # target countries with zero rows here
@@ -2106,8 +2264,18 @@ if (!dir.exists(stecf_catches_dir)) {
       ## GFCM's own species matching used (CL_FI_SPECIES_GROUPS.csv) -
       ## FDI's species field uses the same FAO 3-alpha standard.
       species_code_ref <- unique(safe_fread(file.path(cfg$data_dir, cfg$species_file), "species_file")[, .(SpeciesCode = `3A_Code`, Species = Name_En)])  # FAO 3-alpha code lookup (unique()'d defensively - a duplicate SpeciesCode row here would fan out every merge keyed on it below)
-      species_code_to_fg <- unique(merge(species_code_ref, species_to_fg, by = "Species")[, .(SpeciesCode, FG_num, FG_name)])  # build a 3-alpha code -> FG lookup
-      stecf_raw <- merge(stecf_raw, species_code_to_fg, by.x = "species", by.y = "SpeciesCode", all.x = TRUE)  # attach FG to each FDI row
+      species_code_to_fg <- unique(merge(species_code_ref, species_to_fg, by = "Species")[, .(SpeciesCode, FG_num, FG_name, Split_weight)])  # build a 3-alpha code -> FG lookup - Split_weight (2026-09-24) carries a real fraction (<1) through for a taxonomy-rank-split aggregate/NEI code, 1 for every normal match
+      stecf_raw <- merge(stecf_raw, species_code_to_fg, by.x = "species", by.y = "SpeciesCode", all.x = TRUE, allow.cartesian = TRUE)  # attach FG to each FDI row - allow.cartesian since a taxonomy-rank-split code now fans out into more than one row (one per candidate FG)
+      ## Scale the two tonnage columns by Split_weight right here, at the
+      ## fan-out point, so every row of stecf_raw from here on already
+      ## carries its correctly-split share and nothing downstream needs
+      ## to know Split_weight exists. NA Split_weight only happens for a
+      ## code that matched no FG at all here (FG_num is also NA for those,
+      ## and they get dropped a few steps below regardless).
+      stecf_raw[!is.na(Split_weight) & Split_weight != 1, `:=`(
+        total_live_weight_landed = total_live_weight_landed * Split_weight,
+        tot_discards_tonnes      = tot_discards_tonnes * Split_weight
+      )]
       
       ## --- ASFIS bridge (2026-09-23 addition), tried BEFORE the retry
       ## cascade below - CL_FI_SPECIES_GROUPS.csv above is missing some
@@ -2209,11 +2377,24 @@ if (!dir.exists(stecf_catches_dir)) {
           message("[STECF FDI] ", nrow(rerun_matches), " species resolved to an FG on retry (FDI reports",
                   " landings for these but GFCM never reported catch for them, so they never went through",
                   " the matching cascade the first time): ", paste(rerun_matches$Species, collapse = ", "))
-          rerun_code_to_fg <- unique(merge(code_has_name, rerun_matches[, .(Species, FG_num, FG_name)], by = "Species")[, .(SpeciesCode, FG_num, FG_name)])
-          stecf_raw[species %in% rerun_code_to_fg$SpeciesCode, `:=`(
-            FG_num  = rerun_code_to_fg$FG_num[match(species, rerun_code_to_fg$SpeciesCode)],
-            FG_name = rerun_code_to_fg$FG_name[match(species, rerun_code_to_fg$SpeciesCode)]
+          rerun_code_to_fg <- unique(merge(code_has_name, rerun_matches[, .(Species, FG_num, FG_name, Split_weight)], by = "Species")[, .(SpeciesCode, FG_num, FG_name, Split_weight)])
+          ## 2026-09-24: was an in-place `:=` update via match() (grabs
+          ## only the FIRST FG per code) - replaced with a proper fan-out
+          ## merge, since a taxonomy-rank-split code (per Andrea: a bare
+          ## Family/Order/Class/Phylum name in the resolved "scientific
+          ## name") now correctly resolves to MORE than one candidate FG,
+          ## and match()-based assignment would silently keep only the
+          ## first one, dropping the rest of the split.
+          rerun_rows_to_expand <- stecf_raw[species %in% rerun_code_to_fg$SpeciesCode]
+          stecf_raw <- stecf_raw[!species %in% rerun_code_to_fg$SpeciesCode]
+          rerun_rows_expanded <- merge(
+            rerun_rows_to_expand[, setdiff(names(rerun_rows_to_expand), c("FG_num", "FG_name", "Split_weight")), with = FALSE],
+            rerun_code_to_fg, by.x = "species", by.y = "SpeciesCode", allow.cartesian = TRUE)
+          rerun_rows_expanded[!is.na(Split_weight) & Split_weight != 1, `:=`(
+            total_live_weight_landed = total_live_weight_landed * Split_weight,
+            tot_discards_tonnes      = tot_discards_tonnes * Split_weight
           )]
+          stecf_raw <- rbindlist(list(stecf_raw, rerun_rows_expanded), use.names = TRUE, fill = TRUE)
         }
         still_unmatched_names <- setdiff(unique(code_has_name$Species), rerun_matches$Species)
         if (length(still_unmatched_names) > 0) {

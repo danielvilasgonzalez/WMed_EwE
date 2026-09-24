@@ -656,3 +656,187 @@ build_ecobase_sheet_dt <- function(out_dir, target_year = NULL) {
           " model(s)) ready for the Ecobase workbook sheet.")
   invisible(sheet_dt)
 }
+
+## =================================================================
+## fetch_ecobase_diet_matrix(out_dir, target_predator_keywords, ...)
+##
+## NEW (2026-09-24, added for 04_diets.R's diet-composition fallback -
+## same three-source idea as fetch_ecobase_literature_biomass()/pb_qb(),
+## but for a predator's DIET COMPOSITION rather than a single scalar
+## trait). Reuses fetch_ecobase_raw_inputs()'s own model list/status
+## CSVs (ecobase_mediterranean_models_status.csv) to know which models
+## actually returned data, then re-fetches EACH such model's raw input
+## XML directly (fetch_ecobase_raw_inputs()'s own per-group parsing,
+## xml_node_to_dt_row(), FLATTENS every group node's children to plain
+## text - fine for scalar fields like Biomass/PB/QB, but would silently
+## mangle a NESTED diet-composition sub-structure, e.g. a repeated
+## <prey><group>3</group><value>0.12</value></prey> list under each
+## <group> node, into one useless concatenated text blob. This function
+## instead re-parses each group node's own XML children directly,
+## looking for anything diet-related.
+##
+## HONESTLY UNVERIFIED (no network access from this session, exactly
+## like the rest of this file - see the file header): it is NOT
+## confirmed that EcoBase's public webservice exposes a per-model diet
+## matrix at all through this endpoint (ECOBASE_INPUT_URL). The official
+## EcoBase SOAP example this file was adapted from only demonstrates
+## group-level scalar inputs (Biomass/PB/QB/EE/...), not a diet matrix -
+## a full diet composition might live in a different endpoint/field
+## entirely, or might not be exposed publicly at all. DIET_NODE_NAME_
+## CANDIDATES below is a best-effort guess at what such a field might be
+## called if it exists (mirroring how BIOMASS_COL_CANDIDATES guesses at
+## the biomass field name above) - the diagnostic prints below make a
+## wrong/absent guess immediately visible rather than silently wrong,
+## and this function returns NULL (with a clear message, not a
+## fabricated result) if nothing diet-shaped is found for a model.
+fetch_ecobase_diet_matrix_for_model <- function(model_id, timeout_sec = 60) {
+  if (!requireNamespace("httr", quietly = TRUE) || !requireNamespace("xml2", quietly = TRUE)) return(NULL)
+  ECOBASE_INPUT_URL <- "http://sirs.agrocampus-ouest.fr/EcoBase/php/webser/soap-client.php"
+  url <- paste0(ECOBASE_INPUT_URL, "?no_model=", model_id)
+  resp <- tryCatch(httr::GET(url, httr::timeout(timeout_sec)), error = function(e) NULL)
+  if (is.null(resp) || httr::status_code(resp) != 200) return(NULL)
+  xml_data <- tryCatch(xml2::read_xml(httr::content(resp, as = "text", encoding = "UTF-8")), error = function(e) NULL)
+  if (is.null(xml_data)) return(NULL)
+  
+  group_nodes <- xml2::xml_find_all(xml_data, ".//group")
+  if (length(group_nodes) == 0) return(NULL)
+  
+  ## Names a nested diet-composition child might plausibly carry -
+  ## unverified guesses (see header above).
+  DIET_NODE_NAME_CANDIDATES <- c("diet", "diet_composition", "dietcomp", "dc", "preys", "prey_list", "diet_matrix")
+  
+  diet_rows <- rbindlist(lapply(group_nodes, function(g) {
+    pred_name_node <- xml2::xml_find_first(g, "./group_name")
+    pred_name <- if (!is.na(pred_name_node)) xml2::xml_text(pred_name_node) else NA_character_
+    children <- xml2::xml_children(g)
+    child_names_lower <- tolower(xml2::xml_name(children))
+    diet_child_idx <- which(child_names_lower %in% DIET_NODE_NAME_CANDIDATES)
+    if (length(diet_child_idx) == 0) return(NULL)
+    rbindlist(lapply(diet_child_idx, function(i) {
+      diet_node <- children[[i]]
+      prey_entries <- xml2::xml_children(diet_node)
+      if (length(prey_entries) == 0) return(NULL)
+      rbindlist(lapply(prey_entries, function(pe) {
+        pe_children <- xml2::xml_children(pe)
+        if (length(pe_children) > 0) {
+          ## Structured <prey><group_name>X</group_name><value>Y</value></prey>-style entry.
+          row <- xml_node_to_dt_row(pe)
+          if (!"predator_group_name" %in% names(row)) row[, predator_group_name := pred_name]
+          row
+        } else {
+          NULL
+        }
+      }), fill = TRUE)
+    }), fill = TRUE)
+  }), fill = TRUE)
+  
+  if (is.null(diet_rows) || nrow(diet_rows) == 0) return(NULL)
+  diet_rows[, model_id := model_id]
+  diet_rows[]
+}
+
+## fetch_ecobase_diet_by_keyword(out_dir, target_predator_keywords,
+##                               force_refresh = FALSE, target_year = NULL, ...)
+##
+## Public entry point, mirroring fetch_ecobase_literature_biomass()'s
+## contract: target_predator_keywords is a named list (name = this
+## pipeline's own predator FG name, value = character vector of
+## keywords), same shape as MEGAFAUNA_TAXON_KEYWORDS elsewhere. For each
+## target predator FG, keyword-matches EcoBase's own predator_group_name
+## (case-insensitive substring) across every model that (a) is in
+## med_bbox/dissemination-allowed (reusing fetch_ecobase_raw_inputs()'s
+## already-filtered model-status CSV, so no duplicate geographic query)
+## and (b) actually returned a parseable diet sub-structure via
+## fetch_ecobase_diet_matrix_for_model() above. Picks the closest-year
+## model per target FG (same rule as the biomass/PB-QB fallbacks) and
+## tags the result with Source_citation for provenance. Returns NULL
+## (with a message) if EcoBase exposes no diet field at all for any
+## matched model - the honest "not available via this endpoint" case -
+## so 04_diets.R's caller can fall through to "still missing" rather
+## than being handed a fabricated result.
+fetch_ecobase_diet_by_keyword <- function(out_dir, target_predator_keywords, force_refresh = FALSE,
+                                          target_year = NULL, med_bbox = WESTMED_BBOX, timeout_sec = 60) {
+  ## Ensure the model list/status cache exists (reuses fetch_ecobase_
+  ## raw_inputs()'s own geographic + dissemination_allow filtering -
+  ## does NOT re-query the model list itself).
+  status_path <- file.path(out_dir, "ecobase_mediterranean_models_status.csv")
+  if (!file.exists(status_path) || force_refresh) {
+    invisible(fetch_ecobase_raw_inputs(out_dir, force_refresh = force_refresh, med_bbox = med_bbox, timeout_sec = timeout_sec))
+  }
+  if (!file.exists(status_path)) {
+    message("fetch_ecobase_diet_by_keyword(): ", status_path, " still not found after attempting ",
+            "fetch_ecobase_raw_inputs() - can't determine which models to query for diet data.")
+    return(invisible(NULL))
+  }
+  models_status <- as.data.table(fread(status_path))
+  candidate_model_ids <- unique(models_status[status == "success", model_number])
+  if (length(candidate_model_ids) == 0) {
+    message("fetch_ecobase_diet_by_keyword(): no model in ", status_path, " has status == 'success' - nothing to query.")
+    return(invisible(NULL))
+  }
+  
+  message("fetch_ecobase_diet_by_keyword(): checking ", length(candidate_model_ids), " model(s) for a parseable ",
+          "diet-composition sub-structure (UNVERIFIED whether EcoBase exposes this at all - see this function's own header comment)...")
+  diet_all <- rbindlist(lapply(candidate_model_ids, function(id) {
+    message("  Model ", id, "...")
+    fetch_ecobase_diet_matrix_for_model(id, timeout_sec = timeout_sec)
+  }), fill = TRUE)
+  
+  if (is.null(diet_all) || nrow(diet_all) == 0) {
+    message("fetch_ecobase_diet_by_keyword(): NO model among the ", length(candidate_model_ids), " checked exposed ",
+            "a diet-composition field under any of the guessed node names - EcoBase's public webservice does not ",
+            "appear to expose a diet matrix through this endpoint (or the guessed field names are wrong; see the ",
+            "DIET_NODE_NAME_CANDIDATES comment above). The EcoBase diet fallback is UNAVAILABLE this run.")
+    return(invisible(NULL))
+  }
+  
+  meta_path <- file.path(out_dir, "ecobase_all_inputs_with_meta.csv")
+  meta <- if (file.exists(meta_path)) unique(as.data.table(fread(meta_path))[, .(model_id = as.character(model_id), EwE_model, year, authors, country, ecosystem_name)]) else NULL
+  diet_all[, model_id := as.character(model_id)]
+  if (!is.null(meta)) diet_all <- merge(diet_all, meta, by = "model_id", all.x = TRUE)
+  
+  fwrite(diet_all, file.path(out_dir, "ecobase_diet_matrix_full.csv"))
+  message("fetch_ecobase_diet_by_keyword(): saved ecobase_diet_matrix_full.csv (", nrow(diet_all), " raw prey-entry row(s) ",
+          "across ", uniqueN(diet_all$model_id), " model(s)) - review directly, this is unverified/experimental parsing.")
+  
+  if (is.null(target_predator_keywords)) return(invisible(diet_all))
+  
+  pred_name_col <- intersect(c("predator_group_name", "group_name"), names(diet_all))[1]
+  if (is.na(pred_name_col)) {
+    message("fetch_ecobase_diet_by_keyword(): parsed diet rows have no predator-name column to keyword-match against ",
+            "(columns: ", paste(names(diet_all), collapse = ", "), ") - can't reduce to per-target-FG picks.")
+    return(invisible(diet_all))
+  }
+  
+  group_word_sets <- lapply(target_predator_keywords, tolower)
+  matches <- rbindlist(lapply(names(group_word_sets), function(g) {
+    hits <- diet_all[sapply(tolower(get(pred_name_col)), function(nm) any(sapply(group_word_sets[[g]], function(kw) grepl(kw, nm, fixed = TRUE))))]
+    if (nrow(hits) == 0) return(NULL)
+    hits[, TargetPredatorFG := g]
+    hits
+  }), fill = TRUE)
+  
+  unmatched <- setdiff(names(target_predator_keywords), if (is.null(matches)) character() else unique(matches$TargetPredatorFG))
+  if (length(unmatched) > 0) {
+    message("[EcoBase diet] No parsed diet row matched these target predator FG(s) by keyword: ",
+            paste(unmatched, collapse = ", "), " - these need a different source.")
+  }
+  if (is.null(matches) || nrow(matches) == 0) return(invisible(diet_all))
+  
+  if (!is.null(target_year) && "year" %in% names(matches)) {
+    matches[, year_numeric := as.numeric(regmatches(year, regexpr("[0-9]{4}", year)))]
+    matches[, year_distance := abs(year_numeric - target_year)]
+    setorder(matches, TargetPredatorFG, year_distance, na.last = TRUE)
+    best_model_by_fg <- matches[, .SD[1], by = .(TargetPredatorFG)][, .(TargetPredatorFG, model_id)]
+    matches <- merge(matches, best_model_by_fg, by = c("TargetPredatorFG", "model_id"))
+  }
+  if (all(c("EwE_model", "ecosystem_name", "country", "year", "authors") %in% names(matches))) {
+    matches[, Source_citation := paste0("EcoBase model '", EwE_model, "' (", ecosystem_name, ", ", country, "), year ", year,
+                                        " - ", authors, " (via EcoBase, model_id ", model_id, ")")]
+  }
+  
+  fwrite(matches, file.path(out_dir, "ecobase_diet_matrix_best_by_predator_fg.csv"))
+  message("[EcoBase diet] ", uniqueN(matches$TargetPredatorFG), " of ", length(target_predator_keywords),
+          " target predator FG(s) matched to an EcoBase model diet - written to ecobase_diet_matrix_best_by_predator_fg.csv.")
+  invisible(matches)
+}

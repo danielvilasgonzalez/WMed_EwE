@@ -3352,8 +3352,46 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
             v <- effort[Fleet == fl & Year == y, get(value_col)]
             if (length(v) == 0) NA_real_ else v[1]
           }, numeric(1))
-          col <- c(paste0("Effort_", gsub("[^A-Za-z0-9]+", "", fl)), "Effort", "reference", "absolute",
-                   "1", fl, "", "Annual", as.character(ts_vals))
+          ## 2026-09-24 fix, per Andrea ("fishing effort, relative?"):
+          ## this used to ship raw FishMIP kW-days as Type="Effort"/
+          ## Scaling="absolute" - but Ecosim doesn't use the Effort
+          ## driver as a physical quantity, it uses it as a MULTIPLIER
+          ## on the Ecopath base year's own fishing mortality (F), which
+          ## is itself derived here from Catch/Biomass, not from any
+          ## catchability coefficient linking kW-days to F. Feeding it
+          ## raw absolute kW-days only works if effort in the Ecopath
+          ## base year is independently calibrated to reproduce F_base -
+          ## nothing in this pipeline does that calibration, so
+          ## "absolute" here was liable to silently misscale F for every
+          ## other year. Rescaled to a first-valid-year=1 index instead -
+          ## same convention build_ts_column() already uses for Biomass
+          ## above (Scaling="relative") - so the fleet's effort MULTIPLIER
+          ## on baseline F is correct regardless of what physical units
+          ## the underlying FishMIP figure is in.
+          first_valid_idx <- which(!is.na(ts_vals))[1]
+          if (is.na(first_valid_idx)) {
+            message("Effort fleet '", fl, "': no non-NA effort values across the whole time series - column left blank.")
+            ts_vals_rel <- ts_vals
+          } else {
+            ref_value <- ts_vals[first_valid_idx]
+            if (years[first_valid_idx] != years[1]) {
+              message("Effort fleet '", fl, "': relative-scaling reference is year ", years[first_valid_idx],
+                      " (first year WITH data), not the series' first year ", years[1], ".")
+            }
+            if (is.na(ref_value) || ref_value == 0) {
+              message("WARNING: Effort fleet '", fl, "'s reference value (year ", years[first_valid_idx], ") is ",
+                      ifelse(is.na(ref_value), "NA", "zero"), " - cannot rescale to a relative index,",
+                      " leaving this column as raw kW-days instead (Scaling stays 'absolute' for this fleet only).")
+              ts_vals_rel <- ts_vals
+            } else {
+              ts_vals_rel <- ts_vals / ref_value
+            }
+          }
+          is_relative <- !is.na(first_valid_idx) && !(is.na(ts_vals[first_valid_idx]) || ts_vals[first_valid_idx] == 0)
+          col <- c(paste0("Effort_", gsub("[^A-Za-z0-9]+", "", fl)),
+                   if (is_relative) "Effort (relative)" else "Effort", "reference",
+                   if (is_relative) "relative" else "absolute",
+                   "1", fl, "", "Annual", as.character(ts_vals_rel))
           combined[, (paste0("Effort_fleet_", gsub("[^A-Za-z0-9]+", "", fl))) := col]
         }
       }
@@ -3428,6 +3466,92 @@ read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
   ts_years <- sort(year_rows[!is.na(year_rows)])
   if (length(ts_years) == 0) return(NULL)
   ts_years
+}
+
+## =================================================================
+## resolve_baseline_with_nearest_year_fallback() - added 2026-09-24,
+## per Andrea. Bottom-trawl survey groups (fish, cephalopods, benthos,
+## corals, invertebrates - i.e. everything MEDITS/MEDIAS actually
+## samples) can show a real ZERO or NA density in the 1994-1996
+## Ecopath baseline years purely from survey catchability/rarity
+## (patchy schools, low encounter probability at the shallow/deep
+## edges of the sampled band) - NOT because the group was genuinely
+## absent from the West Med at that time. Andrea confirmed this is
+## the case she wants handled, distinct from a genuinely
+## range-expanding/colonizing group (FG_name containing "Expanding"),
+## where a real baseline zero/near-zero IS the correct signal (the
+## group hadn't established yet) and must NOT be papered over with a
+## later year's value.
+##
+## For every group (id_cols - MUST include a FG_name-like column,
+## named by fg_name_col, for the exclusion check), if the group's
+## baseline_years average is NA or exactly 0 AND its FG_name does not
+## match exclude_pattern (case-insensitive), this looks across the
+## group's FULL available time series in dt (every Year present, not
+## just baseline_years) for the SINGLE closest year (by
+## |Year - round(mean(baseline_years))|, ties broken toward the
+## earlier year) that has a real (>0) observed value, and substitutes
+## THAT one year's value as the baseline estimate - flagged via the
+## returned borrowed/borrowed_from_year columns, never silently
+## blended into an average. A group matching exclude_pattern, or with
+## no positive value anywhere in its own time series, is returned
+## completely untouched (final_value stays NA/0, borrowed = FALSE).
+##
+## dt must have: Year, value_col, and every column in id_cols. Returns
+## one row per id_cols group: id_cols, final_value, borrowed (logical),
+## borrowed_from_year (NA unless borrowed).
+## =================================================================
+resolve_baseline_with_nearest_year_fallback <- function(dt, id_cols, value_col = "mean_density",
+                                                        fg_name_col = "FG_name",
+                                                        baseline_years,
+                                                        exclude_pattern = "Expanding") {
+  if (!fg_name_col %in% id_cols) {
+    stop("resolve_baseline_with_nearest_year_fallback(): fg_name_col ('", fg_name_col,
+         "') must be one of id_cols so the 'Expanding' exclusion can be checked - got id_cols = ",
+         paste(id_cols, collapse = ", "))
+  }
+  dt <- copy(dt)
+  baseline_mid <- round(mean(baseline_years))
+  
+  ## each group's baseline value exactly as computed today, no fallback yet.
+  ## 2026-09-25 fix (Suprabenthos #NUM! bug): mean(x, na.rm=TRUE) over a
+  ## vector that is ENTIRELY NA (every baseline year genuinely missing -
+  ## e.g. a survey_exempt FG with no stock-assessment/EcoBase/manual source
+  ## at all) returns NaN, not NA, because na.rm=TRUE strips the NAs first
+  ## and then takes mean(numeric(0)) = NaN. is.na(NaN) is TRUE in R, so the
+  ## borrowed-value logic below still worked correctly (NaN was treated as
+  ## missing when deciding whether to borrow a nearby year), but whenever
+  ## there was ALSO no other-year value to borrow (nearest_value stays NA,
+  ## borrowed = FALSE), final_value fell back to the untouched baseline_value
+  ## - which was NaN, not NA. openxlsx writes that literal NaN into the
+  ## workbook as Excel's #NUM! error rather than leaving the cell blank.
+  ## Guarded here so an all-NA group's baseline_value is a clean NA_real_
+  ## instead - a genuinely missing figure should render as an empty cell,
+  ## never as a spreadsheet ERROR that looks like something crashed.
+  baseline_dt <- dt[Year %in% baseline_years,
+                    .(baseline_value = {
+                      v <- get(value_col)
+                      if (all(is.na(v))) NA_real_ else mean(v, na.rm = TRUE)
+                    }), by = id_cols]
+  
+  ## each group's own closest OTHER-year real (>0) observation, if any
+  candidates <- dt[!(Year %in% baseline_years) & !is.na(get(value_col)) & get(value_col) > 0]
+  if (nrow(candidates) > 0) {
+    candidates[, .dist := abs(Year - baseline_mid)]
+    setorder(candidates, .dist, Year)
+    nearest <- candidates[, .SD[1], by = id_cols][, c(id_cols, "Year", value_col), with = FALSE]
+    setnames(nearest, c("Year", value_col), c("borrowed_from_year", "nearest_value"))
+  } else {
+    nearest <- unique(dt[, id_cols, with = FALSE])
+    nearest[, `:=`(borrowed_from_year = NA_integer_, nearest_value = NA_real_)]
+  }
+  
+  out <- merge(baseline_dt, nearest, by = id_cols, all.x = TRUE)
+  out[, .is_expanding := grepl(exclude_pattern, get(fg_name_col), ignore.case = TRUE)]
+  out[, borrowed := (is.na(baseline_value) | baseline_value == 0) & !.is_expanding & !is.na(nearest_value)]
+  out[, final_value := fifelse(borrowed, nearest_value, baseline_value)]
+  out[borrowed == FALSE, borrowed_from_year := NA_integer_]
+  out[, c(id_cols, "final_value", "borrowed", "borrowed_from_year"), with = FALSE]
 }
 
 ## Generalized from the MEDITS pipeline's 3-sheet workbook (FG_spp,
@@ -3507,9 +3631,14 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## information from "doesn't belong to this FG", and collapsing them
   ## by omitting the row entirely was losing that distinction.
   all_species_fg <- unique(species_density_regional[, .(FG_num, FG_name, Species = ScientificName)])
-  density_in_base_years <- species_density_regional[
-    Year %in% year_ecopath, .(Density = mean(mean_density, na.rm = TRUE)),
-    by = .(FG_num, FG_name, Species = ScientificName)]
+  ## 2026-09-24: same nearest-year borrow fallback as Ecopath_B below,
+  ## applied here at species level for consistency (see that block's
+  ## comment for the full reasoning; skipped for "Expanding" FGs).
+  species_baseline_fallback <- resolve_baseline_with_nearest_year_fallback(
+    species_density_regional[, .(Year, FG_num, FG_name, Species = ScientificName, mean_density)],
+    id_cols = c("FG_num", "FG_name", "Species"), value_col = "mean_density",
+    baseline_years = year_ecopath)
+  density_in_base_years <- species_baseline_fallback[, .(FG_num, FG_name, Species, Density = final_value)]
   fg_spp_sheet <- merge(all_species_fg, density_in_base_years,
                         by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
   
@@ -3568,8 +3697,28 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## who wants to compare the two.
   base_year <- year_ecopath[1]
   ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
-  ecopath_avg  <- fg_index_regional[Year %in% year_ecopath,
-                                    .(Biomass_avg = mean(mean_density, na.rm = TRUE)), by = FG_num]
+  
+  ## 2026-09-24, per Andrea: an FG with a zero/no-data year_ecopath
+  ## baseline but a real (>0) density in some OTHER survey year is very
+  ## likely a trawl-catchability/rarity artifact, not a true absence -
+  ## see resolve_baseline_with_nearest_year_fallback()'s own header for
+  ## the full reasoning. Borrows the nearest such year's value instead
+  ## of reporting a false zero for every FG EXCEPT one whose FG_name
+  ## contains "Expanding" (a genuinely range-expanding/colonizing group,
+  ## where a real baseline zero is the correct signal and must stay).
+  fg_baseline_fallback <- resolve_baseline_with_nearest_year_fallback(
+    fg_index_regional, id_cols = c("FG_num", "FG_name"), value_col = "mean_density",
+    baseline_years = year_ecopath)
+  n_fg_borrowed <- sum(fg_baseline_fallback$borrowed, na.rm = TRUE)
+  if (n_fg_borrowed > 0) {
+    fwrite(fg_baseline_fallback[borrowed == TRUE], file.path(out_dir, "ecopath_B_baseline_year_borrowed_REVIEW.csv"))
+    message(n_fg_borrowed, " FG(s) had a zero/no-data ", min(year_ecopath), "-", max(year_ecopath),
+            " biomass baseline but a real nonzero density in another survey year - borrowed the",
+            " nearest such year's value for Ecopath_B instead of reporting a false zero (skipped for",
+            " any FG whose name contains \"Expanding\"). See ecopath_B_baseline_year_borrowed_REVIEW.csv.")
+  }
+  ecopath_avg <- fg_baseline_fallback[, .(FG_num, Biomass_avg = final_value)]
+  
   ecopath_detail <- merge(full_fg_list, ecopath_base, by = "FG_num", all.x = TRUE)
   ecopath_detail <- merge(ecopath_detail, ecopath_avg, by = "FG_num", all.x = TRUE)
   setnames(ecopath_detail, c("Biomass_baseyear", "Biomass_avg"),
@@ -3628,7 +3777,14 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
               " down to one value per year rather than left as-is (would otherwise misalign the",
               " Ecosim sheet's fixed-length year column, or crash the column assignment).")
     }
-    vals <- vals[, .(mean_density = mean(mean_density, na.rm = TRUE)), by = Year]
+    ## Same NaN-vs-NA guard as resolve_baseline_with_nearest_year_fallback()
+    ## above (2026-09-25, Suprabenthos #NUM! fix) - a Year where every
+    ## contributing row is NA must average to NA_real_, not NaN, or this
+    ## Ecosim_ts cell renders as Excel's #NUM! error instead of blank.
+    vals <- vals[, .(mean_density = {
+      v <- mean_density
+      if (all(is.na(v))) NA_real_ else mean(v, na.rm = TRUE)
+    }), by = Year]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
     vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
@@ -4130,16 +4286,24 @@ read_full_fg_reference <- function(out_path, csv_dir = NULL) {
 }
 
 ## =================================================================
-## build_fg_references_sheet() - added 2026-09-17. Writes the final
-## workbook's "FG_References" sheet: one row per FG, consolidating
-## WHICH DATA SOURCE fed each block for that FG, so the model's data
-## provenance is reviewable FG by FG rather than scattered across each
-## block's own audit CSVs. Columns: FG_num, FG_name, ref_B (biomass
-## source), ref_fisheries (catch/discard source), ref_pbqb_traits (PB/QB
-## data source), ref_diet (diet-study citations), ref_methods (the
-## calculation METHOD/literature behind PB_FG/QB_FG - distinct from
-## ref_pbqb_traits, which is about the DATA feeding that method, not
-## the method itself).
+## build_fg_references_sheet() - added 2026-09-17, columns renamed/split
+## 2026-09-24 per Andrea ("an extra sheet for references for each code
+## so, B_ref, L_ref, and so on"). Writes the final workbook's
+## "FG_References" sheet: one row per FG, consolidating WHICH DATA
+## SOURCE fed each of the OTHER final sheets for that FG, named to
+## match those sheets' own codes (Ecopath_B -> B_ref, Ecopath_L ->
+## L_ref, Ecopath_Di -> Di_ref, Ecopath_PBQB -> PBQB_ref/
+## PBQB_method_ref, Ecopath_traits -> traits_ref, Ecopath_diet ->
+## diet_ref) so the model's data provenance is reviewable FG by FG,
+## sheet by sheet, rather than scattered across each block's own audit
+## CSVs. L_ref/Di_ref currently carry the SAME value (this pipeline's
+## catch_source is tracked once per FG/Year, applied to Catch_t/
+## Landings_t/Discard_t together - there's no independently-tracked
+## landings-only vs. discards-only source), kept as two columns anyway
+## so every final sheet has its own matching reference column.
+## PBQB_ref/PBQB_method_ref stay separate: PBQB_ref is about the DATA
+## feeding PB_FG/QB_FG, PBQB_method_ref is the calculation METHOD/
+## literature behind it - collapsing them would lose real information.
 ##
 ## Each argument is a directory to read that block's own native CSV
 ## outputs from (see the 2026-09-17 per-block CSV subfolder update) -
@@ -4180,60 +4344,73 @@ build_fg_references_sheet <- function(out_path,
   }
   refs <- copy(full_fg_ref)
   
-  ## --- ref_B: biomass_source, per FG, from 01_biomass.R's own
+  ## --- B_ref: biomass_source, per FG, from 01_biomass.R's own
   ## survey_fg_annual_index_regional_combined.csv (Year x FG_num, one
   ## biomass_source value per row already - see 01_biomass.R's "FG
-  ## biomass-source priority" section).
+  ## biomass-source priority" section). Includes the 2026-09-24
+  ## nearest-year borrow fallback where it applied (biomass_source
+  ## itself doesn't carry a separate "(borrowed from YYYY)" tag - see
+  ## species_baseline_year_borrowed_REVIEW.csv / ecopath_B_baseline_
+  ## year_borrowed_REVIEW.csv for exactly which FGs/years were borrowed).
   biomass_src_path <- file.path(biomass_csv_dir, "survey_fg_annual_index_regional_combined.csv")
   if (file.exists(biomass_src_path)) {
     b <- fread(biomass_src_path)
     if ("biomass_source" %in% names(b)) {
-      b_by_fg <- b[, .(ref_B = paste(sort(unique(biomass_source)), collapse = " | ")), by = FG_num]
+      b_by_fg <- b[, .(B_ref = paste(sort(unique(biomass_source)), collapse = " | ")), by = FG_num]
       refs <- merge(refs, b_by_fg, by = "FG_num", all.x = TRUE)
     } else {
       message("build_fg_references_sheet(): '", biomass_src_path, "' has no biomass_source column",
-              " (older run?) - ref_B left blank.")
+              " (older run?) - B_ref left blank.")
     }
   } else {
     message("build_fg_references_sheet(): '", biomass_src_path, "' not found - run 01_biomass.R",
-            " against this workbook first. ref_B left blank for now.")
+            " against this workbook first. B_ref left blank for now.")
   }
-  if (!"ref_B" %in% names(refs)) refs[, ref_B := NA_character_]
+  if (!"B_ref" %in% names(refs)) refs[, B_ref := NA_character_]
   
-  ## --- ref_fisheries: catch_source, per FG, from 02_fisheries.R's own
+  ## --- L_ref / Di_ref: catch_source, per FG, from 02_fisheries.R's own
   ## Catches_Discards_FG_ts.csv (native/intermediate, fixed filename -
-  ## unlike the DATASET_VERSION-suffixed CSV of the same data).
+  ## unlike the DATASET_VERSION-suffixed CSV of the same data). Two
+  ## columns (matching Ecopath_L/Ecopath_Di) carrying the SAME value -
+  ## this pipeline tracks one catch_source per FG/Year, applied to
+  ## Catch_t/Landings_t/Discard_t together, not independently for
+  ## landings vs. discards.
   cd_ts <- read_native_sheet_csv("Catches_Discards_FG_ts", fisheries_csv_dir)
   if (!is.null(cd_ts) && "catch_source" %in% names(cd_ts)) {
-    f_by_fg <- cd_ts[, .(ref_fisheries = paste(sort(unique(catch_source)), collapse = " | ")), by = FG_num]
+    f_by_fg <- cd_ts[, .(catch_ref = paste(sort(unique(catch_source)), collapse = " | ")), by = FG_num]
     refs <- merge(refs, f_by_fg, by = "FG_num", all.x = TRUE)
+    refs[, `:=`(L_ref = catch_ref, Di_ref = catch_ref)]
+    refs[, catch_ref := NULL]
   } else {
     message("build_fg_references_sheet(): 'Catches_Discards_FG_ts.csv' not found (or has no catch_source",
             " column) in ", fisheries_csv_dir, " - run 02_fisheries.R against this workbook first.",
-            " ref_fisheries left blank for now.")
+            " L_ref/Di_ref left blank for now.")
   }
-  if (!"ref_fisheries" %in% names(refs)) refs[, ref_fisheries := NA_character_]
+  if (!"L_ref" %in% names(refs))  refs[, L_ref := NA_character_]
+  if (!"Di_ref" %in% names(refs)) refs[, Di_ref := NA_character_]
   
-  ## --- ref_pbqb_traits + ref_methods: from 03_pbqb-traits.R's own
+  ## --- PBQB_ref + PBQB_method_ref: from 03_pbqb-traits.R's own
   ## PB_QB.csv (FG-level: PB_source/QB_source if EcoBase gap-filling
   ## ran this session, otherwise every FG is the same "empirical"
   ## default) and PB_QB_spp.csv (species-level: dispatch_group, which
   ## calculation method actually ran for each species feeding that FG -
-  ## mapped below to its literature citation for ref_methods).
+  ## mapped below to its literature citation for PBQB_method_ref). Kept
+  ## as two columns - PBQB_ref is about the DATA feeding PB_FG/QB_FG,
+  ## PBQB_method_ref is the calculation METHOD/literature behind it.
   pbqb <- read_native_sheet_csv("PB_QB", pbqb_csv_dir)
   if (!is.null(pbqb)) {
     if (all(c("PB_source", "QB_source") %in% names(pbqb))) {
-      pbqb[, ref_pbqb_traits := paste0("PB: ", fifelse(is.na(PB_source), "n/a", PB_source),
-                                       "; QB: ", fifelse(is.na(QB_source), "n/a", QB_source))]
+      pbqb[, PBQB_ref := paste0("PB: ", fifelse(is.na(PB_source), "n/a", PB_source),
+                                "; QB: ", fifelse(is.na(QB_source), "n/a", QB_source))]
     } else {
-      pbqb[, ref_pbqb_traits := "empirical (species-level PB/QB, biomass-weighted to FG) - see PB_QB_spp.csv for the species behind each FG"]
+      pbqb[, PBQB_ref := "empirical (species-level PB/QB, biomass-weighted to FG) - see PB_QB_spp.csv for the species behind each FG"]
     }
-    refs <- merge(refs, pbqb[, .(FG_num, ref_pbqb_traits)], by = "FG_num", all.x = TRUE)
+    refs <- merge(refs, pbqb[, .(FG_num, PBQB_ref)], by = "FG_num", all.x = TRUE)
   } else {
     message("build_fg_references_sheet(): 'PB_QB.csv' not found in ", pbqb_csv_dir,
-            " - run 03_pbqb-traits.R against this workbook first. ref_pbqb_traits left blank for now.")
+            " - run 03_pbqb-traits.R against this workbook first. PBQB_ref left blank for now.")
   }
-  if (!"ref_pbqb_traits" %in% names(refs)) refs[, ref_pbqb_traits := NA_character_]
+  if (!"PBQB_ref" %in% names(refs)) refs[, PBQB_ref := NA_character_]
   
   ## dispatch_group -> literature citation. Extend this lookup if
   ## 03_pbqb-traits.R's own dispatch logic (calc_fish()/calc_invert()/
@@ -4248,7 +4425,7 @@ build_fg_references_sheet <- function(out_path,
   spp <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
   if (!is.null(spp) && "dispatch_group" %in% names(spp)) {
     m_by_fg <- spp[!is.na(dispatch_group), .(dispatch_groups = paste(sort(unique(dispatch_group)), collapse = ",")), by = FG_num]
-    m_by_fg[, ref_methods := vapply(strsplit(dispatch_groups, ","), function(groups) {
+    m_by_fg[, PBQB_method_ref := vapply(strsplit(dispatch_groups, ","), function(groups) {
       hits <- unique(method_citation[groups])
       hits <- hits[!is.na(hits)]
       unmatched <- setdiff(groups, names(method_citation))
@@ -4256,39 +4433,47 @@ build_fg_references_sheet <- function(out_path,
       if (length(hits) == 0) return(NA_character_)
       paste(hits, collapse = " | ")
     }, character(1))]
-    refs <- merge(refs, m_by_fg[, .(FG_num, ref_methods)], by = "FG_num", all.x = TRUE)
+    refs <- merge(refs, m_by_fg[, .(FG_num, PBQB_method_ref)], by = "FG_num", all.x = TRUE)
   } else {
     message("build_fg_references_sheet(): 'PB_QB_spp.csv' not found (or has no dispatch_group column)",
             " in ", pbqb_csv_dir, " - run 03_pbqb-traits.R with species_pb_qb passed to",
-            " add_pbqb_to_ecopath_workbook() first. ref_methods left blank for now.")
+            " add_pbqb_to_ecopath_workbook() first. PBQB_method_ref left blank for now.")
   }
-  if (!"ref_methods" %in% names(refs)) refs[, ref_methods := NA_character_]
-  refs[is.na(ref_methods) & !is.na(ref_pbqb_traits) & grepl("EcoBase", ref_pbqb_traits),
-       ref_methods := "EcoBase model repository (published literature P/B, Q/B)"]
+  if (!"PBQB_method_ref" %in% names(refs)) refs[, PBQB_method_ref := NA_character_]
+  refs[is.na(PBQB_method_ref) & !is.na(PBQB_ref) & grepl("EcoBase", PBQB_ref),
+       PBQB_method_ref := "EcoBase model repository (published literature P/B, Q/B)"]
   
-  ## --- ref_diet: from 04_diets.R's own diet_references_by_fg.csv
+  ## --- traits_ref: 03_pbqb-traits.R writes Ecopath_traits directly
+  ## from FG_WMed_2026.csv's own traits_ewe sheet (a static, literature-
+  ## compiled reference table, not something computed per-run with its
+  ## own per-FG source column) - so every FG gets the same fixed note
+  ## rather than a per-FG lookup. Update this string if traits_ewe ever
+  ## gains its own per-row citation column to read instead.
+  refs[, traits_ref := "FG_WMed_2026.csv 'traits_ewe' sheet (literature-compiled, static per-FG values - see that file's own source notes for individual trait citations)"]
+  
+  ## --- diet_ref: from 04_diets.R's own diet_references_by_fg.csv
   ## (per-FG study citations, rolled up from the metaweb's own
   ## Reference column via build_species_diet()/predator_references).
   diet_refs_path <- file.path(diet_csv_dir, "diet_references_by_fg.csv")
   if (file.exists(diet_refs_path)) {
     d <- fread(diet_refs_path)
     if (all(c("FG_num", "references") %in% names(d))) {
-      refs <- merge(refs, d[, .(FG_num, ref_diet = references)], by = "FG_num", all.x = TRUE)
+      refs <- merge(refs, d[, .(FG_num, diet_ref = references)], by = "FG_num", all.x = TRUE)
     } else {
       message("build_fg_references_sheet(): '", diet_refs_path, "' is missing FG_num/references column(s) -",
-              " ref_diet left blank.")
+              " diet_ref left blank.")
     }
   } else {
     message("build_fg_references_sheet(): '", diet_refs_path, "' not found - run 04_diets.R against this",
-            " workbook first. ref_diet left blank for now.")
+            " workbook first. diet_ref left blank for now.")
   }
-  if (!"ref_diet" %in% names(refs)) refs[, ref_diet := NA_character_]
-  refs[!is.na(ref_diet) & ref_diet == "", ref_diet := NA_character_]  # fwrite()/fread() round-trips NA as "" for character columns by default - restore true NA rather than a blank string
+  if (!"diet_ref" %in% names(refs)) refs[, diet_ref := NA_character_]
+  refs[!is.na(diet_ref) & diet_ref == "", diet_ref := NA_character_]  # fwrite()/fread() round-trips NA as "" for character columns by default - restore true NA rather than a blank string
   
-  refs <- refs[, .(FG_num, FG_name, ref_B, ref_fisheries, ref_pbqb_traits, ref_diet, ref_methods)]
+  refs <- refs[, .(FG_num, FG_name, B_ref, L_ref, Di_ref, PBQB_ref, PBQB_method_ref, traits_ref, diet_ref)]
   setorder(refs, FG_num)
   upsert_workbook_sheets(list(FG_References = refs), out_path)
-  n_populated <- refs[, sum(!is.na(ref_B) | !is.na(ref_fisheries) | !is.na(ref_pbqb_traits) | !is.na(ref_diet) | !is.na(ref_methods))]
+  n_populated <- refs[, sum(!is.na(B_ref) | !is.na(L_ref) | !is.na(Di_ref) | !is.na(PBQB_ref) | !is.na(diet_ref))]
   message("build_fg_references_sheet(): wrote 'FG_References' sheet - ", nrow(refs), " FG(s), ", n_populated,
           " with at least one reference filled in so far. Columns: ", paste(names(refs), collapse = ", "), ".")
   invisible(refs)

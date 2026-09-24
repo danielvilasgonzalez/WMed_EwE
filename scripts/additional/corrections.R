@@ -1,45 +1,6 @@
 # TUNISIA INCLUD? TO ASK
 # recreational as sector - need effort manual from Valerio feedback
-# OPENOCEAN Stock assessment (tunas and big pèlagics) - to add
-# STEFC stock data to add
 # joan i fran intenta agrupar seabirds - Fran Joan
 # diets keep as past and later change - working on diet code almost implemented
 # 9-11 15 oct marian xavi i marta para dietes
 # catch from gfcm, discards (%)... bycatch (%).... black market (%)..... illegal and proportions - to discuss unreported/black market
-
-# get biomass estimates for other species (seabirds, mammals, seaturtles, posidonia, seagrass and discards?) to add
-#check map line from disolve region GSA
-#check shiny app
-#juvenile adults with multistanza groups how to pick them up from survey
-
-#find codes for traits - to add
-#Ecology = 5
-# Occurrence_status = 1
-# IUCN_conservation_status = 3
-# Exploitation_status = 2
-
-
-
-#to add biomass for high and low trophic levels with other kind of surveys or satellite data:
-# mammals seabrids or seaturtles surveys
-#connected to ecobase too biomass
-#pull satellite data from other tools or CLIMATE INITIATIVE for get phyto
-# any biogeochemical model in the western med that incorporates zoo and phyto?
-
-### create validation R section:
-# - GFW effort (at least at regional level)
-# - Visual Census regional scale
-# - Diet validation inside diet block  fishbase</ecobae
-# sector (industrial or artisanal) from SAU, but maybe it is worth it to get regional catalan database to validate regional catches?
-# RLS only in 2015 - any qualitative indicator -- for regional validation?
-# comparison between biomass of old wmed model - to add
-# sector (industrial or artisanal) from SAU, but maybe it is worth it to get regional catalan database to validate regional catches?
-
-
-#review that catches have all group from data soruces matched to FG_WMed
-
-
-
-
-
-

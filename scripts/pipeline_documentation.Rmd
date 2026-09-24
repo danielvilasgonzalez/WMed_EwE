@@ -289,6 +289,454 @@ Two more files are **not** part of the numbered pipeline, but support it:
   in particular produces the GeoJSON embedded in `medbs_pipeline_methodology.qmd`'s
   interactive map.
 
+---
+
+# Detailed methodology per output block — B, C, L, Di, M, TRAITS, F, PB, QB, DIET
+
+*(Added 2026-09-24, generated against the current `01_biomass.R` / `02_fisheries.R` (+ `02b_fisheries_priority_merge.R`) / `03_pbqb-traits.R` + `03b_ecobase.R` / `04_diets.R` (+ `04b_diet_matrix_crosswalk.R`) scripts. This section is the authoritative, per-block methodology reference — including the exact priority cascades, formulas, and literature references behind every number in the final workbook. It supersedes any conflicting description elsewhere in this document that still refers to the older `01_survey_density_westmed.R`/`02_fao_catches.R`-as-primary/`03_ecobase_query.R`/`04_pbqb_calc.R` naming — those scripts are either renamed or now secondary/legacy fallbacks, as noted per-section below.)*
+
+This document describes the **current, running** WMed EwE input-data pipeline as implemented in:
+
+- `01_biomass.R` — Biomass (B)
+- `02_fisheries.R` (plus helper `02b_fisheries_priority_merge.R`) — Catches (C), Landings (L), Discards (Di), Fishing mortality (F)
+- `03_pbqb-traits.R` + sourced helper `03b_ecobase.R` — Natural mortality (M), Production/Biomass (PB), Consumption/Biomass (QB), life-history Traits (TRAITS)
+- `04_diets.R` (plus helper `04b_diet_matrix_crosswalk.R`) — Diet matrix (DIET)
+- Shared library `lib_survey_fg_density_functions.R`, plus `lib_worms_taxonomy_lookup.R`, `lib_aquamaps_depth_extension.R`, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`, `lib_sau_extraction.R`, `iccat_bft_swo_automation.R`
+
+**This supersedes any earlier documentation that refers to `01_survey_density_westmed.R`, `02_fao_catches.R` (as the primary catch script), `03_ecobase_query.R`, or `04_pbqb_calc.R`.** Those names describe an older iteration of this pipeline. `02_fao_catches.R` in particular still exists on disk and is read by `03_pbqb-traits.R` only as a **legacy fallback** path for the FG-level fishing-mortality rate (`Fmort_FG`) when `02_fisheries.R`'s own `F_by_fg.csv` output is not available — the current, preferred F source for every section below is `02_fisheries.R`.
+
+All ten input blocks (B, C, L, Di, M, TRAITS, F, PB, QB, DIET) ultimately write into one shared Excel workbook, `ecopath_ecosim_inputs.xlsx` (path held in `ECOPATH_WORKBOOK_PATH`), via `upsert_workbook_sheets()` / `finalize_ecopath_ecosim_summary_sheets()` in `lib_survey_fg_density_functions.R`, and each block also writes native, audit-friendly CSVs into its own output subfolder (`biomass/`, `fisheries/`, `pbqb/`, `diet/`).
+
+---
+
+## B — Biomass
+
+### 1. What it is
+The Ecopath base-year (baseline snapshot, `year_ecopath`, default 1994–1996) biomass density per functional group (FG), in t·km⁻², written to the `Ecopath_B` sheet; and the multi-year `Ecosim_ts` biomass time series used to drive/validate Ecosim.
+
+### 2. Inputs / data sources
+- **MEDITS** bottom-trawl survey (dataframe1/dataframe2 standardized survey tables) and **MEDIAS** pelagic acoustic survey — both processed through the shared density-computation library.
+- **Catchability correction** table (`CATCHABILITY_CSV_PATH`, columns `ScientificName`, `q`) — MEDITS/MEDIAS gear catchability is <1 for many taxa; density/biomass is divided by the resolved `q`.
+- **GFCM STAR / RAM Legacy** combined stock-assessment output (`combined_medbs_star_ramlegacy.csv`, produced by an external `combine_STAR_RAMlegacy.R`), read from `STAR_RAMLEGACY_DIR`.
+- **ICCAT** stock-assessment SSB for Atlantic bluefin tuna (BFT), swordfish (SWO), albacore (ALB) — manual/cited per-stock SSB tables, converted to density via `ICCAT_STOCK_AREA_KM2`.
+- **Manual/cited biomass CSVs**: `MEGAFAUNA_BIOMASS_PATH` (marine megafauna: cetaceans, pinnipeds, sea turtles, elasmobranch megafauna) and `PRIMARY_PRODUCER_BIOMASS_PATH` (zooplankton, phytoplankton, macroalgae, seagrass/Posidonia, gorgonians+corals) — both auto-drafted from EcoBase/CMEMS/satellite when missing, always tagged as a draft.
+- **EcoBase** (existing published Ecopath models covering the Mediterranean) — via `fetch_ecobase_literature_biomass()` (`03b_ecobase.R`), keyword-matched per target group, closest-year-to-1995 model picked.
+- **CMEMS/satellite ocean-colour chlorophyll-a** (`lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`) as a phytoplankton-biomass fallback when EcoBase has no match.
+- FG taxonomy/species-list reference: `FG_WMed_2026.csv`.
+
+### 3. Computation method
+The core is a **biomass-source PRIORITY CASCADE** built via `fcase()` per FG × Year (in `01_biomass.R`, ~lines 2310–2483):
+
+1. **`FG_ECOLOGY_TYPE` classification** (checked first, ~line 2325):
+   - `"survey_exempt"` — FG name is in `EXEMPT_FG_NAMES` (`Cymodocea`, `Posidonia`, `Macroalgae`, `Corals and gorgonians`, `Macro zooplankton`, `Meso and micro zooplankton`, `Suprabenthos`) — groups a bottom-trawl/acoustic survey is not designed to sample representatively at all.
+   - `"single_species_assessed"` — exactly one species in the FG **and** that FG has a GFCM STAR/RAM or ICCAT stock assessment.
+   - `"mixed"` — everything else (default).
+2. **`mean_density` fcase priority**, evaluated top-down (first TRUE wins):
+   - `survey_exempt` **and** a stock-assessment/EcoBase/manual density exists → use it (tagged `"<source> - survey-exempt FG..."`).
+   - `survey_exempt` and **no** such density → left explicitly `NA` (never falls through to a survey figure — a deliberate 2026-09-24 fix; the survey noise for these groups is worse than a genuine gap).
+   - `single_species_assessed` and a stock-assessment density exists → use it.
+   - MEDIAS density exists → MEDIAS (preferred over MEDITS: acoustic survey covers pelagic groups MEDITS' bottom trawl misses).
+   - MEDITS density exists → MEDITS.
+   - Otherwise, any remaining stock-assessment density.
+   - A final backfill (`avg_density`, the MEDITS+MEDIAS average) fills any FG still `NA` **except** `survey_exempt` rows, which are guarded from ever being backfilled with survey noise.
+3. **Stock-assessment table build** (`stock_assessment_fg_year`): STAR/RAM species matched to FG by exact scientific name, then by genus fallback; biomass summed per FG × Year, divided by `total_area_km2_biomass` to get density. ICCAT SSB is folded in on top, **winning any overlap** with STAR/RAM for the same FG × Year cell (an anti-join removes the STAR/RAM row first). `ICCAT_STOCK_AREA_KM2` (BFT=1 — i.e. biomass reported directly as density already; SWO/ALB=2,510,000 km²) converts SSB tonnage to density; rows where the density conversion isn't valid are left with density `NA` and excluded from the priority rule rather than guessed.
+4. **Manual/cited groups** (megafauna, primary producers/plankton) are merged into the same `stock_assessment_fg_year` table via `merge_manual_cited_biomass()`, each tagged `"literature/survey estimate (<label> - manual, cited entry)"`, winning any overlap with an existing STAR/RAM/ICCAT row for that cell.
+5. **Catchability correction** (`apply_catchability_correction()`, `lib_survey_fg_density_functions.R` ~line 1625): resolves a catchability coefficient `q` per species using a taxonomic cascade — species-level exact match → genus (`"Genus spp"` entries) → genus-level taxonomic proximity (average `q` of related species already in the table) → family proximity → order (explicit entry, then proximity) → class (explicit only) → phylum (explicit only) → `EXEMPT_FG_NAMES`/`exempt_species` forced to `q=1` (overrides everything) → `default_q=1` for anything left unmatched. `Density`/`Biomass` are divided by the resolved `q`.
+6. **Ecopath_B sheet build** (`export_ecopath_ecosim_excel()`, ~line 3661): one row per FG (from the full FG reference list, not just observed FGs), `Biomass` = the mean density across every year in `year_ecopath` (not the single first year), matching the averaging window used by PB/QB/L/Di. A parallel `Biomass_<baseyear>` single-year figure is retained in an audit-only CSV (`biomass_by_fg_ecopath_detail.csv`).
+7. **Nearest-year baseline fallback** (`resolve_baseline_with_nearest_year_fallback()`, ~line 3504): if an FG's `year_ecopath` baseline density is zero/NA but it has a real (>0) density in some *other* survey year, that nearest-year value is borrowed instead of reporting a false zero — **except** for any FG whose name contains `"Expanding"` (a genuinely range-expanding/colonizing group, where a real zero baseline is the correct signal).
+8. **`Ecosim_ts`**: built the same way per year across `ts_years`, optionally rescaled to a reference index (`NORMALIZE_TS`/`normalize_ts = TRUE`: first non-NA value in the series set to 1, everything else relative to it) or left as raw density.
+9. **EcoBase last-resort fallback (STEP 15b)**: after all of the above, whatever FG still has no biomass at all is matched against EcoBase's other published Mediterranean models by keyword on the FG's own name/scientific name; a hit patches only the `Ecopath_B` baseline-year snapshot (`fg_biomass_base_year`), **not** the full `Ecosim_ts` series.
+
+### 4. Known caveats / limitations
+- `survey_exempt` FGs with no stock-assessment/EcoBase/manual source are deliberately left `NA` in `Ecopath_B` (flagged `"MISSING - survey-exempt FG..."`), not filled with survey noise — the modeller must supply a real figure.
+- The `EXEMPT_FG_NAMES` list is hand-typed against `FG_WMed_2026.csv`'s exact FG-name spelling; a mismatch is a silent no-op, not an error (flagged explicitly in code comments — "Suprabenthos" specifically called out as unconfirmed spelling).
+- `ICCAT_STOCK_AREA_KM2`'s BFT row (area = 1) is a placeholder to avoid dividing a real tonnage — flagged as "not a real biomass number" until fixed; rows with `uniform_density_valid == FALSE` are excluded rather than guessed.
+- The catchability table's proximity fallback can silently fail to type-check (a documented `data.table` gotcha with `sapply()` over zero-row subsets) if not guarded — the code explicitly pre-initializes `match_value` as character to avoid this.
+- Marine-megafauna keyword coverage (`MEGAFAUNA_TAXON_KEYWORDS`) was previously missing a working monk-seal match; comments flag this as fixed but call out that "Suprabenthos" and other entries were never independently re-verified against the real FG-name spelling.
+- EcoBase biomass figures are explicitly "closest available, not a real 1994–1996 measurement" — every filled value is tagged with source model/authors/year and how far that year is from the target, never silently blended in as if it were a direct observation.
+- The Ecosim sheet's exact export shape was matched against a real prior exported example, "not independently re-verified" against an actual Ecosim-imported file (per the function's own header comment).
+
+### 5. Code location
+- `01_biomass.R`: `EXEMPT_FG_NAMES` (~line 942), `ICCAT_STOCK_AREA_KM2` (~line 1807), `MEGAFAUNA_TAXON_KEYWORDS` (~line 2074), `FG_ECOLOGY_TYPE`/priority `fcase()` (~lines 2310–2483), STEP 15b EcoBase fallback (~line 2952).
+- `lib_survey_fg_density_functions.R`: `apply_catchability_correction()` (~line 1625), `resolve_baseline_with_nearest_year_fallback()` (~line 3504), `export_ecopath_ecosim_excel()` (~line 3560, `Ecopath_B`/`Ecosim` construction ~3661–3740).
+- `03b_ecobase.R`: `fetch_ecobase_literature_biomass()` (~line 493).
+
+### 6. References
+Colléter et al. (2015) — EcoBase; MEDITS Working Group (survey handbook); ICCAT GBYP aerial survey program (CREEM Phase 11, 2021); Kaschner et al. — AquaMaps.
+
+---
+
+## C — Catches
+
+### 1. What it is
+The FG × Year (and Country × FG × Year) **gross catch** (`Catch_t`) time series that feeds both Landings (L) and Discards (Di) — the reported/landed tonnage grossed up by an estimated discard ratio.
+
+### 2. Inputs / data sources
+- **GFCM Capture Production** (Task 1-style) statistics — `gfcm_country_fg`/`gfcm_species_division_fg` — the primary bulk catch source, restricted to `START_YEAR`–`END_YEAR` and `TARGET_COUNTRIES`.
+- **STECF FDI** (Fisheries Dependent Information) — EU fleet-level landings/discards, trusted only from `STECF_FDI_START_YEAR = 2014` onward (2013 excluded for data quality); provides the discard ratio (`Discarded_t/(Landed_t+Discarded_t)`) and fleet composition for the EU-flagged portion of the fleet.
+- **Sea Around Us (SAU)** reconstructed catch — `sau_download_raw_extract()`/`sau_get_raw_extract()` (`lib_sau_extraction.R`), EEZ-level bulk download, restricted to `TARGET_COUNTRIES` and the study period; supplies its own `catch_type`-derived discard ratio and pre-2014 fleet-share hindcast.
+- **FishMIP** fisheries-effort/catch product, matched via a FishMIP-FG crosswalk (`FISHMIP_FG_CROSSWALK_PATH`) — supplies a FG × Year (and flat, all-years-pooled) discard ratio from "reported vs total" tonnage.
+- **GFCM STAR/RAM Legacy** stock-assessment catch figures — cross-checked against (not blindly substituted for) the SAU-built series (`star_catch_pct_diff`), with an explicit override step further down for exact FG × Year matches.
+- **Belhabib et al.** total-catch reconstruction (used for Morocco/Algeria/Tunisia where GFCM/FDI coverage is thin).
+- Technology-creep correction table (`tech_creep_rate_for_year()`/`tech_creep_multiplier()`), anchored to `TECH_CREEP_BASE_YEAR = STECF_FDI_START_YEAR`.
+
+### 3. Computation method
+1. `catch_with_discards <- merge(gfcm_country_fg, discard_by_fg, ...)`: gross catch is computed as `Catch_t = Landings_t / (1 - discard_ratio)` wherever a FishMIP discard ratio exists for that FG × Year; `Discard_t = Catch_t - Landings_t`. Where no ratio exists at all, `Catch_t = Landings_t` (landings-only, no discard assumed).
+2. **Discard-ratio priority override**, applied in sequence (each step recomputes `Catch_t`/`Discard_t` if it fires): FishMIP (base) → **SAU's own discard ratio** (hindcast/bias-corrected against FDI for the pre-2014 years, Country × FG × Year, preferred over FishMIP's Med-wide FG-level ratio) → **STECF FDI's own discard ratio** (Country × FG × Year, preferred over SAU when both exist, since it is fleet-reported rather than reconstructed).
+3. **Hindcast calibration**: for years before `STECF_FDI_START_YEAR`, SAU's discard ratio and fleet-composition shares are calibrated against the FDI/SAU overlap years (`discard_calibration`, a per-Country×FG multiplicative factor), clamped to a plausible `[0, 0.95]` range, rather than trusting SAU's flat all-years figure uncorrected.
+4. **Belhabib override** for Morocco/Algeria/Tunisia: `Catch_t_belhabib` is split into `Discard_t`/`Landings_t` using whichever `discard_ratio` tier already resolved for that cell, if any; otherwise the whole Belhabib figure is treated as gross catch with no discard split (`"Belhabib et al. total catch (gross) - no discard_ratio tier available"`).
+5. **STAR/RAM cross-check** (not an automatic override): `star_ram_combined`, filtered to `Western Mediterranean` subregion, matched to FG by exact species name then genus fallback; compared against `catches_discards_fg` and written as `star_catch_pct_diff`/`star_discard_ratio_diff_pp` for manual review.
+6. The full FG × Year grid is completed via `CJ()` cross-join to `full_fg_list`, so every FG has an explicit (possibly zero) row rather than being silently absent.
+
+### 4. Known caveats / limitations
+- GFCM's own catch source is restricted to a defined coverage window and country set; species reported only at NEI/genus-level aggregates are a known source of FG mis-assignment risk (flagged where relevant to F, see below).
+- The FishMIP discard ratio is Mediterranean-wide and FG-level, coarser than the SAU/FDI country-specific ratios that are preferred over it wherever available.
+- The pre-2014 SAU hindcast calibration factor defaults to 1 (no correction) whenever there are no FDI/SAU overlap years to calibrate against for that Country × FG — a judgement call, explicitly given the same "status" in comments as the technology-creep multiplier (i.e., an assumption, not a measurement).
+- `catch_area_mismatch_flags` — a GSA/Division area-scope mismatch between GFCM's own Catches_Ecopath/Ecosim area and the survey's area can lead F (see below) to be a slight overestimate relative to Biomass's area; called out explicitly as a "known, unresolved mismatch" in `03_pbqb-traits.R`'s comments.
+- Belhabib-sourced catch for Morocco/Algeria/Tunisia frequently has no discard-ratio tier to split against, so it is carried as gross, undifferentiated catch.
+
+### 5. Code location
+- `02_fisheries.R`: discard-ratio tiers and `Catch_t`/`Discard_t` computation (~lines 3390–3437, ~3536–3584), hindcast calibration (~lines 2892–2926), STAR/RAM cross-check (~lines 3636–3691), tech-creep functions (~lines 1841–1896).
+- `02b_fisheries_priority_merge.R` — merges the multi-source catch/discard/fleet tiers by priority (see L/Di section).
+- `lib_sau_extraction.R` — SAU download functions.
+
+### 6. References
+Pauly & Zeller (2016) — Sea Around Us; GFCM MEDBS working group; STECF (FDI database); ICCAT/GFCM Task-1/Task-2 catch reporting conventions.
+
+---
+
+## L — Landings
+
+### 1. What it is
+The `Ecopath_L` workbook sheet: FG × Fleet landings density (t·km⁻²·year⁻¹), averaged over `YEAR_ECOPATH`, one column per named fleet.
+
+### 2. Inputs / data sources
+Same underlying sources as Catches (C) above; the fleet dimension additionally draws on:
+- `FLEET_REGISTER` / `parse_gfcm_fleet_register()` — the GFCM Regional Fleet Register, giving each of six named countries (Spain, France, Italy, Morocco, Algeria, Tunisia) its Sector (Artisanal/Industrial) × Gear (`FleetType`) taxonomy.
+- STECF FDI's own fleet-composition shares (per Country × FG, averaged across covered years) as a pre-2014 prior.
+- SAU's own year-by-year fleet-composition shares (calibrated against FDI where overlap years exist).
+
+### 3. Computation method
+1. `Landings_t = Catch_t − Discard_t` per fleet — the fleet split is applied to the *fleet-resolved* long table `ecopath_fleet_long` (built from `fleet_split_out`), not derived independently.
+2. Fleet-composition proportions (`fleet_prop_final`) are resolved in **four tiers**, combined via `rbindlist()`: (a) STECF FDI's real Country × FG × Year composition where FDI covers that cell; (b) SAU's hindcast-calibrated composition for pre-2014 years; (c) FDI's FG-specific multi-year average as a prior for cells FDI covers in *some* year but not this one; (d) a crude flat/equal split as the last resort where none of the above cover the cell.
+3. `landings_ecopath_by_fleet_wide <- dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet, value.var = "Landings_t_km2_avg", fill = 0)`, then completed to every FG in `full_fg_list` (0-filled where a FG has no fleet catch at all).
+4. **"Other GFCM countries — Unclassified" residual column**: `FLEET_REGISTER` only names fleets for the 6 target countries, so catch attributed to any other GFCM-reporting Mediterranean country (Greece, Libya, Malta, Cyprus, Turkey, Egypt, etc.) would otherwise silently vanish from `Ecopath_L`. This residual column is computed as `pmax(0, broad_FG_landings_density - rowSums(named_fleet_columns))`, keeping each FG's row total consistent with `Catches_Ecopath`'s own FG total.
+5. A `Fleet_Structure` diagnostic table (`fleet_structure_out`) separately reports each fleet's real share of an FG's total catch across all 6 countries combined, `prop_catch` summing to 1 within each `FG_num`.
+
+### 4. Known caveats / limitations
+- A `ecopath_L_fg_coverage_check.csv` diagnostic flags FGs that get **less than half** their total landings from a named 6-country fleet — for those, the fleet/gear breakdown is materially coarser (dominated by the "Other GFCM countries" residual), even though the FG-level total still reconciles with `Catches_Ecopath`.
+- 48 of 63 all-zero FG rows in a real run were found to have real matched crosswalk catch that was silently dropped before the "Other GFCM countries" fix — flagged explicitly as "not a small edge case."
+- No fleet/gear-specific fishing mortality exists anywhere downstream (see F, below) — the fleet split here is landings/discards-only bookkeeping, not an independently fleet-resolved F.
+
+### 5. Code location
+- `02_fisheries.R`: fleet-split tier merge (~lines 4685–4710), `Ecopath_L`/`Ecopath_Di` fleet pivot (~lines 5186–5250), coverage-check diagnostic (~lines 5261–5306).
+
+### 6. References
+GFCM Regional Fleet Register (data collection reference framework, DCRF); STECF FDI database documentation.
+
+---
+
+## Di — Discards
+
+### 1. What it is
+The `Ecopath_Di` workbook sheet: FG × Fleet discards density (t·km⁻²·year⁻¹), the complement of Landings within the same gross-catch total, built identically to `Ecopath_L` but from `Discard_t_km2_avg`.
+
+### 2. Inputs / data sources
+Same discard-ratio sources as Catches (C): FishMIP reported-vs-total tonnage ratio, SAU's own `catch_type`-derived discard ratio, STECF FDI's own landed/discarded tonnage.
+
+### 3. Computation method
+- Built via the identical `dcast(ecopath_fleet_long, FG_num + FG_name ~ Fleet, value.var = "Discard_t_km2_avg", fill = 0)` pattern as `Ecopath_L`, completed to every FG, plus the same "Other GFCM countries — Unclassified" residual column computed from `broad_discards_density`.
+- The FG-level discard ratio itself (before the fleet pivot) is resolved via the same three-tier priority as under Catches (C): FishMIP (Med-wide, FG × Year time-varying, falling back to an all-years-pooled flat ratio per FG when the per-year cell is too thin/implausible) → SAU (Country × FG × Year, hindcast-calibrated pre-2014) → STECF FDI (Country × FG × Year, wins wherever it exists).
+- Implausible ratios are filtered at each tier (`is.finite(discard_ratio) & discard_ratio >= 0 & discard_ratio <= 0.95`) rather than accepted uncritically.
+- A documented `data.table` bug fix (2026-09) ensures multiple FishMIP `f_group`s mapping to the same FG with *differing* discard ratios are averaged into exactly one ratio per FG × Year cell, rather than silently producing duplicate rows.
+
+### 4. Known caveats / limitations
+- The 0.95 cap on any discard ratio is a plausibility guard, not a measured ceiling — a genuinely near-total-discard fishery would be truncated.
+- Discard ratios ultimately trace to at most three independent, imperfectly-overlapping data products (FishMIP, SAU, FDI); where none of the three cover a cell, `Discard_t` stays `NA` and `Catch_t = Landings_t` (i.e., zero assumed discards, not a genuine "unknown").
+- Same residual-column caveat as Landings (L): the "Other GFCM countries" column is not broken down by fleet/gear.
+
+### 5. Code location
+- `02_fisheries.R`: discard-ratio tiers (~lines 2477–2496, 3063–3114, 3213–3238), fleet pivot (~lines 5200–5249).
+
+### 6. References
+Same as Catches (C): FishMIP; Sea Around Us (Pauly & Zeller, 2016); STECF FDI.
+
+---
+
+## M — Natural mortality
+
+### 1. What it is
+The natural-mortality-rate component used **inside** the PB calculation (`PB = M + F`, the standard Ecopath equilibrium-mortality decomposition for fish; other taxa use a direct PB formula without an explicit M+F split — see PB below).
+
+### 2. Inputs / data sources
+- **FishBase/SeaLifeBase** growth parameters (`Loo`, `K`, `tmax`) via `rfishbase::popgrowth()`/`species()`, fetched by `fetch_intrinsic_traits()`, with a Western-Mediterranean-first, then-broader-Mediterranean, then-most-recent-year row-selection rule (`select_best_rows()`, using `WMED_KEYWORDS`/`MED_KEYWORDS`).
+- **FishLife** (Thorson et al.) — `fetch_fishlife()`, a phylogenetic-imputation database (`FishLife::FishBase_and_RAM`) giving a direct `M` prediction (`M_FishLife_2023`) plus imputed `Loo`/`K`/`Winfinity`, without needing this species' own growth data.
+- **TropFishR::M_empirical()** — `fetch_tropfishr_M()`, bundling three independent empirical estimators from a single call (parsed from the function's row-named output matrix, not column names — confirmed against TropFishR's actual source).
+- Ambient temperature (`Temp`), defaulting to `DEFAULT_TEMP = 16` (°C) where no species/area-specific value is supplied.
+
+### 3. Computation method (fish; `calc_fish()`)
+Six independent M methods are computed for **every** fish species (not gated behind missing-data fallback logic, so all methods are genuinely comparable):
+1. **Pauly (1980)**, Eq. 9: `M = 10^(-0.0066 - 0.279·log10(Loo) + 0.6543·log10(K) + 0.4634·log10(Temp))`.
+2. **FishLife**'s own phylogenetically-imputed `M` (used directly, not re-derived from FishLife's `Loo`/`K` via Pauly, to preserve FishLife's joint-uncertainty modelling).
+3. **Gascuel et al. (2008)**, Eq. 15: `M = 2.31 · TrophicLevel^(-1.72) · exp(0.053·Temp)` — needs only trophic level + temperature, so it is nearly always computable.
+4. **Hoenig (1983)** (via TropFishR; two internal rows — "Joint Equation" and "Fish Equation" — averaged into one value).
+5. **Then et al. (2015)** (via TropFishR) — identified in its own validation paper as the best-performing empirical M estimator across 200+ fish species; given first priority when selecting the "chosen" PB method.
+6. **Alverson & Carney (1975)** (via TropFishR).
+
+Every M-method column is then gap-filled by `fill_by_taxonomic_proximity()`: **Stage 1**, borrow the mean of local donors (species already in this model's own `species_df`) at increasingly broad ranks — Genus → Family → Order → Class — using only species with a **direct** (non-borrowed) value as donors. **Stage 2**, if no local donor exists at any rank and the method is in `EXTERNAL_FORMULA_REGISTRY` (or is a TropFishR method), query FishBase/SeaLifeBase directly via `rfishbase::species_list()` for *external* species sharing that rank, fetch their traits, and compute the same formula for them (capped at 20 candidate species per lookup). Every filled value is tagged `"direct"` / `"borrowed (<rank>)"` / `"external FishBase/SeaLifeBase donor (<rank>)"`.
+
+For non-fish taxa (mammals, seabirds), M is not computed as a separate column — the taxon-specific PB formulas below (Barlow & Boveng Siler survivorship; Gascuel general) directly estimate total mortality/production without an explicit M+F split, since no species-level catch data exists for most of those groups anyway.
+
+### 4. Known caveats / limitations
+- `Fmort`/`Fmort_species`/`Fmort_FG` (the F side of `PB=M+F`) is a **single lumped Yield/Biomass ratio across the whole region and all gears/fleets** — nothing in this pipeline currently produces a fleet- or gear-specific F even though `Ecopath_L`/`Ecopath_Di` do carry a fleet dimension; explicitly flagged as "NOT IMPLEMENTED" in code comments, and noted that GFCM's Operational-Unit-level DCRF data (fleet segment × ISSCFG gear × GSA) would be the real source for that, not derivable from `GFCM_Capture_Quantity.csv`.
+- A known, unresolved GSA/Division area-scope mismatch between the catch data's area and the survey's biomass area means `Fmort_FG`/PB is a slight *over*-estimate relative to Biomass's own area.
+- `M_FishLife_2023` depends on FishLife's internal `ParentChild_gz` structure matching what the code was verified against (version 3.1.0); a mismatch causes FishLife to be silently skipped (with a message) rather than erroring, leaving the other five M methods to carry the estimate.
+
+### 5. Code location
+- `03_pbqb-traits.R`: `calc_fish()` (~line 2148, M methods ~2163–2196), `fetch_fishlife()` (~line 1966), `fetch_tropfishr_M()` (~line 2079), `fill_by_taxonomic_proximity()` (~line 1452), `fetch_intrinsic_traits()` (~line 1361).
+
+### 6. References
+Pauly, D. (1980). On the interrelationships between natural mortality, growth parameters, and mean environmental temperature in 175 fish stocks. *ICES Journal of Marine Science*, 39(2), 175–192.
+Hoenig, J.M. (1983). Empirical use of longevity data to estimate mortality rates. *Fishery Bulletin*, 82(1), 898–903.
+Then, A.Y., Hoenig, J.M., Hall, N.G., & Hewitt, D.A. (2015). Evaluating the predictive performance of empirical estimators of natural mortality rate using information on over 200 fish species. *ICES Journal of Marine Science*, 72(1), 82–92.
+Alverson, D.L., & Carney, M.J. (1975). A graphic review of the growth and decay of population cohorts. *Journal of the Conseil International pour l'Exploration de la Mer*, 36(2), 133–143.
+Gascuel, D., Morissette, L., Palomares, M.L.D., & Christensen, V. (2008) [PB/QB "quick guide" protocol equations, as used by Vilas/Coll/Piroddi/Steenbeek-style EwE workflows].
+Thorson, J.T., Munch, S.B., Cope, J.M., & Gao, J. (2017). Predicting life history parameters for all fishes worldwide. *Ecological Applications*, 27(8), 2262–2276. [FishLife]
+Froese, R., & Pauly, D. (Eds.). FishBase. www.fishbase.org.
+Palomares, M.L.D., & Bailly, N. (Eds.). SeaLifeBase. www.sealifebase.org.
+Mildenberger, T.K., Taylor, M.H., & Wolff, M. (2017). TropFishR: an R package for fisheries analysis with length-frequency data. *Methods in Ecology and Evolution*, 8(11), 1520–1527.
+
+---
+
+## TRAITS — Ecopath_traits sheet
+
+### 1. What it is
+A per-species life-history/ecology trait table (`traits_ewe.csv`, exported to the workbook as `Ecopath_traits`, grouped by FG with header rows) — Loo, K, Winf, TrophicLevel, MaxWeight, Longevity, AspectRatio, temperature, plus a coarse `Organism` classification (Fishes/Mammals/Birds/Reptiles/Algae/Plants/Bacteria/Fungi/Other).
+
+### 2. Inputs / data sources
+- **FishBase/SeaLifeBase** taxonomy (`fetch_taxonomy_fishbase()`, wrapping `rfishbase::load_taxa()`), Class/Order/Family/Genus/Phylum/Kingdom.
+- Same growth/ecology/morphometrics tables as M/PB/QB (`popgrowth`, `ecology`, `species`, `swimming`, `maturity`).
+- **rfishbase::synonyms()** for species whose name is a synonym not directly recognized by `load_taxa()` (e.g. genus-level placeholders like `"Sepiola spp."`).
+
+### 3. Computation method
+- **`dispatch_group`** (the coarse bucket used to pick a PB/QB formula set): `classify_dispatch()` maps `Class` to `"fish"` / `"mammal"` / `"seabird"` / `"phytoplankton"`, defaulting anything else (including reptiles) to `"invertebrate"`.
+- **`Organism`** (a separate, finer trait-sheet column, intentionally independent of `dispatch_group`): `classify_organism()` maps Class → Fishes/Mammals/Birds/Reptiles/Algae; Phylum → Plants (`Tracheophyta`, `Magnoliophyta`, `Streptophyta` — vascular seagrasses); Kingdom → Bacteria/Fungi; everything else defaults to `"Other"`.
+- **Unresolved-taxonomy fallback**: species with no `Class` from the initial lookup are re-queried via a single **batched** `rfishbase::synonyms()` call (mapping synonym → currently-valid name) followed by a single batched taxonomy re-fetch for all resolved valid names — explicitly re-engineered (2026-09-23) from an earlier per-species loop that reloaded FishBase's/SeaLifeBase's **entire** table on every call, which was the actual cause of a "taking forever" performance problem, not the synonym lookup itself. Whatever remains unresolved after this defaults `dispatch_group` to `"invertebrate"` and `Organism` to `"Other"` — a taxonomically-neutral default, not a guess borrowed from another source.
+- **Best-row selection** for multi-record FishBase/SeaLifeBase tables (`select_best_rows()`): Western-Mediterranean locality keywords first, then broader-Mediterranean, then most-recent year, then first available.
+- **`build_grouped_traits_sheet()`** lays the flat trait table out with a `"<FG_num>: <FG_name>"` header row and a blank separator above each FG's species block, matching the legacy `FG_WMed.xlsx` sheet's visual convention — the workbook's `Ecopath_traits` sheet is this human-readable layout; `traits_ewe.csv` (flat, one row per species) is the version anything downstream should read programmatically.
+
+### 4. Known caveats / limitations
+- The taxonomic-proximity gap-filling used across M/PB/QB also silently defines what counts as "close" for trait imputation — Genus → Family → Order → Class, with an external-donor fallback capped at 20 species per lookup.
+- `Organism == "Other"` covers any species whose Class/Phylum/Kingdom never resolved to any category — a genuine unknown, flagged for audit via a printed list of "Unclassified/unusual Class values."
+- Bacteria/Fungi classification only works if the FishBase/SeaLifeBase version installed actually carries a `Kingdom` column; otherwise these fall through to `"Other"` rather than erroring.
+
+### 5. Code location
+- `03_pbqb-traits.R`: `classify_dispatch()` (~line 949), `classify_organism()` (~line 985), synonym-resolution fallback (~lines 1008–1166), `select_best_rows()` (~line 1200), `build_grouped_traits_sheet()` (~line 3383).
+
+### 6. References
+Froese, R., & Pauly, D. (Eds.). FishBase; Palomares, M.L.D., & Bailly, N. (Eds.). SeaLifeBase; WoRMS Editorial Board. World Register of Marine Species (www.marinespecies.org).
+
+---
+
+## F — Fishing mortality
+
+### 1. What it is
+The instantaneous fishing-mortality rate per FG, `F = Yield/Biomass` (catch density ÷ biomass density), computed both as a standalone `F_by_fg.csv`/`F_by_species_fg.csv` output in `02_fisheries.R` and reused inside `03_pbqb-traits.R`'s `PB = M + F` chain (fish) via `Fmort`/`Fmort_FG`.
+
+### 2. Inputs / data sources
+- `catches_discards_fg` (this pipeline's own combined GFCM/STECF/SAU/FishMIP/Belhabib catch table — see Catches, C).
+- `species_density_regional_combined.csv` (01_biomass.R's Step-1 output) for the biomass-density side.
+- `Total_Area_km2` — the same West-Med study area used consistently across Biomass, Catches and F, so all three sheets are mutually area-consistent.
+
+### 3. Computation method
+- `f_by_fg`: species density summed to FG level per year, averaged over `YEAR_ECOPATH` → `Biomass_density_avg`; catch averaged over the same years → `Catch_t_avg`; `F = (Catch_t_avg / Total_Area_km2) / Biomass_density_avg`.
+- `f_by_species_fg`: the **same FG-level F value is repeated for every species in that FG** — F is *not* independently estimated per species, since GFCM catch data exists only at FG resolution. This is the standard EwE simplifying assumption of uniform fishing pressure within an FG. What genuinely differs per species is its own biomass share (`prop_sp_fg`) and the resulting implied catch density (`Species_catch_density_avg = F × Species_density_avg`).
+- Inside `03_pbqb-traits.R`, `FG_YIELD_SOURCE` first tries to read `F_by_fg.csv` directly from `02_fisheries.R`'s output (preferred, current path); only if that file is missing does it fall back to reconstructing an FG-level F from the **legacy** `02_fao_catches.R` output (`fg_catch_csv`). Species-level `Fmort_species = Yield/Biomass` is used when a species-level yield exists (currently never, since no species-level landings source is implemented anywhere in the pipeline); otherwise `Fmort := Fmort_FG`.
+- `PB_<method> := M_<method> + Fmort` for every one of the six fish M methods, so F is applied identically regardless of which M source was used.
+
+### 4. Known caveats / limitations
+- No fleet-, gear-, or GSA-specific F exists anywhere in the pipeline — F is a single, region-wide, all-gears rate per FG (explicitly flagged; see M section above for the same caveat).
+- F undefined (`NA`/`Inf`) wherever `Catch_t_avg` is 0 (no matched catch) or `Biomass_density_avg` is 0/NA (FG not observed in the survey) — not imputed.
+- A known area-scope mismatch between the catch data's coverage area and the survey's biomass area biases F slightly high relative to Biomass's own area (same root cause noted under Catches/M above).
+- F is landings-only in `02_fao_catches.R`'s legacy fallback path (true F including discards is understated there) — flagged explicitly in code comments as a "REMINDER."
+
+### 5. Code location
+- `02_fisheries.R`: `f_by_fg`/`f_by_species_fg` computation (~lines 5337–5399).
+- `03_pbqb-traits.R`: `FG_YIELD_SOURCE` resolution and `F_by_fg.csv` read (~lines 764–907), application inside `calc_fish()` (~lines 2197–2247).
+
+### 6. References
+Christensen, V., & Pauly, D. (1992). ECOPATH II — a software for balancing steady-state ecosystem models. *Ecological Modelling*, 61(3–4), 169–185. [standard Ecopath PB=M+F formulation]
+
+---
+
+## PB — Production/Biomass ratio
+
+### 1. What it is
+The Ecopath production/biomass ratio (year⁻¹) per species, aggregated to FG level for the `Ecopath_PBQB` workbook sheet — computed by a **taxon-dispatched** set of independent methods, each kept as its own comparable column.
+
+### 2. Inputs / data sources
+Same FishBase/SeaLifeBase/FishLife/TropFishR sources as M (fish); plus, for non-fish taxa:
+- **Marine mammals**: `Longevity` (max age) and taxonomic family (mapped to a Siler-model "surrogate type" via `MAMMAL_SURROGATE_DEFAULT`).
+- **Seabirds/invertebrates**: `TrophicLevel`, `Temp`, and (invertebrates only) `Biomass`, `MaxWeight`, `Depth`, and max age/max body-mass-in-kJ.
+- **EcoBase literature PB/QB** (`fetch_ecobase_literature_pb_qb()`, `03b_ecobase.R`) as an FG-level gap-filler/cross-check, matched on `FG_name` (EcoBase carries no `FG_num`), averaged across all matching published models per FG.
+
+### 3. Computation method, by taxon (`dispatch_group`)
+- **Fish (`calc_fish()`)**: PB = chosen M (see M section) + Fmort. The "chosen" PB method is selected by `select_chosen()` in priority order: **Then et al. (2015)** first (validated best-in-class), then **Pauly (1980)**, then Hoenig (1983), Alverson & Carney (1975), FishLife, Gascuel (2008) — but every method's PB column remains in the output for direct comparison regardless of which was "chosen."
+- **Marine mammals (`calc_mammal()`)**: **Method 1 — Barlow & Boveng (1991)** Siler three-parameter survivorship model (`siler_pb()`): juvenile/constant/senescent hazard components combined from family-specific surrogate parameter sets (`surrogate_type` 2=phocid-like, 3=delphinid/ziphiid/physeterid-like, 4=a third set), integrated over `Longevity` to a mean instantaneous mortality (= PB at equilibrium). **Method 2 — Gascuel (2008) general**, Eq. 23: `PB = 20.19 · TrophicLevel^(-3.26) · exp(0.041·Temp)`, computable independent of longevity data. Chosen PB prefers Barlow & Boveng when available, else Gascuel.
+- **Seabirds (`calc_seabird()`)**: **only** Gascuel (2008) general (Eq. 23) — "no dedicated seabird PB method exists in the protocol," explicitly flagged; gap-filled by taxonomic proximity since previously ungap-filled seabirds with missing `TrophicLevel` got no PB at all.
+- **Invertebrates (`calc_invertebrate()`)**: three independent methods — **Tumbiolo & Downing (1994)**, Eq. 17 (`logP = 0.24 + 0.96·log10(Biomass) - 0.21·log10(MaxWeight) + 0.03·Temp - 0.16·log10(Depth+1)`, then `PB = 10^logP / Biomass`; needs this model's own `Biomass`, so it is local-donor-only, never extended to external species); **Brey (1999)**, Eq. 19 (`log(P/B) = 1.672 + 0.993·log10(1/Amax) - 0.035·log10(Mmax) - 300.447·(1/(T+273))`, using max age as `Amax` and max body mass converted to kJ via a rough wet-weight energy-density constant of **4.5 kJ/g**, flagged explicitly as an approximation); **Gascuel (2008) general**. Chosen PB prefers Tumbiolo & Downing, then Brey, then Gascuel.
+- **EcoBase gap-fill/cross-check** (in the main script, after taxon dispatch): FG-level empirical PB/QB (`PB_FG`, biomass-weighted across the FG's species) is compared to EcoBase's literature figure (`PB_ecobase`, averaged across matching models); FGs where the ratio `PB_FG/PB_ecobase` exceeds 2× or falls below 0.5× are flagged (`PB_diverges`) for manual review, but **not automatically overridden**. Where the empirical `PB_FG` is `NA` (no species-level data at all for that FG), the EcoBase literature value fills the gap (`PB_source := "EcoBase (literature)"`).
+
+### 4. Known caveats / limitations
+- Seabirds have no automatable dedicated PB method at all — every seabird's PB is the generic Gascuel formula, a materially coarser approximation than the fish/mammal-specific methods.
+- The invertebrate energy-density constant (4.5 kJ/g) used for Brey (1999) is described in comments as "commonly cited order of magnitude," not a precise per-taxon value — adds real uncertainty beyond the formula itself.
+- `PB_TumbioloDowning_1994` can only ever be direct for species with their own `MaxWeight` **and** `Depth` — SeaLifeBase's `MaxWeight` coverage for invertebrates is noted as "patchy," so the local-donor pool for this method can be permanently empty for some taxa (external-donor filling is deliberately disabled for this method since it needs this model's own Biomass).
+- EcoBase's `-9999` sentinel (Ecopath's own "not provided" code) is converted to `NA` before use — a documented, verified fix, not an assumption.
+- The `> 2x`/`< 0.5x` divergence threshold against EcoBase is a review trigger, not evidence either figure is wrong.
+
+### 5. Code location
+- `03_pbqb-traits.R`: `calc_fish()` (~line 2148), `siler_pb()`/`calc_mammal()` (~lines 2330–2392), `calc_seabird()` (~line 2400), `calc_invertebrate()` (~line 2434), EcoBase PB merge/divergence flagging (~lines 2682–2784).
+- `03b_ecobase.R`: `fetch_ecobase_literature_pb_qb()` (~line 391).
+
+### 6. References
+Pauly (1980); Hoenig (1983); Then et al. (2015); Alverson & Carney (1975) [all as under M].
+Gascuel, D., Morissette, L., Palomares, M.L.D., & Christensen, V. (2008) [PB/QB quick-guide protocol].
+Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine mammal populations. *Marine Mammal Science*, 7(1), 50–65.
+Tumbiolo, M.L., & Downing, J.A. (1994). An empirical model for the prediction of secondary production in marine benthic invertebrate populations. *Marine Ecology Progress Series*, 114, 165–174.
+Brey, T. (1999). Growth performance and mortality in aquatic macrobenthic invertebrates. *Advances in Marine Biology*, 35, 153–223. (See also Brey, T. (2012) — Population dynamics in benthic invertebrates. A virtual handbook.)
+Colléter, M., Palomares, M.L.D., Christensen, V., et al. (2015). EcoBase: a repository solution to gather and communicate information from EwE models. *Ecological Modelling*, 302, 42–48.
+
+---
+
+## QB — Consumption/Biomass ratio
+
+### 1. What it is
+The Ecopath consumption/biomass ratio (year⁻¹) per species/FG — the food-intake rate, computed by taxon-specific empirical formulas paralleling the PB section.
+
+### 2. Inputs / data sources
+Fish: `Winf` (asymptotic weight), `AspectRatio` (caudal-fin aspect ratio, `rfishbase::swimming()`), `Temp`, chosen `PB`. Marine mammals: `MaxWeight`. Seabirds: `MaxWeight`. Invertebrates: chosen `PB` only (via the Q/P=3 heuristic). EcoBase literature QB as a gap-filler/cross-check, same mechanism as PB.
+
+### 3. Computation method, by taxon
+- **Fish (`calc_fish()`)**: `Tprime = 1000/(Temp+273.15)`. **Method 1 — Palomares & Pauly (1998), Eq. 27 (Z-based)**: `logQB = 5.847 + 0.280·log10(PB) - 0.152·log10(Winf) - 1.360·T' + 0.062·AspectRatio + 0.510·h + 0.390·d` (herbivore/detritivore dummies `h`,`d` default to 0 — "no reliable automated diet-type classification available yet"), most information-rich since it uses `PB` (=Z) directly. **Method 2 — Palomares & Pauly (1998), Eq. 26 (non-Z)**: same form without the `log10(PB)` term — an independent cross-check that doesn't inherit PB's own error. **Method 3 — Christensen & Pauly (1992), Eq. 24**: `logQB = 6.37 - 1.5045·T' - 0.168·log10(Winf) + 0.1399·Pf + 0.2765·h` (predator dummy `Pf` defaults to 1). **Verified OCR-artifact fix**: the source protocol PDF's extracted text showed "log10 T′" for this equation, but using T′ *without* the log transform is used instead — with a log transform, QB values reached physically implausible tens-of-thousands, whereas T′ used directly (matching Eqs. 26/27's own convention) brings the result into the realistic ~1–20/year range. **Method 4 — Q/P=3** (`QB = 3 × chosen PB`; Christensen et al. 2008 convention). Chosen QB priority: Palomares & Pauly Z-based > Palomares & Pauly non-Z > Christensen & Pauly (1992) > Q/P=3.
+- **Marine mammals (`calc_mammal()`)**: **Method 1 — Innes & Trites**, Eq. 31: `W_kg = MaxWeight/1000`; `QB = (0.1·W_kg^0.8 / W_kg) × 365`. **Method 2 — Q/P=3** fallback. Chosen QB prefers Innes/Trites.
+- **Seabirds (`calc_seabird()`)**: **Nilsson & Nilsson (1976)**, Eq. 30: `logDR = -0.293 + 0.85·log10(MaxWeight)`; `QB = (10^logDR / MaxWeight) × 365`. **Deliberately no Q/P=3 fallback** — flagged explicitly, since that heuristic derives from ectotherm/fish biology and would badly underestimate an endotherm's much higher metabolic QB; if Nilsson & Nilsson fails even after gap-filling, QB is left `NA` rather than guessed.
+- **Invertebrates (`calc_invertebrate()`)**: **Q/P=3 only** (`QB = 3 × chosen PB`) — the only automatable method; a more accurate Brey-based invertebrate QB method exists in the literature but is flagged as "non-automatable," left for manual review rather than implemented.
+- **EcoBase gap-fill/cross-check**: identical mechanism to PB — `QB_ratio = QB_FG/QB_ecobase`, flagged if outside [0.5×, 2×]; EcoBase literature value fills any FG with no empirical QB at all.
+
+### 4. Known caveats / limitations
+- The herbivore/detritivore/predator dummy variables (`h`, `d`, `Pf`) in the fish QB equations are hardcoded defaults (carnivore/predator), not derived from any actual diet-type classification — flagged explicitly as a current limitation ("no reliable automated diet-type classification available yet").
+- The Christensen & Pauly (1992) equation's T′ treatment is a documented correction of a likely OCR error in the source protocol extraction, not independently re-derived from the original 1992 paper — flagged for anyone cross-checking against the primary source.
+- Seabird QB has no fallback at all if Nilsson & Nilsson's inputs are missing.
+- Q/P=3 is applied to invertebrates and mammals as the only or secondary QB method — a coarse heuristic, not taxon-specific.
+
+### 5. Code location
+- `03_pbqb-traits.R`: fish QB (~lines 2261–2317), mammal QB (~lines 2377–2387), seabird QB (~lines 2409–2421), invertebrate QB (~lines 2475–2477), EcoBase QB merge (~lines 2682–2784).
+
+### 6. References
+Palomares, M.L.D., & Pauly, D. (1998). Predicting food consumption of fish populations as functions of mortality, food type, morphometrics, temperature and salinity. *Marine and Freshwater Research*, 49(5), 447–453.
+Christensen, V., & Pauly, D. (1992). ECOPATH II — a software for balancing steady-state ecosystem models. *Ecological Modelling*, 61(3–4), 169–185.
+Christensen, V., Walters, C.J., & Pauly, D. (2008). *Ecopath with Ecosim: a User's Guide*. Fisheries Centre, University of British Columbia. [Q/P=3 convention]
+Innes, S., Lavigne, D.M., Earle, W.M., & Kovacs, K.M. (1987). Feeding rates of seals and whales. *Journal of Animal Ecology*, 56(1), 115–130. [Innes & Trites QB basis]
+Nilsson, S.G., & Nilsson, I.N. (1976). Number, food consumption, and fish predation by birds in Lake Möckeln, Sweden. *Ornis Scandinavica*, 7(1), 61–70.
+
+---
+
+## DIET — Ecopath_diet sheet / diet matrix
+
+### 1. What it is
+The predator × prey diet-composition matrix at FG resolution (`Ecopath_diet` workbook sheet and `diet_composition_ewe.csv`, EwE's plain-text import format) — each predator FG's diet proportions summing to 1 across all prey FGs.
+
+### 2. Inputs / data sources
+- **The Mediterranean trophic metaweb database** (`data_entry_metaweb_empty.xlsx`, sheets `DATA_ENTRY`, `Taxonomic_codes`, `Non_taxonomic_groups`) — a compiled stomach-content/diet-study literature database with predator/prey codes and diet metrics (IRI, %Weight, %Number, Frequency, Presence). **Note:** the currently-shipped file is an empty template — no `DATA_ENTRY` rows exist yet; the earlier `diet_to_ewe.R` tool (documented separately in the project's `diet_to_ewe_tool_notes.md`) instead supported a stomach-content Access export or a direct FishBase/SeaLifeBase diet pull, but that path has been **superseded** — the current `04_diets.R` reads *only* the metaweb file, plus two small fallback CSVs (see below); it does not itself query FishBase/SeaLifeBase for diet data.
+- `FG_WMed_2026.csv` — species→FG membership (same reference file used by 01/02/03).
+- `01_biomass.R`'s own output `biomass_proportion_by_species_fg.csv` (`prop_sp_fg` column) — each species' share of its FG's biomass, used to weight multi-species FGs' blended diet.
+- Two small **fallback-only** manual CSVs: `species_to_fg_missing.csv` (species not in `FG_WMed_2026.csv`) and `species_biomass_in_fg_missing.csv` (species × FG pairs missing a biomass share).
+- `ewe_group_table.csv` — the final group numbering/order and predator/non-predator flag used for matrix layout.
+- `04b_diet_matrix_crosswalk.R` (standalone helper, not run in the main 01→04 pipeline order) — re-expresses an *existing* diet matrix (e.g. from a published EcoBase model, or an older version of this model's own FG structure) against a different target FG list.
+
+### 3. Computation method
+1. **Code resolution** (`build_code_lookup()`/`resolve_codes()`): `Code_predator`/`Code_prey` resolved to scientific names/generic-group labels via `Taxonomic_codes` first (specific taxonomic identifications), then `Non_taxonomic_groups` (catch-all bins, e.g. "Pelagic fish"); an unresolved code is left as its raw code and reported, never silently dropped.
+2. **Metric selection per DATA_ENTRY row** (`pick_diet_metric()`), priority order: **IRI** (Index of Relative Importance — folds in Frequency and either Weight or Number) → **%Weight** (biomass-based, closest to what Ecopath actually wants) → **%Number** → **Frequency** alone (weakest, presence/occurrence only) → **Presence** (1/0, converted to an equal split among a study's present prey when nothing else is available for that predator×reference).
+3. **Species-level diet build** (`build_species_diet()`): each DATA_ENTRY row's diet value is renormalized within its own study (`Reference` × `Code_predator`) so that study's prey sum to 1; then averaged **across studies**, weighted by `predator_number` (sample size) where reported, else an unweighted mean; finally renormalized again per predator so its overall diet sums to 1. Distinct references per predator are retained separately (`predator_references`) to populate the final workbook's `FG_References` sheet's `diet_ref` column.
+4. **Species → FG diet aggregation** (`build_fg_diet()`): each predator-FG's diet is built by weighting its constituent species by `pred_weight = pred_fg_share × pred_biomass_share` — i.e., a species' contribution to its FG's blended diet is weighted by **both** its taxonomic-assignment share (`species_to_fg`'s `proportion`, for species split across more than one FG) **and** its share of the FG's total biomass (from `biomass_in_fg`, sourced from `01_biomass.R`'s `prop_sp_fg`). Prey is similarly expanded across FGs via `prey_fg_share`; a prey with no FG mapping is kept as its own raw name with `prey_fg_share = 1`. The result is renormalized so each predator FG's diet sums to 1.
+5. Where a species×FG pair has **no** biomass share from either `01_biomass.R`'s output or the fallback CSV, `build_biomass_in_fg()` defaults to an **equal split** among that FG's other mapped species — flagged with a message naming the affected species.
+6. **Export**: `export_ewe_matrix_csv()` writes EwE's own plain-text diet-composition layout (predator columns by group number, restricted to `is_predator==TRUE` groups; prey rows by group number+name for the *full* group list; decimal-comma-quoted values; blank for zero; `Import`/`Sum`/`1-Sum` footer rows). `build_ecopath_diet_sheet()` writes the equivalent numeric (non-quoted) matrix directly into the shared workbook's `Ecopath_diet` sheet.
+7. **`04b_diet_matrix_crosswalk.R`** (used only when re-expressing an existing external/older diet matrix against a new FG structure): handles the prey axis as a mass/contribution axis (splitting a source prey FG's contribution across several target preys via `Split_Weight`, or additively merging several source preys into one target) and the predator axis as a composition axis (a split source predator's diet vector is **copied** unchanged to each target predator; several source predators merging into one target predator are combined via a `Merge_Weight`-weighted average of their diet vectors). Any source FG in the matrix with no crosswalk row is excluded and flagged (`diet_crosswalk_UNMAPPED_REVIEW.csv`), never silently dropped or silently kept as its own category; any target predator whose post-conversion diet no longer sums to 1 because some of its prey were excluded is flagged with the % of diet mass lost (`diet_mass_conservation_REVIEW.csv`) before being renormalized back to 1.
+
+### 4. Known caveats / limitations
+- **The metaweb `DATA_ENTRY` sheet currently ships empty** — the entire species-level diet pipeline (`build_species_diet()` onward) has no real rows to process yet; `run_pipeline()` will stop with an explicit error ("No usable diet records...") until the database is populated.
+- Contrary to what the task's own framing might suggest, the *current* `04_diets.R` does **not** call FishBase/SeaLifeBase or EcoBase for diet data at all — those are mentioned only as the superseded `diet_to_ewe.R` tool's alternate source paths; the only diet source in the current pipeline is the metaweb file.
+- Both `Split_Weight` and `Merge_Weight` in the crosswalk helper default to an **equal** split/average when not explicitly supplied — a genuine biomass-weighted aggregation requires the modeller to supply real shares (e.g. from `mean_density` or `biomass_proportion_by_species_fg.csv`).
+- A species×FG pair with no biomass-share source anywhere defaults to an equal split among its FG's other species — a simplifying assumption, not a measured share.
+- Presence-only records are converted to a rough equal-split proxy, the weakest of the five diet metrics in the priority order.
+
+### 5. Code location
+- `04_diets.R`: `build_code_lookup()`/`resolve_codes()` (~line 138), `pick_diet_metric()` (~line 173), `build_species_diet()` (~line 196), `build_biomass_in_fg()` (~line 426), `build_fg_diet()` (~line 458), `export_ewe_matrix_csv()` (~line 502), `build_ecopath_diet_sheet()` (~line 541).
+- `04b_diet_matrix_crosswalk.R`: `apply_prey_crosswalk()` (~line 248), `apply_predator_crosswalk()` (~line 266), `renormalize_and_flag()` (~line 284).
+
+### 6. References
+Christensen, V., & Pauly, D. (1992). ECOPATH II — a software for balancing steady-state ecosystem models. *Ecological Modelling*, 61(3–4), 169–185. [diet-matrix/mass-balance conventions]
+Colléter, M., Palomares, M.L.D., Christensen, V., et al. (2015). EcoBase: a repository solution to gather and communicate information from EwE models. *Ecological Modelling*, 302, 42–48. [diet-matrix crosswalk use case]
+Pinkas, L., Oliphant, M.S., & Iverson, I.L.K. (1971). Food habits of albacore, bluefin tuna, and bonito in California waters. *California Department of Fish and Game, Fish Bulletin*, 152. [Index of Relative Importance, IRI, methodological basis]
+
+---
+
+## References
+
+Alverson, D.L., & Carney, M.J. (1975). A graphic review of the growth and decay of population cohorts. *Journal of the Conseil International pour l'Exploration de la Mer*, 36(2), 133–143.
+
+Barlow, J., & Boveng, P. (1991). Modeling age-specific mortality for marine mammal populations. *Marine Mammal Science*, 7(1), 50–65.
+
+Brey, T. (1999). Growth performance and mortality in aquatic macrobenthic invertebrates. *Advances in Marine Biology*, 35, 153–223.
+
+Brey, T. (2012). *Population dynamics in benthic invertebrates. A virtual handbook.* Alfred Wegener Institute for Polar and Marine Research.
+
+Christensen, V., & Pauly, D. (1992). ECOPATH II — a software for balancing steady-state ecosystem models. *Ecological Modelling*, 61(3–4), 169–185.
+
+Christensen, V., Walters, C.J., & Pauly, D. (2008). *Ecopath with Ecosim: a User's Guide*. Fisheries Centre, University of British Columbia.
+
+Colléter, M., Palomares, M.L.D., Christensen, V., Coll, M., Steenbeek, J., Falautano, M., Sagarese, S., & Pauly, D. (2015). EcoBase: a repository solution to gather and communicate information from EwE models. *Ecological Modelling*, 302, 42–48.
+
+Froese, R., & Pauly, D. (Eds.). FishBase. World Wide Web electronic publication. www.fishbase.org.
+
+Gascuel, D., Morissette, L., Palomares, M.L.D., & Christensen, V. (2008). Trophic flow kinetics in marine ecosystems: toward a theoretical approach to ecosystem functioning. *Ecological Modelling*, 217(1–2), 33–47.
+
+GFCM (General Fisheries Commission for the Mediterranean). MEDBS (Mediterranean and Black Sea) Working Group stock-assessment methodology; Data Collection Reference Framework (DCRF).
+
+Hoenig, J.M. (1983). Empirical use of longevity data to estimate mortality rates. *Fishery Bulletin*, 82(1), 898–903.
+
+Innes, S., Lavigne, D.M., Earle, W.M., & Kovacs, K.M. (1987). Feeding rates of seals and whales. *Journal of Animal Ecology*, 56(1), 115–130.
+
+Kaschner, K., Rius-Barile, J., Kesner-Reyes, K., Garilao, C., Kullander, S.O., Rees, T., & Froese, R. AquaMaps: Predicted range maps for aquatic species. www.aquamaps.org.
+
+Mildenberger, T.K., Taylor, M.H., & Wolff, M. (2017). TropFishR: an R package for fisheries analysis with length-frequency data. *Methods in Ecology and Evolution*, 8(11), 1520–1527.
+
+Nilsson, S.G., & Nilsson, I.N. (1976). Number, food consumption, and fish predation by birds in Lake Möckeln, Sweden. *Ornis Scandinavica*, 7(1), 61–70.
+
+Palomares, M.L.D., & Bailly, N. (Eds.). SeaLifeBase. World Wide Web electronic publication. www.sealifebase.org.
+
+Palomares, M.L.D., & Pauly, D. (1998). Predicting food consumption of fish populations as functions of mortality, food type, morphometrics, temperature and salinity. *Marine and Freshwater Research*, 49(5), 447–453.
+
+Pauly, D. (1980). On the interrelationships between natural mortality, growth parameters, and mean environmental temperature in 175 fish stocks. *ICES Journal of Marine Science*, 39(2), 175–192.
+
+Pauly, D., & Zeller, D. (Eds.) (2016). *Global Atlas of Marine Fisheries: A Critical Appraisal of Catches and Ecosystem Impacts.* Island Press. [Sea Around Us]
+
+Pinkas, L., Oliphant, M.S., & Iverson, I.L.K. (1971). Food habits of albacore, bluefin tuna, and bonito in California waters. *California Department of Fish and Game, Fish Bulletin*, 152.
+
+STECF (Scientific, Technical and Economic Committee for Fisheries). Fisheries Dependent Information (FDI) database.
+
+Then, A.Y., Hoenig, J.M., Hall, N.G., & Hewitt, D.A. (2015). Evaluating the predictive performance of empirical estimators of natural mortality rate using information on over 200 fish species. *ICES Journal of Marine Science*, 72(1), 82–92.
+
+Thorson, J.T., Munch, S.B., Cope, J.M., & Gao, J. (2017). Predicting life history parameters for all fishes worldwide. *Ecological Applications*, 27(8), 2262–2276.
+
+Tumbiolo, M.L., & Downing, J.A. (1994). An empirical model for the prediction of secondary production in marine benthic invertebrate populations. *Marine Ecology Progress Series*, 114, 165–174.
+
+WoRMS Editorial Board. World Register of Marine Species. www.marinespecies.org.
+
+ICCAT (International Commission for the Conservation of Atlantic Tunas). GBYP (Grand Bluefin Tuna Year Program) aerial survey, CREEM Phase 11 report (2021).
+
+---
+
 # Run order and dependencies
 
 | Step | Script | Depends on | Must run before |
