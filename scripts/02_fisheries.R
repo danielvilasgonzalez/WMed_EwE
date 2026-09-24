@@ -596,6 +596,41 @@ if (length(dupe_stanza_species) > 0) {
           " FG(s) stay in full_fg_list (zero catch from these sources, not dropped) until a real juvenile/adult",
           " split rule exists: ", paste(dupe_stanza_species, collapse = ", "))
 }
+
+## --- Multistanza FG pairs, persisted for the Biological Age-file split
+## further down (2026-09-24, per Daniel: "detect the multistanza groups
+## and extract proportion juv/adult discards landings and actual
+## values") - same STRUCTURAL definition as the stanza tie-break just
+## above (a species mapped to more than one single-species-exclusive
+## FG), captured from dupe_stanza_detail BEFORE fg_lookup's own collapse
+## to one row per stanza species, so this table survives regardless of
+## whether the FDI Biological Age files below are ever found. Currently
+## just one such species (European hake, per Daniel) - written
+## generically, not hardcoded to hake, so any future FG_WMed_2026.csv
+## stanza addition is picked up automatically without touching this code.
+multistanza_fg_pairs <- data.table(ScientificName = character(), FG_num_juv = integer(), FG_name_juv = character(),
+                                   FG_num_adult = integer(), FG_name_adult = character())
+if (length(dupe_stanza_species) > 0) {
+  ms <- dupe_stanza_detail[, .(ScientificName, FG_num, FG_name)]
+  ms[, is_adult := str_detect(FG_name, regex("adult", ignore_case = TRUE))]
+  has_adult_ms <- ms[, .(has_adult = any(is_adult), n_juv = sum(!is_adult)), by = ScientificName]
+  clean_pair_species <- has_adult_ms[has_adult == TRUE & n_juv == 1, ScientificName]  # exactly one non-adult FG + at least one adult FG - a clean 1:1 pair
+  if (length(clean_pair_species) < length(dupe_stanza_species)) {
+    message("[Multistanza] ", length(dupe_stanza_species) - length(clean_pair_species), " stanza species excluded",
+            " from multistanza_fg_pairs (no clean 1:1 juvenile/adult pairing - more than one non-adult FG, or no",
+            " '...adult' FG at all): ", paste(setdiff(dupe_stanza_species, clean_pair_species), collapse = ", "))
+  }
+  if (length(clean_pair_species) > 0) {
+    ms_clean <- ms[ScientificName %in% clean_pair_species]
+    juv_part   <- unique(ms_clean[is_adult == FALSE, .(ScientificName, FG_num_juv = FG_num, FG_name_juv = FG_name)])
+    adult_part <- unique(ms_clean[is_adult == TRUE,  .(ScientificName, FG_num_adult = FG_num, FG_name_adult = FG_name)])[
+      , .SD[1], by = ScientificName]  # a species could in principle have >1 adult-named FG too - keep just the first, defensively
+    multistanza_fg_pairs <- merge(juv_part, adult_part, by = "ScientificName")
+  }
+}
+message("\n[Multistanza] ", nrow(multistanza_fg_pairs), " species with a clean juvenile/adult FG pair", if (nrow(multistanza_fg_pairs) > 0)
+  paste0(": ", paste0(multistanza_fg_pairs$ScientificName, " (FG", multistanza_fg_pairs$FG_num_juv, " juv / FG",
+                      multistanza_fg_pairs$FG_num_adult, " adult)", collapse = ", "), ".") else " found.")
 fg_lookup[, genus := extract_genus(ScientificName)]  # add a genus column for the genus-fallback match
 
 fg_name_lookup <- unique(fg[, .(Species = FG_name, FG_num = GF, FG_name)])  # lookup keyed by FG name itself
@@ -2315,6 +2350,166 @@ if (!dir.exists(stecf_catches_dir)) {
   }
 }
 
+## --- Biological (age-resolved discards/landings) - multistanza
+## juvenile/adult split (2026-09-24, per Daniel) ---------------------
+## FDI's Biological/ files ("FDI Discards Age.csv", "FDI Landings
+## Age.csv") are the ONE source in this pipeline with an age breakdown -
+## used here ONLY for FG(s) that are genuinely split juvenile/adult in
+## FG_WMed_2026.csv (multistanza_fg_pairs, built earlier - currently
+## just European hake). Every other catch/landings source in this
+## pipeline (GFCM, SAU, STECF's own Catches file above, STAR/RAM,
+## ICCAT) reports one undifferentiated tonnage per species, so without
+## this step 100% of a stanza species' catch/landings/discards is
+## assigned to the ADULT FG and the juvenile FG stays at zero (see the
+## stanza tie-break comment above) - not wrong, just incomplete. This
+## computes a REAL juvenile:adult proportion from Spain/France/Italy's
+## age-resolved data (FDI's own 2014+ coverage) and applies it
+## uniformly to every country/year further down (Morocco/Algeria/
+## Tunisia and 1994-2013 have no age-resolved source of their own at
+## all) - flagged as an assumption exactly like the technology-creep
+## rate above (same "no fishery/stock-specific figure exists" situation).
+multistanza_age_split <- data.table()  # Country x Year juvenile proportion per species/source-file - empty until filled below
+if (nrow(multistanza_fg_pairs) == 0) {
+  message("\n[Multistanza age split] No multistanza FG pair found in FG_WMed_2026.csv - skipped.")
+} else {
+  stecf_bio_dir <- file.path(STECF_FDI_DIR, "Biological")
+  discards_age_file <- file.path(stecf_bio_dir, "FDI Discards Age.csv")
+  landings_age_file <- file.path(stecf_bio_dir, "FDI Landings Age.csv")
+  if (!file.exists(discards_age_file) || !file.exists(landings_age_file)) {
+    message("\n[Multistanza age split] 'FDI Discards Age.csv'/'FDI Landings Age.csv' not found in '", stecf_bio_dir,
+            "' - the juvenile FG(s) (", paste(multistanza_fg_pairs$FG_name_juv, collapse = ", "), ") stay at zero",
+            " catch/landings/discards from these sources (same as before this fix).")
+  } else {
+    ## Resolve each multistanza species' FAO 3-alpha code via fao_species
+    ## (the FULL CL_FI_SPECIES_GROUPS.csv reference, loaded once near the
+    ## top of this script and already carrying Scientific_Name - same
+    ## file species_code_ref re-derives further up in the Catches block,
+    ## but no extra file read is needed here since fao_species is already
+    ## in scope).
+    code_col <- grep("^3A_Code$|alpha.?3", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
+    if (is.na(code_col)) {
+      message("\n[Multistanza age split] fao_species has no 3-alpha-code column (checked: ",
+              paste(names(fao_species), collapse = ", "), ") - can't resolve FDI's species codes. Skipped.")
+    } else {
+      sci_to_code <- unique(fao_species[!is.na(Scientific_Name) & Scientific_Name %in% multistanza_fg_pairs$ScientificName,
+                                        .(ScientificName = Scientific_Name, SpeciesCode = get(code_col))])
+      sci_to_code <- sci_to_code[!is.na(SpeciesCode) & SpeciesCode != ""]
+      unresolved_sci <- setdiff(multistanza_fg_pairs$ScientificName, sci_to_code$ScientificName)
+      if (length(unresolved_sci) > 0) {
+        message("[Multistanza age split] No FAO 3-alpha code found for: ", paste(unresolved_sci, collapse = ", "),
+                " - its juvenile FG stays at zero from these sources.")
+      }
+      if (nrow(sci_to_code) == 0) {
+        message("[Multistanza age split] None of the multistanza species resolved to a 3-alpha code. Skipped.")
+      } else {
+        ## Loader shared by both Age files - deliberately defensive about
+        ## the exact schema (long: one row per age class via an "age"-
+        ## like column; or wide: one column per age class) since neither
+        ## has been confirmed against Andrea/Daniel's real download yet -
+        ## every column-detection step below prints what it actually
+        ## found so a schema mismatch is visible in the console, not a
+        ## silent zero.
+        load_fdi_age_file <- function(path, label) {
+          raw <- clean_fdi_names(safe_fread(path, label))
+          message("[Multistanza age split] ", label, " columns found: ", paste(names(raw), collapse = ", "))
+          species_col <- grep("^species$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+          country_col <- grep("^country$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+          year_col    <- grep("^year$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+          age_col     <- grep("^age$|^age_?class$|^age_?group$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+          if (any(is.na(c(species_col, country_col, year_col)))) {
+            message("[Multistanza age split] ", label, " is missing an expected species/country/year column",
+                    " (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+            return(data.table())
+          }
+          raw <- raw[get(species_col) %in% sci_to_code$SpeciesCode]  # restrict immediately to just the multistanza species - keeps this cheap and simple regardless of the file's real size
+          if (nrow(raw) == 0) {
+            message("[Multistanza age split] ", label, " has no row for any multistanza species' 3-alpha code",
+                    " (", paste(sci_to_code$SpeciesCode, collapse = ", "), ") - skipped.")
+            return(data.table())
+          }
+          raw[, Country := STECF_COUNTRY_CODES[get(country_col)]]
+          raw <- raw[!is.na(Country)]  # keep only Spain/France/Italy, same as the Catches file above
+          if (nrow(raw) == 0) return(data.table())
+          if (!is.na(age_col)) {
+            ## Long format: one row per species x country x year x age
+            ## class, a single numeric value column (whichever of
+            ## number/weight-discarded/landed is present on this file).
+            value_col <- setdiff(grep("weight|number|value|discard|land", names(raw), ignore.case = TRUE, value = TRUE),
+                                 c(species_col, country_col, year_col, age_col))[1]
+            if (is.na(value_col)) {
+              message("[Multistanza age split] ", label, " has an age column but no recognizable value column",
+                      " (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+              return(data.table())
+            }
+            raw[, age_num := suppressWarnings(as.numeric(gsub("[^0-9.]", "", get(age_col))))]
+            out <- raw[, .(SpeciesCode = get(species_col), Country, Year = suppressWarnings(as.integer(get(year_col))),
+                           age_num, value = suppressWarnings(as.numeric(get(value_col))))]
+          } else {
+            ## Wide format: one row per species x country x year, one
+            ## column per age class (numeric-looking column names, e.g.
+            ## "0"/"1"/"2"/"3+", or "age0"/"age1"/...).
+            age_cols <- grep("^[0-9]+\\+?$|^age[_]?[0-9]+\\+?$", names(raw), ignore.case = TRUE, value = TRUE)
+            if (length(age_cols) == 0) {
+              message("[Multistanza age split] ", label, " has no 'age' column and no numeric-looking age",
+                      " columns (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+              return(data.table())
+            }
+            long <- melt(raw, id.vars = c(species_col, country_col, year_col), measure.vars = age_cols,
+                         variable.name = "age_col", value.name = "value")
+            long[, age_num := suppressWarnings(as.numeric(gsub("[^0-9.]", "", age_col)))]
+            out <- long[, .(SpeciesCode = get(species_col), Country, Year = suppressWarnings(as.integer(get(year_col))),
+                            age_num, value = suppressWarnings(as.numeric(value)))]
+          }
+          out[!is.na(value) & !is.na(age_num)]
+        }
+        discards_age <- load_fdi_age_file(discards_age_file, "FDI Discards Age.csv")
+        landings_age <- load_fdi_age_file(landings_age_file, "FDI Landings Age.csv")
+        
+        ## Juvenile/adult age cutoff - an ASSUMPTION, not a measurement
+        ## (no per-stock maturity-at-age figure is wired into this
+        ## pipeline yet): age <= cutoff counts as Juvenile, > cutoff as
+        ## Adult. Default 0 (only age-0 recruits count as juvenile) is a
+        ## common simplification for Mediterranean hake-style stanza
+        ## splits but has NOT been checked against a real stock-
+        ## assessment maturity ogive for this species - review before
+        ## trusting the downstream juvenile FG values. Named by
+        ## ScientificName so a second multistanza species later gets its
+        ## own cutoff rather than inheriting hake's.
+        MULTISTANZA_JUV_MAX_AGE <- setNames(rep(0, nrow(multistanza_fg_pairs)), multistanza_fg_pairs$ScientificName)
+        
+        compute_juv_prop <- function(age_dt, label) {
+          if (nrow(age_dt) == 0) return(data.table())
+          age_dt <- merge(age_dt, sci_to_code, by = "SpeciesCode")
+          age_dt[, juv_cutoff := MULTISTANZA_JUV_MAX_AGE[ScientificName]]
+          age_dt[, stanza := fifelse(age_num <= juv_cutoff, "Juvenile", "Adult")]
+          agg <- age_dt[, .(value = sum(value, na.rm = TRUE)), by = .(ScientificName, Country, Year, stanza)]
+          wide <- dcast(agg, ScientificName + Country + Year ~ stanza, value.var = "value", fill = 0)
+          if (!"Juvenile" %in% names(wide)) wide[, Juvenile := 0]
+          if (!"Adult" %in% names(wide)) wide[, Adult := 0]
+          wide[, prop_juvenile := fifelse((Juvenile + Adult) > 0, Juvenile / (Juvenile + Adult), NA_real_)]
+          wide[, source_file := label]
+          wide[!is.na(prop_juvenile)]
+        }
+        discards_prop <- compute_juv_prop(discards_age, "FDI Discards Age.csv")
+        landings_prop <- compute_juv_prop(landings_age, "FDI Landings Age.csv")
+        multistanza_age_split <- rbindlist(list(discards_prop, landings_prop), use.names = TRUE, fill = TRUE)
+        if (nrow(multistanza_age_split) > 0) {
+          fwrite(multistanza_age_split, file.path(csv_out_dir, "multistanza_juv_adult_age_split.csv"))
+          summary_prop <- multistanza_age_split[, .(prop_juvenile_avg = mean(prop_juvenile, na.rm = TRUE), n_country_year = .N),
+                                                by = .(ScientificName, source_file)]
+          message("[Multistanza age split] Juvenile proportion by species/source (averaged across FDI's own",
+                  " Spain/France/Italy 2014+ coverage - full Country x Year detail in",
+                  " multistanza_juv_adult_age_split.csv):")
+          print(summary_prop)
+        } else {
+          message("[Multistanza age split] Discards/Landings Age files loaded but produced no usable juvenile",
+                  " proportion (check the column-detection messages above) - juvenile FG(s) stay at zero.")
+        }
+      }
+    }
+  }
+}
+
 ## --- Effort (days x capacity) - separate file, one row per Country x
 ## GSA x gear/metier x quarter x Year, ALL years already in one file
 ## (unlike Catches, which is split by year). -------------------------
@@ -2902,11 +3097,49 @@ if (nrow(stecf_fdi_catch_by_gsa) > 0) {
             max(overlap_years_m), ": ", nrow(catch_magnitude_calibration), " Country x FG factor(s) - applied to GFCM's",
             " own Landings_t across its WHOLE series for Spain/France/Italy (a factor > 1 means FDI's own landed",
             " tonnage runs higher than GFCM's for that Country x FG, and vice versa).")
+    
+    ## -----------------------------------------------------------------
+    ## Zero-catch backfill (2026-09, added per Andrea): the calibration
+    ## above is purely MULTIPLICATIVE (Catch_t_stecf / Catch_t_gfcm), so
+    ## it can never fix a Country x FG cell where GFCM's own overlap-year
+    ## average is ~0 - the ratio is undefined (NA) and gets filtered out
+    ## by is.finite() above, leaving Landings_t untouched at 0 for the
+    ## WHOLE series (including 1994-1996) even when FDI shows real,
+    ## well-matched catch for that species (e.g. Anchovy, Bluefin tuna,
+    ## Sardine, Swordfish, Mullets - all correctly matched to their FG in
+    ## the crosswalk, all zero in Ecopath_L before this fix). For exactly
+    ## those cells, REPLACE GFCM's Landings_t with FDI's own overlap-year
+    ## average tonnage instead of scaling it - flagged as a structural
+    ## placeholder (a proxy carried back from FDI's 2014+ magnitude), not
+    ## a real 1994-1996 measurement.
+    ZERO_CATCH_BACKFILL_MIN_T <- 1  # tonnes/yr threshold: below this GFCM average counts as "effectively zero"
+    gfcm_zero_catch_fdi_backfill <- merge(
+      gfcm_overlap_m, stecf_overlap_m, by = c("Country", "FG_num"), all = TRUE
+    )
+    gfcm_zero_catch_fdi_backfill[is.na(Catch_t_gfcm), Catch_t_gfcm := 0]
+    gfcm_zero_catch_fdi_backfill[is.na(Catch_t_stecf), Catch_t_stecf := 0]
+    gfcm_zero_catch_fdi_backfill <- gfcm_zero_catch_fdi_backfill[
+      Catch_t_gfcm < ZERO_CATCH_BACKFILL_MIN_T & Catch_t_stecf >= ZERO_CATCH_BACKFILL_MIN_T,
+      .(Country, FG_num, Landings_t_backfill = Catch_t_stecf)
+    ]  # GFCM ~0 but FDI has real catch - these are the cells the multiplicative factor can never reach
+    if (nrow(gfcm_zero_catch_fdi_backfill) > 0) {
+      fwrite(gfcm_zero_catch_fdi_backfill, file.path(csv_out_dir, "gfcm_zero_catch_fdi_backfill.csv"))
+      message("[Catch magnitude] Zero-catch backfill: ", nrow(gfcm_zero_catch_fdi_backfill), " Country x FG",
+              " combination(s) where GFCM's own average was < ", ZERO_CATCH_BACKFILL_MIN_T, " t/yr but STECF FDI",
+              " shows real catch (>= ", ZERO_CATCH_BACKFILL_MIN_T, " t/yr) - GFCM's Landings_t for these will be",
+              " REPLACED (not scaled) with FDI's own average tonnage across the whole series, flagged as a",
+              " structural placeholder in magnitude_source. See gfcm_zero_catch_fdi_backfill.csv.")
+    } else {
+      message("[Catch magnitude] Zero-catch backfill: no Country x FG combinations needed it (GFCM's own average",
+              " was already nonzero wherever STECF FDI shows real catch).")
+    }
   } else {
     message("\n[Catch magnitude] No years where both GFCM and STECF FDI have data - GFCM's landings stay uncalibrated.")
+    gfcm_zero_catch_fdi_backfill <- data.table()
   }
 } else {
   message("\n[Catch magnitude] STECF FDI catch data not available - GFCM's landings stay uncalibrated against it.")
+  gfcm_zero_catch_fdi_backfill <- data.table()
 }
 
 if (nrow(catch_magnitude_calibration) > 0) {
@@ -2921,6 +3154,51 @@ if (nrow(catch_magnitude_calibration) > 0) {
           " match STECF FDI's magnitude across the whole series.")
 } else {
   gfcm_country_fg[, magnitude_source := "GFCM (uncalibrated - no STECF FDI data to compare against)"]  # flag every row as uncalibrated, no factor available at all
+}
+
+## Apply the zero-catch backfill (see above): for Country x FG cells where
+## GFCM's own average was ~0 but STECF FDI shows real catch, REPLACE
+## Landings_t across the whole series with FDI's own average tonnage,
+## rather than the multiplicative scaling above (which can't touch these
+## cells at all since Catch_t_gfcm == 0 makes the ratio undefined).
+if (nrow(gfcm_zero_catch_fdi_backfill) > 0) {
+  ## Year-specific real STECF catch, where it exists, is used DIRECTLY -
+  ## not the flat overlap-year average - and only years STECF has NO
+  ## coverage for at all (pre-2014 always; a gap year even within
+  ## 2014+) fall back to the average (2026-09, per Andrea's own review:
+  ## "if no fdi data the species will be present during the whole time
+  ## simulation" - a flat merge on Country x FG alone, ignoring Year,
+  ## was overwriting EVERY year - including 2014+ years where FDI's own
+  ## real, year-varying figure is sitting right there in stecf_catch_cfy
+  ## - with one identical constant, forcing an artificial flat catch
+  ## across the whole 1994-END_YEAR series instead of the real
+  ## trajectory FDI actually shows from 2014 on).
+  if (exists("stecf_catch_cfy") && nrow(stecf_catch_cfy) > 0) {
+    stecf_year_backfill <- merge(unique(gfcm_zero_catch_fdi_backfill[, .(Country, FG_num)]), stecf_catch_cfy,
+                                 by = c("Country", "FG_num"))  # one row per Country x FG x (only the years STECF actually covers)
+    setnames(stecf_year_backfill, "Catch_t_stecf", "Landings_t_year_backfill")
+  } else {
+    stecf_year_backfill <- data.table(Country = character(), FG_num = integer(), Year = integer(), Landings_t_year_backfill = numeric())
+  }
+  gfcm_country_fg <- merge(gfcm_country_fg, stecf_year_backfill, by = c("Country", "FG_num", "Year"), all.x = TRUE)  # NA wherever STECF has no coverage for that exact year
+  gfcm_country_fg <- merge(gfcm_country_fg, gfcm_zero_catch_fdi_backfill, by = c("Country", "FG_num"), all.x = TRUE)  # flat multi-year average, same value on every year row - the fallback
+  gfcm_country_fg[!is.na(Landings_t_backfill) & !is.na(Landings_t_year_backfill), `:=`(
+    Landings_t = Landings_t_year_backfill,
+    magnitude_source = "STRUCTURAL PLACEHOLDER - GFCM had ~0 catch for this Country x FG; backfilled from STECF FDI's own REAL catch reported for this specific year (2014+ coverage, not averaged/flattened)"
+  )]
+  gfcm_country_fg[!is.na(Landings_t_backfill) & is.na(Landings_t_year_backfill), `:=`(
+    Landings_t = Landings_t_backfill,
+    magnitude_source = "STRUCTURAL PLACEHOLDER - GFCM had ~0 catch for this Country x FG; STECF FDI has no coverage for this specific year (pre-2014, or a gap year), so backfilled from FDI's own 2014+ multi-year AVERAGE instead (not a real measurement for this year)"
+  )]
+  n_backfilled_cfg <- gfcm_country_fg[!is.na(Landings_t_backfill), uniqueN(paste(Country, FG_num))]
+  n_year_specific <- gfcm_country_fg[!is.na(Landings_t_backfill) & !is.na(Landings_t_year_backfill), .N]
+  n_flat_avg <- gfcm_country_fg[!is.na(Landings_t_backfill) & is.na(Landings_t_year_backfill), .N]
+  gfcm_country_fg[, `:=`(Landings_t_backfill = NULL, Landings_t_year_backfill = NULL)]
+  message("[Catch magnitude] Zero-catch backfill applied: ", n_backfilled_cfg, " Country x FG combination(s) now",
+          " carry a nonzero Landings_t sourced from STECF FDI - ", n_year_specific, " Country x FG x Year cell(s)",
+          " use FDI's own REAL year-specific catch (2014+, wherever FDI covers that exact year), ", n_flat_avg,
+          " cell(s) (pre-2014, or a gap year FDI doesn't cover) fall back to FDI's flat multi-year average -",
+          " both flagged as a structural placeholder, never a genuine 1994-1996 measurement, in magnitude_source.")
 }
 
 ## Country x FG x Year catch WITH discards added back onto GFCM's landings
@@ -3703,6 +3981,84 @@ if (nrow(star_catch_by_fg) > 0) {
   }
 }
 catches_discards_fg[, n_species_in_fg := NULL]
+
+## --- Apply the multistanza juvenile/adult split (2026-09-24, per
+## Daniel), now that catches_discards_fg's Adult FG row(s) carry their
+## FINAL Catch_t/Landings_t/Discard_t (every override above - ICCAT,
+## STAR/RAM - has already been applied). Every multistanza species'
+## FULL combined catch currently sits on its ADULT FG (see the stanza
+## tie-break earlier); this splits it into real Juvenile/Adult FG rows
+## using the age-resolved proportion computed above
+## (multistanza_age_split), applied uniformly to every country/year in
+## the series - the age data itself only covers Spain/France/Italy
+## 2014+, but GFCM's own combined catch runs 1994-END_YEAR and includes
+## Morocco/Algeria/Tunisia, so this is necessarily an extrapolation, not
+## a per-year/per-country measurement (flagged in catch_source below).
+## Scope note: this only touches catches_discards_fg (the FG-only series
+## feeding Catches_Ecopath/Catches_Ecosim/the F step) - the PER-COUNTRY/
+## FLEET breakdown (gfcm_country_fg, fleet_prop_final, Ecopath_L's
+## by-fleet sheet) is NOT split by juvenile/adult in this pass; that
+## breakdown still shows the multistanza species' full combined total on
+## its Adult fleet-split rows. A known, explicitly flagged follow-up, not
+## a silent gap.
+if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
+  message("\n[Multistanza split] Not applied - ", if (nrow(multistanza_fg_pairs) == 0) "no multistanza FG pair"
+          else "no usable age-resolved proportion", " (see the messages above). Juvenile FG(s) stay at zero.")
+} else {
+  landings_prop_by_species <- multistanza_age_split[source_file == "FDI Landings Age.csv",
+                                                    .(landings_prop_juv = mean(prop_juvenile, na.rm = TRUE)), by = ScientificName]
+  discards_prop_by_species <- multistanza_age_split[source_file == "FDI Discards Age.csv",
+                                                    .(discards_prop_juv = mean(prop_juvenile, na.rm = TRUE)), by = ScientificName]
+  n_split_applied <- 0
+  for (i in seq_len(nrow(multistanza_fg_pairs))) {
+    sci_name  <- multistanza_fg_pairs$ScientificName[i]
+    fg_juv    <- multistanza_fg_pairs$FG_num_juv[i]
+    fg_adult  <- multistanza_fg_pairs$FG_num_adult[i]
+    l_prop <- landings_prop_by_species[ScientificName == sci_name]$landings_prop_juv
+    d_prop <- discards_prop_by_species[ScientificName == sci_name]$discards_prop_juv
+    if (length(l_prop) == 0 || is.na(l_prop)) {
+      message("[Multistanza split] ", sci_name, ": no usable landings-age proportion - juvenile FG (FG", fg_juv,
+              ") stays at zero, adult FG (FG", fg_adult, ") keeps 100% of the combined catch.")
+      next
+    }
+    if (length(d_prop) == 0 || is.na(d_prop)) d_prop <- l_prop  # no separate discard-age proportion - fall back to the landings proportion rather than leaving discards unsplit
+    adult_rows <- catches_discards_fg[FG_num == fg_adult]
+    juv_new <- copy(adult_rows)
+    juv_new[, `:=`(
+      FG_num = fg_juv,
+      FG_name = multistanza_fg_pairs$FG_name_juv[i],
+      Landings_t = Landings_t * l_prop,
+      Discard_t = fifelse(!is.na(Discard_t), Discard_t * d_prop, NA_real_),
+      catch_source = paste0("derived: STECF FDI Biological Age data's juvenile proportion (", round(100 * l_prop, 1),
+                            "% of landings, ", round(100 * d_prop, 1), "% of discards - Spain/France/Italy 2014+",
+                            " age data, applied uniformly to the whole series) x the '", sci_name, "' combined total")
+    )]
+    juv_new[, Catch_t := Landings_t + fifelse(is.na(Discard_t), 0, Discard_t)]
+    ## Null out the stock-assessment cross-check diagnostic columns on
+    ## the derived juvenile row - copied over from the adult row above,
+    ## but those ICCAT/STAR-RAM figures were computed for the ADULT
+    ## stock's own catch and don't apply to this synthetic juvenile split.
+    diag_cols <- intersect(c("iccat_catches_t", "iccat_catch_pct_diff", "star_catches_t", "star_landings_t",
+                             "star_n_stocks", "star_sources", "star_catch_pct_diff", "star_discard_ratio_diff_pp",
+                             "discard_ratio"), names(juv_new))
+    if (length(diag_cols) > 0) juv_new[, (diag_cols) := lapply(diag_cols, function(x) NA)]
+    catches_discards_fg[FG_num == fg_adult, `:=`(
+      Landings_t = Landings_t * (1 - l_prop),
+      Discard_t = fifelse(!is.na(Discard_t), Discard_t * (1 - d_prop), NA_real_)
+    )]
+    catches_discards_fg[FG_num == fg_adult, Catch_t := Landings_t + fifelse(is.na(Discard_t), 0, Discard_t)]
+    catches_discards_fg <- catches_discards_fg[FG_num != fg_juv]  # drop the old all-zero juvenile placeholder rows
+    catches_discards_fg <- rbindlist(list(catches_discards_fg, juv_new), use.names = TRUE, fill = TRUE)
+    n_split_applied <- n_split_applied + 1
+    message("[Multistanza split] ", sci_name, ": FG", fg_adult, " (adult) kept ", round(100 * (1 - l_prop), 1),
+            "% of landings/", round(100 * (1 - d_prop), 1), "% of discards; FG", fg_juv, " (juvenile) now carries",
+            " the remaining ", round(100 * l_prop, 1), "%/", round(100 * d_prop, 1),
+            "% across the whole series - see multistanza_juv_adult_age_split.csv for the source proportions.")
+  }
+  setorder(catches_discards_fg, FG_num, Year)
+  message("[Multistanza split] Applied to ", n_split_applied, " of ", nrow(multistanza_fg_pairs), " multistanza",
+          " species pair(s).")
+}
 
 ## --- Final "expected catch but got zero" cross-check (2026-09-23) ------
 ## Answers directly the question "am I losing FG data because the catch

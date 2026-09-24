@@ -18,6 +18,14 @@
 # IUCN_conservation_status = 3
 # Exploitation_status = 2
 
+
+
+#to add biomass for high and low trophic levels with other kind of surveys or satellite data:
+# mammals seabrids or seaturtles surveys
+#connected to ecobase too biomass
+#pull satellite data from other tools or CLIMATE INITIATIVE for get phyto
+# any biogeochemical model in the western med that incorporates zoo and phyto?
+
 ### create validation R section:
 # - GFW effort (at least at regional level)
 # - Visual Census regional scale
