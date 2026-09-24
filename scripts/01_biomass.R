@@ -275,6 +275,15 @@ if (!exists("TS_YEARS",      envir = .GlobalEnv, inherits = FALSE)) TS_YEARS    
 if (!exists("DROP_OUTLIERS", envir = .GlobalEnv, inherits = FALSE)) DROP_OUTLIERS <- TRUE         # function attribute: whether remove_sample_outliers() actually
 if (!exists("NORMALIZE_TS",  envir = .GlobalEnv, inherits = FALSE)) NORMALIZE_TS  <- TRUE         # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
 # removes flagged observations (TRUE) or only reports them (FALSE)
+## 2026-09-24, per Andrea: EcoBase (existing published Ecopath models) is
+## the preferred source for biomass on FGs no survey here samples -
+## macro-/meso-/microzooplankton, large/small phytoplankton, Posidonia/
+## seagrass, macroalgae, gorgonians and corals - over hand-copying a
+## number out of a paper's supplementary tables. Same knob pattern as
+## 03_pbqb-traits.R's ENABLE_ECOBASE_QUERY/ECOBASE_FORCE_REFRESH.
+if (!exists("ENABLE_ECOBASE_BIOMASS_QUERY", envir = .GlobalEnv, inherits = FALSE)) ENABLE_ECOBASE_BIOMASS_QUERY <- TRUE
+if (!exists("ECOBASE_BIOMASS_FORCE_REFRESH", envir = .GlobalEnv, inherits = FALSE)) ECOBASE_BIOMASS_FORCE_REFRESH <- FALSE
+source(file.path(git_dir, "scripts/03b_ecobase.R"))
 if (!exists("SAVE_SHINY_CACHE_PATH", envir = .GlobalEnv, inherits = FALSE)) SAVE_SHINY_CACHE_PATH <- NULL
 ## Opt-in, default off (NULL = don't save). Set to a file path (e.g.
 ## file.path(out_dir, "shiny_cache", "survey_density_raw.rds")) to save a
@@ -1770,6 +1779,389 @@ if (AREA_MODE == "westmed") {
   }
   
   ## =================================================================
+  ## Marine megafauna BIOMASS - cetaceans, seabirds, sea turtles
+  ## (2026-09-24, per Andrea's explicit request: "we need to get marine
+  ## mammals, seabirds and seaturtles biomass time series"). UNLIKE
+  ## bluefin tuna/swordfish above, there is NO RFMO-style bulk catch/
+  ## stock-assessment database for any of these three groups - checked
+  ## directly (2026-09-24):
+  ##   - Cetaceans: the ACCOBAMS Survey Initiative (ASI) is the one real,
+  ##     peer-reviewed, Mediterranean-wide density/abundance estimate
+  ##     that exists, by species and sub-region - but it is essentially
+  ##     ONE synoptic snapshot (aerial+ship surveys run in 2018, a
+  ##     second ASI round has since followed) published as a PDF report
+  ##     (accobams.org), not an annual bulk-downloadable time series the
+  ##     way GFCM/FDI catch data is. Two data points, decades apart, is
+  ##     the realistic ceiling here, not a real 1994-2024 series.
+  ##   - Sea turtles: no Mediterranean-wide biomass series either, but
+  ##     several individual nesting beaches (Zakynthos/Kyparissia in
+  ##     Greece, Dalyan in Turkey, etc.) DO have genuine multi-decade
+  ##     annual NESTING COUNT series - the closest thing to a real long
+  ##     time series among these three groups, but it measures nesting
+  ##     females/nests, not total population biomass, and needs a
+  ##     documented nests-to-population conversion (e.g. Casale et al.)
+  ##     to become a biomass figure - not attempted automatically here.
+  ##   - Seabirds: no Mediterranean-wide population database found at
+  ##     all - coverage is scattered, species-specific literature (e.g.
+  ##     the Balearic shearwater population-trend papers), each with its
+  ##     own methodology and reporting units.
+  ## None of this is a "wrong URL" situation the way the earlier ICCAT
+  ## biomass placeholder's problem was a real bulk download waiting to
+  ## be found - there genuinely isn't a bulk source, so this stays a
+  ## manual, per-record, CITED entry table, same convention as
+  ## BYCATCH_RATE_MANUAL/RECREATIONAL_CATCH_MANUAL/iccat_ssb_biomass.csv
+  ## above. This block is the CODE PLUMBING so that whatever real
+  ## figures Andrea/Daniel pull from ACCOBAMS ASI, a nesting-count
+  ## series (converted to population), or a seabird paper can be
+  ## dropped straight into one small CSV and flow into the model with
+  ## the priority rule below, instead of being pasted into the workbook
+  ## by hand.
+  ##
+  ## Expected schema at MEGAFAUNA_BIOMASS_PATH - one row per group/
+  ## species x year: Group (or Species/FG_name - several header
+  ## spellings accepted), Year, Biomass_t (total, whole West Med study
+  ## area - not a density; this script converts to density itself using
+  ## the SAME Total_Area_km2 every other biomass figure here uses), and
+  ## Source_citation (REQUIRED in spirit, not enforced in code - every
+  ## row here is a literature/survey figure, never a measurement this
+  ## pipeline made itself, so it must be traceable to where it came
+  ## from). Group is matched to FG by KEYWORD against FG_name (same
+  ## "closest FG" technique BELHABIB_TAXON_KEYWORDS uses in
+  ## 02_fisheries.R for broad taxon-group catch) - a Group matching zero
+  ## or more than one FG is written to
+  ## marine_megafauna_group_to_fg_REVIEW.csv and excluded, never guessed.
+  ## =================================================================
+  ## 2026-09-24, per Andrea: these groups don't need a real time series -
+  ## the minimum is a single baseline biomass figure for the Ecopath base
+  ## year (1994-1996). load_manual_cited_biomass_group() below accepts
+  ## that as-is: a CSV with just one Year value (or one row per year of
+  ## 1994/1995/1996) works fine, since everything downstream already
+  ## groups by FG x Year - it never assumed a full annual series.
+  ##
+  ## Generic loader, used twice below (once for marine megafauna, once
+  ## for the lower-trophic groups that MEDITS/MEDIAS also can't sample -
+  ## see EXEMPT_FG_NAMES/catchability-correction comment near the top of
+  ## this script: a bottom-trawl survey isn't designed to represent
+  ## phytoplankton/zooplankton/macroalgae/seagrass at all). Both are the
+  ## SAME situation - no bulk API, no survey coverage, manual cited entry
+  ## is the only honest option - so one function, two csv files, two
+  ## keyword sets.
+  load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, review_csv_name, output_csv_name,
+                                              fallback_message) {
+    col_aliases <- list(
+      year      = c("Year", "year", "Yearc"),
+      group     = c("Group", "Species", "FG_name", "Taxon", "CommonName"),
+      biomass_t = c("Biomass_t", "Biomass", "Population_t", "Total_t"),
+      source    = c("Source_citation", "Source", "Citation", "Reference")
+    )
+    out <- data.table(FG_num = integer(0), FG_name = character(0), Year = integer(0),
+                      group_biomass_t = numeric(0), group_sources = character(0),
+                      stock_assessment_density_t_km2 = numeric(0))
+    if (!file.exists(csv_path)) {
+      message("\n[", label, "] '", csv_path, "' not found - skipping. ", fallback_message)
+      return(out)
+    }
+    raw <- fread(csv_path, encoding = "UTF-8")
+    col_year <- resolve_iccat_col(names(raw), col_aliases$year)
+    col_bio  <- resolve_iccat_col(names(raw), col_aliases$biomass_t)
+    col_grp  <- resolve_iccat_col(names(raw), col_aliases$group)
+    col_src  <- resolve_iccat_col(names(raw), col_aliases$source)
+    if (any(is.na(c(col_year, col_bio, col_grp)))) {
+      message("\n[", label, "] '", csv_path, "' is missing a required column - found: ",
+              paste(names(raw), collapse = ", "), ". Needed a year column (tried ",
+              paste(col_aliases$year, collapse = "/"), "), a biomass column (tried ",
+              paste(col_aliases$biomass_t, collapse = "/"), "), and a group/species column (tried ",
+              paste(col_aliases$group, collapse = "/"), ") - skipping rather than guessing.")
+      return(out)
+    }
+    setnames(raw, col_year, "Year")
+    setnames(raw, col_bio, "group_biomass_t")
+    setnames(raw, col_grp, "Group")
+    if (!is.na(col_src)) setnames(raw, col_src, "Source_citation") else raw[, Source_citation := NA_character_]
+    raw[, `:=`(Year = as.integer(Year), group_biomass_t = as.numeric(group_biomass_t))]
+    
+    ## Full FG catalog isn't built until later in this script (full_fg_list,
+    ## from dataframe2) - fg_lookup_safe is already in scope this far up
+    ## (built at line ~637) and carries the same FG_num/FG_name universe.
+    full_fg_catalog <- unique(fg_lookup_safe[, .(FG_num, FG_name)])
+    group_word_sets <- lapply(taxon_keywords, tolower)
+    fg_word_hits <- rbindlist(lapply(names(group_word_sets), function(g) {
+      hits <- full_fg_catalog[sapply(tolower(FG_name), function(nm) any(sapply(group_word_sets[[g]], function(kw) grepl(kw, nm, fixed = TRUE))))]
+      if (nrow(hits) == 0) return(NULL)
+      data.table(Group = g, FG_num = hits$FG_num, FG_name = hits$FG_name)
+    }))
+    if (is.null(fg_word_hits) || nrow(fg_word_hits) == 0) fg_word_hits <- data.table(Group = character(), FG_num = integer(), FG_name = character())
+    
+    unmatched_groups_dt <- unique(raw[!Group %in% unique(fg_word_hits$Group), .(Group)])
+    if (nrow(unmatched_groups_dt) > 0) {
+      fwrite(unmatched_groups_dt, file.path(csv_out_dir, review_csv_name))
+      message("[", label, "] ", nrow(unmatched_groups_dt), " Group value(s) in ", csv_path,
+              " matched ZERO FG by keyword (checked against FG_WMed_2026.csv's real FG_name text - add a",
+              " keyword to the taxon-keyword list above if the FG really exists under a different name): ",
+              paste(unmatched_groups_dt$Group, collapse = ", "), " - written to ", review_csv_name, ", excluded below.")
+    }
+    ambiguous_groups <- fg_word_hits[, .N, by = Group][N > 1, Group]
+    if (length(ambiguous_groups) > 0) {
+      message("[", label, "] ", length(ambiguous_groups), " Group value(s) matched MORE than one",
+              " FG by keyword - kept (biomass is apportioned across all matching FGs, same 'split it' rule the",
+              " Belhabib taxon-keyword match in 02_fisheries.R uses): ", paste(ambiguous_groups, collapse = ", "))
+    }
+    matched <- merge(raw, fg_word_hits, by = "Group", allow.cartesian = TRUE)
+    if (nrow(matched) > 0) {
+      matched[, n_fg_for_group := uniqueN(FG_num), by = .(Group, Year)]
+      matched[, group_biomass_t := group_biomass_t / n_fg_for_group]  # split evenly across ambiguous FGs - never guessed at full weight onto each
+      out <- matched[, .(
+        group_biomass_t = sum(group_biomass_t, na.rm = TRUE),
+        group_sources = paste(unique(na.omit(Source_citation)), collapse = "; ")
+      ), by = .(FG_num, FG_name, Year)]
+      out[group_sources == "", group_sources := paste0(label, " (source_citation not filled in)")]
+      out[, stock_assessment_density_t_km2 := group_biomass_t / sum(strata_area_by_area$area_km2, na.rm = TRUE)]
+      out <- out[group_biomass_t > 0]
+      fwrite(out, file.path(csv_out_dir, output_csv_name))
+      message("[", label, "] ", nrow(out), " FG x Year row(s) (", uniqueN(out$FG_num), " FG(s)) - written to ", output_csv_name, ".")
+    }
+    out
+  }
+  
+  ## Merge one manual-cited group's output into stock_assessment_fg_year -
+  ## it wins on any FG x Year overlap (it's always the single most direct
+  ## source available for these FGs; no MEDITS/MEDIAS trawl survey samples
+  ## megafauna or plankton/primary-producer groups at all).
+  merge_manual_cited_biomass <- function(stock_assessment_fg_year, group_fg_year, source_label) {
+    if (nrow(group_fg_year) == 0) return(stock_assessment_fg_year)
+    overlap_cells <- fintersect(stock_assessment_fg_year[, .(FG_num, Year)], group_fg_year[, .(FG_num, Year)])
+    if (nrow(overlap_cells) > 0) {
+      message("[Stock-assessment biomass] ", source_label, " overrides an existing source for ",
+              nrow(overlap_cells), " FG x Year cell(s).")
+      stock_assessment_fg_year <- stock_assessment_fg_year[!overlap_cells, on = c("FG_num", "Year")]
+    }
+    stock_assessment_fg_year <- rbindlist(list(
+      stock_assessment_fg_year,
+      group_fg_year[, .(FG_num, FG_name, Year, stock_assessment_density_t_km2,
+                        star_biomass_t = group_biomass_t, star_n_stocks = NA_integer_,
+                        star_sources = group_sources,
+                        stock_assessment_source = paste0("literature/survey estimate (", source_label, " - manual, cited entry)"))]
+    ), use.names = TRUE, fill = TRUE)
+    message("[Stock-assessment biomass] stock_assessment_fg_year now also includes ", source_label, ": ",
+            nrow(stock_assessment_fg_year), " FG x Year row(s) total.")
+    stock_assessment_fg_year
+  }
+  
+  ## --- Marine megafauna (cetaceans, seabirds, sea turtles) ---------------
+  ## Real sources for a 1994-1996 baseline figure: ACCOBAMS Survey
+  ## Initiative (accobams.org - cetacean density/abundance by species and
+  ## sub-region; note its own survey rounds are ~2018+, so treat it as the
+  ## closest available proxy, not a real 1994-1996 measurement, unless a
+  ## published back-cast exists); a long-running nesting-beach count series
+  ## (e.g. Zakynthos/Kyparissia, Greece; Dalyan, Turkey) converted to a
+  ## population estimate via a published nests-to-population factor (e.g.
+  ## Casale et al.) for sea turtles - these series DO reach back to the
+  ## 1990s, so this is the one megafauna group with a real shot at an
+  ## actual base-year figure; species-specific published population papers
+  ## for seabirds (no single Mediterranean-wide source found). Whole-
+  ## Mediterranean EwE models covering this exact period also exist and
+  ## are worth pulling a cited baseline from directly - see
+  ## Piroddi et al. 2015 (Mar Ecol Prog Ser 533:47-65, "Modelling the
+  ## Mediterranean marine ecosystem as a whole" - two baseline periods,
+  ## "1950s" and "2000s", 4 Mediterranean sub-regions including a Western
+  ## Mediterranean one, tables S2/S3 in the supplementary material carry
+  ## the actual B t/km2 by functional group INCLUDING cetaceans, seabirds,
+  ## sea turtles) and, as a smaller-scale cross-check, the GOLEM Gulf of
+  ## Lion Ecopath model (Ecosyst. modelling in the NW Med Sea, 2010-2014
+  ## baseline - reports dolphins+seabirds combined at <0.01% of total
+  ## system biomass, a useful order-of-magnitude sanity check even though
+  ## its reference period is 20 years later than ours).
+  MEGAFAUNA_BIOMASS_PATH <- file.path(pcloud_dir, "data/marine_megafauna_biomass.csv")
+  MEGAFAUNA_TAXON_KEYWORDS <- list(
+    Cetaceans  = c("cetacean", "dolphin", "whale", "porpoise"),
+    Seabirds   = c("seabird", "shearwater", "gull", "petrel", "tern", "auk", "cormorant"),
+    SeaTurtles = c("turtle")
+  )
+  megafauna_biomass_fg_year <- load_manual_cited_biomass_group(
+    csv_path = MEGAFAUNA_BIOMASS_PATH, taxon_keywords = MEGAFAUNA_TAXON_KEYWORDS,
+    label = "Marine megafauna biomass", review_csv_name = "marine_megafauna_group_to_fg_REVIEW.csv",
+    output_csv_name = "marine_megafauna_biomass_by_fg.csv",
+    fallback_message = paste0("A single 1994-1996 baseline figure per group is enough - no time series needed.",
+                              " Preferred real sources, per Andrea (2026-09-24): AERIAL SURVEY density/abundance for cetaceans -",
+                              " the ACCOBAMS Survey Initiative (ASI-Med-Report, accobams.org) and the dedicated Central/Western",
+                              " Mediterranean aerial survey (Panigada et al., ScienceDirect S0967064517301418) both report real",
+                              " aerial-survey density/abundance by species and sub-region; CENSUS data for seabirds - UNEPMAP's",
+                              " Mediterranean Quality Status Report 'Common Indicator 4: Population abundance - Seabirds'",
+                              " (medqsr.org) is the closest thing to a single Mediterranean-wide seabird census, with the World",
+                              " Seabird Union's database directory (worldseabirdunion.org) as a second place to check for a",
+                              " colony-count series; nesting-beach count series x a published nests-to-population factor, e.g.",
+                              " Casale et al. (sea turtles - the one group with count series reaching back to the 1990s). A cited",
+                              " B t/km2 straight out of Piroddi et al. 2015 (Mar Ecol Prog Ser 533:47-65, supplementary tables",
+                              " S2/S3, Western Mediterranean sub-region) remains a fallback/cross-check if a real aerial-survey or",
+                              " census figure isn't available for a given species/year. Expected columns: Year, Group (Cetaceans/Seabirds/SeaTurtles, or a",
+                              " specific FG_name), Biomass_t (total for the whole West Med study area, not a density), Source_citation.")
+  )
+  
+  ## --- Lower trophic levels (zooplankton, phytoplankton, macroalgae, ------
+  ## seagrass/Posidonia, gorgonians/corals) - same situation as megafauna:
+  ## MEDITS/MEDIAS are bottom-trawl surveys and were never designed to
+  ## sample these groups representatively (see EXEMPT_FG_NAMES near the
+  ## top of this script, which already excludes them from the trawl
+  ## catchability correction for exactly this reason) - so there's no
+  ## survey density figure to fall back on here either.
+  ##
+  ## 2026-09-24, per Andrea: pull this from EcoBase (existing published
+  ## Ecopath models covering the Mediterranean) rather than hand-copying
+  ## numbers out of a paper - EcoBase already has these exact groups as
+  ## Biomass inputs in OTHER models' own Ecopath parameterizations, and is
+  ## therefore the fastest, most directly comparable (same B t/km2 EwE
+  ## unit) source, on top of whatever satellite/other-source estimates are
+  ## closest to 1994-1996.
+  ##
+  ## fetch_ecobase_literature_biomass() (03b_ecobase.R) queries EcoBase,
+  ## keyword-matches every returned group_name against the 7 target
+  ## groups below, and for each one picks whichever candidate model's
+  ## year is CLOSEST to 1995 (midpoint of YEAR_ECOPATH) - written to
+  ## ecobase_literature_biomass_best_by_group.csv with the source model/
+  ## year/authors and how far that year actually is from 1995, so "closest
+  ## available, not a real 1994-1996 measurement" stays explicit. If
+  ## PRIMARY_PRODUCER_BIOMASS_PATH doesn't exist yet, that EcoBase result
+  ## is used to AUTO-DRAFT it (clearly tagged as an EcoBase draft, not a
+  ## final reviewed figure) - so load_manual_cited_biomass_group() below
+  ## always has something to read, without needing Andrea/Daniel to
+  ## manually type numbers in first. Once a real, reviewed CSV is placed
+  ## at that path, this auto-draft step is skipped entirely (existing file
+  ## always wins - never overwritten by this block).
+  ##
+  ## A target group EcoBase has no match for at all (reported by
+  ## fetch_ecobase_literature_biomass() itself) still needs a non-EcoBase
+  ## source - candidates from this research: satellite chlorophyll-a ->
+  ## phytoplankton biomass conversions (ocean-colour record starts
+  ## ~1997/1998 (SeaWiFS), so also a "closest available year" proxy, not
+  ## a real 1994-1996 measurement); Posidonia standing biomass per m2 from
+  ## the seagrass-ecology literature (e.g. Pergent et al.) x the actual
+  ## meadow area within the study area's strata, if known.
+  PRIMARY_PRODUCER_BIOMASS_PATH <- file.path(pcloud_dir, "data/primary_producer_plankton_biomass.csv")
+  ## Full keyword catalog - used below to match the manual/auto-drafted
+  ## CSV's Group column to an FG_name, REGARDLESS of which source (EcoBase
+  ## or satellite) actually supplied each group's number.
+  PRIMARY_PRODUCER_TAXON_KEYWORDS <- list(
+    MacroZooplankton     = c("macrozooplankton", "macro-zooplankton", "macro zooplankton"),
+    MesoMicroZooplankton = c("mesozooplankton", "meso-zooplankton", "meso zooplankton",
+                             "microzooplankton", "micro-zooplankton", "micro zooplankton"),
+    LargePhytoplankton   = c("large phytoplankton", "diatom"),
+    SmallPhytoplankton   = c("small phytoplankton", "picophytoplankton", "nanophytoplankton"),
+    Posidonia            = c("posidonia", "seagrass"),
+    Macroalgae           = c("macroalga", "macro-alga"),
+    GorgoniansCorals     = c("gorgonian", "coral")
+  )
+  ## 2026-09-24, per Andrea (refining the 2026-09-24-earlier satellite
+  ## approach): phytoplankton should come from a Mediterranean
+  ## BIOGEOCHEMICAL MODEL (Copernicus Marine's Med BGC Reanalysis,
+  ## MedBFM/OGSTM-BFM - reports phytoplankton biomass directly as carbon,
+  ## not a Chl-a proxy) - see lib_cmems_phytoplankton_biomass.R. Satellite
+  ## chlorophyll-a (lib_satellite_phytoplankton_biomass.R, kept as-is) is
+  ## now the FALLBACK if CMEMS access isn't set up (it needs a free
+  ## Copernicus Marine account + the copernicusmarine CLI - see that
+  ## function's own header) or the query fails for any reason.
+  ##
+  ## Zooplankton (Macro-/MesoMicroZooplankton) - the SAME reanalysis has
+  ## NO public zooplankton biomass variable at all (confirmed from its
+  ## own product documentation - only phytoplankton/chlorophyll/
+  ## nutrients/carbon system are released, even though the underlying
+  ## BFM model simulates zooplankton internally). Zooplankton therefore
+  ## still goes through EcoBase below, same as macroalgae/seagrass/
+  ## gorgonians+corals - flagged explicitly so this isn't mistaken for
+  ## an oversight; ask CMCC/OGS directly for their model's internal
+  ## zooplankton output if you want the true biogeochemical-model value.
+  ECOBASE_LOWTROPHIC_KEYWORDS <- PRIMARY_PRODUCER_TAXON_KEYWORDS[
+    !names(PRIMARY_PRODUCER_TAXON_KEYWORDS) %in% c("LargePhytoplankton", "SmallPhytoplankton")]
+  
+  if (!file.exists(PRIMARY_PRODUCER_BIOMASS_PATH)) {
+    draft_rows <- list()
+    
+    if (ENABLE_ECOBASE_BIOMASS_QUERY) {
+      ecobase_best_lowtrophic <- fetch_ecobase_literature_biomass(
+        out_dir = csv_out_dir, force_refresh = ECOBASE_BIOMASS_FORCE_REFRESH,
+        target_fg_keywords = ECOBASE_LOWTROPHIC_KEYWORDS, target_year = round(mean(YEAR_ECOPATH))
+      )
+      if (!is.null(ecobase_best_lowtrophic) && nrow(ecobase_best_lowtrophic) > 0) {
+        ## Biomass_t_km2 (EcoBase's native Ecopath unit) -> a total tonnage,
+        ## same convention load_manual_cited_biomass_group() expects
+        ## (Biomass_t for the whole West Med study area) - scaled by the
+        ## SAME Total_Area_km2 every other biomass figure in this script
+        ## uses, via strata_area_by_area (already in scope this far down).
+        draft_rows$ecobase <- ecobase_best_lowtrophic[, .(
+          Year = round(mean(YEAR_ECOPATH)),
+          Group = TargetGroup,
+          Biomass_t = Biomass_t_km2 * sum(strata_area_by_area$area_km2, na.rm = TRUE),
+          Source_citation = paste0("AUTO-DRAFT FROM ECOBASE (2026-09-24) - REVIEW BEFORE TRUSTING: ", Source_citation)
+        )]
+      }
+    }
+    
+    if (!exists("ENABLE_CMEMS_PHYTOPLANKTON", envir = .GlobalEnv, inherits = FALSE)) ENABLE_CMEMS_PHYTOPLANKTON <- TRUE
+    if (!exists("ENABLE_SATELLITE_PHYTOPLANKTON", envir = .GlobalEnv, inherits = FALSE)) ENABLE_SATELLITE_PHYTOPLANKTON <- TRUE
+    phyto_draft <- NULL
+    phyto_source_label <- NA_character_
+    if (ENABLE_CMEMS_PHYTOPLANKTON) {
+      source(file.path(git_dir, "scripts/lib_cmems_phytoplankton_biomass.R"))
+      cmems_phyto <- fetch_cmems_phytoplankton_biomass(out_dir = csv_out_dir)
+      if (!is.null(cmems_phyto) && nrow(cmems_phyto) > 0) {
+        phyto_draft <- cmems_phyto
+        phyto_source_label <- "CMEMS MED BGC REANALYSIS (biogeochemical model, phytoplankton carbon)"
+      }
+    }
+    if (is.null(phyto_draft) && ENABLE_SATELLITE_PHYTOPLANKTON) {
+      message("[Primary producer/plankton biomass] CMEMS phytoplankton unavailable this run",
+              " (ENABLE_CMEMS_PHYTOPLANKTON = FALSE, or the query above failed/wasn't set up) -",
+              " falling back to satellite chlorophyll-a.")
+      source(file.path(git_dir, "scripts/lib_satellite_phytoplankton_biomass.R"))
+      satellite_phyto <- fetch_satellite_phytoplankton_biomass(out_dir = csv_out_dir)
+      if (!is.null(satellite_phyto) && nrow(satellite_phyto) > 0) {
+        phyto_draft <- satellite_phyto
+        phyto_source_label <- "SATELLITE CHLOROPHYLL-A (fallback - CMEMS biogeochemical model was unavailable)"
+      }
+    }
+    if (!is.null(phyto_draft)) {
+      draft_rows$phyto <- phyto_draft[, .(
+        Year = round(mean(YEAR_ECOPATH)),
+        Group = TargetGroup,
+        Biomass_t = Biomass_t_km2 * sum(strata_area_by_area$area_km2, na.rm = TRUE),
+        Source_citation = paste0("AUTO-DRAFT FROM ", phyto_source_label, " (2026-09-24) - REVIEW BEFORE TRUSTING: ", Source_citation)
+      )]
+    }
+    
+    if (length(draft_rows) > 0) {
+      full_draft <- rbindlist(draft_rows, use.names = TRUE)
+      fwrite(full_draft, PRIMARY_PRODUCER_BIOMASS_PATH)
+      message("\n[Primary producer/plankton biomass] No reviewed CSV existed yet at '", PRIMARY_PRODUCER_BIOMASS_PATH,
+              "' - auto-drafted ", nrow(full_draft), " row(s): ", paste(full_draft$Group, collapse = ", "),
+              " (zooplankton/macroalgae/seagrass/gorgonians+corals from EcoBase's closest-to-",
+              round(mean(YEAR_ECOPATH)), " model; Large/SmallPhytoplankton from ",
+              if (!is.na(phyto_source_label)) phyto_source_label else "no source (both CMEMS and satellite failed)",
+              "). REVIEW this file - it's a starting point, not a final figure - then re-run. Delete it and",
+              " this step will re-draft next run; replace it with your own reviewed numbers and it's used",
+              " as-is (never overwritten once it exists).")
+    }
+  }
+  
+  primary_producer_biomass_fg_year <- load_manual_cited_biomass_group(
+    csv_path = PRIMARY_PRODUCER_BIOMASS_PATH, taxon_keywords = PRIMARY_PRODUCER_TAXON_KEYWORDS,
+    label = "Primary producer/plankton biomass", review_csv_name = "primary_producer_group_to_fg_REVIEW.csv",
+    output_csv_name = "primary_producer_plankton_biomass_by_fg.csv",
+    fallback_message = paste0("A single 1994-1996 baseline figure per group is enough - no time series needed.",
+                              " MEDITS/MEDIAS are bottom-trawl surveys and don't sample these groups at all (same reason they're in",
+                              " EXEMPT_FG_NAMES above). With ENABLE_ECOBASE_BIOMASS_QUERY/ENABLE_CMEMS_PHYTOPLANKTON/",
+                              " ENABLE_SATELLITE_PHYTOPLANKTON = TRUE (all default) this file should have been auto-drafted just",
+                              " above - if you're seeing this message, every query failed (check the [EcoBase biomass]/",
+                              " fetch_cmems_phytoplankton_biomass()/fetch_satellite_phytoplankton_biomass() messages above) or",
+                              " matched nothing. Other real sources: Posidonia standing biomass per m2 (seagrass-ecology",
+                              " literature, e.g. Pergent et al., or satellite/Sentinel-2-derived meadow extent x that per-m2",
+                              " figure) x actual meadow area. Expected columns: Year, Group (a target group name above, or a",
+                              " specific FG_name), Biomass_t (total for the whole West Med study area, not a density),",
+                              " Source_citation.")
+  )
+  
+  stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, megafauna_biomass_fg_year, "marine megafauna")
+  stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, primary_producer_biomass_fg_year, "primary producer/plankton")
+  
+  ## =================================================================
   ## FG biomass-source priority (rewritten 2026-09-16 -
   ## REPLACES the earlier demersal/small-pelagic-KEYWORD-guessing version,
   ## which is removed entirely). The rule, verbatim: "the
@@ -2069,6 +2461,31 @@ export_ecopath_ecosim_excel(
 )
 
 ## =================================================================
+## STEP 10b: "Ecobase" workbook sheet (2026-09-24, per Andrea: "add a
+## section where it adds a Ecobase sheet on the excel input file
+## produced with data from the model biomass pbqb reference year etc").
+## build_ecobase_sheet_dt() (03b_ecobase.R) reads back whichever of the
+## EcoBase queries above already ran this pipeline (biomass here in
+## 01_biomass.R, PB/QB later in 03_pbqb-traits.R - both write into the
+## SAME shared raw cache, ecobase_all_inputs_with_meta.csv, so whichever
+## ran first is enough) and writes a side-by-side comparison table -
+## other Western Med Ecopath models' Biomass/PB/QB per group, next to
+## their own model name/ecosystem/country/reference year/authors - into
+## an "Ecobase" sheet in ecopath_ecosim_inputs.xlsx, sorted so whichever
+## model's reference year is closest to THIS model's own YEAR_ECOPATH
+## sits at the top. "Ecobase" is now in trim_workbook_to_final_sheets()'s
+## target_order (lib_survey_fg_density_functions.R), so it survives every
+## script's end-of-run trim, not just this one.
+## Silently does nothing if the raw EcoBase cache doesn't exist yet
+## (e.g. ENABLE_ECOBASE_BIOMASS_QUERY was FALSE and 03_pbqb-traits.R
+## hasn't run yet either) - never blocks the rest of the pipeline.
+## =================================================================
+ecobase_sheet_dt <- build_ecobase_sheet_dt(csv_out_dir, target_year = round(mean(YEAR_ECOPATH)))
+if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
+  upsert_workbook_sheets(list(Ecobase = ecobase_sheet_dt), file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
+}
+
+## =================================================================
 ## STEP 11: Complete FG_spp_Ecopath / FG_lookup sheets.
 ##
 ## FG_spp_Ecopath includes EVERY species from the UNION of:
@@ -2266,6 +2683,34 @@ trim_workbook_to_final_sheets(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
 ## FG_WMed.xlsx sheet 4.
 ## =================================================================
 build_full_fg_species_catalog(csv_out_dir)
+
+## =================================================================
+## STEP 15: completeness check - which FGs have NO Ecopath_B biomass
+## at all (2026-09-24, per Andrea: "print the FGs at the end of the
+## scripts that dont have data on Ecopath B, or L or Di"). Checked
+## against fg_index_regional_combined (the exact table that feeds
+## Ecopath_B via export_ecopath_ecosim_excel() in STEP 10), restricted
+## to the Ecopath base year(s) (YEAR_ECOPATH) - an FG with no row at
+## all there, or a row whose mean_density is NA or exactly 0, has no
+## real biomass estimate behind it from ANY source (survey, stock
+## assessment, ICCAT, marine megafauna, or primary producer/plankton),
+## regardless of which fallback ultimately would have applied.
+## =================================================================
+fg_biomass_base_year <- fg_index_regional_combined[Year %in% YEAR_ECOPATH,
+                                                   .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
+fg_missing_biomass <- merge(full_fg_list, fg_biomass_base_year, by = c("FG_num", "FG_name"), all.x = TRUE)
+fg_missing_biomass <- fg_missing_biomass[is.na(mean_density) | mean_density == 0]
+if (nrow(fg_missing_biomass) > 0) {
+  fwrite(fg_missing_biomass[, .(FG_num, FG_name)], file.path(csv_out_dir, "fg_missing_ecopath_B_REVIEW.csv"))
+  message("\n[Completeness check] ", nrow(fg_missing_biomass), " of ", nrow(full_fg_list),
+          " FG(s) have NO Ecopath_B biomass at all for ", paste(range(YEAR_ECOPATH), collapse = "-"),
+          " (no survey/stock-assessment/ICCAT/megafauna/primary-producer source supplied a value) -",
+          " written to fg_missing_ecopath_B_REVIEW.csv:")
+  print(fg_missing_biomass[, .(FG_num, FG_name)])
+} else {
+  message("\n[Completeness check] Every one of ", nrow(full_fg_list),
+          " FG(s) has a nonzero Ecopath_B biomass value for ", paste(range(YEAR_ECOPATH), collapse = "-"), ".")
+}
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())

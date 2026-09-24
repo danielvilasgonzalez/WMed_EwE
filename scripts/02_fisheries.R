@@ -5734,6 +5734,35 @@ validation_plots[["06_data_source_coverage"]] <- tryCatch({
     theme_minimal(base_size = 8) + theme(legend.position = "bottom", panel.grid = element_blank())
 }, error = function(e) { message("[Validation plot 6] skipped - ", conditionMessage(e)); NULL })
 
+## =================================================================
+## Completeness check - which FGs have NO Ecopath_L/Ecopath_Di catch or
+## discards at all (2026-09-24, per Andrea: "print the FGs at the end of
+## the scripts that dont have data on Ecopath B, or L or Di"). Checked
+## against catches_discards_fg (the exact table that feeds Ecopath_L/
+## Ecopath_Di), restricted to the Ecopath base year(s) (YEAR_ECOPATH).
+## NOTE this is informational, not necessarily a problem: many FGs
+## (primary producers, plankton, non-target invertebrates) are correctly
+## unfished and belong on this list - it's here so nothing was silently
+## skipped that SHOULD have had a real catch/discard figure.
+## =================================================================
+fg_catch_base_year <- catches_discards_fg[Year %in% YEAR_ECOPATH,
+                                          .(Landings_t = sum(Landings_t, na.rm = TRUE), Discard_t = sum(Discard_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
+fg_missing_catch_discards <- merge(full_fg_list, fg_catch_base_year, by = c("FG_num", "FG_name"), all.x = TRUE)
+fg_missing_catch_discards <- fg_missing_catch_discards[
+  (is.na(Landings_t) | Landings_t == 0) & (is.na(Discard_t) | Discard_t == 0)]
+if (nrow(fg_missing_catch_discards) > 0) {
+  fwrite(fg_missing_catch_discards[, .(FG_num, FG_name)], file.path(csv_out_dir, "fg_missing_ecopath_L_Di_REVIEW.csv"))
+  message("\n[Completeness check] ", nrow(fg_missing_catch_discards), " of ", nrow(full_fg_list),
+          " FG(s) have ZERO Ecopath_L landings AND ZERO Ecopath_Di discards for ",
+          paste(range(YEAR_ECOPATH), collapse = "-"), " (often legitimate - unfished/non-target FGs like",
+          " primary producers - but worth a look) - written to fg_missing_ecopath_L_Di_REVIEW.csv:")
+  print(fg_missing_catch_discards[, .(FG_num, FG_name)])
+} else {
+  message("\n[Completeness check] Every one of ", nrow(full_fg_list),
+          " FG(s) has a nonzero Ecopath_L landings or Ecopath_Di discards value for ",
+          paste(range(YEAR_ECOPATH), collapse = "-"), ".")
+}
+
 validation_plots <- validation_plots[!sapply(validation_plots, is.null)]  # drop any plot that failed and returned NULL
 if (length(validation_plots) == 0) {
   message("\n[Validation plots] None could be built - the tables they read from are all empty (no data",

@@ -886,6 +886,49 @@ classify_dispatch <- function(class_vec) {
 
 taxonomy[, dispatch_group := classify_dispatch(Class)]
 
+## 2026-09-24, per Andrea: a SEPARATE, finer classification for the
+## traits_ewe/Ecopath_traits "Organism" column - bacteria/fungi/algae/
+## plants/invertebrates/fishes/birds/mammals/reptiles/other. Kept
+## entirely independent of dispatch_group above (which exists only to
+## pick a PB/QB empirical formula and deliberately lumps everything
+## non-fish/mammal/bird/phyto into "invertebrate", including reptiles -
+## fine for that narrow purpose, wrong for a species-level trait column
+## someone will read directly). Built from the SAME Class/Phylum this
+## script already fetches via fetch_taxonomy_fishbase() - no extra
+## network call needed.
+REPTILE_CLASSES <- c("Reptilia", "Testudines")   # sea turtles
+## Macroalgae Class-level taxa (red/brown/green algae) - distinct from
+## PHYTO_CLASSES above, which is single-celled phytoplankton, not the
+## macroalgae/"other macroalgae" FG.
+ALGAE_CLASSES <- c("Phaeophyceae", "Florideophyceae", "Rhodophyceae", "Ulvophyceae",
+                   "Chlorophyceae", "Bangiophyceae", "Compsopogonophyceae")
+## Seagrass (Posidonia) - vascular plants; Phylum-level since FishBase/
+## SeaLifeBase taxonomy for a marine angiosperm may not carry a Class.
+PLANT_PHYLA <- c("Tracheophyta", "Magnoliophyta", "Streptophyta")
+BACTERIA_KINGDOMS <- c("Bacteria", "Monera")
+FUNGI_KINGDOMS <- c("Fungi")
+
+## class_vec/phylum_vec/kingdom_vec: kingdom_vec is optional (NULL if
+## fetch_taxonomy_fishbase()'s output doesn't carry a Kingdom column at
+## all in your rfishbase version - bacteria/fungi will then just fall
+## through to "Other" rather than erroring).
+classify_organism <- function(class_vec, phylum_vec, kingdom_vec = NULL) {
+  out <- fifelse(class_vec %in% FISH_CLASSES, "Fishes", fifelse(
+    class_vec %in% MAMMAL_CLASSES, "Mammals", fifelse(
+      class_vec %in% BIRD_CLASSES, "Birds", fifelse(
+        class_vec %in% REPTILE_CLASSES, "Reptiles", fifelse(
+          class_vec %in% PHYTO_CLASSES, "Algae", fifelse(
+            class_vec %in% ALGAE_CLASSES, "Algae", fifelse(
+              phylum_vec %in% PLANT_PHYLA, "Plants", NA_character_
+            )))))))
+  if (!is.null(kingdom_vec)) {
+    out <- fifelse(is.na(out) & kingdom_vec %in% BACTERIA_KINGDOMS, "Bacteria", fifelse(
+      is.na(out) & kingdom_vec %in% FUNGI_KINGDOMS, "Fungi", out))
+  }
+  out
+}
+taxonomy[, Organism := classify_organism(Class, Phylum, if ("Kingdom" %in% names(taxonomy)) Kingdom else NULL)]
+
 ## --- Fallback for species with no Class: the usual cause is that the
 ## name FishBase/SeaLifeBase's load_taxa() doesn't recognize as a valid
 ## current name (a synonym, or a genus-level placeholder like "Sepiola
@@ -1028,6 +1071,7 @@ if (length(unresolved) > 0) {
       taxonomy[, (resolved_col) := NULL]
     }
     taxonomy[is.na(dispatch_group), dispatch_group := classify_dispatch(Class)]
+    taxonomy[is.na(Organism), Organism := classify_organism(Class, Phylum, if ("Kingdom" %in% names(taxonomy)) Kingdom else NULL)]
   }
   
   ## whatever's still unresolved after a genuine FishBase/SeaLifeBase
@@ -1035,6 +1079,16 @@ if (length(unresolved) > 0) {
   ## fallback, not a fish/non-fish guess borrowed from an unrelated source
   still_unresolved <- taxonomy[is.na(dispatch_group), Species]
   taxonomy[Species %in% still_unresolved, dispatch_group := "invertebrate"]
+  ## Organism gets its OWN default, separately from dispatch_group's
+  ## "invertebrate" default above - whatever never resolved a Class/
+  ## Phylum/Kingdom at all genuinely isn't known to be any of Andrea's
+  ## categories, so "Other" is the honest default here, not a borrowed
+  ## "invertebrate" guess. A species left NA for dispatch_group but with
+  ## a real Class/Phylum (rare - only species with a Class outside every
+  ## classify_dispatch bucket AND every classify_organism bucket) still
+  ## correctly gets a non-"Other" Organism if Phylum alone identifies it
+  ## (e.g. a plant Phylum with no informative Class).
+  taxonomy[is.na(Organism), Organism := "Other"]
   
   message(length(unresolved) - length(still_unresolved), " resolved via FishBase/SeaLifeBase synonym lookup, ",
           length(still_unresolved), " still fully unresolved (defaulted to invertebrate):")
@@ -1500,6 +1554,38 @@ vuln_col   <- intersect(c("Vulnerability"), names(sp_table))[1]
 ## message on your first run and add the real column name here if
 ## it's missing from this list.
 common_length_col <- intersect(c("CommonLength", "CommonLengthF", "CommonLengthM"), names(sp_table))[1]
+## 2026-09-24, per Andrea: Ecology/IUCN_conservation_status/Exploitation_
+## status were previously hand-curated (left NA - see the traits_ewe
+## header comment near where traits_reconciled is built) - she correctly
+## identified these as real FishBase/SeaLifeBase species() fields, not
+## something that needs manual entry. Resolved defensively (same pattern
+## as vuln_col/common_length_col above) since this session has no
+## network access to verify the exact column names against a live
+## rfishbase pull - the coverage message below prints whichever field
+## name was actually found (or "NONE FOUND") so a wrong guess is visible
+## on the first real run rather than silently blank.
+##   - Ecology              <- DemersPelag (FishBase/SeaLifeBase's own
+##                             ecology category - bathydemersal/
+##                             bathypelagic/benthic/benthopelagic/
+##                             demersal/pelagic/pelagic-neritic/pelagic-
+##                             oceanic/reef-associated - exactly Andrea's
+##                             list except "land-based", which FishBase/
+##                             SeaLifeBase has no reason to carry since
+##                             it's a fish/aquatic-organism database -
+##                             see the Organism/land-based note below).
+##   - IUCN_conservation_status <- IUCN_Code (FishBase/SeaLifeBase's own
+##                             IUCN Red List category field).
+##   - Exploitation_status  <- Importance (FishBase/SeaLifeBase's own
+##                             commercial-importance category - e.g.
+##                             "highly commercial"/"minor commercial"/
+##                             "subsistence fisheries"/"of no interest" -
+##                             the closest FishBase-native field to
+##                             "exploitation status"; if your version of
+##                             rfishbase calls this something else, add
+##                             the real name to the candidate list below).
+demerspelag_col <- intersect(c("DemersPelag"), names(sp_table))[1]
+iucn_col        <- intersect(c("IUCN_Code", "IUCNCode", "IUCN_code"), names(sp_table))[1]
+importance_col  <- intersect(c("Importance", "importance"), names(sp_table))[1]
 
 sp_traits <- if (nrow(sp_table) > 0) unique(sp_table[, .(
   Species,
@@ -1510,14 +1596,19 @@ sp_traits <- if (nrow(sp_table) > 0) unique(sp_table[, .(
                   fcoalesce(DepthRangeDeep, DepthRangeShallow)),
   Longevity = if (!is.na(long_col)) get(long_col) else NA_real_,
   Vulnerability = if (!is.na(vuln_col)) get(vuln_col) else NA_real_,
-  CommonLength = if (!is.na(common_length_col)) get(common_length_col) else NA_real_
+  CommonLength = if (!is.na(common_length_col)) get(common_length_col) else NA_real_,
+  Ecology = if (!is.na(demerspelag_col)) as.character(get(demerspelag_col)) else NA_character_,
+  IUCN_conservation_status = if (!is.na(iucn_col)) as.character(get(iucn_col)) else NA_character_,
+  Exploitation_status = if (!is.na(importance_col)) as.character(get(importance_col)) else NA_character_
   ## NOTE: Family deliberately NOT extracted here - it's already merged
   ## in from WoRMS taxonomy (Step 1, with proper synonym resolution),
   ## and duplicating it here would collide into Family.x/Family.y on
   ## the merge below instead of a clean single column
 )], by = "Species") else data.table(Species = character(), MaxWeight = numeric(),
                                     MaxLength = numeric(), Depth = numeric(), Longevity = numeric(),
-                                    Vulnerability = numeric(), CommonLength = numeric())
+                                    Vulnerability = numeric(), CommonLength = numeric(),
+                                    Ecology = character(), IUCN_conservation_status = character(),
+                                    Exploitation_status = character())
 
 message("Coverage - Vulnerability: ", sp_traits[!is.na(Vulnerability), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(vuln_col), "NONE FOUND", vuln_col), ")",
@@ -1528,7 +1619,60 @@ message("Coverage - MaxWeight: ", sp_traits[!is.na(MaxWeight), .N], "/", length(
         " | Depth: ", sp_traits[!is.na(Depth), .N], "/", length(sp_list),
         " | Longevity: ", sp_traits[!is.na(Longevity), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(long_col), "NONE FOUND", long_col), ")")
+
+message("Coverage - Ecology: ", sp_traits[!is.na(Ecology), .N], "/", length(sp_list),
+        " (field: ", ifelse(is.na(demerspelag_col), "NONE FOUND", demerspelag_col), ")",
+        " | IUCN_conservation_status: ", sp_traits[!is.na(IUCN_conservation_status), .N], "/", length(sp_list),
+        " (field: ", ifelse(is.na(iucn_col), "NONE FOUND", iucn_col), ")",
+        " | Exploitation_status: ", sp_traits[!is.na(Exploitation_status), .N], "/", length(sp_list),
+        " (field: ", ifelse(is.na(importance_col), "NONE FOUND", importance_col), ")")
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a: species() traits")))
+
+## --- 2a2. Occurrence status (native/introduced/questionable in the ---
+## Western Mediterranean) - via rfishbase::country(), FishBase/
+## SeaLifeBase's own per-country status table. UNVERIFIED against a
+## live pull (same caveat as everything else in this script that has no
+## network access here to check real column names) - this table's exact
+## column names/status vocabulary are a best-effort guess
+## (Status/status; native/introduced/questionable/endemic-style values)
+## and this is genuinely new functionality, not a refinement of
+## something already working - check the coverage message below
+## carefully on the first real run.
+## Falls back to a hardcoded Western Med country list if TARGET_COUNTRIES
+## isn't set in this session (e.g. this script run standalone, without
+## 02_fisheries.R having run first).
+OCCURRENCE_COUNTRIES <- if (exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) {
+  TARGET_COUNTRIES
+} else {
+  c("Spain", "France", "Italy", "Morocco", "Algeria", "Tunisia")
+}
+occurrence_traits <- tryCatch({
+  country_raw <- fetch_both(rfishbase::country, sp_list)
+  if (nrow(country_raw) == 0) stop("rfishbase::country() returned no rows for this species list.")
+  country_col_name <- intersect(c("country", "Country"), names(country_raw))[1]
+  status_col       <- intersect(c("Status", "status"), names(country_raw))[1]
+  if (is.na(country_col_name) || is.na(status_col)) {
+    stop("Expected columns (country/Country, Status/status) not found - columns present: ",
+         paste(names(country_raw), collapse = ", "))
+  }
+  message("\nrfishbase::country() columns available:")
+  print(names(country_raw))
+  setnames(country_raw, c(country_col_name, status_col), c("CountryName", "Status"))
+  med_rows <- country_raw[CountryName %in% OCCURRENCE_COUNTRIES]
+  ## One species can have a different status per country (e.g. native
+  ## in Spain, questionable in Tunisia) - collapsed to the distinct set
+  ## found across the Western Med countries above, joined with "; " so
+  ## nothing is silently picked over another; genuinely one-status
+  ## species just get that one value.
+  med_rows[, .(Occurrence_status = paste(sort(unique(Status)), collapse = "; ")), by = Species]
+}, error = function(e) {
+  message("Occurrence_status (rfishbase::country()) fetch failed - ", conditionMessage(e),
+          ". Occurrence_status will be blank for every species this run.")
+  data.table(Species = character(), Occurrence_status = character())
+})
+message("Coverage - Occurrence_status: ", nrow(occurrence_traits), "/", length(sp_list),
+        " species have at least one Western Med country record.")
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a2: occurrence status")))
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
 growth_raw <- fetch_both(rfishbase::popgrowth, sp_list)
@@ -1599,7 +1743,7 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2f: swimming/aspect ra
 ## --- assemble ----------------------------------------------------------
 species_df <- Reduce(function(x, y) merge(x, y, by = "Species", all.x = TRUE),
                      list(species_df, sp_traits, growth_traits, lw_traits,
-                          maturity_traits, ecol_traits, swim_traits))
+                          maturity_traits, ecol_traits, swim_traits, occurrence_traits))
 
 if (!exists("DEFAULT_TEMP", envir = .GlobalEnv, inherits = FALSE)) DEFAULT_TEMP <- 16
 species_df[, Temp := DEFAULT_TEMP]
@@ -2489,7 +2633,15 @@ if (ENABLE_ECOBASE_QUERY) {
   ## never found by the read-back check right below. Now both point at
   ## csv_out_dir, so the EcoBase CSVs land inside the pbqb subfolder
   ## alongside this script's other output.
-  fetch_ecobase_literature_pb_qb(out_dir = csv_out_dir, force_refresh = ECOBASE_FORCE_REFRESH)
+  ## 2026-09-24, per Andrea: EcoBase should consider each candidate
+  ## model's OWN reference year, not treat every matching model as
+  ## equally relevant - target_year narrows the "simple" CSV below to
+  ## whichever model is closest to this model's own YEAR_ECOPATH per
+  ## FG_name (see fetch_ecobase_literature_pb_qb()'s own header comment;
+  ## the full multi-model detail is still written to
+  ## ecobase_literature_pb_qb_full.csv either way).
+  fetch_ecobase_literature_pb_qb(out_dir = csv_out_dir, force_refresh = ECOBASE_FORCE_REFRESH,
+                                 target_year = round(mean(YEAR_ECOPATH)))
 } else {
   message("ENABLE_ECOBASE_QUERY = FALSE - skipping the EcoBase literature query entirely.",
           " Continuing with empirical PB/QB only",
@@ -2716,6 +2868,15 @@ add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKB
 write_native_sheet_csv(fg_traits_weighted, "fg_traits_weighted", csv_out_dir)
 finalize_ecopath_ecosim_summary_sheets(out_path = ECOPATH_WORKBOOK_PATH, year_ecopath = YEAR_ECOPATH,
                                        biomass_csv_dir = BIOMASS_CSV_DIR, fisheries_csv_dir = FISHERIES_CSV_DIR)
+
+## Refresh the "Ecobase" comparison sheet (03b_ecobase.R) now that this
+## script's own PB/QB query above may have added rows the raw cache
+## didn't have when 01_biomass.R first wrote this sheet (or added it for
+## the first time, if ENABLE_ECOBASE_BIOMASS_QUERY was FALSE there).
+ecobase_sheet_dt <- build_ecobase_sheet_dt(csv_out_dir, target_year = round(mean(YEAR_ECOPATH)))
+if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
+  upsert_workbook_sheets(list(Ecobase = ecobase_sheet_dt), ECOPATH_WORKBOOK_PATH)
+}
 
 ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
 ## the intended sheets, trimmed script by script - trim the workbook
@@ -3032,11 +3193,34 @@ if (file.exists(FG_REFERENCE_PATH)) {
 ##                            Yield (fisheries-derived, species_df$Yield -
 ##                            NA whenever YIELD_SOURCE has no data, same
 ##                            as species_df$Yield itself)
-## Ecology, Occurrence_status, IUCN_conservation_status and Exploitation_
-## status have NO automated source wired into this pipeline (they were
-## hand-curated in the old sheet) - kept as NA columns so the table's
-## shape/contract is unchanged for anything reading traits_ewe.csv/
-## Ecopath_traits downstream, rather than silently fabricated.
+## 2026-09-24 update, per Andrea (correctly identified these as real
+## FishBase/SeaLifeBase fields, not something that needs hand-curation):
+##   - Organism  <- classify_organism(Class, Phylum[, Kingdom]) (Step 1,
+##                  lib taxonomy fetch) - Fishes/Mammals/Birds/Reptiles/
+##                  Algae/Plants/Bacteria/Fungi/Invertebrates/Other -
+##                  finer than dispatch_group (which only exists to pick
+##                  a PB/QB formula and lumps reptiles into
+##                  "invertebrate") - see classify_organism()'s own
+##                  comment near where taxonomy is built, Step 1.
+##   - Ecology   <- DemersPelag (FishBase/SeaLifeBase species(), Step 2a) -
+##                  bathydemersal/bathypelagic/benthic/benthopelagic/
+##                  demersal/pelagic/pelagic-neritic/pelagic-oceanic/
+##                  reef-associated. NOT populated for "land-based"
+##                  species (seabirds/some mammals) - FishBase/SeaLifeBase
+##                  has no reason to carry that value at all, since it's
+##                  an aquatic-organism database; those rows just stay
+##                  blank here rather than guessed.
+##   - IUCN_conservation_status <- IUCN_Code (species(), Step 2a).
+##   - Exploitation_status <- Importance (species(), Step 2a) - FishBase's
+##                  own commercial-importance category, the closest
+##                  native field to "exploitation status".
+##   - Occurrence_status <- rfishbase::country() Status, Western Med
+##                  countries only (Step 2a2) - genuinely NEW/UNVERIFIED
+##                  functionality (see that step's own comment) - check
+##                  its coverage message on the first real run.
+## All four are still genuinely NA wherever FishBase/SeaLifeBase itself
+## has no value for that species (or the species isn't in species_df at
+## all - no 1994-1996 survey record) - never guessed/fabricated.
 
 species_universe <- if (!is.null(fg_species_all)) {
   copy(fg_species_all)
@@ -3058,21 +3242,18 @@ fg_totals <- species_df[, .(FG_Biomass_total = sum(Biomass, na.rm = TRUE),
 fg_totals[, FG := as.character(FG)]
 
 traits_reconciled <- merge(species_universe,
-                           species_df[, .(Species, dispatch_group, MaxLength, CommonLength,
-                                          Longevity, Vulnerability, a_lw, b_lw, Biomass, Yield)],
+                           species_df[, .(Species, dispatch_group, Organism, MaxLength, CommonLength,
+                                          Longevity, Vulnerability, a_lw, b_lw, Biomass, Yield,
+                                          Ecology, IUCN_conservation_status, Exploitation_status,
+                                          Occurrence_status)],
                            by = "Species", all.x = TRUE)
 traits_reconciled <- merge(traits_reconciled, fg_totals, by = "FG", all.x = TRUE)
 
 traits_reconciled[, `:=`(
-  Organism             = dispatch_group,
-  Ecology              = NA_character_,
-  Occurrence_status    = NA_character_,
   Biomass_contribution = fifelse(!is.na(FG_Biomass_total) & FG_Biomass_total > 0,
                                  Biomass / FG_Biomass_total, NA_real_),
   Catch_contribution   = fifelse(!is.na(FG_Yield_total) & FG_Yield_total > 0,
                                  Yield / FG_Yield_total, NA_real_),
-  IUCN_conservation_status = NA_character_,
-  Exploitation_status  = NA_character_,
   Vulnerability_index  = Vulnerability,
   Mean_length          = CommonLength,
   Max_length           = MaxLength,

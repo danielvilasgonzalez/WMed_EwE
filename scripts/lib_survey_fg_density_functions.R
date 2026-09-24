@@ -3075,9 +3075,12 @@ trim_workbook_to_final_sheets <- function(out_path) {
   finalize_workbook_sheet_order(
     out_path = out_path,
     ## FG_References added 2026-09-17 - see build_fg_references_sheet()
-    ## below. 10 final sheets now, not 9.
+    ## below. Ecobase added 2026-09-24 - see add_ecobase_sheet_to_workbook()
+    ## in 03b_ecobase.R (per-group Biomass/PB/QB/reference-year from other
+    ## published Western Med Ecopath models, for direct comparison against
+    ## this model's own Ecopath_B/Ecopath_PBQB values). 11 final sheets now.
     target_order = c("info", "FG_spp", "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB",
-                     "Ecopath_traits", "Ecopath_diet", "Ecosim_ts", "FG_References"),
+                     "Ecopath_traits", "Ecopath_diet", "Ecosim_ts", "FG_References", "Ecobase"),
     drop_extras = TRUE
   )
 }
