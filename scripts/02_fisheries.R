@@ -4642,6 +4642,7 @@ if (nrow(stecf_discard_ratio_by_fleet) > 0) {
 recreational_rows <- CJ(Country = unique(FLEET_REGISTER[Sector == "Recreational"]$Country), FG_num = unique(gfcm_country_fg$FG_num), Year = YEAR_ECOPATH)  # every country x FG x Ecopath-year combination
 recreational_rows <- merge(recreational_rows, FLEET_REGISTER[Sector == "Recreational", .(Country, GSA, FleetType, Comment)], by = "Country")  # attach the Recreational fleet's metadata
 recreational_rows[, `:=`(Sector = "Recreational", Catch_t_by_fleet = NA_real_, Discard_t_by_fleet = NA_real_,
+                         Landings_t_by_fleet = NA_real_,
                          fleet_split_source = "not estimated - no source in this pipeline captures recreational catch")]  # default to "not estimated"
 
 if (nrow(sau_sector_prop) > 0) {
@@ -4658,6 +4659,7 @@ if (nrow(sau_sector_prop) > 0) {
     n_recreational_est <- sum(!is.na(recreational_rows$recreational_ratio) & !is.na(recreational_rows$Catch_t_commercial))  # cells with an estimate
     recreational_rows[!is.na(recreational_ratio) & !is.na(Catch_t_commercial), `:=`(
       Catch_t_by_fleet = Catch_t_commercial * recreational_ratio,  # infer recreational catch from the commercial total x ratio
+      Landings_t_by_fleet = Catch_t_commercial * recreational_ratio,  # no discard estimate exists for recreational catch anywhere in this pipeline - Landings = Catch here, same assumption Discard_t_by_fleet staying NA already implies
       fleet_split_source = "inferred - SAU sector split's Recreational:Commercial ratio applied to GFCM's commercial total (proxy, not a measurement)"
     )]
     recreational_rows[, `:=`(recreational_ratio = NULL, Catch_t_commercial = NULL)]  # drop the now-unneeded helper columns
@@ -4667,13 +4669,35 @@ if (nrow(sau_sector_prop) > 0) {
   }
 }
 
+## 2026-09-24 fix, per Andrea's real run: hake/anglerfish/conger (and
+## any other FG/fleet cell where discard rate is genuinely unknown -
+## NA, not zero - for every YEAR_ECOPATH year) were showing ZERO
+## landings in Ecopath_L/Ecopath_Di despite real, correctly-split
+## catch existing all the way through fleet_split (confirmed step by
+## step against her actual data: real GFCM catch -> real per-country
+## catch -> real fleet share -> real Landings_t_by_fleet in
+## fleet_split itself). ROOT CAUSE: Landings_t_by_fleet (already
+## computed correctly here, in fleet_split) was never carried into
+## fleet_split_out at all - only Catch_t/Discard_t survived. Ecopath_L
+## further downstream (ecopath_fleet_long) then had to RE-DERIVE
+## landings as Catch_t_avg - Discard_t_avg, and mean(Discard_t, na.rm
+## = TRUE) over an all-NA group returns NaN (not 0) in R - so
+## Catch_t_avg - NaN = NaN for every one of these cells. That NaN then
+## got silently swept to 0 by the later `is.na(get(cc)) := 0` cleanup
+## loop (is.na(NaN) is TRUE in R), which was only ever meant to catch
+## genuinely-missing FG x Fleet combinations, not a real value that
+## happened to compute to NaN. Fixed by carrying Landings_t_by_fleet
+## through as its own column and using it directly further down,
+## instead of re-deriving it from two separately-averaged columns.
 fleet_split_out <- rbindlist(list(
   fleet_split[, .(Country, FG_num, FG_name, Year, Sector, FleetType, GSA, Comment,
                   Catch_t = Catch_t_by_fleet, Discard_t = Discard_t_by_fleet,
+                  Landings_t = Landings_t_by_fleet,
                   Catch_t_incl_unreported = Catch_t_incl_unreported * prop_fleet,
                   discard_source, discard_split_source, fleet_split_source)],
   recreational_rows[, .(Country, FG_num, Year, Sector, FleetType, GSA, Comment,
                         Catch_t = Catch_t_by_fleet, Discard_t = Discard_t_by_fleet,
+                        Landings_t = Landings_t_by_fleet,
                         Catch_t_incl_unreported = NA_real_, discard_source = NA_character_,
                         discard_split_source = NA_character_, fleet_split_source)]
 ), use.names = TRUE, fill = TRUE)  # combine commercial fleet rows and recreational rows into one output table
@@ -4958,12 +4982,25 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
 ## flagged "not estimated" (Catch_t is NA) are still dropped here, same
 ## as before - only cells with a real number are added in.
 ## =================================================================
+## 2026-09-24 fix: Landings_t_avg is now taken directly from
+## fleet_split_out's own Landings_t column (computed correctly back in
+## fleet_split, carried through unchanged) rather than re-derived as
+## Catch_t_avg - Discard_t_avg. That subtraction broke silently for any
+## FG x Fleet where Discard_t is NA (unknown - not zero) for every
+## single YEAR_ECOPATH year: mean(Discard_t, na.rm = TRUE) over an
+## all-NA group returns NaN in R, so Catch_t_avg - NaN = NaN, which the
+## later 0-fill cleanup step then quietly zeroed out (is.na(NaN) is
+## TRUE in R) even though real, nonzero landings existed all along -
+## confirmed against Andrea's own run for hake/anglerfish/conger in
+## France/Italy/Spain. See fleet_split_out's own comment for the full
+## trace.
 ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & (Sector != "Recreational" | !is.na(Catch_t)),
-                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE), Discard_t_avg = mean(Discard_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch AND discards by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
+                                      .(Catch_t_avg = mean(Catch_t, na.rm = TRUE), Discard_t_avg = mean(Discard_t, na.rm = TRUE),
+                                        Landings_t_avg = mean(Landings_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch, discards AND landings by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
 ecopath_fleet_long[, `:=`(Fleet = paste(Country, FleetType, sep = " - "),
                           Catch_t_km2_avg = Catch_t_avg / Total_Area_km2,
                           Discard_t_km2_avg = Discard_t_avg / Total_Area_km2,
-                          Landings_t_km2_avg = (Catch_t_avg - Discard_t_avg) / Total_Area_km2)]  # build the Fleet label and convert catch/discards/landings (Catch_t = gross catch = Landings + Discards) to density
+                          Landings_t_km2_avg = Landings_t_avg / Total_Area_km2)]  # build the Fleet label and convert catch/discards/landings to density
 
 ## --- Ecopath_L / Ecopath_Di: FG x Fleet, one column PER FLEET -------
 ## Final workbook sheets, per spec: "FG_number, FG_name, landings/

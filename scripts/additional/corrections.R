@@ -36,7 +36,7 @@
 # sector (industrial or artisanal) from SAU, but maybe it is worth it to get regional catalan database to validate regional catches?
 
 
-
+#review that catches have all group from data soruces matched to FG_WMed
 
 
 
