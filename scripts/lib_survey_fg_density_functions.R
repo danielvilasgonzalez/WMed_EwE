@@ -3369,8 +3369,29 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
           ## on baseline F is correct regardless of what physical units
           ## the underlying FishMIP figure is in.
           first_valid_idx <- which(!is.na(ts_vals))[1]
+          ## 2026-09-25 fix, per Daniel's real run (crashed with "Error in
+          ## if (years[first_valid_idx] != years[1]) { : missing value
+          ## where TRUE/FALSE needed"): `years` (parsed via
+          ## suppressWarnings(as.numeric(ecosim_b[[1]][...]))) up above can
+          ## itself contain NA - e.g. a blank/non-numeric cell in
+          ## Ecosim.csv's own Year column for one row - and `years[1]`
+          ## specifically being NA is enough to make ANY comparison against
+          ## it evaluate to NA (real_number != NA is NA, not FALSE), which
+          ## `if()` cannot evaluate. This is a genuinely different failure
+          ## mode than "no non-NA effort values" (already guarded by the
+          ## is.na(first_valid_idx) branch above) - the effort column
+          ## itself can be perfectly fine while the `years` reference
+          ## vector has the hole. Guarded every years[...] comparison
+          ## below with explicit is.na() checks instead of relying on `!=`
+          ## to short-circuit safely (it does not, for NA).
           if (is.na(first_valid_idx)) {
             message("Effort fleet '", fl, "': no non-NA effort values across the whole time series - column left blank.")
+            ts_vals_rel <- ts_vals
+          } else if (any(is.na(years))) {
+            message("Effort fleet '", fl, "': the reference 'years' vector (from Ecosim.csv's own Year column) has ",
+                    sum(is.na(years)), " NA/unparseable entry(ies) - cannot safely determine whether the relative-",
+                    "scaling reference year matches the series' first year. Check Ecosim.csv for a blank or non-",
+                    "numeric Year cell. Falling back to raw kW-days for this fleet only (Scaling stays 'absolute').")
             ts_vals_rel <- ts_vals
           } else {
             ref_value <- ts_vals[first_valid_idx]

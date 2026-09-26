@@ -1176,6 +1176,42 @@ message("\nDispatch group counts:")
 print(species_df[, .N, by = dispatch_group])
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (FishBase/SeaLifeBase)")))
 
+## 2026-09-25, per Andrea ("the pbqb code should look for growth
+## parameters and other things only for fish groups. (no invertebrates)"):
+## growth params (Loo/K/Winfinity/tmax, via rfishbase::popgrowth()),
+## length-weight a/b (poplw()), maturity (Lm/Tmat, maturity()), and
+## swimming/aspect ratio (swimming()) are all genuinely FISH life-history
+## concepts - they feed calc_fish() ONLY (Pauly 1980 M, the Froese-
+## Binohlan t0 estimate, FishLife/TropFishR's M methods, and the
+## PalomaresPauly/ChristensenPauly QB formulas that need Winf/AspectRatio).
+## calc_mammal()/calc_seabird()/calc_invertebrate() (further down) use a
+## completely disjoint set of traits - TrophicLevel, MaxWeight, Longevity,
+## Depth - none of which come from these four fetches. Previously all four
+## were queried against `sp_list` (EVERY species in species_df, including
+## mammals/seabirds/invertebrates/phytoplankton) - wasted SeaLifeBase
+## queries for groups that were never going to use the result (and, for
+## poplw()/maturity(), SeaLifeBase DOES carry some invertebrate rows,
+## which could have been silently merged into species_df's Loo/K/Lm/Tmat
+## columns for an invertebrate row even though nothing downstream ever
+## reads them for that dispatch_group - confusing in the audit CSVs at
+## best). Restricted to fish only, right after dispatch_group becomes
+## available. `sp_list` itself is left untouched - species()/country()/
+## ecology() (2a/2a2/2e below) are still fetched for every species, since
+## TrophicLevel (ecology) and MaxWeight/Longevity (species()) ARE used by
+## the non-fish dispatch functions too.
+sp_list_fish <- unique(species_df[dispatch_group == "fish", Species])
+message("Fish-only species list for growth/length-weight/maturity/swimming fetches: ",
+        length(sp_list_fish), " of ", length(sp_list), " total species in species_df ",
+        "(the rest are ", paste(setdiff(unique(species_df$dispatch_group), "fish"), collapse = "/"),
+        " - popgrowth()/poplw()/maturity()/swimming() are no longer queried for them).")
+if (length(sp_list_fish) == 0) {
+  message("WARNING: sp_list_fish is EMPTY (no species classified dispatch_group == \"fish\" -",
+          " check the taxonomy fetch above/fetch_taxonomy_fishbase() output). The 2b/2c/2d/2f",
+          " fetches below (popgrowth/poplw/maturity/swimming) will be skipped entirely rather",
+          " than calling rfishbase with a zero-length species vector, which some rfishbase",
+          " functions error on rather than returning an empty result.")
+}
+
 ## =================================================================
 ## HELPER: pick the best row per species from a multi-record FishBase/
 ## SeaLifeBase table (popgrowth, poplw, maturity all have this shape -
@@ -1745,7 +1781,25 @@ message("Coverage - Occurrence_status: ", nrow(occurrence_traits), "/", length(s
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a2: occurrence status")))
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
-growth_raw <- fetch_both(rfishbase::popgrowth, sp_list)
+## FISH ONLY (sp_list_fish, not sp_list) - see the 2026-09-25 comment
+## right after dispatch_group is attached to species_df, above.
+## 2026-09-26 fix, per Andrea ("is taking foreverer... optimize that
+## with lower the search only for certain pars for fish"): fetch_both()
+## defaults to ALSO querying SeaLifeBase (fishbase_only = FALSE) - fine
+## when sp_list could contain non-fish species, but sp_list_fish is
+## ALREADY restricted to species whose Class is in FISH_CLASSES (real
+## fish live in FishBase, not SeaLifeBase). Querying SeaLifeBase for
+## them anyway was pure waste, and worse: SeaLifeBase's remote parquet
+## backend (the "cboettig/fishbase/slb/..." S3 bucket) was timing out
+## repeatedly in a real run (10+ minutes per failed batch, confirmed from
+## the actual console log: "Operation too slow"/"Connection timed out"),
+## which then fell back to 400+ sequential PER-SPECIES SeaLifeBase calls,
+## each eating the same multi-minute timeout - this alone accounted for
+## multiple hours of the run (ETA readings up to "5d" were observed).
+## Setting fishbase_only = TRUE here (matching what the swimming() call
+## in 2f already correctly did) skips the SeaLifeBase attempt entirely
+## for these three genuinely fish-only fetches.
+growth_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::popgrowth, sp_list_fish, fishbase_only = TRUE) else data.table()
 growth_best <- select_best_rows(growth_raw)
 tmax_col <- if (nrow(growth_best) > 0) intersect(c("tmax", "TMax"), names(growth_best))[1] else NA
 growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
@@ -1764,7 +1818,9 @@ growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)",
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
-lw_raw <- fetch_both(rfishbase::poplw, sp_list)
+## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
+## FISHBASE ONLY - same 2026-09-26 fix/reasoning as popgrowth above.
+lw_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::poplw, sp_list_fish, fishbase_only = TRUE) else data.table()
 lw_best <- select_best_rows(lw_raw)
 lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
   Species,
@@ -1776,7 +1832,9 @@ lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)",
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b")))
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
-maturity_raw <- fetch_both(rfishbase::maturity, sp_list)
+## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
+## FISHBASE ONLY - same 2026-09-26 fix/reasoning as popgrowth above.
+maturity_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::maturity, sp_list_fish, fishbase_only = TRUE) else data.table()
 maturity_best <- select_best_rows(maturity_raw)
 lm_col <- if (nrow(maturity_best) > 0) intersect(c("Lm", "LengthMatMin"), names(maturity_best))[1] else NA
 tmat_col <- if (nrow(maturity_best) > 0) intersect(c("tm", "AgeMatMin"), names(maturity_best))[1] else NA
@@ -1788,8 +1846,8 @@ maturity_traits <- if (nrow(maturity_best) > 0) maturity_best[, .(
 maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)",
                                           refno_candidates = c("MaturityRef", "MatRef", "RefNo", "MainRefNo"))
 
-message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N], "/", length(sp_list),
-        " (field: ", ifelse(is.na(lm_col), "NONE FOUND", lm_col), ")")
+message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N], "/", length(sp_list_fish),
+        " fish species (field: ", ifelse(is.na(lm_col), "NONE FOUND", lm_col), ")")
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2d: maturity")))
 
 ## --- 2e. Ecology: trophic level ---------------------------------------
@@ -1803,7 +1861,12 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2e: ecology/trophic le
 ## --- 2f. Swimming: aspect ratio (fish-specific caudal-fin morphology -
 ## SeaLifeBase never has this, so skip that call entirely rather than
 ## waste time on a query that can never succeed) -----------------------
-swim <- fetch_both(rfishbase::swimming, sp_list, fishbase_only = TRUE)
+## FISH ONLY (sp_list_fish) - `fishbase_only = TRUE` already meant this
+## never returned rows for a non-fish species, but it was still QUERIED
+## against the full sp_list (mammals/seabirds/invertebrates included)
+## every run - narrowed to sp_list_fish so the query itself is smaller,
+## consistent with 2b/2c/2d above.
+swim <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::swimming, sp_list_fish, fishbase_only = TRUE) else data.table()
 ar_col <- if (nrow(swim) > 0) intersect(c("AspectRatio", "Aspect"), names(swim))[1] else NA
 swim_traits <- if (nrow(swim) > 0) unique(swim[, .(
   Species, AspectRatio = if (!is.na(ar_col)) get(ar_col) else NA_real_
@@ -2341,7 +2404,19 @@ siler_pb <- function(longevity, surrogate_type) {
   lc <- exp(-p$a2 * x / W)
   ls <- exp((p$a3 / p$b3) * (1 - exp(p$b3 * x / W)))
   lx <- lj * lc * ls
-  survival <- lx / shift(lx, fill = 1)
+  ## 2026-09-25 fix, per Daniel's real run (crashed with "Error in
+  ## (function (classes, fdef, mtable) ... : unable to find an inherited
+  ## method for function 'shift' for signature '"numeric"'"): a bare
+  ## `shift()` call is ambiguous once a package that registers `shift` as
+  ## an S4 generic for spatial objects is loaded (e.g. `raster`/`terra` -
+  ## both are `library()`'d by 01_biomass.R, sourced earlier in the same
+  ## pipeline run) - R then dispatches through S4 method lookup instead of
+  ## calling the plain `data.table::shift()` function this code actually
+  ## wants, and there is no S4 method registered for a bare numeric
+  ## vector, so it errors instead of lagging the vector. Explicitly
+  ## namespaced to remove the ambiguity - this is a lag-by-one on a plain
+  ## numeric vector, nothing spatial.
+  survival <- lx / data.table::shift(lx, fill = 1)
   mean(-log(survival), na.rm = TRUE)
 }
 

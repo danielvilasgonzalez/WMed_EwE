@@ -2094,6 +2094,18 @@ if (AREA_MODE == "westmed") {
   ## at the whole-cetacean-guild level (e.g. a total abundance survey that
   ## doesn't break out species) - it still splits evenly across all 5 FGs,
   ## which is the correct behavior for a genuinely undifferentiated figure.
+  ## 2026-09-25, per Andrea ("i am still missing two FGs of seabirds..."):
+  ## same bug as the original single "Cetaceans" bucket - the broad
+  ## "Seabirds" keyword list below (still kept, as a genuinely-
+  ## undifferentiated-figure fallback) matches BOTH "Pelagic/Offshore
+  ## seabirds" (FG7) and "Coastal/inshore seabirds" (FG8) by keyword
+  ## (both FG_names literally contain the substring "seabirds"), so a
+  ## Group="Seabirds" row would still split evenly across both FGs
+  ## regardless of which one a real count actually describes. Added
+  ## PelagicSeabirds/CoastalSeabirds as their own keyword categories -
+  ## each keyword checked to match ONLY its intended FG_name text
+  ## ("pelagic/offshore seabird" only appears in FG7, "coastal/inshore
+  ## seabird" only in FG8).
   MEGAFAUNA_TAXON_KEYWORDS <- list(
     Cetaceans              = c("cetacean", "dolphin", "whale", "porpoise"),
     BottlenoseDolphins     = c("bottlenose"),
@@ -2103,6 +2115,8 @@ if (AREA_MODE == "westmed") {
     DeepSeaCetaceanFeeders = c("deep sea-cetacean", "deep sea cetacean"),
     Pinnipeds  = c("seal", "monk seal"),
     Seabirds   = c("seabird", "shearwater", "gull", "petrel", "tern", "auk", "cormorant"),
+    PelagicSeabirds = c("pelagic/offshore seabird", "pelagic seabird"),
+    CoastalSeabirds = c("coastal/inshore seabird", "coastal seabird"),
     SeaTurtles = c("turtle")
   )
   megafauna_biomass_fg_year <- load_manual_cited_biomass_group(
@@ -2168,6 +2182,44 @@ if (AREA_MODE == "westmed") {
   ## Full keyword catalog - used below to match the manual/auto-drafted
   ## CSV's Group column to an FG_name, REGARDLESS of which source (EcoBase
   ## or satellite) actually supplied each group's number.
+  ## 2026-09-25, per Andrea ("suprabenthos... salps and gelatinous
+  ## zooplankton and jellyfish... and cymodocea for biomass"): these four
+  ## groups were NEVER in this keyword list before - meaning the EcoBase
+  ## auto-draft block above (fetch_ecobase_literature_biomass()) has never
+  ## actually searched for them, even though EcoBase model group_names
+  ## commonly use exactly these labels (per Andrea, re: Suprabenthos
+  ## specifically: "usually a lot of models include this FG with that
+  ## name") - a real, silent gap, not just missing manual data. Added as
+  ## their own categories so a future EcoBase query (or a manual/cited CSV
+  ## row) can target each one specifically. NOTE: because
+  ## PRIMARY_PRODUCER_BIOMASS_PATH already exists (Andrea/Daniel's real,
+  ## reviewed data/primary_producer_plankton_biomass.csv), the auto-draft
+  ## block above is SKIPPED entirely this run ("existing file always wins
+  ## - never overwritten") - these new categories only take effect once
+  ## EITHER (a) that file is deleted/renamed so the EcoBase auto-draft
+  ## runs fresh and can populate them, or (b) real cited rows for
+  ## Suprabenthos/Cymodocea/GelatinousZooplankton are added to that CSV by
+  ## hand, same as the megafauna file above. Web search this session
+  ## (2026-09-25) could NOT find a citable Western-Med-specific standing-
+  ## biomass figure for any of these three (Suprabenthos: Corrales et al.
+  ## 2015/South Catalan Sea Ecopath papers exist but are paywalled;
+  ## Cymodocea nodosa: literature has LEAF/RHIZOME PRODUCTION rates, e.g.
+  ## Pérez & Camp 1986 Mar Menor lagoon 160-427 g DW/m2/year, but no
+  ## standing-biomass figure; gelatinous zooplankton/salps: Mediterranean-
+  ## specific trawl-survey biomass papers found by title but not
+  ## accessible full-text) - genuinely still open, not filled with a
+  ## guess. "Jellyfish" (FG68) and "Other macro-benthos" (FG67) are NOT
+  ## added here - both already receive a small non-NA MEDITS-survey-
+  ## derived value in the current real output (confirmed against Daniel's
+  ## actual ecopath_ecosim_inputs.xlsx, Ecopath_B sheet: Jellyfish =
+  ## 0.000196 t/km2, Other macro-benthos = 0.003135 t/km2) - genuinely
+  ## missing is Suprabenthos/Cymodocea/"Salps and other gelatinous
+  ## zooplankton" (all = NA in that same real output), which is what these
+  ## three new categories target. The tiny Jellyfish/macro-benthos MEDITS
+  ## values are likely a real undersample (bottom trawls are known to
+  ## catch gelatinous fauna poorly) rather than a bug - worth a literature
+  ## cross-check later, but that is a "is this number too low" question,
+  ## not a "this cell is empty" one, so left untouched here.
   PRIMARY_PRODUCER_TAXON_KEYWORDS <- list(
     MacroZooplankton     = c("macrozooplankton", "macro-zooplankton", "macro zooplankton"),
     MesoMicroZooplankton = c("mesozooplankton", "meso-zooplankton", "meso zooplankton",
@@ -2176,7 +2228,10 @@ if (AREA_MODE == "westmed") {
     SmallPhytoplankton   = c("small phytoplankton", "picophytoplankton", "nanophytoplankton"),
     Posidonia            = c("posidonia", "seagrass"),
     Macroalgae           = c("macroalga", "macro-alga"),
-    GorgoniansCorals     = c("gorgonian", "coral")
+    GorgoniansCorals     = c("gorgonian", "coral"),
+    Suprabenthos         = c("suprabenthos", "supra-benthos", "supra benthos"),
+    Cymodocea            = c("cymodocea"),
+    GelatinousZooplankton = c("gelatinous zooplankton", "salp", "salpidae", "thaliacea", "jellyfish")
   )
   ## 2026-09-24, per Andrea (refining the 2026-09-24-earlier satellite
   ## approach): phytoplankton should come from a Mediterranean
