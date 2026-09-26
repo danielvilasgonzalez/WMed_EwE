@@ -4637,3 +4637,257 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   upsert_workbook_sheets(workbook_sheets, out_path)
   invisible(sheets)
 }
+## =================================================================
+## Multistanza (juvenile/adult) biomass split - shared support
+## functions, added 2026-09-26 per Andrea's fix for code-review finding
+## #3 (European hake adult, FG "European hake adult", getting no real
+## biomass at all under the current species->FG lookup design - see
+## prepare_fg_lookup()'s own header comment above for the root cause:
+## its stanza tie-break keeps exactly one row per stanza species,
+## by lowest FG_num, so a stanza's higher-FG_num FG - "European hake
+## adult" in the current FG_WMed_2026.csv - gets ZERO species mapped to
+## it anywhere downstream, including ordinary MEDITS/MEDIAS survey
+## matching, not just stock-assessment attachment).
+##
+## Both 01_biomass.R and 02_fisheries.R independently hit the SAME
+## underlying data limitation: no catch/landings/survey source in this
+## pipeline reports an age/length-resolved split for a stanza species -
+## every source (GFCM, STECF's own Catches file, STAR/RAM, MEDITS/
+## MEDIAS) reports one undifferentiated figure per species. STECF FDI's
+## own "Biological/FDI Discards Age.csv"/"FDI Landings Age.csv" are the
+## ONE age-resolved source in this pipeline (Spain/France/Italy, 2014+
+## only). 02_fisheries.R already uses them to derive a real
+## juvenile:adult proportion for the CATCH side (see that script's own
+## "Multistanza age split" section) - kept as its own separate inline
+## block there rather than switched onto these shared functions in this
+## pass, to avoid touching already-validated production catch logic
+## without being able to re-run it against real data from this session.
+##
+## detect_multistanza_fg_pairs()/compute_multistanza_age_proportion()
+## below generalize that same approach so 01_biomass.R can compute and
+## apply the IDENTICAL proportion to the BIOMASS/survey side too - per
+## Andrea's explicit choice (2026-09-26) to reuse the catch-side age
+## proportion as the best-available real signal for the biomass split,
+## now that fish FGs are barred from any literature/EcoBase substitute
+## (see STEP 15b in 01_biomass.R). This is an acknowledged PROXY - catch
+## selectivity at age is not the same as standing-biomass age structure
+## - not a measurement of biomass age structure itself, and every use
+## of it downstream says so explicitly (catch_source/biomass_source
+## text, REVIEW csv).
+## =================================================================
+
+## Same marker-folder search 02_fisheries.R uses locally
+## (find_versioned_subdir(), defined in that script BEFORE it sources
+## this file) to resolve a year-stamped/versioned data folder (e.g.
+## STECF FDI's unzipped download). Duplicated here under a DIFFERENT
+## name, deliberately - not sharing the name means sourcing this file
+## from 02_fisheries.R can never silently overwrite (or be overwritten
+## by) that script's own copy, so a future edit to one can't change the
+## other's behavior through the shared name.
+resolve_versioned_data_subdir <- function(parent_dir, marker) {
+  if (!dir.exists(parent_dir)) return(NA_character_)
+  candidates <- c(parent_dir, list.dirs(parent_dir, recursive = FALSE, full.names = TRUE))
+  has_marker <- file.exists(file.path(candidates, marker)) | dir.exists(file.path(candidates, marker))
+  hits <- candidates[has_marker]
+  if (length(hits) == 0) return(NA_character_)
+  if (length(hits) > 1) message("[Paths] Multiple candidate folders under '", parent_dir, "' have '", marker,
+                                "' - using the first one found: '", hits[1], "'.")
+  hits[1]
+}
+
+## detect_multistanza_fg_pairs(): STRUCTURAL stanza-pair detection (same
+## rule prepare_fg_lookup() and 02_fisheries.R's own stanza tie-break
+## both already use) - a species is a clean juvenile/adult pair iff it
+## maps to more than one FG, EVERY one of those FGs is exclusive to that
+## species alone (no other species shares it), exactly one of them is
+## NOT named "...adult", and at least one of them IS. species_fg_dt must
+## have ScientificName/FG_num/FG_name columns - pass the UNDEDUPED
+## species->FG catalog (e.g. dataframe2 in 01_biomass.R, or fg_lookup
+## before its own tie-break in 02_fisheries.R), never
+## prepare_fg_lookup()'s own deduped output, which has already collapsed
+## each stanza down to one row by the time it exists.
+detect_multistanza_fg_pairs <- function(species_fg_dt) {
+  sf <- unique(as.data.table(species_fg_dt)[, .(ScientificName, FG_num, FG_name)])
+  fg_species_counts <- sf[, .(n_species_in_fg = uniqueN(ScientificName)), by = FG_num]
+  sf <- merge(sf, fg_species_counts, by = "FG_num")
+  sp_fg_counts <- sf[, .(n_fg = uniqueN(FG_num)), by = ScientificName]
+  multi_fg_species <- sp_fg_counts[n_fg > 1, ScientificName]
+  
+  empty_pairs <- data.table(ScientificName = character(), FG_num_juv = integer(), FG_name_juv = character(),
+                            FG_num_adult = integer(), FG_name_adult = character())
+  if (length(multi_fg_species) == 0) return(empty_pairs)
+  
+  stanza_check <- sf[ScientificName %in% multi_fg_species,
+                     .(all_exclusive = all(n_species_in_fg == 1)), by = ScientificName]
+  stanza_species <- stanza_check[all_exclusive == TRUE, ScientificName]
+  if (length(stanza_species) == 0) return(empty_pairs)
+  
+  ms <- sf[ScientificName %in% stanza_species, .(ScientificName, FG_num, FG_name)]
+  ms[, is_adult := str_detect(FG_name, regex("adult", ignore_case = TRUE))]
+  has_adult_ms <- ms[, .(has_adult = any(is_adult), n_juv = sum(!is_adult)), by = ScientificName]
+  clean_pair_species <- has_adult_ms[has_adult == TRUE & n_juv == 1, ScientificName]
+  if (length(clean_pair_species) == 0) return(empty_pairs)
+  
+  ms_clean <- ms[ScientificName %in% clean_pair_species]
+  juv_part   <- unique(ms_clean[is_adult == FALSE, .(ScientificName, FG_num_juv = FG_num, FG_name_juv = FG_name)])
+  adult_part <- unique(ms_clean[is_adult == TRUE,  .(ScientificName, FG_num_adult = FG_num, FG_name_adult = FG_name)])[
+    , .SD[1], by = ScientificName]  # a species could in principle have >1 adult-named FG too - keep just the first, defensively
+  merge(juv_part, adult_part, by = "ScientificName")
+}
+
+## resolve_fao_species_reference(): finds (or downloads) FAO's
+## CL_FI_SPECIES_GROUPS.csv reference and standardizes its English-name/
+## scientific-name columns - the same source 02_fisheries.R already uses
+## for its own species-code resolution, factored out here so
+## 01_biomass.R can resolve a multistanza species' FAO 3-alpha code
+## (needed to filter the FDI age files below) without needing the rest
+## of 02_fisheries.R's GFCM/SAU matching machinery.
+resolve_fao_species_reference <- function(pcloud_dir, csv_out_dir) {
+  found <- list.files(pcloud_dir, pattern = "CL_FI_SPECIES_GROUPS.csv$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+  path <- if (length(found) > 0) found[1] else {
+    url <- "https://data.apps.fao.org/catalog/dataset/b70c52c1-475f-4951-a8ac-de44016abd9b/resource/2c0f936d-6c36-4715-9c7f-fa5a70c00249/download/cl_fi_species_groups.csv"
+    destfile <- file.path(csv_out_dir, "CL_FI_SPECIES_GROUPS.csv")
+    ok <- tryCatch({ download.file(url, destfile = destfile, mode = "wb", method = "libcurl", quiet = TRUE); TRUE },
+                   error = function(e) FALSE, warning = function(w) FALSE)
+    if (!isTRUE(ok) || !file.exists(destfile) || file.size(destfile) == 0) {
+      if (!requireNamespace("httr", quietly = TRUE)) install.packages("httr")
+      resp <- tryCatch(httr::GET(url, httr::config(http_version = 1.1), httr::write_disk(destfile, overwrite = TRUE), httr::timeout(120)), error = function(e) e)
+      if (inherits(resp, "error") || httr::status_code(resp) != 200 || !file.exists(destfile) || file.size(destfile) == 0) {
+        stop("Could not download cl_fi_species_groups.csv - download it manually into pcloud_dir as CL_FI_SPECIES_GROUPS.csv.")
+      }
+    }
+    destfile
+  }
+  fao_species <- fread(path, encoding = "UTF-8")
+  name_col <- grep("english|name.*en$|^name$", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
+  sci_col  <- grep("scientific", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
+  setnames(fao_species, c(name_col, sci_col), c("Name_En", "Scientific_Name"), skip_absent = TRUE)
+  fao_species
+}
+
+## compute_multistanza_age_proportion(): loads STECF FDI's "Biological/
+## FDI Discards Age.csv"/"FDI Landings Age.csv", restricts to whichever
+## multistanza species have a resolvable FAO 3-alpha code, and computes
+## a real juvenile:adult proportion per species/Country/Year/source file
+## - the exact same logic 02_fisheries.R uses for the catch side (see
+## this function group's own header comment above), factored out so it
+## can be called from more than one script. juv_max_age: an ASSUMPTION
+## (age <= this counts as juvenile), not a measurement - no per-stock
+## maturity-at-age figure is wired into this pipeline yet. Default 0
+## (only age-0 recruits count as juvenile) matches 02_fisheries.R's own
+## default; pass a named vector (by ScientificName) to override per
+## species.
+compute_multistanza_age_proportion <- function(multistanza_fg_pairs, stecf_bio_dir, fao_species,
+                                               country_codes = c(ESP = "Spain", FRA = "France", ITA = "Italy"),
+                                               juv_max_age = NULL) {
+  empty_result <- data.table()
+  if (nrow(multistanza_fg_pairs) == 0) {
+    message("\n[Multistanza age split] No multistanza FG pair to compute a proportion for - skipped.")
+    return(empty_result)
+  }
+  discards_age_file <- file.path(stecf_bio_dir, "FDI Discards Age.csv")
+  landings_age_file <- file.path(stecf_bio_dir, "FDI Landings Age.csv")
+  if (!file.exists(discards_age_file) || !file.exists(landings_age_file)) {
+    message("\n[Multistanza age split] 'FDI Discards Age.csv'/'FDI Landings Age.csv' not found in '", stecf_bio_dir,
+            "' - no age-resolved proportion available.")
+    return(empty_result)
+  }
+  code_col <- grep("^3A_Code$|alpha.?3", names(fao_species), ignore.case = TRUE, value = TRUE)[1]
+  if (is.na(code_col)) {
+    message("\n[Multistanza age split] fao_species has no 3-alpha-code column (checked: ",
+            paste(names(fao_species), collapse = ", "), ") - can't resolve FDI's species codes.")
+    return(empty_result)
+  }
+  sci_to_code <- unique(fao_species[!is.na(Scientific_Name) & Scientific_Name %in% multistanza_fg_pairs$ScientificName,
+                                    .(ScientificName = Scientific_Name, SpeciesCode = get(code_col))])
+  sci_to_code <- sci_to_code[!is.na(SpeciesCode) & SpeciesCode != ""]
+  unresolved_sci <- setdiff(multistanza_fg_pairs$ScientificName, sci_to_code$ScientificName)
+  if (length(unresolved_sci) > 0) {
+    message("[Multistanza age split] No FAO 3-alpha code found for: ", paste(unresolved_sci, collapse = ", "), ".")
+  }
+  if (nrow(sci_to_code) == 0) {
+    message("[Multistanza age split] None of the multistanza species resolved to a 3-alpha code. Skipped.")
+    return(empty_result)
+  }
+  
+  load_fdi_age_file <- function(path, label) {
+    raw <- fread(path, encoding = "UTF-8")
+    setnames(raw, gsub("\\s+", "", names(raw)))
+    message("[Multistanza age split] ", label, " columns found: ", paste(names(raw), collapse = ", "))
+    species_col <- grep("^species$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+    country_col <- grep("^country$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+    year_col    <- grep("^year$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+    age_col     <- grep("^age$|^age_?class$|^age_?group$", names(raw), ignore.case = TRUE, value = TRUE)[1]
+    if (any(is.na(c(species_col, country_col, year_col)))) {
+      message("[Multistanza age split] ", label, " is missing an expected species/country/year column",
+              " (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+      return(data.table())
+    }
+    raw <- raw[get(species_col) %in% sci_to_code$SpeciesCode]
+    if (nrow(raw) == 0) {
+      message("[Multistanza age split] ", label, " has no row for any multistanza species' 3-alpha code",
+              " (", paste(sci_to_code$SpeciesCode, collapse = ", "), ") - skipped.")
+      return(data.table())
+    }
+    raw[, Country := country_codes[get(country_col)]]
+    raw <- raw[!is.na(Country)]
+    if (nrow(raw) == 0) return(data.table())
+    if (!is.na(age_col)) {
+      value_col <- setdiff(grep("weight|number|value|discard|land", names(raw), ignore.case = TRUE, value = TRUE),
+                           c(species_col, country_col, year_col, age_col))[1]
+      if (is.na(value_col)) {
+        message("[Multistanza age split] ", label, " has an age column but no recognizable value column",
+                " (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+        return(data.table())
+      }
+      raw[, age_num := suppressWarnings(as.numeric(gsub("[^0-9.]", "", get(age_col))))]
+      out <- raw[, .(SpeciesCode = get(species_col), Country, Year = suppressWarnings(as.integer(get(year_col))),
+                     age_num, value = suppressWarnings(as.numeric(get(value_col))))]
+    } else {
+      age_cols <- grep("^[0-9]+\\+?$|^age[_]?[0-9]+\\+?$", names(raw), ignore.case = TRUE, value = TRUE)
+      if (length(age_cols) == 0) {
+        message("[Multistanza age split] ", label, " has no 'age' column and no numeric-looking age",
+                " columns (checked: ", paste(names(raw), collapse = ", "), ") - skipped.")
+        return(data.table())
+      }
+      long <- melt(raw, id.vars = c(species_col, country_col, year_col), measure.vars = age_cols,
+                   variable.name = "age_col", value.name = "value")
+      long[, age_num := suppressWarnings(as.numeric(gsub("[^0-9.]", "", age_col)))]
+      out <- long[, .(SpeciesCode = get(species_col), Country, Year = suppressWarnings(as.integer(get(year_col))),
+                      age_num, value = suppressWarnings(as.numeric(value)))]
+    }
+    out[!is.na(value) & !is.na(age_num)]
+  }
+  
+  discards_age <- load_fdi_age_file(discards_age_file, "FDI Discards Age.csv")
+  landings_age <- load_fdi_age_file(landings_age_file, "FDI Landings Age.csv")
+  
+  if (is.null(juv_max_age)) juv_max_age <- setNames(rep(0, nrow(multistanza_fg_pairs)), multistanza_fg_pairs$ScientificName)
+  
+  compute_juv_prop <- function(age_dt, label) {
+    if (nrow(age_dt) == 0) return(data.table())
+    age_dt <- merge(age_dt, sci_to_code, by = "SpeciesCode")
+    age_dt[, juv_cutoff := juv_max_age[ScientificName]]
+    age_dt[, stanza := fifelse(age_num <= juv_cutoff, "Juvenile", "Adult")]
+    agg <- age_dt[, .(value = sum(value, na.rm = TRUE)), by = .(ScientificName, Country, Year, stanza)]
+    wide <- dcast(agg, ScientificName + Country + Year ~ stanza, value.var = "value", fill = 0)
+    if (!"Juvenile" %in% names(wide)) wide[, Juvenile := 0]
+    if (!"Adult" %in% names(wide)) wide[, Adult := 0]
+    wide[, prop_juvenile := fifelse((Juvenile + Adult) > 0, Juvenile / (Juvenile + Adult), NA_real_)]
+    wide[, source_file := label]
+    wide[!is.na(prop_juvenile)]
+  }
+  discards_prop <- compute_juv_prop(discards_age, "FDI Discards Age.csv")
+  landings_prop <- compute_juv_prop(landings_age, "FDI Landings Age.csv")
+  result <- rbindlist(list(discards_prop, landings_prop), use.names = TRUE, fill = TRUE)
+  if (nrow(result) > 0) {
+    summary_prop <- result[, .(prop_juvenile_avg = mean(prop_juvenile, na.rm = TRUE), n_country_year = .N),
+                           by = .(ScientificName, source_file)]
+    message("[Multistanza age split] Juvenile proportion by species/source (averaged across FDI's own",
+            " Spain/France/Italy 2014+ coverage):")
+    print(summary_prop)
+  } else {
+    message("[Multistanza age split] Discards/Landings Age files loaded but produced no usable juvenile proportion.")
+  }
+  result
+}

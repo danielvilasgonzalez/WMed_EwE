@@ -57,10 +57,15 @@ if (RUN_MODE == "westmed_default") {
   ## (A) WEST MED DEFAULT - do not set FILTER_AREAS/TARGET_COUNTRIES/
   ## START_YEAR/END_YEAR/YEAR_ECOPATH/TS_YEARS at all here. Each script
   ## falls through to its own built-in Western Med default (GSA 1-11,
-  ## 1994-2023, Spain/France/Italy/Tunisia/Algeria/Morocco) exactly as
-  ## it did before this change - nothing below is new behavior, it's
-  ## just being triggered by source() from this driver instead of by
-  ## opening each script directly.
+  ## Spain/France/Italy/Tunisia/Algeria/Morocco) - specifically:
+  ##   YEAR_ECOPATH = 1994:1996 (Ecopath baseline - 3-year average snapshot)
+  ##   TS_YEARS/START_YEAR/END_YEAR = 1995:2023 (Ecosim time series)
+  ## THIS is the one enforced default for the West Med model (confirmed
+  ## 2026-09-26) - every numbered script's own `if (!exists(...))` guard
+  ## resolves to these exact values whenever nothing overrides them, so
+  ## there is no separate place these need to be kept in sync. Nothing
+  ## below is new behavior, it's just being triggered by source() from
+  ## this driver instead of by opening each script directly.
   ##
   ## EcoBase query left at its own default too (ENABLE_ECOBASE_QUERY =
   ## TRUE, ECOBASE_FORCE_REFRESH = FALSE inside 03_pbqb-traits.R) - set

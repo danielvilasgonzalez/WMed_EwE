@@ -2964,6 +2964,39 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
           " lower bound for any FG that's actually fished.")
 }
 
+## 2026-09-26: the standard Ecopath PB-vs-QB diagnostic scatter, at the
+## FG level (not species-level like p_pb/p_qb further down, which
+## compare estimation METHODS within one species) - lets a reviewer see
+## every FG's final PB_FG/QB_FG position at a glance, colored by which
+## dispatch group actually drove the calculation (fish/mammal/seabird/
+## invertebrate use different underlying methods - see calc_fish()/
+## calc_mammal()/calc_seabird()/calc_invertebrate() above), sized by
+## FG biomass so the ecologically-dominant groups stand out. A point
+## sitting well above the QB=PB reference line (P/Q ratio too high) or
+## with PB/QB both implausibly extreme for its dispatch group is
+## exactly what this plot is for catching before it goes into Ecopath.
+p_fg_pb_qb <- tryCatch({
+  dg_by_fg <- results[!is.na(dispatch_group), .(Biomass_dg = sum(Biomass, na.rm = TRUE)), by = .(FG, dispatch_group)]
+  dg_dominant <- dg_by_fg[dg_by_fg[, .I[which.max(Biomass_dg)], by = FG]$V1][, .(FG, dispatch_group)]
+  d <- merge(fg_weighted, dg_dominant, by = "FG", all.x = TRUE)
+  d <- d[!is.na(PB_FG) & !is.na(QB_FG)]
+  if (nrow(d) == 0) stop("no FG has both PB_FG and QB_FG")
+  label_layer <- if (requireNamespace("ggrepel", quietly = TRUE)) {
+    ggrepel::geom_text_repel(aes(label = FG_name), size = 2.2, max.overlaps = 15, show.legend = FALSE)
+  } else {
+    message("[FG PB/QB scatter] ggrepel not installed - falling back to plain (possibly overlapping) geom_text labels.")
+    geom_text(aes(label = FG_name), size = 2.2, vjust = -0.6, show.legend = FALSE)
+  }
+  ggplot(d, aes(x = PB_FG, y = QB_FG, color = dispatch_group, size = Biomass_FG)) +
+    geom_point(alpha = 0.75) +
+    label_layer +
+    scale_size_continuous(guide = "none") +
+    labs(title = "PB vs. QB by functional group", subtitle = "Point size = FG biomass; color = dominant dispatch group (fish/mammal/seabird/invertebrate)",
+         x = "PB_FG (/year)", y = "QB_FG (/year)", color = NULL) +
+    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+}, error = function(e) { message("[FG PB/QB scatter] skipped - ", conditionMessage(e)); NULL })
+if (!is.null(p_fg_pb_qb)) ggsave(file.path(plot_dir, "fg_pb_qb_scatter.png"), p_fg_pb_qb, width = 11, height = 9, dpi = 150, bg = "white")
+
 ## =================================================================
 ## Add PB_QB (+ PB_QB_spp) to output/ecopath_ecosim_inputs.xlsx
 ##
@@ -3478,12 +3511,19 @@ build_grouped_traits_sheet <- function(dt) {
   rbindlist(rows, use.names = TRUE, fill = TRUE)
 }
 traits_grouped <- build_grouped_traits_sheet(traits_reconciled)
-fwrite(traits_grouped, file.path(csv_out_dir, "traits_ewe_grouped.csv"))
+## 2026-09-26: traits_ewe_grouped.csv (a standalone CSV mirror of this
+## exact same traits_grouped object) removed - it was a pure duplicate of
+## the Ecopath_traits workbook sheet written right below (same object,
+## same content), with the comment above already confirming nothing
+## reads it back programmatically. traits_ewe.csv (flat, written above)
+## remains the one machine-readable CSV source of truth for this data;
+## the grouped layout now lives ONLY in the workbook sheet, its one
+## actual consumer.
 upsert_workbook_sheets(
   list(Ecopath_traits = traits_grouped),
   ECOPATH_WORKBOOK_PATH
 )
-message("Saved: traits_ewe_grouped.csv and workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
+message("Saved: workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
         " FG header rows + ", nrow(traits_reconciled), " species rows) - the same data as traits_ewe.csv,",
         " laid out with a '<FG_num>: <FG_name>' header row and blank separator above each FG's species,",
         " matching the old FG_WMed.xlsx sheet's visual convention. Anything reading this data back",

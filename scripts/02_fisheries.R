@@ -1738,7 +1738,17 @@ if (is.na(STECF_FDI_DIR)) {
 ## treats 2013 as "before FDI" - it falls through to the SAU hindcast
 ## tier (bias-corrected against FDI's real 2014+ overlap) rather than
 ## being read from FDI's own unreliable first year.
-STECF_FDI_START_YEAR <- 2014   # FDI's own TRUSTED coverage window starts here - 2013 excluded (data quality), SAU/hindcast covers everything before this
+## 2026-09-26: guarded like every other config constant at the top of this
+## script (START_YEAR/END_YEAR/YEAR_ECOPATH/TARGET_COUNTRIES) - previously
+## unguarded, so a caller (run_pipeline_demo.R or any other driver) setting
+## STECF_FDI_START_YEAR before source()-ing this script had it silently
+## overwritten back to 2014. Kept far from the top config block because it's
+## genuinely tied to WHERE FDI's real data starts, not a study-area/time-
+## window choice - but a different FDI vintage may start its trusted window
+## in a different year, so it still needs to be overridable.
+if (!exists("STECF_FDI_START_YEAR", envir = .GlobalEnv, inherits = FALSE)) {
+  STECF_FDI_START_YEAR <- 2014   # FDI's own TRUSTED coverage window starts here - 2013 excluded (data quality), SAU/hindcast covers everything before this
+}
 
 ## Reference year for the technology-creep correction below (Effort_
 ## kWdays_per_vessel_effective) - i.e. "express every year's effective
@@ -3768,8 +3778,22 @@ ICCAT_COL_ALIASES <- list(
   species      = c("Species", "SpeciesCode", "sp_code"),
   species_name = c("SpeciesName", "SpName", "CommonName"),
   area         = c("AreaName", "Area", "Ocean", "Region", "Stock"),
-  flag         = c("Flag", "FlagName", "Country"),
-  catch_t      = c("Qty_t", "Qty", "Catch_t", "CatchWt", "Catch(t)", "Value")
+  flag         = c("FlagName", "Flag", "Country"),  # 2026-09-26: FlagName preferred over the generic "Flag" alias below - see the FlagName/PartyName note further down
+  catch_t      = c("Qty_t", "Qty", "Catch_t", "CatchWt", "Catch(t)", "Value"),
+  ## 2026-09-26, added once a real ICCAT Task I download (t1nc_20260129_ALL.xlsx,
+  ## sent by Andrea) was available to check against: its "Data" sheet's real
+  ## headers are RecID/Species/ScieName/SPFamily/SpeciesGrp/YearC/Decade/Lustrum/
+  ## PartyStatus/PartyName/FlagName/FleetCode/Stock/SampAreaCode/Area/SpcGearGrp/
+  ## GearGrp/GearCode/CatchTypeCode/FishZoneCode/QualInfoCode/CnvFactor/
+  ## TargetBycatch/Qty_t/CatchSource - confirming "Area"/"FlagName"/"Qty_t"
+  ## above were already being resolved correctly. catch_type/gear are new:
+  ## CatchTypeCode splits Qty_t into Landings ("L"/"FA"/"LF") vs Discards
+  ## ("DD"/"DM") - see ICCAT_LANDINGS_CODES/ICCAT_DISCARD_CODES below - and
+  ## GearGrp (PS/LL/GN/TP/HL/...) is what lets ICCAT catch be split by FLEET,
+  ## not just by country, for Ecopath_L/Ecopath_Di (see the fleet-type
+  ## resolver further below).
+  catch_type   = c("CatchTypeCode", "CatchType"),
+  gear         = c("GearGrp", "Gear", "GearCode")
 )
 resolve_iccat_col <- function(dt_names, aliases) {
   hit <- intersect(aliases, dt_names)
@@ -3785,6 +3809,49 @@ resolve_iccat_col <- function(dt_names, aliases) {
 ## happens then (a diagnostic CSV + a graceful skip).
 fetch_iccat_task1_nominal_catches <- function(cache_dir) {
   if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  ## moved up from further below (was defined right before the
+  ## candidate_files loop) so the manual-file check just below can use it
+  ## too, without duplicating the same column-recognition logic.
+  looks_valid <- function(dt) {
+    !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$year)) &&
+      !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$catch_t)) &&
+      (!is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$species)) ||
+         !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$species_name)))
+  }
+  
+  ## 2026-09-26: check for a manually-placed file directly in cache_dir
+  ## FIRST, before attempting any download - lets Andrea/Daniel just drop
+  ## ICCAT's own Task I export (downloaded by hand from
+  ## https://www.iccat.int/en/accesingdb.HTML, e.g. "t1nc_20260129_ALL.xlsx")
+  ## straight into ICCAT_DIR (pcloud_dir/data/fisheries/ICCAT) without
+  ## needing to know this function's own dated zip-extract folder-naming
+  ## convention, and without depending on this script's own download step
+  ## working at all (useful in a sandboxed/no-network environment, or once
+  ## ICCAT's page layout changes and the scrape/fallback URL above goes
+  ## stale). Only the TOP LEVEL of cache_dir is checked here (not
+  ## recursive) so this never accidentally picks up a file from inside an
+  ## already-extracted zip subfolder further down.
+  manual_files <- list.files(cache_dir, pattern = "\\.(csv|xlsx|xls)$", full.names = TRUE, ignore.case = TRUE)
+  if (length(manual_files) > 0) {
+    for (f in manual_files) {
+      dt <- tryCatch({
+        if (grepl("\\.csv$", f, ignore.case = TRUE)) fread(f, encoding = "UTF-8")
+        else {
+          sheets <- readxl::excel_sheets(f)
+          sheet_pick <- if ("Data" %in% sheets) "Data" else sheets[1]  # ICCAT's real Task I export names its row-level sheet "Data" (checked against a real download); fall back to the first sheet for a differently-shaped file
+          as.data.table(readxl::read_excel(f, sheet = sheet_pick))
+        }
+      }, error = function(e) NULL)
+      if (!is.null(dt) && nrow(dt) > 0 && looks_valid(dt)) {
+        message("[ICCAT] Using manually-placed file '", basename(f), "' found directly in '", cache_dir,
+                "' - skipping the download step entirely (delete/move this file to fall back to auto-download).")
+        return(dt)
+      }
+    }
+    message("[ICCAT] Found file(s) directly in '", cache_dir, "' (", paste(basename(manual_files), collapse = ", "),
+            ") but none had a recognizable year + catch-weight + species column set - falling back to auto-download.")
+  }
   
   page_url <- "https://www.iccat.int/en/accesingdb.HTML"
   fallback_zip_url <- "https://www.iccat.int/Data/t1nc_20260129.zip"  # known-good as of 2026-09-23 - used only if the page scrape below fails
@@ -3816,13 +3883,6 @@ fetch_iccat_task1_nominal_catches <- function(cache_dir) {
     message("[ICCAT] No .csv/.xlsx/.xls file found inside the downloaded archive - contents: ",
             paste(list.files(extract_dir, recursive = TRUE), collapse = ", "))
     return(NULL)
-  }
-  
-  looks_valid <- function(dt) {
-    !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$year)) &&
-      !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$catch_t)) &&
-      (!is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$species)) ||
-         !is.na(resolve_iccat_col(names(dt), ICCAT_COL_ALIASES$species_name)))
   }
   
   diagnostic <- list()
@@ -3870,7 +3930,105 @@ fetch_iccat_task1_nominal_catches <- function(cache_dir) {
   NULL
 }
 
+## =====================================================================
+## ICCAT Task I "Vessels Actively Fishing" (ST01 form), 2026-09-26.
+## Andrea asked whether this would help refine the ICCAT-derived catch
+## numbers - it does NOT (it has no catch weights at all, see below),
+## but it DOES give something the T1NC catch data can never provide:
+## real per-vessel length (LOA_m) by country + gear, which is exactly
+## what's needed to check whether resolve_iccat_fleet_type()'s gear-
+## code-only guess (e.g. "LL -> whichever fleet name matches
+## 'longline'") is actually the right SCALE of fleet for that country,
+## not just the right gear. Source: the live table at
+## https://www.iccat.int/ActiveVessels/index.html, which itself just
+## renders a static CSV at the URL below (found via the page's own
+## network request, not a documented API - if ICCAT restructures this
+## page, re-find the CSV's real path the same way and update csv_url).
+##
+## IMPORTANT COVERAGE CAVEAT: this file only goes back to 2016 (checked
+## against the real download - no vessel-level data exists for this
+## model's 1994-1996 Ecopath baseline). There is no way to get a
+## vintage-correct vessel-size fleet split for the base years from this
+## source. What this DOES support: a best-available, present-day check
+## on whether a country's gear-code-to-fleet-type mapping is pointing
+## at the right SCALE of fleet at all, applied uniformly across every
+## year (better than the pure gear-code guess it replaces, not a
+## historically-precise one).
+## =====================================================================
+ICCAT_VESSELS_DIR <- file.path(ICCAT_DIR, "ActiveVessels")  # separate subfolder from the T1NC cache above, so a manually-placed file here is never confused with a T1NC catch file
+fetch_iccat_active_vessels <- function(cache_dir) {
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  looks_valid_vessels <- function(dt) all(c("Flag", "Year", "GearCode", "LOA_m") %in% names(dt))
+  
+  ## Manual-file check first, same pattern as fetch_iccat_task1_nominal_catches()
+  manual_files <- list.files(cache_dir, pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
+  for (f in manual_files) {
+    dt <- tryCatch(fread(f, encoding = "UTF-8"), error = function(e) NULL)
+    if (!is.null(dt) && nrow(dt) > 0 && looks_valid_vessels(dt)) {
+      message("[ICCAT ActiveVessels] Using manually-placed file '", basename(f), "' - skipping download.")
+      return(dt)
+    }
+  }
+  
+  csv_url <- "https://www.iccat.int/ActiveVessels/data/ActiveVessels_ST01.csv"  # found via the live page's own network request, 2026-09-26 - see block comment above
+  csv_file <- file.path(cache_dir, "ActiveVessels_ST01.csv")
+  if (!file.exists(csv_file)) {
+    message("[ICCAT ActiveVessels] Downloading '", csv_url, "' ...")
+    ok <- tryCatch({
+      download.file(csv_url, destfile = csv_file, mode = "wb", method = "libcurl")
+      TRUE
+    }, error = function(e) { message("[ICCAT ActiveVessels] Download failed: ", conditionMessage(e)); FALSE })
+    if (!ok) return(NULL)
+  } else {
+    message("[ICCAT ActiveVessels] Using cached '", csv_file, "' (delete this file to force a fresh download).")
+  }
+  
+  dt <- tryCatch(fread(csv_file, encoding = "UTF-8"), error = function(e) NULL)
+  if (is.null(dt) || nrow(dt) == 0 || !looks_valid_vessels(dt)) {
+    message("[ICCAT ActiveVessels] Downloaded file didn't have the expected Flag/Year/GearCode/LOA_m columns",
+            " (actual columns: ", if (!is.null(dt)) paste(names(dt), collapse = ", ") else "none", ") - skipping",
+            " the fleet-type-by-vessel-size refinement for this run; resolve_iccat_fleet_type() falls back to",
+            " its gear-code-only mapping.")
+    return(NULL)
+  }
+  dt
+}
+
+## Median LOA per (Country, GearCode), target countries only, across
+## every year the file has (2016-2026) - see the coverage caveat above.
+## NA/empty LOA_m rows are dropped rather than coerced to 0. This table
+## is what resolve_iccat_fleet_type() (below) consults to decide
+## whether a gear code's catch belongs in this country's small-scale
+## ("Artisanal") bucket or its named industrial-gear bucket, when both
+## exist as separate FLEET_REGISTER entries.
+ICCAT_SMALL_SCALE_LOA_M <- 12  # EU/GFCM small-scale ("artisanal") fleet-segment convention: LOA < 12 m
+iccat_vessels_raw <- fetch_iccat_active_vessels(ICCAT_VESSELS_DIR)
+ICCAT_VESSEL_SIZE_BY_GEAR <- data.table()
+if (!is.null(iccat_vessels_raw)) {
+  vsl <- copy(iccat_vessels_raw)
+  vsl[, LOA_m := suppressWarnings(as.numeric(LOA_m))]
+  vsl <- merge(vsl, data.table(
+    Flag    = c("EU-España", "EU-France", "EU-Italy", "Algerie", "Maroc", "Tunisie"),
+    Country = c("Spain", "France", "Italy", "Algeria", "Morocco", "Tunisia")
+  ), by = "Flag")  # restrict to this model's 6 target countries, same crosswalk as ICCAT_COUNTRY_MAP below
+  ICCAT_VESSEL_SIZE_BY_GEAR <- vsl[!is.na(LOA_m), .(
+    n_vessels      = .N,
+    median_LOA_m   = median(LOA_m)
+  ), by = .(Country, GearCode)]
+  ICCAT_VESSEL_SIZE_BY_GEAR[, is_small_scale := median_LOA_m < ICCAT_SMALL_SCALE_LOA_M]
+  fwrite(ICCAT_VESSEL_SIZE_BY_GEAR, file.path(csv_out_dir, "iccat_vessel_size_by_country_gear_crosscheck.csv"))
+  message("\n[ICCAT ActiveVessels] ", nrow(ICCAT_VESSEL_SIZE_BY_GEAR), " Country x GearCode median-LOA cell(s)",
+          " (2016-2026, this model's 6 target countries only) - written to",
+          " iccat_vessel_size_by_country_gear_crosscheck.csv. Consulted by resolve_iccat_fleet_type() to check",
+          " gear-code fleet-type resolution against real vessel size, not just the gear code alone.")
+} else {
+  message("\n[ICCAT ActiveVessels] No usable vessel-size data this run - resolve_iccat_fleet_type() falls back",
+          " to its gear-code-only mapping (same behavior as before this addition existed).")
+}
+
 iccat_catch_by_fg <- data.table()
+iccat_country_fleet_catch <- data.table()  # initialized here so the fleet-split override further below is always safe to check, even if iccat_raw is NULL or has no usable flag/gear column
 iccat_raw <- fetch_iccat_task1_nominal_catches(ICCAT_DIR)
 if (is.null(iccat_raw)) {
   message("\n[ICCAT] No usable Task I data this run - skipping (see the messages above for why: download",
@@ -3884,6 +4042,8 @@ if (is.null(iccat_raw)) {
   col_spname  <- resolve_iccat_col(names(iccat_raw), ICCAT_COL_ALIASES$species_name)
   col_area    <- resolve_iccat_col(names(iccat_raw), ICCAT_COL_ALIASES$area)
   col_flag    <- resolve_iccat_col(names(iccat_raw), ICCAT_COL_ALIASES$flag)
+  col_catchtype <- resolve_iccat_col(names(iccat_raw), ICCAT_COL_ALIASES$catch_type)
+  col_gear    <- resolve_iccat_col(names(iccat_raw), ICCAT_COL_ALIASES$gear)
   
   ## No is.na() guard needed here (unlike the old hand-prepared-CSV
   ## version of this block) - fetch_iccat_task1_nominal_catches() above
@@ -3893,6 +4053,114 @@ if (is.null(iccat_raw)) {
   setnames(iccat_raw, col_year, "Year")
   setnames(iccat_raw, col_catch, "Catch_t_iccat")
   iccat_raw[, `:=`(Year = as.integer(Year), Catch_t_iccat = as.numeric(Catch_t_iccat))]
+  if (!is.na(col_flag)) setnames(iccat_raw, col_flag, "iccat_flag")
+  if (!is.na(col_catchtype)) setnames(iccat_raw, col_catchtype, "iccat_catch_type")
+  if (!is.na(col_gear)) setnames(iccat_raw, col_gear, "iccat_gear")
+  
+  ## =================================================================
+  ## FlagName vs PartyName (2026-09-26, checked against the real
+  ## download): ICCAT's Task I export reports catch per REPORTING
+  ## PARTY, and for the EU (a Contracting Party in its own right) that
+  ## party-level field ("PartyName") lumps every EU member state's
+  ## catch together as one "EUROPEAN UNION" row - there is no way to
+  ## recover Spain vs France vs Italy from PartyName alone. FlagName,
+  ## however, DOES break the EU total back out by member state (real
+  ## values seen in the download: "EU-España", "EU-France", "EU-Italy",
+  ## "EU-Greece", "EU-Malta", etc.), and for non-EU parties FlagName is
+  ## just that country's own name (e.g. "Algerie", "Maroc", "Tunisie" -
+  ## no accents, unlike PartyName's "ALGÉRIE"/"MAROC"/"TUNISIE"). This is
+  ## why ICCAT_COL_ALIASES$flag prefers "FlagName" over the generic
+  ## "Flag" alias, and why the crosswalk below matches on FlagName, not
+  ## PartyName/Country.
+  ##
+  ## Per Andrea's explicit decision (2026-09-26): Catches_Ecopath/
+  ## Ecopath_L should reflect only THIS model's own 6 target countries'
+  ## real ICCAT-reported catch - NOT the full Mediterranean-wide ICCAT
+  ## total for these highly-migratory stocks (checked against the real
+  ## file: the 6 target countries are only ~53% of the full Med bluefin
+  ## tuna catch and ~81% of swordfish over 1994-2023 - the rest is
+  ## Libya/Türkiye/Greece/Malta/Cyprus/Croatia/Albania/Egypt/etc., all
+  ## outside this model's domain). This keeps ICCAT-derived catch on the
+  ## same footing as every other FG in this pipeline, which only ever
+  ## counts catch from these 6 countries.
+  ICCAT_COUNTRY_MAP <- data.table(
+    iccat_flag = c("EU-España", "EU-France", "EU-Italy", "Algerie", "Maroc", "Tunisie"),
+    Country    = c("Spain", "France", "Italy", "Algeria", "Morocco", "Tunisia")
+  )
+  
+  ## CatchTypeCode groups (2026-09-26, checked against the real download -
+  ## for BFT/SWO/ALB in the Mediterranean, only "L", "FA" and "DD" actually
+  ## occur; "LF"/"DM" are included below for completeness/robustness since
+  ## ICCAT's own ReadMe lists them as valid codes generally, but neither
+  ## appeared in the real Mediterranean bluefin/swordfish/albacore rows
+  ## checked here). "FA" ("Farming") is wild-caught fish transferred alive
+  ## into tuna-farming cages - a real removal from the wild stock (the fish
+  ## no longer contributes to natural mortality/reproduction), so it is
+  ## counted as Landings for Ecopath mass-balance purposes, same as "L".
+  ## "DD"/"DM" (dead discards) go to Discards. Anything else is left out of
+  ## both and flagged via iccat_catch_type_other below rather than silently
+  ## added to either bucket.
+  ICCAT_LANDINGS_CODES <- c("L", "FA", "LF")
+  ICCAT_DISCARD_CODES  <- c("DD", "DM")
+  
+  ## Maps an ICCAT GearGrp code (checked against the real download's
+  ## values for BFT/SWO/ALB in the Mediterranean: PS, LL, GN, TP, HL, HP,
+  ## RR, BB, TR, TW, TN, TL, UN) onto THIS COUNTRY's own FleetType
+  ## taxonomy (FLEET_REGISTER, defined earlier in this script) - a
+  ## generic "purse seine"/"longline"/"trawl" bucket resolved to whichever
+  ## specific FleetType label that country actually uses (e.g. France has
+  ## "Drifting longlines" and "Hooks and line not drifting lines" where
+  ## Morocco/Algeria/Tunisia just have "Longlines"), falling back to
+  ## "Artisanal" for small-scale/traditional gears this register doesn't
+  ## separately register (gillnets, traps, harpoon, hand lines, and any
+  ## gear code not recognized at all) and to "Recreational" for ICCAT's
+  ## own "RR" (Rod and Reel) code specifically, since every country's
+  ## register has both an "Artisanal" and a "Recreational" fleet already.
+  ## This is a reasonable best-effort mapping, not a verified one - the
+  ## Mediterranean bluefin/swordfish fishery's own gear-to-fleet
+  ## conventions may differ in detail; correct against real knowledge of
+  ## each country's fleet if this turns out wrong.
+  resolve_iccat_fleet_type <- function(country, gear_grp) {
+    country_fleets <- FLEET_REGISTER[Country == country, FleetType]
+    pick_first_match <- function(pattern) {
+      hit <- country_fleets[grepl(pattern, country_fleets, ignore.case = TRUE)]
+      if (length(hit) > 0) hit[1] else NA_character_
+    }
+    resolved <- fcase(
+      is.na(gear_grp), NA_character_,
+      gear_grp == "PS", pick_first_match("purse"),
+      gear_grp == "LL", { hit <- pick_first_match("drifting longline"); if (!is.na(hit)) hit else pick_first_match("longline") },
+      gear_grp %in% c("TR", "TW"), { hit <- pick_first_match("bottom trawl"); if (!is.na(hit)) hit else pick_first_match("trawl") },
+      gear_grp == "RR", pick_first_match("recreational"),
+      default = NA_character_
+    )
+    if (is.na(resolved)) resolved <- pick_first_match("artisanal")  # fallback bucket for GN/TP/HL/HP/BB/TN/TL/UN/anything unmapped
+    if (is.na(resolved) && length(country_fleets) > 0) resolved <- country_fleets[1]  # last-resort: this country's first registered fleet, rather than dropping the catch entirely
+    
+    ## 2026-09-26: real-vessel-size check against ICCAT's own ST01
+    ## "Active Vessels" data (ICCAT_VESSEL_SIZE_BY_GEAR, built above from
+    ## https://www.iccat.int/ActiveVessels/index.html - see that block's
+    ## comment for the 2016-2026-only coverage caveat). The gear-code
+    ## match above can point at a named non-Artisanal fleet type (e.g.
+    ## "Longlines") for a gear that this country's registered
+    ## small-scale ("Artisanal") fleet actually runs itself - FLEET_
+    ## REGISTER has no separate "small-scale longline" entry to catch
+    ## this, so without a real size check the catch would be misfiled
+    ## into an industrial-scale bucket it doesn't belong in. When this
+    ## country + gear cell has real vessel-size data AND its median LOA
+    ## is below the small-scale threshold AND this country actually has
+    ## a registered "Artisanal" fleet to redirect into, override to
+    ## Artisanal. Never overrides RR (Recreational is resolved from the
+    ## gear code alone, correctly) or a cell with no size data at all.
+    if (!is.na(resolved) && !is.na(gear_grp) && gear_grp != "RR" && nrow(ICCAT_VESSEL_SIZE_BY_GEAR) > 0) {
+      size_hit <- ICCAT_VESSEL_SIZE_BY_GEAR[Country == country & GearCode == gear_grp]
+      if (nrow(size_hit) == 1 && isTRUE(size_hit$is_small_scale)) {
+        artisanal_hit <- pick_first_match("artisanal")
+        if (!is.na(artisanal_hit)) resolved <- artisanal_hit
+      }
+    }
+    resolved
+  }
   
   ## Restrict to the 3 requested species, matched on whichever of
   ## species-code/species-name the file actually has - code first
@@ -3985,19 +4253,140 @@ if (is.null(iccat_raw)) {
   species_fg_crosswalk_parts[["ICCAT"]] <- iccat_crosswalk[, .(DataSource = "ICCAT", RawIdentifier = ScientificName,
                                                                ScientificName, FG_num, FG_name, Matched = !is.na(FG_num))]
   
-  ## Sum across flags/gears to one Catch_t per FG x Year - ICCAT's Task
-  ## I is reported per flag(country) x gear x year, and the whole-
-  ## stock total (summed across every reporting flag) is what belongs
-  ## in a FG's whole-domain catch figure, same principle as GFCM STAR/
-  ## RAM's own summed-across-GSA total below.
-  iccat_catch_by_fg <- iccat_raw[, .(
-    iccat_catches_t = sum(Catch_t_iccat, na.rm = TRUE),
-    iccat_n_flags   = if (!is.na(col_flag) && "Flag" %in% names(iccat_raw)) uniqueN(Flag) else NA_integer_
-  ), by = .(FG_num, FG_name, Year)]
+  ## Whole-Mediterranean total, EVERY reporting flag included - kept only
+  ## as a transparency cross-check (written below), NOT used for
+  ## Catches_Ecopath/Ecopath_L (see the FlagName/PartyName comment above
+  ## for why: per Andrea's 2026-09-26 decision, this model only counts
+  ## catch from its own 6 target countries, same as every other FG).
+  iccat_wholemed_by_fg <- iccat_raw[, .(iccat_wholemed_catches_t = sum(Catch_t_iccat, na.rm = TRUE)),
+                                    by = .(FG_num, FG_name, Year)]
   
+  ## 2026-09-26: for the target-6-country breakdown specifically, bluefin
+  ## tuna is NOT exempted from the Mediterranean-only area filter, unlike
+  ## iccat_wholemed_by_fg above. That exemption exists because BFT is
+  ## assessed as one combined Eastern-Atlantic-+-Mediterranean STOCK (no
+  ## separate Med-only assessment unit) - a legitimate reason to use the
+  ## combined figure when reporting the whole assessed stock's total
+  ## removals (iccat_wholemed_by_fg's purpose). But once catch is being
+  ## attributed to THIS WEST MED MODEL's own countries specifically (per
+  ## Andrea's decision above), what matters is where the fish was caught,
+  ## not which stock-assessment unit it's counted against - and Task I
+  ## still records a real Area/SampAreaCode per row regardless of stock
+  ## unit (checked directly against the real download: Spain/France/
+  ## Italy all report real Bay-of-Biscay/NE-Atlantic bluefin catch under
+  ## Area != "MEDI", which is not West Med catch and would otherwise
+  ## silently inflate this model's Ecopath_L/Catches_Ecopath bluefin
+  ## figure well beyond what these countries actually take from West Med
+  ## waters). So iccat_target_raw always applies the Mediterranean area
+  ## filter, with no BFT exemption, even though iccat_wholemed_raw (via
+  ## iccat_raw above) still gets the exemption for the whole-stock number.
+  if (!is.na(col_area)) {
+    iccat_medonly_raw <- iccat_raw[grepl("\\bmed", iccat_area, ignore.case = TRUE)]
+    n_bft_dropped <- iccat_raw[ScientificName == "Thunnus thynnus" & !grepl("\\bmed", iccat_area, ignore.case = TRUE), .N]
+    if (n_bft_dropped > 0) {
+      message("[ICCAT] Mediterranean-only filter for the target-6-country breakdown (stricter than the whole-",
+              "stock total above): dropped ", n_bft_dropped, " non-Mediterranean bluefin tuna row(s) (Atlantic/",
+              "other area) that the whole-stock cross-check above deliberately kept - these represent catch taken",
+              " outside West Med waters by an otherwise-target country's Atlantic fleet.")
+    }
+  } else {
+    iccat_medonly_raw <- iccat_raw  # no area column at all - nothing stricter to apply than what iccat_raw already is
+  }
+  
+  ## Restrict to the 6 target countries via FlagName (real per-country
+  ## attribution, incl. EU members split back out of "EUROPEAN UNION" -
+  ## see the comment above `ICCAT_COUNTRY_MAP`). Countries this model
+  ## doesn't cover (Libya, Türkiye, Greece, Malta, Cyprus, Croatia,
+  ## Albania, Egypt, other non-contracting parties, etc.) are dropped
+  ## here by design (inner join), not folded into any residual bucket -
+  ## unlike GFCM's "Other GFCM countries" pattern elsewhere, there is no
+  ## meaningful "Other Mediterranean ICCAT countries" fleet in this
+  ## model's own fleet register to attach them to.
+  if (is.na(col_flag)) {
+    message("\n[ICCAT] WARNING: no flag/country column resolved (ICCAT_COL_ALIASES$flag) - cannot restrict to",
+            " this model's own 6 target countries, so the ICCAT catch/fleet-split steps below are skipped",
+            " entirely this run (whole-Mediterranean total still written to iccat_catch_by_fg_wholemed_crosscheck.csv",
+            " for reference). Add the real flag column's header to ICCAT_COL_ALIASES$flag once known.")
+    iccat_target_raw <- iccat_raw[0]
+  } else {
+    iccat_target_raw <- merge(iccat_medonly_raw, ICCAT_COUNTRY_MAP, by = "iccat_flag")  # inner join - Mediterranean-only catch, 6 target countries only
+  }
+  
+  ## Split Qty_t into Landings vs Discards via CatchTypeCode where that
+  ## column resolved (see ICCAT_LANDINGS_CODES/ICCAT_DISCARD_CODES
+  ## above); otherwise every row is treated as Landings and Discard_t
+  ## stays 0, flagged via iccat_catch_type_resolved below rather than
+  ## silently assuming a discard rate.
+  if (nrow(iccat_target_raw) > 0) {
+    if (!is.na(col_catchtype)) {
+      iccat_target_raw[, catch_group := fcase(
+        iccat_catch_type %in% ICCAT_LANDINGS_CODES, "Landings",
+        iccat_catch_type %in% ICCAT_DISCARD_CODES, "Discards",
+        default = "Other/unclassified"
+      )]
+      n_other_ct <- iccat_target_raw[catch_group == "Other/unclassified", .N]
+      if (n_other_ct > 0) {
+        message("[ICCAT] ", n_other_ct, " row(s) have a CatchTypeCode not in ICCAT_LANDINGS_CODES/",
+                "ICCAT_DISCARD_CODES (", paste(unique(iccat_target_raw[catch_group == "Other/unclassified", iccat_catch_type]),
+                                               collapse = ", "), ") - excluded from both Landings_t and Discard_t rather than guessed at.")
+      }
+    } else {
+      iccat_target_raw[, catch_group := "Landings"]  # no CatchTypeCode column resolved - fall back to treating everything as Landings (previous behavior)
+      message("[ICCAT] No CatchTypeCode column resolved (ICCAT_COL_ALIASES$catch_type) - treating all ICCAT",
+              " catch as Landings (Discard_t = 0) rather than guessing a discard rate.")
+    }
+  }
+  
+  ## FG x Year totals across the 6 target countries - this is what
+  ## feeds the Catches_Ecopath override (Tier 1 below).
+  iccat_catch_by_fg <- data.table()
+  if (nrow(iccat_target_raw) > 0) {
+    iccat_by_group <- iccat_target_raw[, .(Qty = sum(Catch_t_iccat, na.rm = TRUE)),
+                                       by = .(FG_num, FG_name, Year, catch_group)]
+    iccat_catch_by_fg <- dcast(iccat_by_group, FG_num + FG_name + Year ~ catch_group, value.var = "Qty", fill = 0)
+    if (!"Landings" %in% names(iccat_catch_by_fg)) iccat_catch_by_fg[, Landings := 0]
+    if (!"Discards" %in% names(iccat_catch_by_fg)) iccat_catch_by_fg[, Discards := 0]
+    setnames(iccat_catch_by_fg, c("Landings", "Discards"), c("iccat_landings_t", "iccat_discard_t"))
+    iccat_catch_by_fg[, iccat_catches_t := iccat_landings_t + iccat_discard_t]  # target-6-country total (NOT whole-Med)
+    iccat_catch_by_fg[, `Other/unclassified` := NULL]
+  }
+  
+  ## Country x FleetType x Year breakdown for the fleet-split step
+  ## further below (feeds Ecopath_L/Ecopath_Di directly for these FGs -
+  ## see the "ICCAT fleet-split override" block after fleet_split_out is
+  ## built). Real ICCAT GearGrp mapped to each country's own FleetType
+  ## taxonomy (resolve_iccat_fleet_type(), defined just below).
+  iccat_country_fleet_catch <- data.table()
+  if (nrow(iccat_target_raw) > 0) {
+    if (is.na(col_gear)) {
+      message("\n[ICCAT] No gear column resolved (ICCAT_COL_ALIASES$gear) - cannot split ICCAT catch by fleet,",
+              " so Ecopath_L/Ecopath_Di's fleet columns for Bluefin tuna/Swordfish will stay at whatever GFCM",
+              " (near-zero) figure existed before, even though the FG-level Catches_Ecopath total above is now",
+              " correct. Add the real gear column's header to ICCAT_COL_ALIASES$gear once known.")
+    } else {
+      iccat_target_raw[, FleetType_resolved := mapply(resolve_iccat_fleet_type, Country, iccat_gear)]
+      iccat_fleet_group <- iccat_target_raw[, .(Qty = sum(Catch_t_iccat, na.rm = TRUE)),
+                                            by = .(Country, FG_num, FG_name, Year, FleetType_resolved, catch_group)]
+      iccat_country_fleet_catch <- dcast(iccat_fleet_group, Country + FG_num + FG_name + Year + FleetType_resolved ~ catch_group,
+                                         value.var = "Qty", fill = 0)
+      if (!"Landings" %in% names(iccat_country_fleet_catch)) iccat_country_fleet_catch[, Landings := 0]
+      if (!"Discards" %in% names(iccat_country_fleet_catch)) iccat_country_fleet_catch[, Discards := 0]
+      setnames(iccat_country_fleet_catch, c("FleetType_resolved", "Landings", "Discards"),
+               c("FleetType", "Landings_t", "Discard_t"))
+      iccat_country_fleet_catch[, `Other/unclassified` := NULL]
+      iccat_country_fleet_catch[, Catch_t := Landings_t + Discard_t]
+      message("\n[ICCAT] iccat_country_fleet_catch: ", nrow(iccat_country_fleet_catch), " Country x FG x FleetType x",
+              " Year row(s), real gear-based fleet split for ", uniqueN(iccat_country_fleet_catch$Country),
+              " target countr(y/ies) x ", uniqueN(iccat_country_fleet_catch$FG_num), " FG(s).")
+    }
+  }
+  
+  fwrite(iccat_wholemed_by_fg, file.path(csv_out_dir, "iccat_catch_by_fg_wholemed_crosscheck.csv"))
   fwrite(iccat_catch_by_fg, file.path(csv_out_dir, "iccat_catch_by_fg_crosscheck.csv"))
-  message("[ICCAT] iccat_catch_by_fg: ", nrow(iccat_catch_by_fg), " FG x Year row(s) (",
-          uniqueN(iccat_catch_by_fg$FG_num), " FG(s) total) - written to iccat_catch_by_fg_crosscheck.csv.")
+  if (nrow(iccat_country_fleet_catch) > 0) fwrite(iccat_country_fleet_catch, file.path(csv_out_dir, "iccat_country_fleet_catch_crosscheck.csv"))
+  message("[ICCAT] iccat_catch_by_fg (6 target countries): ", nrow(iccat_catch_by_fg), " FG x Year row(s) - written to",
+          " iccat_catch_by_fg_crosscheck.csv. Whole-Mediterranean total (all reporting flags, for comparison only,",
+          " NOT used downstream) written to iccat_catch_by_fg_wholemed_crosscheck.csv.")
 }
 
 ## Attach as comparison-only columns on catches_discards_fg - NEVER
@@ -4006,17 +4395,19 @@ if (is.null(iccat_raw)) {
 ## join every time someone wants to check.
 catches_discards_fg[, `:=`(iccat_catches_t = NA_real_)]
 if (nrow(iccat_catch_by_fg) > 0) {
-  catches_discards_fg[iccat_catch_by_fg, on = c("FG_num", "Year"), iccat_catches_t := i.iccat_catches_t]
+  catches_discards_fg[iccat_catch_by_fg, on = c("FG_num", "Year"), `:=`(
+    iccat_catches_t = i.iccat_catches_t, iccat_landings_t = i.iccat_landings_t, iccat_discard_t = i.iccat_discard_t
+  )]
   catches_discards_fg[, iccat_catch_pct_diff := fifelse(!is.na(iccat_catches_t) & iccat_catches_t > 0,
                                                         round(100 * (Catch_t - iccat_catches_t) / iccat_catches_t, 1), NA_real_)]  # this pipeline's Catch_t vs ICCAT's, % difference - positive = this pipeline reports MORE
   n_flagged_iccat <- catches_discards_fg[!is.na(iccat_catch_pct_diff) & abs(iccat_catch_pct_diff) > 50, .N]
   message("[ICCAT cross-check] ", catches_discards_fg[!is.na(iccat_catches_t), .N], " FG x Year cell(s) have an",
-          " ICCAT catch figure; ", n_flagged_iccat, " of those disagree with this pipeline's own Catch_t by more",
-          " than 50% - see iccat_catch_pct_diff. Computed against Catch_t BEFORE the stock-assessment PRIORITY",
-          " override below runs - for single-species/stanza assessed FGs, Catch_t is then replaced with ICCAT's",
-          " own figure first (ICCAT takes priority over GFCM STAR/RAM below for any FG x Year cell it covers,",
-          " since ICCAT is the actual assessing body for these highly-migratory stocks); every other FG stays a",
-          " cross-check only.")
+          " ICCAT catch figure (this model's own 6 target countries only); ", n_flagged_iccat, " of those disagree",
+          " with this pipeline's own Catch_t by more than 50% - see iccat_catch_pct_diff. Computed against Catch_t",
+          " BEFORE the stock-assessment PRIORITY override below runs - for single-species/stanza assessed FGs,",
+          " Catch_t is then replaced with ICCAT's own figure first (ICCAT takes priority over GFCM STAR/RAM below",
+          " for any FG x Year cell it covers, since ICCAT is the actual assessing body for these highly-migratory",
+          " stocks); every other FG stays a cross-check only.")
 } else {
   catches_discards_fg[, iccat_catch_pct_diff := NA_real_]
 }
@@ -4105,16 +4496,21 @@ if (nrow(iccat_catch_by_fg) > 0) {
   use_iccat <- catches_discards_fg[, !is.na(n_species_in_fg) & n_species_in_fg == 1 & !is.na(iccat_catches_t) & iccat_catches_t > 0]
   n_overridden_iccat <- sum(use_iccat, na.rm = TRUE)
   if (n_overridden_iccat > 0) {
+    ## 2026-09-26: Landings_t/Discard_t now come directly from ICCAT's own
+    ## CatchTypeCode split (iccat_landings_t/iccat_discard_t - see the
+    ## ICCAT ingestion block above) wherever that resolved, instead of
+    ## backing Landings_t out via this pipeline's own discard_ratio - a
+    ## real reported split beats an assumed one. Falls back to the old
+    ## discard_ratio-based method for any row where iccat_landings_t is
+    ## somehow NA (e.g. a re-download whose CatchTypeCode column didn't
+    ## resolve), so this degrades gracefully rather than erroring.
     catches_discards_fg[use_iccat, `:=`(
       Catch_t      = iccat_catches_t,
-      ## ICCAT's Task I nominal catches has no separate landings/discard
-      ## breakdown either (same limitation as STAR/RAM above) - back out
-      ## Landings_t via this pipeline's own discard_ratio for that FG/
-      ## Year if available, else assume Landings_t = Catch_t (discard_ratio = 0).
-      Landings_t   = iccat_catches_t * (1 - fifelse(is.na(discard_ratio), 0, discard_ratio)),
-      catch_source = "stock assessment (ICCAT Task I nominal catches) - single species/stanza FG"
+      Landings_t   = fifelse(!is.na(iccat_landings_t), iccat_landings_t,
+                             iccat_catches_t * (1 - fifelse(is.na(discard_ratio), 0, discard_ratio))),
+      catch_source = "stock assessment (ICCAT Task I nominal catches, own Landings/Discards split) - single species/stanza FG"
     )]
-    catches_discards_fg[use_iccat, Discard_t := Catch_t - Landings_t]
+    catches_discards_fg[use_iccat, Discard_t := fifelse(!is.na(iccat_discard_t), iccat_discard_t, Catch_t - Landings_t)]
     message("\n[Catches] ICCAT PRIORITY applied: ", n_overridden_iccat, " FG x Year cell(s) (",
             uniqueN(catches_discards_fg[use_iccat == TRUE, FG_num]), " single-species/stanza assessed FG(s)) now",
             " use ICCAT's own nominal catch directly as Catch_t/Landings_t/Discard_t, replacing the GFCM/FDI/",
@@ -4161,6 +4557,14 @@ if (nrow(star_catch_by_fg) > 0) {
             " combined_medbs_star_ramlegacy.csv (exact species name or genus).")
   }
 }
+## Captured BEFORE n_species_in_fg is dropped and BEFORE the multistanza
+## split below reshuffles rows, so the STAR/RAM fleet-split fix further
+## down (after fleet_split_out is built) knows exactly which FG x Year
+## cells the Tier-2 stock-assessment override above actually touched -
+## use_star itself is row-order-aligned with catches_discards_fg as of
+## right here, before anything reorders it.
+star_overridden_fg_years <- if (exists("use_star")) unique(catches_discards_fg[use_star == TRUE, .(FG_num, Year)]) else data.table(FG_num = integer(), Year = integer())
+
 catches_discards_fg[, n_species_in_fg := NULL]
 
 ## --- Apply the multistanza juvenile/adult split (2026-09-24, per
@@ -4230,6 +4634,17 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
     catches_discards_fg[FG_num == fg_adult, Catch_t := Landings_t + fifelse(is.na(Discard_t), 0, Discard_t)]
     catches_discards_fg <- catches_discards_fg[FG_num != fg_juv]  # drop the old all-zero juvenile placeholder rows
     catches_discards_fg <- rbindlist(list(catches_discards_fg, juv_new), use.names = TRUE, fill = TRUE)
+    ## If the adult stanza's catch came from the STAR/RAM tier above (the
+    ## normal case - e.g. hake), the juvenile stanza's newly-created share
+    ## of it needs the SAME STAR/RAM fleet-split fix further down, or its
+    ## fleet_split_out rows (which never existed under GFCM's own
+    ## juvenile-blind reporting - see the stanza tie-break comment) would
+    ## stay at zero even after the adult's fleet split is corrected.
+    adult_star_years <- star_overridden_fg_years[FG_num == fg_adult, Year]
+    if (length(adult_star_years) > 0) {
+      star_overridden_fg_years <- unique(rbindlist(list(star_overridden_fg_years,
+                                                        data.table(FG_num = fg_juv, Year = adult_star_years))))
+    }
     n_split_applied <- n_split_applied + 1
     message("[Multistanza split] ", sci_name, ": FG", fg_adult, " (adult) kept ", round(100 * (1 - l_prop), 1),
             "% of landings/", round(100 * (1 - d_prop), 1), "% of discards; FG", fg_juv, " (juvenile) now carries",
@@ -4884,6 +5299,185 @@ fleet_split_out <- rbindlist(list(
 ), use.names = TRUE, fill = TRUE)  # combine commercial fleet rows and recreational rows into one output table
 setorder(fleet_split_out, Country, FG_num, Year, -Catch_t)  # sort for readability
 message("\n[Fleet split] fleet_split_out: ", nrow(fleet_split_out), " Country x FG x FleetType x Year row(s).")
+
+## =================================================================
+## ICCAT fleet-split override (2026-09-26) - replaces fleet_split_out's
+## Bluefin tuna/Swordfish (or any other FG ICCAT actually matched) rows
+## with ICCAT's own real Country x Gear x Year breakdown, built above as
+## iccat_country_fleet_catch. Necessary because the Tier-1 ICCAT
+## override further above only ever touches catches_discards_fg (the
+## FG-total table feeding Catches_Ecopath) - fleet_split_out/Ecopath_L
+## is built from a COMPLETELY SEPARATE country-level pathway
+## (gfcm_country_fg -> catch_with_discards -> catch_with_unreported ->
+## fleet_split), which GFCM barely covers for these ICCAT-managed
+## species (see this ICCAT block's own header comment on why ICCAT was
+## added as a third source at all) - so without this step, Bluefin
+## tuna/Swordfish kept showing zero across every fleet column in
+## Ecopath_L/Ecopath_Di even after the FG-total fix above (confirmed
+## against Andrea's real iccat_catch_by_fg_crosscheck.csv - correct FG
+## totals, but Ecopath_L still empty). Every Country x FG x Year cell
+## ICCAT covers here REPLACES whatever GFCM-derived fleet row(s) existed
+## for that cell entirely (never merged/added), so the two sources are
+## never double-counted.
+## =================================================================
+if (nrow(iccat_country_fleet_catch) > 0) {
+  iccat_cells <- unique(iccat_country_fleet_catch[, .(Country, FG_num, Year)])
+  n_replaced_rows <- nrow(fleet_split_out[iccat_cells, on = c("Country", "FG_num", "Year"), nomatch = 0])
+  fleet_split_out <- fleet_split_out[!iccat_cells, on = c("Country", "FG_num", "Year")]  # drop every GFCM-derived fleet row for a cell ICCAT now covers
+  
+  iccat_fleet_meta <- unique(FLEET_REGISTER[, .(Country, FleetType, GSA, Comment)])
+  iccat_fleet_rows <- merge(iccat_country_fleet_catch, iccat_fleet_meta, by = c("Country", "FleetType"), all.x = TRUE)
+  iccat_fleet_rows[, Sector := fifelse(FleetType == "Recreational", "Recreational",
+                                       fifelse(FleetType == "Artisanal", "Artisanal", "Industrial"))]
+  iccat_fleet_rows[, `:=`(
+    Catch_t_incl_unreported = NA_real_,  # ICCAT's own reported catch - no separate "unreported/IUU" adjustment applied to it (unlike the GFCM-derived pathway)
+    discard_source = "ICCAT Task I nominal catches (CatchTypeCode DD/DM)",
+    discard_split_source = "ICCAT's own real Country x Gear breakdown (GearGrp) - not estimated",
+    fleet_split_source = "ICCAT Task I nominal catches - real per-country/per-gear attribution, replacing the GFCM-derived value (this model's own 6 target countries only, per Andrea's 2026-09-26 decision)"
+  )]
+  
+  fleet_split_out <- rbindlist(list(fleet_split_out, iccat_fleet_rows[, .(
+    Country, FG_num, FG_name, Year, Sector, FleetType, GSA, Comment, Catch_t, Discard_t, Landings_t,
+    Catch_t_incl_unreported, discard_source, discard_split_source, fleet_split_source
+  )]), use.names = TRUE, fill = TRUE)
+  setorder(fleet_split_out, Country, FG_num, Year, -Catch_t)
+  message("\n[ICCAT fleet split] Replaced ", n_replaced_rows, " GFCM-derived fleet_split_out row(s) across ",
+          nrow(iccat_cells), " Country x FG x Year cell(s) with ", nrow(iccat_fleet_rows), " real ICCAT",
+          " Country x FleetType x Year row(s) (see iccat_country_fleet_catch_crosscheck.csv) - fleet_split_out is",
+          " now ", nrow(fleet_split_out), " row(s) total.")
+}
+
+## =================================================================
+## STAR/RAM fleet-split magnitude correction (2026-09-26, per Andrea -
+## code review finding: Sardine, Anchovy, hake and ~30 other single-
+## species/stanza assessed FGs show ~0% attribution to Spain/France/
+## Italy/Morocco/Algeria/Tunisia's own fleets in Ecopath_L, with their
+## real landings dumped almost entirely into the "Other GFCM countries"
+## residual). ROOT CAUSE: the Tier-2 STAR/RAM override further above
+## (catches_discards_fg[use_star, Catch_t := star_catches_t, ...]) only
+## ever touches catches_discards_fg, the FG-TOTAL table Catches_Ecopath
+## is built from. fleet_split_out (Ecopath_L/Ecopath_Di's own source) is
+## built from a COMPLETELY SEPARATE country-level pathway
+## (gfcm_country_fg -> catch_with_discards -> catch_with_unreported ->
+## fleet_split) that stays whatever GFCM's own raw, uncorrected country-
+## level catch was - exactly the same class of bug the ICCAT fleet-split
+## override just above already fixes for Bluefin tuna/Swordfish/Albacore,
+## just never written for STAR/RAM.
+##
+## UNLIKE ICCAT, GFCM STAR/RAM Legacy has no real per-country/per-gear
+## breakdown of its own to substitute in (it's a single whole-stock
+## catch figure per Year) - so this can't replace fleet_split_out's rows
+## with a "real" breakdown the way the ICCAT block does. Instead it
+## rescales the EXISTING GFCM-derived country/fleet rows for each
+## STAR/RAM-overridden FG x Year so their sum matches the corrected
+## total, preserving whatever real relative country/fleet shape GFCM's
+## own data carries (a magnitude fix, not a shape guess - the same
+## principle already used elsewhere in this script for
+## catch_magnitude_calibration, GFCM scaled to STECF FDI's magnitude).
+## Where GFCM has NO country-level row at all for that FG x Year (a
+## multiplicative scale is undefined with nothing to scale from - this
+## is exactly the "0% attribution" case Andrea flagged, most likely for
+## small pelagics like sardine/anchovy that GFCM's own West-Med country-
+## level capture-production data barely resolves at species level),
+## falls back to distributing the corrected total equally across the 6
+## target countries and, within each, equally across its own named
+## FleetTypes - the same "no data at all - equal share" last-resort tier
+## already used elsewhere in fleet_prop_final, explicitly flagged as a
+## placeholder pending a real country-distribution key (e.g. SAU's own
+## country totals for these species) rather than silently presented as
+## measured.
+## =================================================================
+if (nrow(star_overridden_fg_years) == 0) {
+  message("\n[STAR/RAM fleet split] No FG x Year cell used the STAR/RAM stock-assessment catch override above -",
+          " nothing to correct in fleet_split_out.")
+} else {
+  star_fix_log <- data.table()
+  current_totals <- fleet_split_out[, .(Catch_t_current = sum(Catch_t, na.rm = TRUE)),
+                                    by = .(FG_num, Year)]
+  target_totals <- catches_discards_fg[star_overridden_fg_years, on = c("FG_num", "Year"),
+                                       .(FG_num, Year, Catch_t_target = Catch_t)]
+  fix_cells <- merge(target_totals, current_totals, by = c("FG_num", "Year"), all.x = TRUE)
+  fix_cells[is.na(Catch_t_current), Catch_t_current := 0]
+  
+  scale_cells <- fix_cells[Catch_t_current > 0]
+  zero_base_cells <- fix_cells[Catch_t_current == 0]
+  
+  ## --- Case 1: GFCM already has SOME country/fleet catch for this ------
+  ## FG x Year - rescale it (Catch_t/Discard_t/Landings_t/
+  ## Catch_t_incl_unreported all multiplied by the same factor) so the
+  ## 6-country total matches the STAR/RAM-corrected figure, preserving
+  ## the existing relative country/fleet shares.
+  if (nrow(scale_cells) > 0) {
+    for (i in seq_len(nrow(scale_cells))) {
+      fg_i <- scale_cells$FG_num[i]; yr_i <- scale_cells$Year[i]
+      factor_i <- scale_cells$Catch_t_target[i] / scale_cells$Catch_t_current[i]
+      fleet_split_out[FG_num == fg_i & Year == yr_i, `:=`(
+        Catch_t = Catch_t * factor_i,
+        Discard_t = Discard_t * factor_i,
+        Landings_t = Landings_t * factor_i,
+        Catch_t_incl_unreported = Catch_t_incl_unreported * factor_i,
+        fleet_split_source = paste0(fleet_split_source, " - rescaled by ", round(factor_i, 3),
+                                    "x to match the STAR/RAM stock-assessment catch total (", round(scale_cells$Catch_t_target[i], 1),
+                                    " t), which replaced GFCM's own raw FG-total catch (", round(scale_cells$Catch_t_current[i], 1),
+                                    " t) upstream - relative country/fleet shares from GFCM's own data are preserved,",
+                                    " only the magnitude is corrected")
+      )]
+    }
+    star_fix_log <- rbindlist(list(star_fix_log, scale_cells[, method := "rescaled existing GFCM country/fleet shares"]), fill = TRUE)
+  }
+  
+  ## --- Case 2: GFCM has NO country/fleet row at all for this FG x -------
+  ## Year (Catch_t_current == 0, nothing to rescale from) - distribute
+  ## the STAR/RAM total equally across the 6 target countries and their
+  ## own named FleetTypes, as an explicitly flagged last resort.
+  if (nrow(zero_base_cells) > 0) {
+    fleet_meta <- unique(FLEET_REGISTER[Country %in% TARGET_COUNTRIES, .(Country, FleetType, GSA, Comment)])
+    n_fleets_by_country <- fleet_meta[, .N, by = Country]
+    for (i in seq_len(nrow(zero_base_cells))) {
+      fg_i <- zero_base_cells$FG_num[i]; yr_i <- zero_base_cells$Year[i]
+      target_i <- zero_base_cells$Catch_t_target[i]
+      fg_name_i <- unique(catches_discards_fg[FG_num == fg_i, FG_name])[1]
+      per_country_i <- target_i / uniqueN(fleet_meta$Country)
+      flat_rows <- merge(fleet_meta, n_fleets_by_country, by = "Country")
+      flat_rows[, `:=`(
+        FG_num = fg_i, FG_name = fg_name_i, Year = yr_i,
+        Sector = fifelse(FleetType == "Recreational", "Recreational", fifelse(FleetType == "Artisanal", "Artisanal", "Industrial")),
+        Catch_t = per_country_i / N,
+        Discard_t = NA_real_,
+        Landings_t = per_country_i / N,
+        Catch_t_incl_unreported = NA_real_,
+        discard_source = NA_character_,
+        discard_split_source = NA_character_,
+        fleet_split_source = paste0("PLACEHOLDER - STAR/RAM stock-assessment catch (", round(target_i, 1),
+                                    " t) had NO GFCM country-level catch to scale from for this FG x Year (GFCM's",
+                                    " own West-Med country-level data doesn't resolve this FG at species level) -",
+                                    " distributed equally across the 6 target countries and their own fleet types.",
+                                    " Review: a real country-distribution key (e.g. SAU's own country totals for",
+                                    " this species) would replace this placeholder with something better than a",
+                                    " flat equal share.")
+      )]
+      flat_rows[, N := NULL]
+      ## Drop any all-NA/zero GFCM-derived rows that might already exist
+      ## for this cell (Catch_t_current == 0 doesn't guarantee zero ROWS,
+      ## just zero total) before adding the flat placeholder, so the two
+      ## never coexist for the same Country x FleetType.
+      fleet_split_out <- fleet_split_out[!(FG_num == fg_i & Year == yr_i)]
+      fleet_split_out <- rbindlist(list(fleet_split_out, flat_rows[, .(
+        Country, FG_num, FG_name, Year, Sector, FleetType, GSA, Comment, Catch_t, Discard_t, Landings_t,
+        Catch_t_incl_unreported, discard_source, discard_split_source, fleet_split_source
+      )]), use.names = TRUE, fill = TRUE)
+    }
+    star_fix_log <- rbindlist(list(star_fix_log, zero_base_cells[, method := "flat equal-share placeholder (no GFCM country data to scale from)"]), fill = TRUE)
+  }
+  
+  setorder(fleet_split_out, Country, FG_num, Year, -Catch_t)
+  fwrite(star_fix_log, file.path(csv_out_dir, "star_ram_fleet_split_fix_REVIEW.csv"))
+  message("\n[STAR/RAM fleet split] ", nrow(scale_cells), " FG x Year cell(s) rescaled from GFCM's own existing",
+          " country/fleet shares; ", nrow(zero_base_cells), " FG x Year cell(s) had no GFCM country data at all",
+          " and got a flat equal-share placeholder instead (review star_ram_fleet_split_fix_REVIEW.csv - these",
+          " need a real country-distribution key eventually, not a flat share). fleet_split_out is now ",
+          nrow(fleet_split_out), " row(s) total.")
+}
 
 ## --- Effort hindcast for Spain/France/Italy's pre-2014 years: FDI's
 ## own days-per-tonne ratio (stecf_effort_catch_ratio, Country x
@@ -5980,6 +6574,45 @@ if (nrow(fg_missing_catch_discards) > 0) {
           " FG(s) has a nonzero Ecopath_L landings or Ecopath_Di discards value for ",
           paste(range(YEAR_ECOPATH), collapse = "-"), ".")
 }
+
+## 7/8. Catches AND discards jointly by FG x fleet (2026-09-26) - the one
+## breakdown missing from #01 (FG-keyed, no fleet dimension) and #02/#03
+## (fleet-keyed, FG summed away): fleet_split_out carries BOTH FG_num/
+## FG_name and Country/FleetType together, so this is a real joint view,
+## not two separately-aggregated tables. Restricted to the top 12 FGs by
+## total catch (full series) - every FG x fleet combination faceted with
+## no restriction is unreadable (70+ FGs x 5+ fleet types); the smaller
+## ones are already visible via plot #01 (FG-only) and #02/#03 (fleet-only,
+## all-FG-summed).
+top_fg_by_catch <- fleet_split_out[Sector != "Recreational", .(Catch_t = sum(Catch_t, na.rm = TRUE)), by = .(FG_num, FG_name)]
+setorder(top_fg_by_catch, -Catch_t)
+top_fg_ids <- head(top_fg_by_catch, 12)$FG_num
+message("\n[Validation plots 07/08] Restricting the joint FG x fleet plots to the top ", length(top_fg_ids),
+        " FG(s) by total catch (of ", nrow(top_fg_by_catch), " with any catch at all) - see fg_catch_base_year/",
+        " catches_discards_fg for every FG's own totals, plot #01 for the full FG-only breakdown.")
+
+validation_plots[["07_catch_by_fg_and_fleet"]] <- tryCatch({
+  d <- fleet_split_out[Sector != "Recreational" & FG_num %in% top_fg_ids,
+                       .(Catch_t = sum(Catch_t, na.rm = TRUE)), by = .(FG_num, FG_name, FleetType, Year)]
+  ggplot(d, aes(x = Year, y = Catch_t, fill = FleetType)) +
+    geom_area(position = "stack") +
+    facet_wrap(~ paste0(FG_num, " - ", FG_name), scales = "free_y") +
+    labs(title = "Catch by functional group AND fleet over time", subtitle = paste0("Top ", length(top_fg_ids), " FG(s) by total catch, all countries summed"),
+         x = NULL, y = "t/year", fill = "Fleet") +
+    theme_minimal(base_size = 7) + theme(legend.position = "bottom")
+}, error = function(e) { message("[Validation plot 7] skipped - ", conditionMessage(e)); NULL })
+
+validation_plots[["08_discards_by_fg_and_fleet"]] <- tryCatch({
+  d <- fleet_split_out[Sector != "Recreational" & FG_num %in% top_fg_ids & !is.na(Discard_t),
+                       .(Discard_t = sum(Discard_t, na.rm = TRUE)), by = .(FG_num, FG_name, FleetType, Year)]
+  if (nrow(d) == 0) stop("no non-NA Discard_t among the top FGs")
+  ggplot(d, aes(x = Year, y = Discard_t, fill = FleetType)) +
+    geom_area(position = "stack") +
+    facet_wrap(~ paste0(FG_num, " - ", FG_name), scales = "free_y") +
+    labs(title = "Discards by functional group AND fleet over time", subtitle = paste0("Top ", length(top_fg_ids), " FG(s) by total catch, all countries summed"),
+         x = NULL, y = "t/year", fill = "Fleet") +
+    theme_minimal(base_size = 7) + theme(legend.position = "bottom")
+}, error = function(e) { message("[Validation plot 8] skipped - ", conditionMessage(e)); NULL })
 
 validation_plots <- validation_plots[!sapply(validation_plots, is.null)]  # drop any plot that failed and returned NULL
 if (length(validation_plots) == 0) {

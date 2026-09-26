@@ -105,6 +105,18 @@ if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FAL
 if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # group_number, group_name, is_predator - row/column order for the output matrix
 if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
 
+## 2026-09-26: 04_diets.R previously never defined its own YEAR_ECOPATH
+## default at all - it only READ it (line ~850, target_year_ecobase) if
+## already set in the global env by a prior script/driver, else fell back
+## to NULL. That means running this script standalone (not through
+## run_pipeline_demo.R after 01/02/03) silently disabled the EcoBase
+## diet-matrix fallback's year-targeting with no message explaining why.
+## Guarded exactly like 01_biomass.R/02_fisheries.R/03_pbqb-traits.R's own
+## YEAR_ECOPATH default (same WMed default: 1994:1996) - a driver script
+## setting YEAR_ECOPATH before source()-ing this file still overrides it,
+## same override pattern as every other numbered script.
+if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996
+
 ## Which diet metric to use, in priority order, when a DATA_ENTRY row
 ## has more than one filled in (a study rarely reports all of them for
 ## the same predator-prey pair). IRI folds in Frequency AND either
@@ -921,6 +933,34 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     message("[04_diets.R] No FG_lookup.csv found in ", BIOMASS_CSV_DIR, " (run 01_biomass.R first) -",
             " diet_references_by_fg.csv not written this run; the FG_References sheet's diet_ref column",
             " will be blank until it is.")
+  }
+  
+  ## 2026-09-26: diet-matrix heatmap - predator FG (x) x prey FG (y),
+  ## fill = proportion of predator's diet - the standard EwE diet-check
+  ## figure, and the single most useful "does this diet matrix look
+  ## sane" view (columns should each sum to ~1, since fg_diet's own
+  ## weight is already normalized per predator_fg - see the `weight :=
+  ## weight / sum(weight), by = predator_fg` line in build_fg_diet()).
+  ## Shares plot_dir with 01/02/03 (out_dir/plots) - 04_diets.R didn't
+  ## define it before since it had no plotting code at all until now.
+  if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.path(out_dir, "plots")
+  if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+  p_diet_matrix <- tryCatch({
+    if (nrow(fg_diet) == 0) stop("fg_diet is empty")
+    ggplot(fg_diet, aes(x = predator_fg, y = prey_fg, fill = weight)) +
+      geom_tile(color = "white", linewidth = 0.1) +
+      scale_fill_viridis_c(option = "magma", direction = -1, na.value = "grey95", limits = c(0, NA)) +
+      labs(title = "Diet composition matrix (Ecopath_diet)", subtitle = "Each predator FG's column sums to ~1 (its full diet); color = proportion contributed by that prey FG",
+           x = "Predator FG", y = "Prey FG", fill = "Diet\nproportion") +
+      theme_minimal(base_size = 6) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 5),
+            axis.text.y = element_text(size = 5), legend.position = "right")
+  }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
+  if (!is.null(p_diet_matrix)) {
+    n_fg_side <- length(unique(c(fg_diet$predator_fg, fg_diet$prey_fg)))
+    ggsave(file.path(plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
+           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = 150, bg = "white", limitsize = FALSE)
+    message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis).")
   }
   
   export_ewe_matrix_csv(fg_diet, group_table, out_path)
