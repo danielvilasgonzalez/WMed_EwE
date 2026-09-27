@@ -44,8 +44,8 @@ RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
 ## -----------------------------------------------------------------
 ## Shared paths - set ONCE here, reused by all three scripts.
 ##
-## 2026-09-27: packaging this as a repo other
-## people can clone and run - rather than every person editing these
+## 2026-09-27 (per Andrea/Daniel, packaging this as a repo other
+## people can clone and run): rather than every person editing these
 ## three lines directly (and constantly re-diffing/re-committing over
 ## each other's local paths), this now looks for a config.R file
 ## living alongside this script FIRST. Copy config.R.example to
@@ -80,8 +80,8 @@ if (file.exists("config.R")) {
   git_dir    <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
 }
 
-## 2026-09-27: pbqb-traits/diet/validation plots weren't being
-## created - root cause was traced to THIS block. Every one of 01/02/03/
+## 2026-09-27 (per Andrea: "pbqb-traits/diet/validation plots aren't being
+## created") - root cause was traced to THIS block. Every one of 01/02/03/
 ## 04's own "SOURCE-ABLE SCRIPT" guards (see their Configuration sections)
 ## trusts out_dir/pcloud_dir/git_dir blindly the moment they're already set
 ## in the calling environment - it never checks they actually exist on

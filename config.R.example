@@ -1,0 +1,37 @@
+## =================================================================
+## config.R.example
+##
+## Copy this file to "config.R" (same folder) and edit the three paths
+## below to match YOUR machine. config.R is listed in .gitignore -
+## it's meant to be personal/local, never committed, so everyone
+## running this repo keeps their own copy without touching the
+## scripts or fighting over one shared hardcoded path in git history.
+##
+## run_pipeline_demo.R sources this file automatically if it exists
+## (see the top of that script). If config.R is missing, it warns and
+## falls back to Daniel's own hardcoded defaults - useful for Daniel,
+## not for anyone else - so create your own copy before running.
+## =================================================================
+
+## Writable output folder - the pipeline creates every subfolder it
+## needs under here itself (biomass/, fisheries/, plots/biomass,
+## plots/fisheries, plots/pbqb-traits, plots/validation, plots/diets,
+## the shared ecopath_ecosim_inputs.xlsx workbook, etc). Point this at
+## any empty folder you have write access to.
+out_dir <- "/path/to/your/output/folder/"
+
+## Read access to the shared external data tree (FG_WMed_2026.csv,
+## ewe_group_table.csv, and every fisheries/ subfolder - GFCM, FDI,
+## SAU, Morocco_Algeria, RousseauEtAl2023, FishMIP, STAR_RAMLegacy,
+## ICCAT). This is the pCloud "EwE Western Med 2026" folder - mount/
+## sync it locally and point this at that local path.
+pcloud_dir <- "/path/to/your/pCloud Drive/EwE Western Med 2026/"
+
+## Your own local clone of this repo - must contain a scripts/
+## subfolder with 01_biomass.R, 02_fisheries.R, 03_pbqb-traits.R,
+## 04_diets.R, 05_validation.R, 03b_ecobase.R,
+## lib_survey_fg_density_functions.R, lib_worms_taxonomy_lookup.R
+## (and the optional lib_aquamaps_depth_extension.R /
+## lib_cmems_phytoplankton_biomass.R / lib_satellite_phytoplankton_biomass.R,
+## if you use those opt-in features).
+git_dir <- "/path/to/your/clone/WMed_EwE/"

@@ -126,6 +126,17 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("git_dir", envir = .GlobalEnv, inherits = FALSE)) {
   message("[01_survey_density] Using pre-set out_dir/pcloud_dir/git_dir from calling environment:\n  out_dir  = ", out_dir, "\n  pcloud_dir = ", pcloud_dir, "\n  git_dir  = ", git_dir)
+  ## 2026-09-27: a pre-set out_dir that doesn't exist on this machine used
+  ## to fail silently (dir.create(..., recursive=TRUE) further down just
+  ## returns FALSE with a warning when it lacks permission to create it,
+  ## e.g. someone else's home directory) or crash much later inside
+  ## ggsave() with a cryptic error, instead of here where the bad path was
+  ## actually accepted. run_pipeline_demo.R now checks this itself before
+  ## sourcing anything, but this guard stays here too for any other driver.
+  if (!dir.exists(out_dir)) {
+    stop("[01_biomass.R] out_dir was pre-set by the calling script but doesn't exist on this machine: \"",
+         out_dir, "\". Fix it in the driver script (e.g. run_pipeline_demo.R) before sourcing this file.")
+  }
 } else if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   ## AREA_MODE == "custom" nests the default out_dir under AREA_NAME, so
   ## different custom-region runs never collide or overwrite each
@@ -226,11 +237,21 @@ fg_species_file  <- resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed_2026.cs
 #downloaded from MEDITS website
 tm_list_file     <- resolve_pcloud_file(paste0(pcloud_dir,"/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/TM_list_(April_2019).xlsx"), pcloud_dir)
 
-## plot_dir is INSIDE out_dir (out_dir/plots), not two directories up
-## from it - both are created (recursive=TRUE, in case the full parent
+## plot_dir is INSIDE out_dir (out_dir/plots/biomass), not two directories
+## up from it - both are created (recursive=TRUE, in case the full parent
 ## path doesn't exist yet) rather than assuming either already exists.
+## 2026-09-27: every script's REGULAR (non-validation) plots
+## now live in their own named subfolder under out_dir/plots/ - biomass's
+## own figures go here, fisheries' own go in out_dir/plots/fisheries
+## (02_fisheries.R), pbqb-traits' own go in out_dir/plots/pbqb-traits
+## (03_pbqb-traits.R) - so out_dir/plots/ no longer mixes figures from
+## different scripts together. The shared cross-script Ecopath-input
+## validation checks (PB/QB, F, P/Q ratio, diet matrix) still all land in
+## one place regardless of which script produced them, but that's now
+## out_dir/plots/validation (nested under plots/, see 03_pbqb-traits.R
+## and 04_diets.R), not a separate top-level out_dir/validation folder.
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-plot_dir <- file.path(out_dir, "plots")
+plot_dir <- file.path(out_dir, "plots", "biomass")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## 2026-09-17 update: this block's own native/intermediate CSV outputs
@@ -1783,6 +1804,20 @@ if (AREA_MODE == "westmed") {
     ## figure, e.g. Bethoux 1979-style Mediterranean physical geography
     ## references) is used as the stock's range.
     ##
+    ## Swordfish (2026-09-27, filled in): ICCAT's own SS assessment
+    ## reports SSB only as a B/Bmsy ratio, not a tonnage - but the 2020
+    ## Mediterranean swordfish assessment's JABBA (surplus-production)
+    ## model DOES give an absolute Bmsy: joint posterior median 71,319 t
+    ## (67,509-73,928 t across model variants), with B2018/Bmsy = 0.72 for
+    ## the terminal year -> B2018 = 0.72 x 71,319 = 51,350 t (whole
+    ## Mediterranean stock, one year only - no public year-by-year SSB
+    ## table exists, so this is used as the single closest-available point
+    ## to the 1994-1996 baseline, same "closest available, flagged not
+    ## guessed" convention as every other manual-cited source in this
+    ## pipeline). See iccat_ssb_biomass.csv's SWO row for the full
+    ## citation. Albacore (ALB) has no equivalent figure sourced yet - the
+    ## mechanism is ready, the number isn't found.
+    ##
     ## Bluefin tuna (2026-09-24, updated per Andrea: "do what you think is
     ## best - area weight or aerial"): area-ratio allocation across the
     ## whole Eastern Atlantic+Mediterranean stock range is NOT used - as
@@ -2981,14 +3016,24 @@ if (AREA_MODE == "westmed") {
     d[, mean_density := fifelse(is.na(mean_density), 0, mean_density)]
     d <- d[order(-mean_density)]
     d[, FG_label := factor(paste0(FG_num, " - ", FG_name), levels = paste0(FG_num, " - ", FG_name))]
+    ## 2026-09-27 fix: a handful of FGs (typically Detritus/
+    ## plankton/megafauna-adjacent groups) sit 1-2+ orders of magnitude
+    ## above everything else, so on a LINEAR x-axis every other bar gets
+    ## compressed down to a sliver next to them. pseudo_log_trans behaves
+    ## like log10 once values get large but stays linear (and defined) near
+    ## zero, so FGs with a real but small density are still visible AND a
+    ## genuine 0 (missing) still plots at 0 instead of erroring the way a
+    ## true log scale would.
     ggplot(d, aes(x = mean_density, y = reorder(FG_label, mean_density), fill = Tier)) +
       geom_col() +
+      scale_x_continuous(trans = scales::pseudo_log_trans(base = 10)) +
       scale_fill_manual(values = c("Survey (MEDITS/MEDIAS)" = "#4C6FE7", "Stock assessment (ICCAT/STAR-RAM)" = "#2E7D32",
                                    "Manual-cited literature" = "#F9A825", "EcoBase (literature model)" = "#8E24AA",
                                    "Missing" = "grey70", "Other" = "grey40")) +
       labs(title = "Biomass by functional group at the Ecopath baseline, by data source",
-           subtitle = paste0("Mean density, Year ", paste(range(YEAR_ECOPATH), collapse = "-"), " - color = which source actually supplied the value"),
-           x = "t/km2", y = NULL, fill = "Source") +
+           subtitle = paste0("Mean density, Year ", paste(range(YEAR_ECOPATH), collapse = "-"), " - color = which source actually supplied the value.",
+                             " x-axis is log-like (pseudo-log) so small-density FGs stay visible next to a few very large ones"),
+           x = "t/km2 (pseudo-log scale)", y = NULL, fill = "Source") +
       theme_minimal(base_size = 7) + theme(legend.position = "bottom")
   }, error = function(e) { message("[Biomass-by-FG-source plot] skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_biomass_by_fg_source)) {

@@ -58,6 +58,13 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("git_dir", envir = .GlobalEnv, inherits = FALSE)) {
   message("[04_diets.R] Using pre-set out_dir/pcloud_dir/git_dir from calling environment:\n  out_dir  = ", out_dir, "\n  pcloud_dir = ", pcloud_dir, "\n  git_dir  = ", git_dir)
+  ## 2026-09-27: same fail-fast check as 03_pbqb-traits.R - a pre-set
+  ## out_dir that doesn't exist on this machine used to fail silently or
+  ## crash later with a cryptic error instead of here.
+  if (!dir.exists(out_dir)) {
+    stop("[04_diets.R] out_dir was pre-set by the calling script but doesn't exist on this machine: \"",
+         out_dir, "\". Fix it in the driver script (e.g. run_pipeline_demo.R) before sourcing this file.")
+  }
 } else if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
   out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
   pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
@@ -102,7 +109,19 @@ if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) M
 if (!exists("FG_REFERENCE_CSV_PATH",    envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH    <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_CSV_PATH; ok if the file doesn't exist (treated as empty)
 if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_BIOMASS_IN_FG_CSV_PATH <- file.path(pcloud_dir, "data/species_biomass_in_fg_missing.csv")   # species, fg_name, biomass_proportion - ONLY for species x FG pairs not covered by ECOPATH_WORKBOOK_PATH's own FG_spp_Ecopath sheet; ok if the file doesn't exist
-if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # group_number, group_name, is_predator - row/column order for the output matrix
+## 2026-09-27: group_number/group_name/is_predator (row/column universe of
+## the output diet matrix) used to require a separate, fully manually-
+## maintained ewe_group_table.csv - group_number/group_name duplicated
+## FG_WMed_2026.csv, and is_predator had no source at all if that file
+## didn't exist yet. build_group_table_auto() below now derives both
+## automatically: group_number/group_name from the same FG_lookup
+## reference 01_biomass.R already writes, is_predator from whether
+## 03_pbqb-traits.R computed a real QB_FG for that FG (QB is only ever
+## computed for something that actually consumes prey). EWE_GROUP_TABLE_CSV_PATH
+## is now an OPTIONAL override, only read if it exists - for any FG where
+## the QB-derived value needs a manual correction, not a required input.
+if (!exists("PBQB_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) PBQB_CSV_DIR <- file.path(out_dir, "pbqb-traits")   # same csv_out_dir 03_pbqb-traits.R itself writes fg_pb_qb_weighted*.csv into
+if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # OPTIONAL is_predator override (group_number, is_predator) - safe to not exist
 if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
 
 ## 2026-09-26: 04_diets.R previously never defined its own YEAR_ECOPATH
@@ -787,6 +806,77 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 }
 
 ## =================================================================
+## build_group_table_auto() - 2026-09-27, replaces a required, fully
+## manually-maintained ewe_group_table.csv.
+##
+## group_number/group_name: read from the same FG_lookup reference
+## 01_biomass.R already writes (read_full_fg_reference(), the exact
+## helper this script's own FG_References-sheet step already calls
+## further down) - no separate file, no duplication of FG_WMed_2026.csv.
+##
+## is_predator: a FG is treated as a predator (gets its own column in
+## the output matrix) iff 03_pbqb-traits.R computed a real, positive
+## QB_FG for it this run. QB (consumption/biomass) is only ever
+## computed for a group that actually eats something - a group with no
+## real QB is exactly a primary producer/detritus/non-consuming group,
+## which is precisely what is_predator was already encoding by hand.
+## Reads whichever of fg_pb_qb_weighted*.csv exists (03_pbqb-traits.R
+## writes several progressively-enriched versions over its own run;
+## prefers the most complete one actually present).
+##
+## manual_override_path (EWE_GROUP_TABLE_CSV_PATH) is now OPTIONAL: if
+## it happens to exist, only its is_predator column is used, and only
+## to override the QB-derived value for specific FGs where that's
+## known to be wrong (e.g. a FG that consumes something no diet/growth
+## source captured this run, so QB_FG came back NA for a reason other
+## than "doesn't eat").
+## =================================================================
+build_group_table_auto <- function(workbook_path, biomass_csv_dir, pbqb_csv_dir, manual_override_path = NULL) {
+  fg_ref <- read_full_fg_reference(workbook_path, csv_dir = biomass_csv_dir)
+  if (is.null(fg_ref) || nrow(fg_ref) == 0) {
+    stop("build_group_table_auto(): no FG_lookup reference found under '", biomass_csv_dir,
+         "' (or in the workbook itself) - run 01_biomass.R first, it's what writes this.")
+  }
+  
+  pbqb_candidates <- c("fg_pb_qb_weighted_with_F.csv", "fg_pb_qb_weighted_with_ecobase.csv", "fg_pb_qb_weighted.csv")
+  pbqb_found <- pbqb_candidates[file.exists(file.path(pbqb_csv_dir, pbqb_candidates))]
+  if (length(pbqb_found) == 0) {
+    stop("build_group_table_auto(): none of ", paste(pbqb_candidates, collapse = ", "), " found under '",
+         pbqb_csv_dir, "' - run 03_pbqb-traits.R first, it's what writes this (needed to know which FGs",
+         " consume anything, i.e. is_predator).")
+  }
+  pbqb <- fread(file.path(pbqb_csv_dir, pbqb_found[1]))
+  qb_by_fg <- pbqb[, .(has_real_qb = any(!is.na(QB_FG) & QB_FG > 0)), by = .(group_number = as.character(as.integer(FG)))]
+  
+  group_table <- data.table(group_number = as.character(fg_ref$FG_num), group_name = fg_ref$FG_name)
+  group_table <- merge(group_table, qb_by_fg, by = "group_number", all.x = TRUE)
+  group_table[, is_predator := fifelse(is.na(has_real_qb), FALSE, has_real_qb)]   # no QB info at all this run -> not a predator column, same default a primary-producer/detritus FG already got by hand
+  group_table[, has_real_qb := NULL]
+  
+  if (!is.null(manual_override_path) && file.exists(manual_override_path)) {
+    overrides <- as.data.table(read.csv(manual_override_path, stringsAsFactors = FALSE))
+    if (all(c("group_number", "is_predator") %in% names(overrides))) {
+      overrides[, group_number := as.character(group_number)]
+      group_table <- merge(group_table, overrides[, .(group_number, is_predator_override = is_predator)], by = "group_number", all.x = TRUE)
+      n_override <- sum(!is.na(group_table$is_predator_override))
+      if (n_override > 0) {
+        message("[04_diets.R] ", n_override, " FG(s) have an explicit is_predator override from '",
+                manual_override_path, "' - taking precedence over the QB-derived value.")
+        group_table[!is.na(is_predator_override), is_predator := as.logical(is_predator_override)]
+      }
+      group_table[, is_predator_override := NULL]
+    } else {
+      message("[04_diets.R] '", manual_override_path, "' exists but is missing group_number/is_predator",
+              " columns - ignoring it, using the QB-derived is_predator for every FG.")
+    }
+  }
+  group_table[, group_number := as.integer(group_number)]
+  message("[04_diets.R] group_table built automatically: ", nrow(group_table), " FG(s), ",
+          sum(group_table$is_predator), " flagged as predator (real QB_FG > 0 from 03_pbqb-traits.R).")
+  group_table[]
+}
+
+## =================================================================
 ## STEP 9: run_pipeline() - the one call this script itself makes at
 ## the bottom (auto-runs on source(), same convention as 01_biomass.R/
 ## 02_fisheries.R/03_pbqb-traits.R - unlike the earlier diet_to_ewe.R,
@@ -801,7 +891,8 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                          out_path = OUTPUT_CSV_PATH) {
   metaweb        <- read_metaweb(metaweb_path)
   lookup         <- build_code_lookup(metaweb$tax_codes, metaweb$nontax_groups)
-  group_table    <- as.data.table(read.csv(group_table_path, stringsAsFactors = FALSE))   # moved up from STEP 9's old position - the fallback tiers below need the predator FG list before the diet matrix is built, not just at export time
+  group_table    <- build_group_table_auto(workbook_path, biomass_csv_dir = BIOMASS_CSV_DIR, pbqb_csv_dir = PBQB_CSV_DIR,
+                                           manual_override_path = group_table_path)   # moved up from STEP 9's old position - the fallback tiers below need the predator FG list before the diet matrix is built, not just at export time
   predator_fg_names_all <- unique(group_table[is_predator == TRUE | is_predator == 1]$group_name)
   
   species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
@@ -941,10 +1032,15 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   ## sane" view (columns should each sum to ~1, since fg_diet's own
   ## weight is already normalized per predator_fg - see the `weight :=
   ## weight / sum(weight), by = predator_fg` line in build_fg_diet()).
-  ## Shares plot_dir with 01/02/03 (out_dir/plots) - 04_diets.R didn't
-  ## define it before since it had no plotting code at all until now.
-  if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.path(out_dir, "plots")
-  if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+  ## 2026-09-27: this script's own plots go in its own
+  ## named subfolder, out_dir/plots/diets - matching out_dir/plots/
+  ## biomass (01_biomass.R), out_dir/plots/fisheries (02_fisheries.R)
+  ## and out_dir/plots/pbqb-traits (03_pbqb-traits.R) - one subfolder
+  ## per producing script. out_dir/plots/validation is reserved for
+  ## 05_validation.R's own output, not for this script's
+  ## diet-matrix figure.
+  if (!exists("diets_plot_dir", envir = .GlobalEnv, inherits = FALSE)) diets_plot_dir <- file.path(out_dir, "plots", "diets")
+  if (!dir.exists(diets_plot_dir)) dir.create(diets_plot_dir, recursive = TRUE, showWarnings = FALSE)
   p_diet_matrix <- tryCatch({
     if (nrow(fg_diet) == 0) stop("fg_diet is empty")
     ggplot(fg_diet, aes(x = predator_fg, y = prey_fg, fill = weight)) +
@@ -958,9 +1054,9 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_diet_matrix)) {
     n_fg_side <- length(unique(c(fg_diet$predator_fg, fg_diet$prey_fg)))
-    ggsave(file.path(plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
+    ggsave(file.path(diets_plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
            width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = 150, bg = "white", limitsize = FALSE)
-    message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis).")
+    message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis, in ", diets_plot_dir, ").")
   }
   
   export_ewe_matrix_csv(fg_diet, group_table, out_path)

@@ -3447,6 +3447,54 @@ if (nrow(stecf_discard_ratio) > 0) {
           " discard ratio instead of FishMIP's Med-wide FG-level ratio.")
 }
 
+## 2026-09-27: the discards validation plot showed some years with no
+## discards at all for some species/FGs (e.g. sardine, 1995-2013) - every
+## tier above (FishMIP per-year/flat-pooled, SAU,
+## STECF FDI) can still leave discard_ratio NA for a whole run of years
+## for one Country x FG: e.g. a species/FG that FishMIP's crosswalk
+## doesn't cover at all only picks up a ratio once STECF FDI starts
+## (2014+), leaving every pre-2014 year "not available - landings-only"
+## even though later years DO have a real ratio for that same Country x
+## FG. Borrow the NEAREST available year's own discard_ratio (by |Year -
+## that year|, ties broken toward the earlier year) within each Country
+## x FG group, same "nearest-year fallback" pattern already used for
+## biomass baseline gaps elsewhere in this pipeline - a single carried-
+## forward/back value, not a flat all-years average, so a real
+## structural break (e.g. right at STECF FDI's 2014 start) still reads
+## as a step, not smoothed away. Only fills cells that have NO ratio at
+## all after every tier above; never overwrites a real one.
+n_before_nearest <- sum(is.na(catch_with_discards$discard_ratio))
+if (n_before_nearest > 0) {
+  catch_with_discards[, row_id_tmp := .I]  # preserve original row identity through the join below
+  donor_years <- catch_with_discards[!is.na(discard_ratio), .(Country, FG_num, donor_Year = Year, discard_ratio, discard_source)]
+  if (nrow(donor_years) > 0) {
+    gap_rows <- catch_with_discards[is.na(discard_ratio), .(row_id_tmp, Country, FG_num, Year)]
+    ## cross every gap row against every donor year for that same
+    ## Country x FG, then keep only the closest donor year per gap row
+    ## (earlier year wins an exact tie, via the Year secondary sort key)
+    candidates <- merge(gap_rows, donor_years, by = c("Country", "FG_num"), allow.cartesian = TRUE)
+    candidates[, dist := abs(Year - donor_Year)]
+    setorder(candidates, row_id_tmp, dist, donor_Year)
+    filled <- candidates[, .SD[1], by = row_id_tmp][
+      , .(row_id_tmp, discard_ratio_nearest = discard_ratio,
+          discard_source_nearest = paste0(discard_source, " (nearest-year fallback, borrowed from ", donor_Year, ")"))]
+    catch_with_discards <- merge(catch_with_discards, filled, by = "row_id_tmp", all.x = TRUE)
+    catch_with_discards[is.na(discard_ratio) & !is.na(discard_ratio_nearest), `:=`(
+      Catch_t   = Landings_t / (1 - discard_ratio_nearest),
+      Discard_t = Landings_t / (1 - discard_ratio_nearest) - Landings_t,
+      discard_ratio = discard_ratio_nearest,
+      discard_source = discard_source_nearest
+    )]
+    catch_with_discards[, `:=`(discard_ratio_nearest = NULL, discard_source_nearest = NULL)]
+  }
+  catch_with_discards[, row_id_tmp := NULL]
+  n_filled_nearest <- n_before_nearest - sum(is.na(catch_with_discards$discard_ratio))
+  message("\n[Discards] Nearest-year fallback: ", n_filled_nearest, " of ", n_before_nearest,
+          " previously-NA Country x FG x Year discard_ratio cell(s) filled by borrowing that same",
+          " Country x FG's closest other year with a real ratio (", n_before_nearest - n_filled_nearest,
+          " remain NA - that Country x FG has no ratio in ANY year).")
+}
+
 ## =================================================================
 ## Morocco/Algeria real local catch data (2026-09, per the uploaded
 ## workbook - see MOROCCO_ALGERIA_DIR comment near the top of this
@@ -6395,14 +6443,19 @@ message("\n=== Done (02_fisheries.R) === Wrote ", length(sheets_to_write), " she
 ## a table that's empty because a data source wasn't found this run)
 ## never blocks the others or the rest of the script having already run.
 ## =================================================================
-## Nested under out_dir/plots/validation/fisheries/ - same "plots"
-## convention as 01_biomass.R/03_pbqb-traits.R's plot_dir (out_dir/
-## plots), with a shared "validation" subfolder (for every script's
-## validation figures) and a per-module "fisheries" subfolder under
-## that.
-validation_png_dir <- file.path(out_dir, "plots", "validation", "fisheries")
-if (!dir.exists(validation_png_dir)) dir.create(validation_png_dir, recursive = TRUE, showWarnings = FALSE)  # ensure the PNG output dir exists
-VALIDATION_PLOTS_PDF <- file.path(validation_png_dir, "fisheries_validation_plots.pdf")
+## 2026-09-27: nested under out_dir/plots/fisheries/ - this
+## script's own regular (non-validation) plot subfolder, same "plots"
+## convention as 01_biomass.R's out_dir/plots/biomass and
+## 03_pbqb-traits.R's out_dir/plots/pbqb-traits - kept separate from
+## out_dir/plots/validation, which is reserved for the shared, cross-
+## script Ecopath-input validation checks (PB/QB, F, P/Q ratio, diet
+## matrix - see 03_pbqb-traits.R/04_diets.R), not this script's own
+## fisheries-data diagnostic figures (catches, discards, fleet
+## composition, effort, data-source coverage). Variable kept as
+## fisheries_plot_dir (renamed from validation_png_dir) to match that.
+fisheries_plot_dir <- file.path(out_dir, "plots", "fisheries")
+if (!dir.exists(fisheries_plot_dir)) dir.create(fisheries_plot_dir, recursive = TRUE, showWarnings = FALSE)  # ensure the PNG output dir exists
+VALIDATION_PLOTS_PDF <- file.path(fisheries_plot_dir, "fisheries_validation_plots.pdf")
 
 ## Short, consistent label for which tier actually produced a row's
 ## fleet split / discard rate - parsed from the *_source text every
@@ -6453,7 +6506,7 @@ validation_plots[["02_catch_by_country_fleet"]] <- tryCatch({
 validation_plots[["03_discards_by_country_fleet"]] <- tryCatch({
   d <- fleet_split_out[Sector != "Recreational" & !is.na(Discard_t),
                        .(Discard_t = sum(Discard_t, na.rm = TRUE)), by = .(Country, FleetType, Year, discard_split_source)]  # sum discards by country x fleet x year x source
-  d[, Tier := classify_source(discard_split_source)]  # classify each row's data tier for coloring
+  d[, Tier := classify_source(discard_split_source)]  # classify each row's data tier for coloring (COARSE label, for color only - see fix below)
   ## 2026-09-23 fix: a Country x FleetType x Year cell can legitimately
   ## carry MORE THAN ONE row here - one per distinct discard_split_source
   ## its underlying FGs used that year (e.g. some FGs get FDI's own
@@ -6463,12 +6516,23 @@ validation_plots[["03_discards_by_country_fleet"]] <- tryCatch({
   ## ignores that split and connects every one of a FleetType's points,
   ## across both years AND tiers, into a single path - exactly the same
   ## "connects unrelated points, draws a zigzag" bug already fixed for
-  ## plot 5's sawtooth. Grouping by FleetType x Tier together instead
-  ## gives each tier its own continuous sub-line per fleet, so a genuine
-  ## color/tier switch reads as two clean, separately-colored segments
-  ## instead of one multi-colored zigzag.
+  ## plot 5's sawtooth.
+  ##
+  ## 2026-09-27 fix: the discards plot still showed multiple crossing
+  ## lines per facet - grouping by FleetType x Tier
+  ## (the fix above) was still not fine-grained enough. Tier is itself
+  ## a MANY-TO-ONE coarsening (classify_source()'s catch-all "other"
+  ## bucket, for example, lumps together every discard_split_source
+  ## string that isn't STECF FDI/SAU/flat-fallback). Two genuinely
+  ## distinct series - different underlying source strings, different
+  ## scales - can both land in the same Tier and still get connected
+  ## into one zigzagging line. Group by the RAW discard_split_source
+  ## instead (crossed with FleetType) so every truly distinct series
+  ## gets its own continuous sub-line; keep color = Tier (the coarse
+  ## label) so the legend stays readable instead of exploding into one
+  ## color per raw source string.
   ggplot(d, aes(x = Year, y = Discard_t, color = Tier)) +
-    geom_point(size = 0.6, alpha = 0.7) + geom_line(aes(group = interaction(FleetType, Tier)), linewidth = 0.2, alpha = 0.4) +
+    geom_point(size = 0.6, alpha = 0.7) + geom_line(aes(group = interaction(FleetType, discard_split_source)), linewidth = 0.2, alpha = 0.4) +
     facet_wrap(~ Country, scales = "free_y") +
     labs(title = "Discards by country and fleet over time", subtitle = "Colored by which data tier supplied that cell's discard rate",
          x = NULL, y = "Discard_t/year (all FG, all fleets summed per point)", color = NULL) +
@@ -6520,11 +6584,26 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
   } else data.table()
   d <- rbindlist(list(eu3, mat), use.names = TRUE, fill = TRUE)  # combine both effort sources into one plotting table
   if (nrow(d) == 0) stop("no effort data available from either source")
-  ggplot(d, aes(x = Year, y = Effort, color = Fleet)) +
+  ## 2026-09-27: normalized each series to 1 at its first value -
+  ## EU-3 effort is in days and Morocco/Algeria/Tunisia
+  ## effort is in kW-days, so the two are never comparable on one
+  ## free_y-per-Country axis anyway; index each Country x Fleet series
+  ## to its OWN first available (non-NA, non-zero) year = 1, so the
+  ## plot shows relative change over time instead of absolute,
+  ## unit-mismatched levels. Setdorder by Year first so "first" means
+  ## chronologically first, not first row in whatever order rbindlist
+  ## produced.
+  setorder(d, Country, Fleet, Year)
+  d[, Effort_idx := {
+    base_val <- Effort[which(!is.na(Effort) & Effort != 0)[1]]  # first non-NA, non-zero value for this Country x Fleet series
+    if (is.na(base_val) || length(base_val) == 0) NA_real_ else Effort / base_val
+  }, by = .(Country, Fleet)]
+  ggplot(d, aes(x = Year, y = Effort_idx, color = Fleet)) +
     geom_line(linewidth = 0.4) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey60", linewidth = 0.3) +
     facet_wrap(~ Country, scales = "free_y") +
-    labs(title = "Fishing effort by country and fleet over time", subtitle = "EU-3: FDI days (2014+) / SAU-hindcasted days (pre-2014). Morocco/Algeria/Tunisia: FishMIP nom_active",
-         x = NULL, y = "Effort (units vary by source - see legend/table)", color = "Fleet") +
+    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Each series divided by its own first available year (= 1). EU-3: FDI days (2014+) / SAU-hindcasted days (pre-2014). Morocco/Algeria/Tunisia: FishMIP nom_active",
+         x = NULL, y = "Effort (index, first year = 1)", color = "Fleet") +
     theme_minimal(base_size = 8) + theme(legend.position = "bottom")
 }, error = function(e) { message("[Validation plot 5] skipped - ", conditionMessage(e)); NULL })
 
@@ -6623,10 +6702,10 @@ if (length(validation_plots) == 0) {
   for (p in validation_plots) print(p)  # draw each figure onto its own PDF page
   dev.off()  # close the PDF device
   for (nm in names(validation_plots)) {
-    ggsave(file.path(validation_png_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = 150)  # also save each figure as its own PNG
+    ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = 150)  # also save each figure as its own PNG
   }
   message("\n[Validation plots] ", length(validation_plots), " of 6 figure(s) written to '", VALIDATION_PLOTS_PDF,
-          "' (one PDF, all figures) and as individual PNGs under '", validation_png_dir, "'. Any figure not",
+          "' (one PDF, all figures) and as individual PNGs under '", fisheries_plot_dir, "'. Any figure not",
           " listed here was skipped because the table it needs came back empty this run - check the",
           " message above naming which one and why.")
 }
