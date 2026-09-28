@@ -4500,6 +4500,118 @@ build_fg_references_sheet <- function(out_path,
   invisible(refs)
 }
 
+## =================================================================
+## append_reference_columns_to_final_sheets()
+##
+## Andrea (2026-09-28): "the last column of Ecopath_b Ecopath_l
+## Ecopath_Di Ecopath_pbqb Ecopath-traits sheet should include the
+## reference on where the value ... is calculated - like from this
+## literature reference or medits or x or y". build_fg_references_
+## sheet() above already tracks exactly this, per FG, but only in its
+## OWN separate "FG_References" lookup sheet - this function copies
+## that same provenance onto each of the five sheets themselves, as a
+## trailing "Reference" column, so the source for a value is visible
+## right next to it rather than requiring a second sheet to cross-
+## reference.
+##
+##   Ecopath_B      <- FG_References$B_ref
+##   Ecopath_L      <- FG_References$L_ref
+##   Ecopath_Di     <- FG_References$Di_ref
+##   Ecopath_traits <- FG_References$traits_ref
+##   Ecopath_PBQB   <- FG_References$PBQB_ref combined with
+##                      $PBQB_method_ref (data source and calculation
+##                      method/literature are two separate FG_References
+##                      columns, per that function's own header - both
+##                      are folded into this sheet's one trailing column)
+##
+## Must run AFTER build_fg_references_sheet() has (re)written
+## FG_References for this workbook - it reads FG_References straight
+## back out of the workbook, so it always reflects whatever data each
+## block actually used, not a stale snapshot. Safe to call repeatedly:
+## replaces its own "Reference" column each time rather than stacking
+## duplicates. Any of the five sheets that doesn't exist in the
+## workbook yet (an earlier script hasn't run against this exact path
+## yet) is skipped with a message, never an error.
+## =================================================================
+append_reference_columns_to_final_sheets <- function(out_path) {
+  if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required.")
+  if (!file.exists(out_path)) {
+    message("append_reference_columns_to_final_sheets(): no workbook at '", out_path, "' yet - skipping.")
+    return(invisible(NULL))
+  }
+  existing_sheets <- openxlsx::getSheetNames(out_path)
+  if (!"FG_References" %in% existing_sheets) {
+    message("append_reference_columns_to_final_sheets(): no 'FG_References' sheet in '", out_path,
+            "' yet - run build_fg_references_sheet() first. Skipping.")
+    return(invisible(NULL))
+  }
+  refs <- as.data.table(openxlsx::read.xlsx(out_path, sheet = "FG_References"))
+  if (!"FG_num" %in% names(refs)) {
+    message("append_reference_columns_to_final_sheets(): 'FG_References' sheet has no FG_num column - skipping.")
+    return(invisible(NULL))
+  }
+  refs[, FG_num := as.integer(FG_num)]
+  
+  ## sheet name -> which FG_References column becomes its own trailing
+  ## "Reference" column (Ecopath_PBQB handled separately below, since
+  ## it combines two FG_References columns into one).
+  sheet_ref_map <- list(
+    Ecopath_B      = "B_ref",
+    Ecopath_L      = "L_ref",
+    Ecopath_Di     = "Di_ref",
+    Ecopath_traits = "traits_ref"
+  )
+  
+  updated <- list()
+  for (sheet_name in names(sheet_ref_map)) {
+    if (!sheet_name %in% existing_sheets) next
+    dt <- as.data.table(openxlsx::read.xlsx(out_path, sheet = sheet_name))
+    if (!"FG_num" %in% names(dt)) {
+      message("append_reference_columns_to_final_sheets(): '", sheet_name, "' has no FG_num column - skipping.")
+      next
+    }
+    dt[, FG_num := as.integer(FG_num)]
+    ref_col <- sheet_ref_map[[sheet_name]]
+    if ("Reference" %in% names(dt)) dt[, Reference := NULL]  # drop a stale copy from a previous run before re-merging
+    dt <- merge(dt, refs[, .(FG_num, Reference = get(ref_col))], by = "FG_num", all.x = TRUE)
+    setorder(dt, FG_num)
+    updated[[sheet_name]] <- dt
+  }
+  
+  ## Ecopath_PBQB: PBQB_ref (the DATA feeding PB_FG/QB_FG) and
+  ## PBQB_method_ref (the calculation METHOD/literature behind it) are
+  ## two separate FG_References columns by design (see that function's
+  ## header) - combined here into one "<data> | method: <method>"
+  ## string since this sheet gets only one trailing column.
+  if ("Ecopath_PBQB" %in% existing_sheets) {
+    dt <- as.data.table(openxlsx::read.xlsx(out_path, sheet = "Ecopath_PBQB"))
+    if ("FG_num" %in% names(dt)) {
+      dt[, FG_num := as.integer(FG_num)]
+      if ("Reference" %in% names(dt)) dt[, Reference := NULL]
+      pbqb_refs <- refs[, .(FG_num, PBQB_ref, PBQB_method_ref)]
+      pbqb_refs[, Reference := fifelse(
+        !is.na(PBQB_ref) & !is.na(PBQB_method_ref), paste0(PBQB_ref, " | method: ", PBQB_method_ref),
+        fifelse(!is.na(PBQB_ref), PBQB_ref,
+                fifelse(!is.na(PBQB_method_ref), paste0("method: ", PBQB_method_ref), NA_character_)))]
+      dt <- merge(dt, pbqb_refs[, .(FG_num, Reference)], by = "FG_num", all.x = TRUE)
+      setorder(dt, FG_num)
+      updated[["Ecopath_PBQB"]] <- dt
+    } else {
+      message("append_reference_columns_to_final_sheets(): 'Ecopath_PBQB' has no FG_num column - skipping.")
+    }
+  }
+  
+  if (length(updated) == 0) {
+    message("append_reference_columns_to_final_sheets(): none of the five target sheets exist yet in '",
+            out_path, "' - nothing to do.")
+    return(invisible(NULL))
+  }
+  upsert_workbook_sheets(updated, out_path)
+  message("append_reference_columns_to_final_sheets(): added/updated a trailing 'Reference' column on: ",
+          paste(names(updated), collapse = ", "), ".")
+  invisible(updated)
+}
+
 add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = NULL,
                                          csv_out_dir = NULL, biomass_csv_dir = NULL) {
   ## csv_out_dir: directory for this function's OWN native CSV outputs

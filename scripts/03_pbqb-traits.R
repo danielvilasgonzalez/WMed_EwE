@@ -2880,11 +2880,25 @@ if (ENABLE_ECOBASE_QUERY && file.exists(ECOBASE_CSV_PATH)) {
   ## composition than a borrowed literature value.
   fg_weighted_ecobase[, PB_FG_filled := fifelse(is.na(PB_FG), PB_ecobase, PB_FG)]
   fg_weighted_ecobase[, QB_FG_filled := fifelse(is.na(QB_FG), QB_ecobase, QB_FG)]
-  fg_weighted_ecobase[, PB_source := fifelse(is.na(PB_FG), "EcoBase (literature)", "empirical")]
-  fg_weighted_ecobase[, QB_source := fifelse(is.na(QB_FG), "EcoBase (literature)", "empirical")]
+  ## PB_source/QB_source used to just say "EcoBase (literature)" - a
+  ## generic word with no actual citation. `References` (built just
+  ## above, per FG_name) already carries the real "Model (authors,
+  ## year)" citation(s) this FG's EcoBase value came from - embed it
+  ## directly instead of the generic placeholder, so a reviewer (and
+  ## the FG_References/Reference columns downstream, which read
+  ## PB_source/QB_source straight through) can see exactly which
+  ## published model/paper the gap-filled PB or QB came from.
+  fg_weighted_ecobase[, PB_source := fifelse(
+    is.na(PB_FG),
+    fifelse(is.na(References), "EcoBase (literature model - citation not resolved)", paste0("EcoBase: ", References)),
+    "empirical")]
+  fg_weighted_ecobase[, QB_source := fifelse(
+    is.na(QB_FG),
+    fifelse(is.na(References), "EcoBase (literature model - citation not resolved)", paste0("EcoBase: ", References)),
+    "empirical")]
   
-  n_pb_filled <- fg_weighted_ecobase[PB_source == "EcoBase (literature)" & !is.na(PB_FG_filled), .N]
-  n_qb_filled <- fg_weighted_ecobase[QB_source == "EcoBase (literature)" & !is.na(QB_FG_filled), .N]
+  n_pb_filled <- fg_weighted_ecobase[startsWith(PB_source, "EcoBase") & !is.na(PB_FG_filled), .N]
+  n_qb_filled <- fg_weighted_ecobase[startsWith(QB_source, "EcoBase") & !is.na(QB_FG_filled), .N]
   message(n_pb_filled, " FG(s) had PB gap-filled from EcoBase; ",
           n_qb_filled, " FG(s) had QB gap-filled from EcoBase.",
           " PB_FG/QB_FG above are left as the pure empirical estimate (NA where absent) -",

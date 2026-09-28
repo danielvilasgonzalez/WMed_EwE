@@ -2315,12 +2315,26 @@ if (AREA_MODE == "westmed") {
               nrow(overlap_cells), " FG x Year cell(s).")
       stock_assessment_fg_year <- stock_assessment_fg_year[!overlap_cells, on = c("FG_num", "Year")]
     }
+    ## stock_assessment_source now carries the REAL literature citation
+    ## (group_sources - read straight from the input CSV's own
+    ## Source_citation column, see load_manual_cited_biomass_group()
+    ## above), prefixed with source_label, instead of the generic
+    ## "literature/survey estimate (... - manual, cited entry)"
+    ## placeholder phrase this used to write no matter what the row's
+    ## actual citation was. The source_label prefix ("marine megafauna",
+    ## "primary producer/plankton") is kept so the Tier classification in
+    ## the biomass-by-source QA plot below (which matches on those exact
+    ## words) still recognizes these rows - only the "manual, cited
+    ## entry" filler is replaced with content. group_sources already
+    ## reads "<label> (source_citation not filled in)" for a row whose
+    ## input CSV genuinely left Source_citation blank, so that case still
+    ## surfaces as a visible gap rather than a silent fake citation.
     stock_assessment_fg_year <- rbindlist(list(
       stock_assessment_fg_year,
       group_fg_year[, .(FG_num, FG_name, Year, stock_assessment_density_t_km2,
                         star_biomass_t = group_biomass_t, star_n_stocks = NA_integer_,
                         star_sources = group_sources,
-                        stock_assessment_source = paste0("literature/survey estimate (", source_label, " - manual, cited entry)"))]
+                        stock_assessment_source = paste0(source_label, ": ", group_sources))]
     ), use.names = TRUE, fill = TRUE)
     message("[Stock-assessment biomass] stock_assessment_fg_year now also includes ", source_label, ": ",
             nrow(stock_assessment_fg_year), " FG x Year row(s) total.")
@@ -3271,6 +3285,14 @@ export_ecopath_ecosim_excel(
   csv_out_dir = csv_out_dir
 )
 
+## Read back Ecopath_B's per-FG Biomass (just written above) so STEP 11
+## below can reconcile FG_spp_Ecopath's species-level proportions
+## against the SAME FG-level Biomass Ecopath_B actually uses - see that
+## step's own comment for why this matters (the two used to be built
+## from different sources and could disagree).
+ecopath_b_by_fg <- as.data.table(openxlsx::read.xlsx(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"), sheet = "Ecopath_B"))
+ecopath_b_by_fg[, FG_num := as.integer(FG_num)]
+
 ## =================================================================
 ## STEP 10b: "Ecobase" workbook sheet (2026-09-24, per Andrea: "add a
 ## section where it adds a Ecobase sheet on the excel input file
@@ -3318,7 +3340,19 @@ if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
 ## =================================================================
 all_species_fg <- unique(species_density_regional_combined[, .(FG_num, FG_name, Species = ScientificName)])
 fg_master_species <- unique(dataframe2[, .(FG_num, FG_name, Species = ScientificName)])
-full_species_fg <- unique(rbindlist(list(all_species_fg, fg_master_species)), by = "Species")
+## Dedup key is (FG_num, Species), NOT Species alone. Several FGs that
+## the survey never samples (marine megafauna in particular - cetaceans,
+## seabirds, sea turtles, pinnipeds) can carry a blank/NA Species in the
+## FG_WMed_2026.csv catalog, or share a generic placeholder text, since
+## there's no individual scientific-name-level catalog entry for them.
+## Deduping by Species alone treated every one of those blank/shared
+## values as "the same row" across DIFFERENT FGs, so only the first
+## such FG survived unique() and every other one silently vanished from
+## full_species_fg (and therefore from FG_spp_Ecopath entirely - no
+## Density, no prop_sp_fg row at all) - this is what was happening to
+## cetaceans and seabirds. Keying on FG_num too means two rows only
+## collapse when they really are the same species in the same FG.
+full_species_fg <- unique(rbindlist(list(all_species_fg, fg_master_species)), by = c("FG_num", "Species"))
 
 ## --- base-year Density + within-FG proportion, zero-filled -------------
 ## 2026-09-24, per Andrea: a species genuinely present in the West Med
@@ -3394,6 +3428,124 @@ if (nrow(fg_missing) > 0) {
   FG_spp_Ecopath[is.na(prop_sp_fg), prop_sp_fg := 0]
 }
 
+## --- prop_sp_fg fallback for FGs with no usable species density --------
+## The Density-ratio arithmetic above (Density / fg_total_density) only
+## produces a real answer when at least one species in the FG has a
+## nonzero survey density. Two cases where that's NOT true, both common
+## for FGs the survey never samples (megafauna especially):
+##   - a SINGLE-species FG: its one species IS the FG, 100% by
+##     definition, whatever its density happens to be (was already
+##     forced to 1 here; folded into the general rule below instead).
+##   - a MULTI-species FG where EVERY species has Density = 0 (e.g.
+##     "Other dolphins" = Delphinus delphis + Stenella coeruleoalba,
+##     neither ever caught by a bottom-trawl/acoustic survey) - the
+##     Density-ratio formula leaves prop_sp_fg = 0 for ALL of them, which
+##     silently throws away the FG's real (literature/stock-assessment)
+##     biomass at species level: Biomass_t_km2 below would come out 0
+##     for every species even though Ecopath_B has a real nonzero total
+##     for that FG. Andrea (2026-09-28), from exactly this case ("Other
+##     dolphins" showing Density=0/prop_sp_fg=0 for both species): "this
+##     biomass is resulted from the sum of species and this should be
+##     noted on the FG_spp".
+## Fixed by falling back to an EVEN split (1/n species) whenever the
+## whole FG's survey density is zero - so Biomass_t_km2 always sums back
+## to Ecopath_B's real total, never silently to zero - and by adding a
+## prop_sp_fg_basis column that says in plain language whether a row's
+## prop_sp_fg is a real density-weighted split or an even-split
+## assumption (i.e. exactly the note Andrea asked for), so an even split
+## is never mistaken for an actual per-species measurement.
+FG_spp_Ecopath[, n_species_in_fg := .N, by = FG_num]
+FG_spp_Ecopath[, fg_total_density := sum(Density, na.rm = TRUE), by = FG_num]
+FG_spp_Ecopath[fg_total_density == 0, prop_sp_fg := 1 / n_species_in_fg]
+FG_spp_Ecopath[, prop_sp_fg_basis := fifelse(
+  n_species_in_fg == 1L,
+  "single species in FG (100% by definition)",
+  fifelse(fg_total_density > 0,
+          "density-weighted (real MEDITS/MEDIAS survey density)",
+          "even split across FG's species (no survey density available for this FG - not a real per-species measurement)"))]
+FG_spp_Ecopath[, `:=`(n_species_in_fg = NULL, fg_total_density = NULL)]
+
+## --- documented species-level override for literature-targeted FGs ----
+## The even-split fallback just above is only correct when there's
+## genuinely no basis to prefer one species over another. For at least
+## one FG, there IS a real basis - it was just never wired into the
+## data. "Other dolphins" (FG_name "Other dolphins" = Delphinus delphis
+## + Stenella coeruleoalba) gets its biomass from the "OtherDolphins"
+## marine-megafauna keyword group, whose ACCOBAMS Survey Initiative
+## figure is documented (2026-09-25, per Andrea - see the
+## MEGAFAUNA_TAXON_KEYWORDS comment above) as a STRIPED DOLPHIN
+## (Stenella coeruleoalba) proxy specifically, NOT a real combined
+## measurement of both species. That fact lived only in a code comment
+## until now - load_manual_cited_biomass_group() itself only ever
+## captures an FG-level total, with no species column, so it never
+## reached FG_spp_Ecopath. Andrea (2026-09-28): "if you gave me
+## estimates of densities, find species and provide them, solve that."
+##
+## Fixed by overriding prop_sp_fg directly for the documented target
+## species (1) vs. every other species sharing that FG (0), instead of
+## the generic even split - and labeling it as such in prop_sp_fg_basis
+## so it's clearly a documented literature target, not a real survey
+## measurement either. Extend MEGAFAUNA_FG_SPECIES_TARGET below if
+## another FG's literature source turns out to be similarly
+## species-targeted (e.g. if the seabird or "Deep sea-cetacean feeders"
+## figures are ever confirmed to target one specific species rather
+## than being genuinely combined-guild counts, which is the current
+## documented assumption for those - see the keyword-group comment).
+MEGAFAUNA_FG_SPECIES_TARGET <- list(
+  "Other dolphins" = "Stenella coeruleoalba"
+)
+for (fg_nm in names(MEGAFAUNA_FG_SPECIES_TARGET)) {
+  target_species <- MEGAFAUNA_FG_SPECIES_TARGET[[fg_nm]]
+  fg_rows <- FG_spp_Ecopath$FG_name == fg_nm
+  if (any(fg_rows) && target_species %in% FG_spp_Ecopath[fg_rows]$Species) {
+    FG_spp_Ecopath[fg_rows, prop_sp_fg := fifelse(Species == target_species, 1, 0)]
+    FG_spp_Ecopath[fg_rows, prop_sp_fg_basis := fifelse(
+      Species == target_species,
+      "literature-targeted species (this FG's cited biomass figure is documented as specifically measuring this species - ACCOBAMS Survey Initiative - not a combined-species average)",
+      paste0("0 - this FG's cited biomass figure specifically targets ", target_species,
+             ", documented as a species-specific proxy, not a real measurement of this species"))]
+    message("[FG_spp] Species-level override applied for FG '", fg_nm, "': ", target_species,
+            " set to prop_sp_fg = 1 (documented literature target), every other species in this FG set to 0.")
+  } else {
+    message("[FG_spp] MEGAFAUNA_FG_SPECIES_TARGET names FG '", fg_nm, "' and species '", target_species,
+            "', but one or both weren't found in FG_spp_Ecopath - override skipped. Check FG_WMed_2026.csv",
+            " naming (FG_name/Species) hasn't drifted from what this override expects.")
+  }
+}
+
+## --- reconcile against Ecopath_B: species-level Biomass_t_km2 ---------
+## Density/prop_sp_fg above are the SURVEY's own species-level density
+## and each species' share of the survey total for its FG - correct as
+## a proportion of what the survey itself saw, but Ecopath_B's own
+## FG-level Biomass can come from a completely different source (stock
+## assessment, EcoBase, marine-megafauna/primary-producer literature)
+## whenever the survey doesn't sample that FG representatively (see the
+## biomass_source priority cascade above) - so summing the raw Density
+## numbers within an FG does NOT actually add up to Ecopath_B's total
+## for those FGs. Andrea (2026-09-28): "the proportion of biomass in the
+## FG_spp doesn't correspond to Ecopath_B". Fixed by adding
+## Biomass_t_km2 = prop_sp_fg * that FG's ACTUAL Ecopath_B Biomass, so
+## summing Biomass_t_km2 within any FG always reconciles exactly to
+## Ecopath_B, whichever source fed that FG's biomass. Density/prop_sp_fg
+## are left unchanged alongside it - they're still the real survey
+## observations, not overwritten, just no longer the only biomass-like
+## number in this sheet.
+FG_spp_Ecopath <- merge(FG_spp_Ecopath, ecopath_b_by_fg[, .(FG_num, Ecopath_B_Biomass = Biomass)],
+                        by = "FG_num", all.x = TRUE)
+FG_spp_Ecopath[, Biomass_t_km2 := prop_sp_fg * Ecopath_B_Biomass]
+n_no_ecopath_b <- FG_spp_Ecopath[is.na(Ecopath_B_Biomass), uniqueN(FG_num)]
+if (n_no_ecopath_b > 0) {
+  message(n_no_ecopath_b, " FG(s) in FG_spp_Ecopath have no matching row in Ecopath_B at all",
+          " (unexpected - Ecopath_B should cover every FG in dataframe2) - Biomass_t_km2 left NA",
+          " for their species; check ecopath_b_by_fg/Ecopath_B directly.")
+}
+n_zero_biomass_fg <- FG_spp_Ecopath[!is.na(Ecopath_B_Biomass) & Ecopath_B_Biomass == 0 & prop_sp_fg > 0, uniqueN(FG_num)]
+if (n_zero_biomass_fg > 0) {
+  message(n_zero_biomass_fg, " FG(s) have a real survey-based prop_sp_fg split among species but Ecopath_B",
+          " itself is 0 for that FG this baseline period - Biomass_t_km2 correctly comes out 0 for every",
+          " species in these FG(s) too (there's no FG-level biomass to distribute).")
+}
+
 ## --- enforce column order: FG_num, FG_name, Species first -------------
 ## The taxonomy merge above joins on "Species" (by.x/by.y), which
 ## data.table puts first in the result - pushing FG_num/FG_name behind
@@ -3415,9 +3567,11 @@ message("FG_spp_Ecopath: ", nrow(FG_spp_Ecopath), " species total (", n_zero_den
 ## straight out of the workbook for its diet-blending weights), just
 ## exported on its own for review/matching purposes without needing to
 ## open the workbook.
-fwrite(FG_spp_Ecopath[, .(FG_num, FG_name, Species, Density, prop_sp_fg)],
+fwrite(FG_spp_Ecopath[, .(FG_num, FG_name, Species, Density, prop_sp_fg, prop_sp_fg_basis, Ecopath_B_Biomass, Biomass_t_km2)],
        file.path(csv_out_dir, "biomass_proportion_by_species_fg.csv"))
-message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg = that species' share of its FG's total biomass).")
+message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg = that species' share of its FG's total biomass",
+        " (see prop_sp_fg_basis for whether that's a real density-weighted split or an even-split assumption);",
+        " Biomass_t_km2 = prop_sp_fg x that FG's own Ecopath_B Biomass, so it sums to Ecopath_B exactly within each FG).")
 
 ## 2026-09-17 update: FG_spp_Ecopath and FG_lookup are native/intermediate
 ## reference tables, not final target sheets - written as CSV only.

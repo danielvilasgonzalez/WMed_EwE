@@ -908,6 +908,26 @@ build_group_table_auto <- function(workbook_path, biomass_csv_dir, manual_overri
     grepl(PRIMARY_PRODUCER_FG_NAME_REGEX, group_table$group_name, perl = TRUE)
   group_table[, is_predator := !is_non_predator]
   
+  ## EwE requires detritus groups to have a HIGHER group number than
+  ## every living group (User Guide, Ecopath Input chapter: "Detritus
+  ## groups must be placed after all living groups"). group_number here
+  ## is just FG_num carried over from FG_WMed_2026.csv/FG_lookup as-is -
+  ## this script doesn't renumber anything - so a violation means the
+  ## upstream FG reference itself has Detritus/Discards out of order,
+  ## not something this pipeline can safely fix on its own (renumbering
+  ## would also have to touch every FG-numbered output already written
+  ## by 01_biomass.R/02_fisheries.R/03_pbqb-traits.R). Flagged here so
+  ## it's caught before the workbook ever reaches EwE.
+  non_living_nums <- suppressWarnings(as.integer(group_table[group_name %in% NON_LIVING_FG_NAMES]$group_number))
+  living_nums     <- suppressWarnings(as.integer(group_table[!group_name %in% NON_LIVING_FG_NAMES]$group_number))
+  if (length(non_living_nums) > 0 && length(living_nums) > 0 && min(non_living_nums) <= max(living_nums)) {
+    warning("[04_diets.R] Group ordering: Detritus/Discards group number(s) (",
+            paste(sort(non_living_nums), collapse = ", "), ") are NOT all higher than every living FG's ",
+            "group number (max living = ", max(living_nums), "). EwE requires detritus groups to have the ",
+            "highest group numbers in the model - fix the FG numbering in FG_WMed_2026.csv/FG_lookup before ",
+            "importing this workbook into EwE.")
+  }
+  
   if (!is.null(manual_override_path) && file.exists(manual_override_path)) {
     overrides <- as.data.table(read.csv(manual_override_path, stringsAsFactors = FALSE))
     if (all(c("group_number", "is_predator") %in% names(overrides))) {
@@ -1141,6 +1161,31 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis, in ", diets_plot_dir, ").")
   }
   
+  ## --- Diet-matrix sanity checks (User Guide, Ecopath Input chapter) -
+  ## 1) each predator FG's diet column should sum to 1 (matches EwE's
+  ##    own "Sum to one" behaviour on import) - build_fg_diet() already
+  ##    normalizes every predator it has ANY rows for to sum to 1, so a
+  ##    deviation here can only come from a predator FG with zero total
+  ##    diet weight (missing/all-zero, already flagged separately above
+  ##    via predator_fg_still_missing) or a floating-point rounding blip.
+  ## 2) "Avoid situations where the fraction of the food of a group
+  ##    taken from that same group exceeds ~0.1" (cannibalism warning) -
+  ##    checked on the same normalized weights, predator_fg == prey_fg.
+  if (nrow(fg_diet) > 0) {
+    diet_col_sums <- fg_diet[, .(total = sum(weight, na.rm = TRUE)), by = predator_fg]
+    bad_sum <- diet_col_sums[abs(total - 1) > 1e-3 & total > 0]  # total == 0 is the already-flagged "no diet data" case, not a new issue
+    if (nrow(bad_sum) > 0) {
+      message("[04_diets.R] WARNING - diet column(s) not summing to 1 (EwE's own \"Sum to one\" convention): ",
+              paste0(bad_sum$predator_fg, " (", round(bad_sum$total, 4), ")", collapse = ", "))
+    }
+    cannibalism <- fg_diet[predator_fg == prey_fg & weight > 0.1]
+    if (nrow(cannibalism) > 0) {
+      message("[04_diets.R] WARNING - self-prey (cannibalism) fraction exceeds the ~0.1 guideline for: ",
+              paste0(cannibalism$predator_fg, " (", round(cannibalism$weight, 3), ")", collapse = ", "),
+              " - EwE User Guide: avoid a group's own diet fraction of itself going much above 0.1.")
+    }
+  }
+  
   export_ewe_matrix_csv(fg_diet, group_table, out_path)
   ecopath_diet_sheet <- build_ecopath_diet_sheet(fg_diet, group_table)
   upsert_workbook_sheets(list(Ecopath_diet = ecopath_diet_sheet), workbook_path)
@@ -1178,6 +1223,16 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                             fisheries_csv_dir = file.path(out_dir, "fisheries"),
                             pbqb_csv_dir      = file.path(out_dir, "pbqb-traits"),
                             diet_csv_dir      = csv_out_dir)
+  
+  ## Also surface the same per-FG provenance as a trailing "Reference"
+  ## column directly on Ecopath_B/Ecopath_L/Ecopath_Di/Ecopath_PBQB/
+  ## Ecopath_traits themselves - not just in the separate FG_References
+  ## sheet - so the source for a given biomass/landings/discards/PBQB/
+  ## trait value is visible right next to it. See
+  ## append_reference_columns_to_final_sheets() (lib_survey_fg_density_
+  ## functions.R) for exactly which FG_References column feeds which
+  ## sheet's Reference column.
+  append_reference_columns_to_final_sheets(workbook_path)
   
   trim_workbook_to_final_sheets(workbook_path)
   message("[04_diets.R] Final workbook trimmed to the 9 final target sheets (whichever exist so far).")
