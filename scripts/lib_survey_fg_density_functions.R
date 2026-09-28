@@ -4413,11 +4413,22 @@ build_fg_references_sheet <- function(out_path,
   ## --- PBQB_ref + PBQB_method_ref: from 03_pbqb-traits.R's own
   ## PB_QB.csv (FG-level: PB_source/QB_source if EcoBase gap-filling
   ## ran this session, otherwise every FG is the same "empirical"
-  ## default) and PB_QB_spp.csv (species-level: dispatch_group, which
-  ## calculation method actually ran for each species feeding that FG -
-  ## mapped below to its literature citation for PBQB_method_ref). Kept
-  ## as two columns - PBQB_ref is about the DATA feeding PB_FG/QB_FG,
-  ## PBQB_method_ref is the calculation METHOD/literature behind it.
+  ## default), PB_QB_spp.csv (species-level: which SPECIFIC published
+  ## equation - PB_method/QB_method, e.g. "Then et al. 2015", "Palomares
+  ## & Pauly 1998 (Z-based)" - actually ran for each species feeding that
+  ## FG), pbqb_method_references.csv (the real citation text behind each
+  ## of those method names), and species_parameter_references.csv (which
+  ## FishBase study's Locality/Year backs each species' own growth/
+  ## length-weight/maturity input data). PBQB_ref is about the DATA
+  ## feeding PB_FG/QB_FG (empirical vs. EcoBase-filled, plus which
+  ## growth-parameter studies back it); PBQB_method_ref is the actual
+  ## calculation EQUATION/literature behind it - both now real, per-FG,
+  ## per-method citations, not a generic word like "empirical" or
+  ## "literature". Andrea (2026-09-28): "the literature references are
+  ## not paste it in the FG_ref, neither in pbqb or methods ... all the
+  ## references should appear here for parameters, literature or model
+  ## ecobase or whatever or method equation reference for fish and other
+  ## FGs" - this is that fix.
   pbqb <- read_native_sheet_csv("PB_QB", pbqb_csv_dir)
   if (!is.null(pbqb)) {
     if (all(c("PB_source", "QB_source") %in% names(pbqb))) {
@@ -4433,36 +4444,106 @@ build_fg_references_sheet <- function(out_path,
   }
   if (!"PBQB_ref" %in% names(refs)) refs[, PBQB_ref := NA_character_]
   
-  ## dispatch_group -> literature citation. Extend this lookup if
-  ## 03_pbqb-traits.R's own dispatch logic (calc_fish()/calc_invert()/
-  ## etc.) ever adds a new dispatch_group value - anything not listed
-  ## here just falls through with a generic note instead of erroring.
-  method_citation <- c(
-    fish        = "Fish P/B, Q/B from growth (VBGF) and natural/fishing mortality - method for estimating P/B and Q/B for EwE models (see pipeline_documentation.Rmd's Methodology reference)",
-    invert      = "Benthic invertebrate P/B, Q/B from empirical length/weight-based relationships",
-    cephalopod  = "Cephalopod P/B, Q/B from short-lived life-history convention",
-    literature  = "EcoBase model repository (published literature P/B, Q/B)"
+  ## Real per-species-parameter-study citations (Locality/Year/Reference,
+  ## from FishBase - "which study backs this species' own growth/length-
+  ## weight/maturity DATA"), rolled up per FG and appended onto PBQB_ref -
+  ## this is a different, finer-grained thing than PBQB_method_ref below
+  ## (which equation was used), but equally a "literature reference" in
+  ## Andrea's sense, so it belongs here rather than nowhere.
+  species_param_refs <- read_native_sheet_csv("References", pbqb_csv_dir)
+  if (!is.null(species_param_refs) && all(c("Species", "Reference") %in% names(species_param_refs))) {
+    spp_fg_lookup <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
+    if (!is.null(spp_fg_lookup) && all(c("Species", "FG_num") %in% names(spp_fg_lookup))) {
+      param_by_fg <- merge(species_param_refs[!is.na(Reference) & Reference != ""],
+                           unique(spp_fg_lookup[, .(Species, FG_num)]), by = "Species")
+      param_by_fg <- param_by_fg[, .(param_refs = paste(sort(unique(Reference)), collapse = " | ")), by = FG_num]
+      refs <- merge(refs, param_by_fg, by = "FG_num", all.x = TRUE)
+      refs[!is.na(param_refs), PBQB_ref := paste0(PBQB_ref, " - parameter studies: ", param_refs)]
+      refs[, param_refs := NULL]
+    } else {
+      message("build_fg_references_sheet(): 'PB_QB_spp.csv' not found (or has no Species/FG_num columns)",
+              " in ", pbqb_csv_dir, " - can't map species_parameter_references.csv's per-species citations",
+              " to an FG, so they're left out of PBQB_ref.")
+    }
+  } else {
+    message("build_fg_references_sheet(): 'species_parameter_references.csv' (native sheet 'References')",
+            " not found in ", pbqb_csv_dir, " - PBQB_ref won't include per-species growth-study citations.")
+  }
+  
+  ## PBQB_method_ref: real per-FG method citations, from PB_QB_spp's own
+  ## PB_method/QB_method columns (the specific equation actually used for
+  ## each species, e.g. "Pauly 1980 (Eq.9)", "Then et al. 2015",
+  ## "Palomares & Pauly 1998 (Z-based)") joined against
+  ## pbqb_method_references.csv's real citation text for each one -
+  ## replacing the old coarse dispatch_group -> generic-sentence mapping,
+  ## which threw away exactly which equation ran and cited it with one
+  ## vague paragraph per taxon group instead. dispatch_group -> generic
+  ## text is kept ONLY as a last-resort fallback for a species/FG that
+  ## has a dispatch_group but no PB_method/QB_method value at all (e.g.
+  ## every method failed for it) - it should basically never fire once
+  ## PB_QB_spp.csv includes PB_method/QB_method.
+  method_citation_lookup <- read_native_sheet_csv("PBQB_Method_References", pbqb_csv_dir)
+  dispatch_group_fallback_citation <- c(
+    fish        = "Fish P/B, Q/B from growth (VBGF) and natural/fishing mortality - see pbqb_method_references.csv for the specific equation (no PB_method/QB_method recorded for this FG's species)",
+    mammal      = "Marine mammal P/B, Q/B from taxonomic-surrogate life-history parameters - see pbqb_method_references.csv",
+    seabird     = "Seabird Q/B from daily-ration/body-mass regression - see pbqb_method_references.csv",
+    invertebrate = "Benthic invertebrate P/B, Q/B from empirical length/weight- or temperature/longevity-based relationships - see pbqb_method_references.csv",
+    invert      = "Benthic invertebrate P/B, Q/B from empirical length/weight-based relationships - see pbqb_method_references.csv",
+    cephalopod  = "Cephalopod P/B, Q/B from short-lived life-history convention - see pbqb_method_references.csv",
+    literature  = "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"
   )
   spp <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
-  if (!is.null(spp) && "dispatch_group" %in% names(spp)) {
-    m_by_fg <- spp[!is.na(dispatch_group), .(dispatch_groups = paste(sort(unique(dispatch_group)), collapse = ",")), by = FG_num]
-    m_by_fg[, PBQB_method_ref := vapply(strsplit(dispatch_groups, ","), function(groups) {
-      hits <- unique(method_citation[groups])
-      hits <- hits[!is.na(hits)]
-      unmatched <- setdiff(groups, names(method_citation))
-      if (length(unmatched) > 0) hits <- c(hits, paste0("dispatch_group='", unmatched, "' (no citation on file)"))
-      if (length(hits) == 0) return(NA_character_)
-      paste(hits, collapse = " | ")
-    }, character(1))]
-    refs <- merge(refs, m_by_fg[, .(FG_num, PBQB_method_ref)], by = "FG_num", all.x = TRUE)
+  if (!is.null(spp)) {
+    has_method_cols <- all(c("PB_method", "QB_method") %in% names(spp))
+    if (has_method_cols && !is.null(method_citation_lookup) &&
+        all(c("Method", "Citation") %in% names(method_citation_lookup))) {
+      cite_lookup <- setNames(method_citation_lookup$Citation, method_citation_lookup$Method)
+      cite_one <- function(method_name) {
+        if (is.na(method_name) || method_name == "") return(NA_character_)
+        hit <- cite_lookup[[method_name]]
+        if (is.null(hit)) paste0(method_name, " (no citation on file in pbqb_method_references.csv - check the Method name spelling)") else hit
+      }
+      m_by_fg <- spp[, .(
+        pb_cites = paste(sort(unique(vapply(unique(na.omit(PB_method)), cite_one, character(1)))), collapse = " || "),
+        qb_cites = paste(sort(unique(vapply(unique(na.omit(QB_method)), cite_one, character(1)))), collapse = " || ")
+      ), by = FG_num]
+      m_by_fg[, PBQB_method_ref := paste0(
+        fifelse(nzchar(pb_cites), paste0("PB method: ", pb_cites), "PB method: not recorded"), " ; ",
+        fifelse(nzchar(qb_cites), paste0("QB method: ", qb_cites), "QB method: not recorded"))]
+      refs <- merge(refs, m_by_fg[, .(FG_num, PBQB_method_ref)], by = "FG_num", all.x = TRUE)
+    } else if ("dispatch_group" %in% names(spp)) {
+      if (!has_method_cols) {
+        message("build_fg_references_sheet(): 'PB_QB_spp.csv' has no PB_method/QB_method columns",
+                " (older run of 03_pbqb-traits.R, or species_pb_qb was built without them) - falling",
+                " back to the generic dispatch_group description for PBQB_method_ref.")
+      }
+      if (is.null(method_citation_lookup)) {
+        message("build_fg_references_sheet(): 'pbqb_method_references.csv' (native sheet",
+                " 'PBQB_Method_References') not found in ", pbqb_csv_dir, " - falling back to the",
+                " generic dispatch_group description for PBQB_method_ref.")
+      }
+      m_by_fg <- spp[!is.na(dispatch_group), .(dispatch_groups = paste(sort(unique(dispatch_group)), collapse = ",")), by = FG_num]
+      m_by_fg[, PBQB_method_ref := vapply(strsplit(dispatch_groups, ","), function(groups) {
+        hits <- unique(dispatch_group_fallback_citation[groups])
+        hits <- hits[!is.na(hits)]
+        unmatched <- setdiff(groups, names(dispatch_group_fallback_citation))
+        if (length(unmatched) > 0) hits <- c(hits, paste0("dispatch_group='", unmatched, "' (no citation on file)"))
+        if (length(hits) == 0) return(NA_character_)
+        paste(hits, collapse = " | ")
+      }, character(1))]
+      refs <- merge(refs, m_by_fg[, .(FG_num, PBQB_method_ref)], by = "FG_num", all.x = TRUE)
+    } else {
+      message("build_fg_references_sheet(): 'PB_QB_spp.csv' has neither PB_method/QB_method nor",
+              " dispatch_group columns - PBQB_method_ref left blank.")
+    }
   } else {
-    message("build_fg_references_sheet(): 'PB_QB_spp.csv' not found (or has no dispatch_group column)",
-            " in ", pbqb_csv_dir, " - run 03_pbqb-traits.R with species_pb_qb passed to",
-            " add_pbqb_to_ecopath_workbook() first. PBQB_method_ref left blank for now.")
+    message("build_fg_references_sheet(): 'PB_QB_spp.csv' not found in ", pbqb_csv_dir,
+            " - run 03_pbqb-traits.R with species_pb_qb passed to add_pbqb_to_ecopath_workbook()",
+            " first. PBQB_method_ref left blank for now.")
   }
   if (!"PBQB_method_ref" %in% names(refs)) refs[, PBQB_method_ref := NA_character_]
   refs[is.na(PBQB_method_ref) & !is.na(PBQB_ref) & grepl("EcoBase", PBQB_ref),
-       PBQB_method_ref := "EcoBase model repository (published literature P/B, Q/B)"]
+       PBQB_method_ref := "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"]
   
   ## --- traits_ref: 03_pbqb-traits.R writes Ecopath_traits directly
   ## from FG_WMed_2026.csv's own traits_ewe sheet (a static, literature-

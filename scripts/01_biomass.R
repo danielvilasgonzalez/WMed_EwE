@@ -3465,52 +3465,97 @@ FG_spp_Ecopath[, prop_sp_fg_basis := fifelse(
           "even split across FG's species (no survey density available for this FG - not a real per-species measurement)"))]
 FG_spp_Ecopath[, `:=`(n_species_in_fg = NULL, fg_total_density = NULL)]
 
-## --- documented species-level override for literature-targeted FGs ----
+## --- documented species-level WEIGHTED override for megafauna FGs ------
 ## The even-split fallback just above is only correct when there's
-## genuinely no basis to prefer one species over another. For at least
-## one FG, there IS a real basis - it was just never wired into the
-## data. "Other dolphins" (FG_name "Other dolphins" = Delphinus delphis
-## + Stenella coeruleoalba) gets its biomass from the "OtherDolphins"
-## marine-megafauna keyword group, whose ACCOBAMS Survey Initiative
-## figure is documented (2026-09-25, per Andrea - see the
-## MEGAFAUNA_TAXON_KEYWORDS comment above) as a STRIPED DOLPHIN
-## (Stenella coeruleoalba) proxy specifically, NOT a real combined
-## measurement of both species. That fact lived only in a code comment
-## until now - load_manual_cited_biomass_group() itself only ever
-## captures an FG-level total, with no species column, so it never
-## reached FG_spp_Ecopath. Andrea (2026-09-28): "if you gave me
-## estimates of densities, find species and provide them, solve that."
+## genuinely no basis to prefer one species over another. Two megafauna
+## FGs now have a real basis instead - one an exact single-species
+## target, the other a relative-abundance-based weighting - rather than
+## the flat even split Andrea correctly flagged as implausible ("is this
+## actually the same exact proportion among species? i think that this
+## isnt accurate" / "this needs review").
 ##
-## Fixed by overriding prop_sp_fg directly for the documented target
-## species (1) vs. every other species sharing that FG (0), instead of
-## the generic even split - and labeling it as such in prop_sp_fg_basis
-## so it's clearly a documented literature target, not a real survey
-## measurement either. Extend MEGAFAUNA_FG_SPECIES_TARGET below if
-## another FG's literature source turns out to be similarly
-## species-targeted (e.g. if the seabird or "Deep sea-cetacean feeders"
-## figures are ever confirmed to target one specific species rather
-## than being genuinely combined-guild counts, which is the current
-## documented assumption for those - see the keyword-group comment).
-MEGAFAUNA_FG_SPECIES_TARGET <- list(
-  "Other dolphins" = "Stenella coeruleoalba"
+## "Other dolphins" (Delphinus delphis + Stenella coeruleoalba): its
+## ACCOBAMS Survey Initiative figure is documented (2026-09-25, per
+## Andrea - see the MEGAFAUNA_TAXON_KEYWORDS comment above) as a STRIPED
+## DOLPHIN (Stenella coeruleoalba) proxy specifically, not a combined
+## measurement - weight 1 for Stenella, 0 for Delphinus.
+##
+## "Deep sea-cetacean feeders" (Globicephala melas + Grampus griseus +
+## Ziphius cavirostris): weighted by relative BIOMASS, not a straight
+## species count, using the ACCOBAMS Survey Initiative's own basin-wide
+## abundance estimates (Table 4, Lauriano et al./ACCOBAMS 2023 synoptic
+## assessment - https://www.frontiersin.org/journals/marine-science/articles/10.3389/fmars.2023.1270513/full,
+## cross-referenced against the ASI-Med-Report at accobams.org) -
+## individuals: long-finned pilot whale 5,540; Risso's dolphin 26,006;
+## Cuvier's beaked whale 2,929 - multiplied by each species' typical
+## adult body mass (long-finned pilot whale ~1,800 kg; Risso's dolphin
+## ~400 kg; Cuvier's beaked whale ~1,200 kg - commonly cited species
+## averages, e.g. via Wikipedia/marine-mammal reference summaries, NOT
+## independently re-verified against a primary weight study this
+## session) to convert individual counts into a relative BIOMASS share.
+## CAVEATS, explicit rather than hidden (same "flagged, not guessed"
+## convention as every other literature fallback in this pipeline):
+## these abundance figures are WHOLE-MEDITERRANEAN, not Western-Med-
+## specific (ACCOBAMS ASI reports its design-based strata results as
+## larger merged sub-areas, and this session's search didn't surface a
+## Western-Med-only breakdown for these three species), and the body-
+## mass figures are typical-adult approximations, not this study's own
+## measurements - REVIEW BEFORE FULLY TRUSTING, but this ratio (pilot
+## whale ~42%, Risso's dolphin ~44%, Cuvier's beaked whale ~15% of the
+## FG's biomass) is a considerably better approximation than an even
+## 33/33/33 split, which implies equal biomass despite Risso's dolphin
+## and Cuvier's beaked whale differing by roughly 3x in body mass alone.
+##
+## No comparably-sourced weighting was found this session for the
+## seabird FGs (Pelagic/Offshore seabirds, Coastal/inshore seabirds) -
+## those remain on the general even-split fallback above, still
+## explicitly flagged via prop_sp_fg_basis. A real species-by-species
+## Mediterranean seabird census (UNEPMAP Common Indicator 4, World
+## Seabird Union) would fix those the same way, if/when sourced.
+MEGAFAUNA_FG_SPECIES_WEIGHTS <- list(
+  "Other dolphins" = c(
+    "Stenella coeruleoalba" = 1,
+    "Delphinus delphis"     = 0
+  ),
+  "Deep sea-cetacean feeders" = c(
+    "Globicephala melas"  = 5540 * 1800,  # ACCOBAMS ASI individuals x typical adult mass (kg)
+    "Grampus griseus"     = 26006 * 400,
+    "Ziphius cavirostris" = 2929 * 1200
+  )
 )
-for (fg_nm in names(MEGAFAUNA_FG_SPECIES_TARGET)) {
-  target_species <- MEGAFAUNA_FG_SPECIES_TARGET[[fg_nm]]
+for (fg_nm in names(MEGAFAUNA_FG_SPECIES_WEIGHTS)) {
+  weights <- MEGAFAUNA_FG_SPECIES_WEIGHTS[[fg_nm]]
   fg_rows <- FG_spp_Ecopath$FG_name == fg_nm
-  if (any(fg_rows) && target_species %in% FG_spp_Ecopath[fg_rows]$Species) {
-    FG_spp_Ecopath[fg_rows, prop_sp_fg := fifelse(Species == target_species, 1, 0)]
-    FG_spp_Ecopath[fg_rows, prop_sp_fg_basis := fifelse(
-      Species == target_species,
-      "literature-targeted species (this FG's cited biomass figure is documented as specifically measuring this species - ACCOBAMS Survey Initiative - not a combined-species average)",
-      paste0("0 - this FG's cited biomass figure specifically targets ", target_species,
-             ", documented as a species-specific proxy, not a real measurement of this species"))]
-    message("[FG_spp] Species-level override applied for FG '", fg_nm, "': ", target_species,
-            " set to prop_sp_fg = 1 (documented literature target), every other species in this FG set to 0.")
-  } else {
-    message("[FG_spp] MEGAFAUNA_FG_SPECIES_TARGET names FG '", fg_nm, "' and species '", target_species,
-            "', but one or both weren't found in FG_spp_Ecopath - override skipped. Check FG_WMed_2026.csv",
-            " naming (FG_name/Species) hasn't drifted from what this override expects.")
+  if (!any(fg_rows)) {
+    message("[FG_spp] MEGAFAUNA_FG_SPECIES_WEIGHTS names FG '", fg_nm,
+            "' but it wasn't found in FG_spp_Ecopath - override skipped.")
+    next
   }
+  present_species <- FG_spp_Ecopath[fg_rows]$Species
+  matched_species <- intersect(names(weights), present_species)
+  if (length(matched_species) == 0) {
+    message("[FG_spp] MEGAFAUNA_FG_SPECIES_WEIGHTS names FG '", fg_nm,
+            "' but none of its named species (", paste(names(weights), collapse = ", "),
+            ") were found among this FG's actual species (", paste(present_species, collapse = ", "),
+            ") - override skipped. Check FG_WMed_2026.csv naming hasn't drifted.")
+    next
+  }
+  total_weight <- sum(weights[matched_species])
+  is_single_target <- length(matched_species) > 0 && all(weights[matched_species] %in% c(0, 1)) && total_weight == 1
+  basis_label <- if (is_single_target) {
+    "literature-targeted species (this FG's cited biomass figure is documented as specifically measuring this species - not a combined-species average)"
+  } else {
+    "relative-abundance-weighted (basin-wide ACCOBAMS Survey Initiative abundance x typical body mass - a documented approximation, not a Western-Med-specific measurement; see code comment for citation/caveats)"
+  }
+  for (sp in present_species) {
+    w <- if (sp %in% matched_species) weights[[sp]] / total_weight else 0
+    FG_spp_Ecopath[fg_rows & Species == sp, prop_sp_fg := w]
+    FG_spp_Ecopath[fg_rows & Species == sp, prop_sp_fg_basis :=
+                     if (w > 0) basis_label else paste0("0 - ", basis_label, " (this species' computed share rounds to zero)")]
+  }
+  message("[FG_spp] Species-level weighted override applied for FG '", fg_nm, "': ",
+          paste(sprintf("%s = %.3f", matched_species, weights[matched_species] / total_weight), collapse = ", "),
+          " (", if (is_single_target) "documented single-species target" else "relative-abundance weighting", ").")
 }
 
 ## --- reconcile against Ecopath_B: species-level Biomass_t_km2 ---------
