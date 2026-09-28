@@ -20,7 +20,9 @@ Run in order - each later step depends on files the earlier ones write:
 
 ### 1. Get the data
 
-You need read access to the shared external data folder (pCloud: "EwE Western Med 2026") - `FG_WMed_2026.csv`, `ewe_group_table.csv`, and the `fisheries/` subfolders (GFCM, FDI, SAU, Morocco_Algeria, RousseauEtAl2023, FishMIP, STAR_RAMLegacy, ICCAT). This data isn't part of the repo - request access from whoever administers the shared pCloud folder.
+You need read access to the shared external data folder (pCloud: "EwE Western Med 2026") - `FG_WMed_2026.csv` and the `fisheries/` subfolders (GFCM, FDI, SAU, Morocco_Algeria, RousseauEtAl2023, FishMIP, STAR_RAMLegacy, ICCAT). This data isn't part of the repo - request access from whoever administers the shared pCloud folder.
+
+`ewe_group_table.csv` is NOT needed - `04_diets.R` builds that table itself automatically (group_number/group_name from the FG reference `01_biomass.R` already writes; is_predator defaults to TRUE for every FG except Detritus/Discards and primary producers - phytoplankton, Posidonia/seagrass, macroalgae, Cymodocea). It only matters as an optional override if you ever want to manually correct `is_predator` for a specific FG.
 
 ### 2. Install R packages
 

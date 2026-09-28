@@ -115,12 +115,12 @@ if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FAL
 ## FG_WMed_2026.csv, and is_predator had no source at all if that file
 ## didn't exist yet. build_group_table_auto() below now derives both
 ## automatically: group_number/group_name from the same FG_lookup
-## reference 01_biomass.R already writes, is_predator from whether
-## 03_pbqb-traits.R computed a real QB_FG for that FG (QB is only ever
-## computed for something that actually consumes prey). EWE_GROUP_TABLE_CSV_PATH
-## is now an OPTIONAL override, only read if it exists - for any FG where
-## the QB-derived value needs a manual correction, not a required input.
-if (!exists("PBQB_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) PBQB_CSV_DIR <- file.path(out_dir, "pbqb-traits")   # same csv_out_dir 03_pbqb-traits.R itself writes fg_pb_qb_weighted*.csv into
+## reference 01_biomass.R already writes; is_predator defaults to TRUE
+## for every FG except Detritus/Discards and primary producers (see that
+## function's own header comment - rule rewritten 2026-09-28, no longer
+## reads 03_pbqb-traits.R's output at all). EWE_GROUP_TABLE_CSV_PATH is
+## an OPTIONAL override, only read if it exists - for any FG where the
+## default rule needs a manual correction, not a required input.
 if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # OPTIONAL is_predator override (group_number, is_predator) - safe to not exist
 if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
 
@@ -305,28 +305,38 @@ build_species_diet <- function(data_entry, lookup) {
 }
 
 ## =================================================================
-## STEP 3b (added 2026-09-24): FishBase/SeaLifeBase diet() fallback for
-## predators with NO usable metaweb DATA_ENTRY rows. Same rfishbase
-## dependency 03_pbqb-traits.R already uses (see that file's own
-## version-pinning check - NOT repeated here since this tier is
-## optional/best-effort, not required for this script to run at all).
+## STEP 3b (added 2026-09-24, prey-composition source fixed 2026-09-28):
+## FishBase/SeaLifeBase diet fallback for predators with NO usable
+## metaweb DATA_ENTRY rows. Same rfishbase dependency 03_pbqb-traits.R
+## already uses (see that file's own version-pinning check - NOT
+## repeated here since this tier is optional/best-effort, not required
+## for this script to run at all).
 ##
-## rfishbase::diet() itself: returns one row per (species, prey item)
-## for whatever stomach-content studies FishBase/SeaLifeBase have
-## digitized. Its exact column layout has changed across rfishbase
-## versions (confirmed by 03_pbqb-traits.R's own comments elsewhere in
-## this pipeline about schema drift) - NOT independently verified from
-## this session (no network access here, no R environment either), so
-## every column this function needs is resolved DEFENSIVELY from a
-## small set of candidate names, with whatever is actually found
-## printed so a wrong guess is visible immediately rather than a silent
-## empty/garbage result. Known/likely candidates, based on rfishbase's
-## documented diet() table: a prey-item text field (FoodI/FoodII/
-## FoodIII/Foodname/PreyStage), a study identifier (DietCode/StudyDuration/
-## SampleStage or similar - used the same way metaweb's "Reference"
-## groups records into one study), and a proportion field
-## (DietPercent/Percentage/PropDietCompo - FishBase reports this on a
-## 0-100 %Weight-or-%Volume-ish scale, hence the /100 below).
+## 2026-09-28 fix: a real run showed rfishbase::diet() returning ONLY
+## study-level metadata (Species/SpecCode/DietCode/SampleStage/
+## SampleSize/monthly columns/Troph/... - no prey-item name or
+## percentage field at all), so the original "resolve a prey-item
+## column out of diet()'s own output" approach below always failed and
+## skipped this tier entirely. Per rfishbase's own issue tracker
+## (ropensci/rfishbase#87, #155), this is not a bug in this pipeline -
+## FishBase split diet() into two tables: diet() is the study/sample
+## record, and the actual prey composition (FoodI/FoodII/FoodIII/Stage/
+## DietPercent per prey item, joined back to a study via DietCode) now
+## lives in a separate diet_items() table. diet_items() itself takes no
+## species filter (it's the whole reference table), so this queries
+## diet() first per species (as before, to get the DietCode(s) that
+## belong to the requested predators) and then pulls diet_items(),
+## filtered down to just those DietCode(s), for the prey rows.
+## rfishbase::fooditems() (species-keyed directly, no DietCode join
+## needed) is tried as a second fallback if diet_items() comes up empty
+## for a predator - a coarser species-level food-item list without the
+## same %-quantitative weighting, but still real prey identities rather
+## than nothing.
+##
+## Column names are still resolved DEFENSIVELY (schema has already
+## drifted once, per the above) rather than hardcoded, with whatever is
+## actually found printed so a wrong guess is visible immediately
+## rather than a silent empty/garbage result.
 ##
 ## Output shape matches build_species_diet()'s own return EXACTLY
 ## (list(species_diet, predator_references), same columns) so nothing
@@ -345,55 +355,100 @@ fetch_fishbase_diet_for_species <- function(species_names) {
     return(empty_result)
   }
   
-  fetch_one_server <- function(server) {
-    tryCatch(as.data.table(rfishbase::diet(species_names, server = server)),
+  fetch_one <- function(fn_name, ..., server) {
+    if (!exists(fn_name, where = asNamespace("rfishbase"), inherits = FALSE)) return(data.table())
+    tryCatch(as.data.table(do.call(get(fn_name, envir = asNamespace("rfishbase")), list(..., server = server))),
              error = function(e) {
-               message("[04_diets.R] rfishbase::diet(server = '", server, "') failed: ", conditionMessage(e))
+               message("[04_diets.R] rfishbase::", fn_name, "(server = '", server, "') failed: ", conditionMessage(e))
                data.table()
              })
   }
-  diet_raw <- rbindlist(list(fetch_one_server("fishbase"), fetch_one_server("sealifebase")), fill = TRUE)
+  
+  ## --- study-level records (Species <-> DietCode mapping) ---
+  diet_raw <- rbindlist(list(fetch_one("diet", species_names, server = "fishbase"),
+                             fetch_one("diet", species_names, server = "sealifebase")), fill = TRUE)
   if (nrow(diet_raw) == 0) {
     message("[04_diets.R] fetch_fishbase_diet_for_species(): rfishbase::diet() returned no rows for any of the ",
             length(species_names), " predator(s) queried (checked both fishbase and sealifebase servers).")
     return(empty_result)
   }
-  
-  message("[04_diets.R] rfishbase::diet() columns available (resolving defensively - schema drifts across ",
-          "rfishbase versions): ", paste(names(diet_raw), collapse = ", "))
-  
-  species_col  <- intersect(c("Species", "SpecCode", "sciname"), names(diet_raw))[1]
-  prey_col     <- intersect(c("FoodI", "FoodII", "FoodIII", "Foodname", "PreyStage", "Prey"), names(diet_raw))[1]
-  pct_col      <- intersect(c("DietPercent", "Percentage", "PropDietCompo", "PercentFood"), names(diet_raw))[1]
-  study_col    <- intersect(c("DietCode", "StudyDuration", "SampleStage", "C_Code", "StockCode"), names(diet_raw))[1]
-  
-  if (is.na(species_col) || is.na(prey_col)) {
-    message("[04_diets.R] fetch_fishbase_diet_for_species(): couldn't find a usable species and/or prey-item ",
-            "column in rfishbase::diet()'s output (columns present: ", paste(names(diet_raw), collapse = ", "),
-            ") - skipping this fallback tier. Update the candidate names above once the real column is known.")
+  species_col <- intersect(c("Species", "SpecCode", "sciname"), names(diet_raw))[1]
+  code_col    <- intersect(c("DietCode"), names(diet_raw))[1]
+  if (is.na(species_col)) {
+    message("[04_diets.R] fetch_fishbase_diet_for_species(): rfishbase::diet() returned no recognizable species ",
+            "column (columns present: ", paste(names(diet_raw), collapse = ", "), ") - skipping this fallback tier.")
     return(empty_result)
   }
-  if (is.na(pct_col)) {
-    message("[04_diets.R] fetch_fishbase_diet_for_species(): no diet-percentage column found (looked for ",
-            "DietPercent/Percentage/PropDietCompo/PercentFood among: ", paste(names(diet_raw), collapse = ", "),
-            ") - treating every returned prey item as an equal-split PRESENCE record instead (same fallback rule ",
-            "build_species_diet() uses for the metaweb's own Presence_(no_number_data) column).")
-  }
-  if (is.na(study_col)) study_col <- NA_character_  # no per-study grouping available - treat every row as its own "study"
+  setnames(diet_raw, species_col, "predator_name")
   
-  dt <- copy(diet_raw)
-  setnames(dt, species_col, "predator_name")
-  setnames(dt, prey_col, "prey_name")
+  ## --- prey-composition records, joined back via DietCode ---
+  ## diet_items() is the whole FishBase reference table (no species
+  ## argument) - filter to just the DietCode(s) this query's species
+  ## actually have, rather than pulling everything.
+  items_raw <- data.table()
+  if (!is.na(code_col)) {
+    codes_needed <- unique(as.character(diet_raw[[code_col]]))
+    codes_needed <- codes_needed[!is.na(codes_needed) & codes_needed != ""]
+    if (length(codes_needed) > 0) {
+      items_all <- rbindlist(list(fetch_one("diet_items", server = "fishbase"),
+                                  fetch_one("diet_items", server = "sealifebase")), fill = TRUE)
+      items_code_col <- intersect(c("DietCode"), names(items_all))[1]
+      if (nrow(items_all) > 0 && !is.na(items_code_col)) {
+        items_raw <- items_all[as.character(get(items_code_col)) %in% codes_needed]
+      }
+    }
+  }
+  
+  dt <- data.table()
+  if (nrow(items_raw) > 0) {
+    message("[04_diets.R] rfishbase::diet_items() columns available (resolving defensively - schema drifts ",
+            "across rfishbase versions): ", paste(names(items_raw), collapse = ", "))
+    prey_col <- intersect(c("FoodIII", "FoodII", "FoodI", "Foodname", "PreyStage", "Prey"), names(items_raw))[1]
+    pct_col  <- intersect(c("DietPercent", "Percentage", "PropDietCompo", "PercentFood"), names(items_raw))[1]
+    if (!is.na(prey_col)) {
+      dt <- copy(items_raw)
+      dt[, DietCode := as.character(DietCode)]  # items_all's own DietCode column (matched via items_code_col above)
+      setnames(dt, prey_col, "prey_name")
+      dt <- merge(dt, diet_raw[, .(predator_name, DietCode = as.character(get(code_col)))],
+                  by = "DietCode", allow.cartesian = TRUE)
+      dt[, diet_value := if (!is.na(pct_col)) suppressWarnings(as.numeric(get(pct_col))) else NA_real_]
+      dt[, study_id := DietCode]
+    } else {
+      message("[04_diets.R] fetch_fishbase_diet_for_species(): couldn't find a usable prey-item column in ",
+              "rfishbase::diet_items()'s output (columns present: ", paste(names(items_raw), collapse = ", "),
+              ") - falling back to rfishbase::fooditems() instead.")
+    }
+  }
+  
+  ## --- second fallback: fooditems() (species-keyed, no DietCode needed) ---
+  if (nrow(dt) == 0) {
+    food_raw <- rbindlist(list(fetch_one("fooditems", species_names, server = "fishbase"),
+                               fetch_one("fooditems", species_names, server = "sealifebase")), fill = TRUE)
+    if (nrow(food_raw) > 0) {
+      message("[04_diets.R] rfishbase::fooditems() columns available (resolving defensively - schema drifts ",
+              "across rfishbase versions): ", paste(names(food_raw), collapse = ", "))
+      food_species_col <- intersect(c("Species", "SpecCode", "sciname"), names(food_raw))[1]
+      food_prey_col     <- intersect(c("FoodIII", "FoodII", "FoodI", "Foodname", "PreyStage", "Prey"), names(food_raw))[1]
+      food_pct_col      <- intersect(c("DietPercent", "Percentage", "PropDietCompo", "PercentFood"), names(food_raw))[1]
+      if (!is.na(food_species_col) && !is.na(food_prey_col)) {
+        dt <- copy(food_raw)
+        setnames(dt, food_species_col, "predator_name")
+        setnames(dt, food_prey_col, "prey_name")
+        dt[, diet_value := if (!is.na(food_pct_col)) suppressWarnings(as.numeric(get(food_pct_col))) else NA_real_]
+        dt[, study_id := paste(predator_name, "fooditems")]
+      } else {
+        message("[04_diets.R] fetch_fishbase_diet_for_species(): couldn't find a usable species and/or prey-item ",
+                "column in rfishbase::fooditems()'s output either (columns present: ",
+                paste(names(food_raw), collapse = ", "), ") - skipping this fallback tier entirely.")
+      }
+    }
+  }
+  
+  if (nrow(dt) == 0) return(empty_result)
+  
   dt <- dt[!is.na(predator_name) & predator_name != "" & !is.na(prey_name) & prey_name != ""]
   if (nrow(dt) == 0) return(empty_result)
   
-  dt[, study_id := if (!is.na(study_col)) as.character(get(study_col)) else paste(predator_name, seq_len(.N))]
-  
-  if (!is.na(pct_col)) {
-    dt[, diet_value := suppressWarnings(as.numeric(get(pct_col)))]
-  } else {
-    dt[, diet_value := NA_real_]
-  }
   ## Presence-only fallback (no usable % column, or a % value missing on
   ## some rows) - equal split among that predator+study's present prey,
   ## same rule as build_species_diet()'s STEP 5 Presence handling.
@@ -413,9 +468,9 @@ fetch_fishbase_diet_for_species <- function(species_names) {
   ), by = .(predator_name, prey_name)]
   species_diet[, proportion := proportion / sum(proportion), by = predator_name]
   
-  predator_references <- dt[, .(references = paste0("FishBase/SeaLifeBase diet() [", uniqueN(study_id), " study record(s)]")), by = predator_name]
+  predator_references <- dt[, .(references = paste0("FishBase/SeaLifeBase diet_items()/fooditems() [", uniqueN(study_id), " study record(s)]")), by = predator_name]
   
-  message("[04_diets.R] FishBase/SeaLifeBase diet() fallback resolved ", uniqueN(species_diet$predator_name),
+  message("[04_diets.R] FishBase/SeaLifeBase diet fallback resolved ", uniqueN(species_diet$predator_name),
           " of ", length(species_names), " requested predator(s): ",
           paste(head(unique(species_diet$predator_name), 10), collapse = ", "),
           if (uniqueN(species_diet$predator_name) > 10) ", ..." else "")
@@ -814,44 +869,44 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 ## helper this script's own FG_References-sheet step already calls
 ## further down) - no separate file, no duplication of FG_WMed_2026.csv.
 ##
-## is_predator: a FG is treated as a predator (gets its own column in
-## the output matrix) iff 03_pbqb-traits.R computed a real, positive
-## QB_FG for it this run. QB (consumption/biomass) is only ever
-## computed for a group that actually eats something - a group with no
-## real QB is exactly a primary producer/detritus/non-consuming group,
-## which is precisely what is_predator was already encoding by hand.
-## Reads whichever of fg_pb_qb_weighted*.csv exists (03_pbqb-traits.R
-## writes several progressively-enriched versions over its own run;
-## prefers the most complete one actually present).
+## is_predator (rule rewritten 2026-09-28, per Andrea: "all FG should be
+## predators except detritus discards and primary producers (phyto,
+## posidonia....)"): TRUE by DEFAULT for every FG, FALSE only for the
+## two non-living compartments (NON_LIVING_FG_NAMES, defined near the
+## top of 01_biomass.R: Detritus/Discards) and for FG names matching
+## PRIMARY_PRODUCER_FG_NAME_REGEX below - true autotrophs with no
+## consumption to model at all (phytoplankton, Posidonia/seagrass,
+## macroalgae, Cymodocea). Matched case-insensitively as a substring
+## against FG_name, same convention 01_biomass.R already uses elsewhere
+## for its own exclude_fg_regex argument, since FG_WMed_2026.csv's exact
+## label text for these groups isn't hardcoded anywhere upstream of it.
 ##
-## manual_override_path (EWE_GROUP_TABLE_CSV_PATH) is now OPTIONAL: if
-## it happens to exist, only its is_predator column is used, and only
-## to override the QB-derived value for specific FGs where that's
-## known to be wrong (e.g. a FG that consumes something no diet/growth
-## source captured this run, so QB_FG came back NA for a reason other
-## than "doesn't eat").
+## This replaces the earlier QB-derived rule (is_predator iff
+## 03_pbqb-traits.R computed a real, positive QB_FG) - that undercounted
+## real predators whenever QB estimation failed or came back NA for a
+## reason other than "doesn't eat" (a data gap, not biology). The 03_
+## pbqb-traits.R output is no longer read here at all.
+##
+## manual_override_path (EWE_GROUP_TABLE_CSV_PATH) is still OPTIONAL: if
+## it happens to exist, only its is_predator column is used, and only to
+## override the name-derived default for specific FGs where that's known
+## to be wrong (e.g. a primary-producer-looking FG name that's actually
+## a mixed/consuming group, or vice versa).
 ## =================================================================
-build_group_table_auto <- function(workbook_path, biomass_csv_dir, pbqb_csv_dir, manual_override_path = NULL) {
+NON_LIVING_FG_NAMES <- c("Detritus", "Discards")
+PRIMARY_PRODUCER_FG_NAME_REGEX <- "(?i)phytoplankton|posidonia|macroalga|cymodocea|seagrass"
+
+build_group_table_auto <- function(workbook_path, biomass_csv_dir, manual_override_path = NULL) {
   fg_ref <- read_full_fg_reference(workbook_path, csv_dir = biomass_csv_dir)
   if (is.null(fg_ref) || nrow(fg_ref) == 0) {
     stop("build_group_table_auto(): no FG_lookup reference found under '", biomass_csv_dir,
          "' (or in the workbook itself) - run 01_biomass.R first, it's what writes this.")
   }
   
-  pbqb_candidates <- c("fg_pb_qb_weighted_with_F.csv", "fg_pb_qb_weighted_with_ecobase.csv", "fg_pb_qb_weighted.csv")
-  pbqb_found <- pbqb_candidates[file.exists(file.path(pbqb_csv_dir, pbqb_candidates))]
-  if (length(pbqb_found) == 0) {
-    stop("build_group_table_auto(): none of ", paste(pbqb_candidates, collapse = ", "), " found under '",
-         pbqb_csv_dir, "' - run 03_pbqb-traits.R first, it's what writes this (needed to know which FGs",
-         " consume anything, i.e. is_predator).")
-  }
-  pbqb <- fread(file.path(pbqb_csv_dir, pbqb_found[1]))
-  qb_by_fg <- pbqb[, .(has_real_qb = any(!is.na(QB_FG) & QB_FG > 0)), by = .(group_number = as.character(as.integer(FG)))]
-  
   group_table <- data.table(group_number = as.character(fg_ref$FG_num), group_name = fg_ref$FG_name)
-  group_table <- merge(group_table, qb_by_fg, by = "group_number", all.x = TRUE)
-  group_table[, is_predator := fifelse(is.na(has_real_qb), FALSE, has_real_qb)]   # no QB info at all this run -> not a predator column, same default a primary-producer/detritus FG already got by hand
-  group_table[, has_real_qb := NULL]
+  is_non_predator <- group_table$group_name %in% NON_LIVING_FG_NAMES |
+    grepl(PRIMARY_PRODUCER_FG_NAME_REGEX, group_table$group_name, perl = TRUE)
+  group_table[, is_predator := !is_non_predator]
   
   if (!is.null(manual_override_path) && file.exists(manual_override_path)) {
     overrides <- as.data.table(read.csv(manual_override_path, stringsAsFactors = FALSE))
@@ -861,18 +916,20 @@ build_group_table_auto <- function(workbook_path, biomass_csv_dir, pbqb_csv_dir,
       n_override <- sum(!is.na(group_table$is_predator_override))
       if (n_override > 0) {
         message("[04_diets.R] ", n_override, " FG(s) have an explicit is_predator override from '",
-                manual_override_path, "' - taking precedence over the QB-derived value.")
+                manual_override_path, "' - taking precedence over the default (predator-unless-detritus/",
+                "discards/primary-producer) rule.")
         group_table[!is.na(is_predator_override), is_predator := as.logical(is_predator_override)]
       }
       group_table[, is_predator_override := NULL]
     } else {
       message("[04_diets.R] '", manual_override_path, "' exists but is missing group_number/is_predator",
-              " columns - ignoring it, using the QB-derived is_predator for every FG.")
+              " columns - ignoring it, using the default is_predator rule for every FG.")
     }
   }
   group_table[, group_number := as.integer(group_number)]
   message("[04_diets.R] group_table built automatically: ", nrow(group_table), " FG(s), ",
-          sum(group_table$is_predator), " flagged as predator (real QB_FG > 0 from 03_pbqb-traits.R).")
+          sum(group_table$is_predator), " flagged as predator (all FG except Detritus/Discards and ",
+          "primary producers: ", paste(sort(group_table[is_predator == FALSE]$group_name), collapse = ", "), ").")
   group_table[]
 }
 
@@ -891,9 +948,9 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                          out_path = OUTPUT_CSV_PATH) {
   metaweb        <- read_metaweb(metaweb_path)
   lookup         <- build_code_lookup(metaweb$tax_codes, metaweb$nontax_groups)
-  group_table    <- build_group_table_auto(workbook_path, biomass_csv_dir = BIOMASS_CSV_DIR, pbqb_csv_dir = PBQB_CSV_DIR,
+  group_table    <- build_group_table_auto(workbook_path, biomass_csv_dir = BIOMASS_CSV_DIR,
                                            manual_override_path = group_table_path)   # moved up from STEP 9's old position - the fallback tiers below need the predator FG list before the diet matrix is built, not just at export time
-  predator_fg_names_all <- unique(group_table[is_predator == TRUE | is_predator == 1]$group_name)
+  species_to_fg_reference_only <- read_species_to_fg_from_reference(fg_reference_path)   # moved up from the FishBase-fallback block below - also needed here now, to map metaweb predators to FG
   
   species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
   species_diet   <- species_diet_result$species_diet
@@ -902,13 +959,38 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   metaweb_predators <- unique(species_diet$predator_name)
   message("[04_diets.R] Metaweb (DATA_ENTRY) tier: ", uniqueN(metaweb_predators), " predator(s) with real diet-study rows.")
   
+  ## Predator-FG selection: build_group_table_auto() already defaults
+  ## every FG to is_predator = TRUE except Detritus/Discards and primary
+  ## producers (see that function's own header comment), so this mostly
+  ## has nothing left to add. It stays as a safety net for the one case
+  ## the name-based default can get wrong: the metaweb's own DATA_ENTRY
+  ## rows are direct, observed evidence of who eats something, so if a
+  ## real metaweb-cited predator ever falls on the exclusion side (e.g. a
+  ## primary-producer-looking FG name that the metaweb documents as
+  ## consuming prey), that observation wins over the name-based default.
+  ## metaweb_predators can contain both real species (mapped to FG via
+  ## FG_WMed_2026.csv, same as everywhere else in this script) and
+  ## generic non-taxonomic group names that already match an FG name
+  ## directly (e.g. a group like "Zooplankton" cited as its own
+  ## predator) - both are folded in below.
+  metaweb_predator_fgs_from_species <- unique(species_to_fg_reference_only[species %in% metaweb_predators]$fg_name)
+  metaweb_predator_fgs_direct       <- intersect(metaweb_predators, group_table$group_name)
+  metaweb_predator_fgs <- union(metaweb_predator_fgs_from_species, metaweb_predator_fgs_direct)
+  newly_flagged <- setdiff(metaweb_predator_fgs, group_table[is_predator == TRUE | is_predator == 1]$group_name)
+  if (length(newly_flagged) > 0) {
+    message("[04_diets.R] ", length(newly_flagged), " FG(s) have a real metaweb-observed predator but fell on the ",
+            "excluded (Detritus/Discards/primary-producer) side of the default rule - overriding to predator ",
+            "since the metaweb's observed diet data wins: ", paste(newly_flagged, collapse = ", "))
+    group_table[group_name %in% metaweb_predator_fgs, is_predator := TRUE]
+  }
+  predator_fg_names_all <- unique(group_table[is_predator == TRUE | is_predator == 1]$group_name)
+  
   ## --- Fallback tier 1: FishBase/SeaLifeBase diet() (STEP 3b) --------
   ## "Predators needing this fallback" = every real species mapped (via
   ## FG_WMed_2026.csv) into a predator FG that the metaweb tier above did
   ## NOT already cover - independent of whether the metaweb has ANY rows
   ## at all (needed for the current empty-template case, where
   ## metaweb_predators is empty and every predator needs a fallback).
-  species_to_fg_reference_only <- read_species_to_fg_from_reference(fg_reference_path)
   all_predator_species <- unique(species_to_fg_reference_only[fg_name %in% predator_fg_names_all]$species)
   missing_after_metaweb <- setdiff(all_predator_species, metaweb_predators)
   message("[04_diets.R] ", length(missing_after_metaweb), " of ", length(all_predator_species),

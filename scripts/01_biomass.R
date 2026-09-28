@@ -2110,25 +2110,53 @@ if (AREA_MODE == "westmed") {
   ## (the old uniform-smear behavior, kept as a last-resort fallback,
   ## always flagged as such).
   extrapolate_density_row <- function(density_value, density_unit, depth_min_m, depth_max_m, habitat_species,
-                                      strata_area_by_area, strata_def = MEDITS_STRATA, label = "") {
-    depth_source <- "CSV Depth_min_m/Depth_max_m (literature site's own stated depth range)"
-    if (is.na(depth_min_m) || is.na(depth_max_m)) {
-      if (!is.na(habitat_species) && nzchar(habitat_species)) {
-        sp_list_hab <- trimws(strsplit(habitat_species, ";")[[1]])
-        am <- resolve_group_depth_range_aquamaps(sp_list_hab, label = label)
-        depth_min_m <- am$depth_min_m; depth_max_m <- am$depth_max_m
-        depth_source <- paste0("AquaMaps preferred-depth envelope (10th/90th pct across ", am$n_matched, "/",
-                               am$n_total, " matched species: ", habitat_species, ")")
+                                      strata_area_by_area, strata_def = MEDITS_STRATA, label = "",
+                                      habitat_area_km2_override = NA_real_) {
+    ## 2026-09-28: a depth-band area is a poor stand-in for a genuinely
+    ## PATCHY habitat - Posidonia/macroalgae/coralligenous fauna don't
+    ## carpet their entire depth range, they occupy a much smaller real
+    ## footprint within it (e.g. Posidonia's real West Med meadow extent
+    ## is ~10,511 km^2, per a dedicated EUSeaMap habitat shapefile -
+    ## nowhere near the full area of the 0-40m band summed across GSA
+    ## 1-11). Multiplying an in-habitat density measurement by the whole
+    ## depth-band area silently assumes the habitat is contiguous and
+    ## complete across that band, overstating total biomass by
+    ## potentially an order of magnitude for anything patchy. When the
+    ## CSV row supplies a real, independently-measured Habitat_area_km2
+    ## (e.g. from a habitat-extent shapefile clipped to the study
+    ## domain), that number is used directly instead of the depth-band
+    ## estimate - depth range/Habitat_species are then not needed for
+    ## this row at all.
+    if (!is.na(habitat_area_km2_override)) {
+      habitat_area_km2 <- habitat_area_km2_override
+      depth_source <- paste0("REAL HABITAT-EXTENT OVERRIDE (Habitat_area_km2 = ", round(habitat_area_km2, 2),
+                             " km2, supplied directly in the CSV row - not derived from a depth band; this is",
+                             " the correct method for a patchy habitat like seagrass/macroalgae/coralligenous,",
+                             " where the depth band it occupies is far larger than its actual footprint)")
+      if (is.na(density_value)) {
+        return(list(biomass_t = NA_real_,
+                    audit_note = "EXTRAPOLATION FAILED (missing density value) - left as NA, not guessed."))
       }
-    }
-    if (is.na(depth_min_m) || is.na(depth_max_m)) {
-      depth_min_m <- min(strata_def$depth_min); depth_max_m <- max(strata_def$depth_max)
-      depth_source <- "FULL STUDY-DOMAIN DEPTH RANGE (no Depth_min_m/Depth_max_m or resolvable Habitat_species given - uniform extrapolation across the whole domain, same as the old whole-area approach; add a depth range or Habitat_species to narrow this)"
-    }
-    habitat_area_km2 <- estimate_habitat_area_km2(depth_min_m, depth_max_m, strata_area_by_area, strata_def)
-    if (is.na(habitat_area_km2) || is.na(density_value)) {
-      return(list(biomass_t = NA_real_,
-                  audit_note = "EXTRAPOLATION FAILED (missing habitat area or density value) - left as NA, not guessed."))
+    } else {
+      depth_source <- "CSV Depth_min_m/Depth_max_m (literature site's own stated depth range)"
+      if (is.na(depth_min_m) || is.na(depth_max_m)) {
+        if (!is.na(habitat_species) && nzchar(habitat_species)) {
+          sp_list_hab <- trimws(strsplit(habitat_species, ";")[[1]])
+          am <- resolve_group_depth_range_aquamaps(sp_list_hab, label = label)
+          depth_min_m <- am$depth_min_m; depth_max_m <- am$depth_max_m
+          depth_source <- paste0("AquaMaps preferred-depth envelope (10th/90th pct across ", am$n_matched, "/",
+                                 am$n_total, " matched species: ", habitat_species, ")")
+        }
+      }
+      if (is.na(depth_min_m) || is.na(depth_max_m)) {
+        depth_min_m <- min(strata_def$depth_min); depth_max_m <- max(strata_def$depth_max)
+        depth_source <- "FULL STUDY-DOMAIN DEPTH RANGE (no Depth_min_m/Depth_max_m or resolvable Habitat_species given - uniform extrapolation across the whole domain, same as the old whole-area approach; add a depth range or Habitat_species to narrow this)"
+      }
+      habitat_area_km2 <- estimate_habitat_area_km2(depth_min_m, depth_max_m, strata_area_by_area, strata_def)
+      if (is.na(habitat_area_km2) || is.na(density_value)) {
+        return(list(biomass_t = NA_real_,
+                    audit_note = "EXTRAPOLATION FAILED (missing habitat area or density value) - left as NA, not guessed."))
+      }
     }
     unit_key <- gsub("/", "_", tolower(gsub("[[:space:]]+", "_", trimws(as.character(density_unit)))))
     mult <- DENSITY_UNIT_TO_WET_G_M2[unit_key]
@@ -2140,10 +2168,11 @@ if (AREA_MODE == "westmed") {
     }
     density_t_km2 <- density_value * mult
     biomass_t <- density_t_km2 * habitat_area_km2
+    depth_note <- if (is.na(depth_min_m) || is.na(depth_max_m)) "" else paste0(" (depth ", round(depth_min_m), "-", round(depth_max_m), " m)")
     audit_note <- paste0("EXTRAPOLATED from density ", density_value, " ", density_unit, " (x", mult, " -> ",
                          round(density_t_km2, 4), " t/km2) over habitat area ", round(habitat_area_km2, 1),
-                         " km2 (depth ", round(depth_min_m), "-", round(depth_max_m), " m; ", depth_source,
-                         ") => ", round(biomass_t, 3), " t")
+                         " km2", depth_note, "; ", depth_source,
+                         " => ", round(biomass_t, 3), " t")
     list(biomass_t = biomass_t, audit_note = audit_note)
   }
   
@@ -2193,24 +2222,36 @@ if (AREA_MODE == "westmed") {
     col_depth_min <- resolve_iccat_col(names(raw), c("Depth_min_m", "DepthMin_m", "Depth_min"))
     col_depth_max <- resolve_iccat_col(names(raw), c("Depth_max_m", "DepthMax_m", "Depth_max"))
     col_hab_sp    <- resolve_iccat_col(names(raw), c("Habitat_species", "HabitatSpecies", "Taxa_list"))
+    ## 2026-09-28: optional REAL habitat-extent override (e.g. a habitat
+    ## shapefile clipped to the study domain and summed) - see
+    ## extrapolate_density_row()'s own header comment for why this beats
+    ## the depth-band estimate for a patchy habitat (seagrass, macroalgae,
+    ## coralligenous fauna). When given, Depth_min_m/Depth_max_m/
+    ## Habitat_species are ignored for that row - this area is used directly.
+    col_hab_area  <- resolve_iccat_col(names(raw), c("Habitat_area_km2", "HabitatArea_km2", "Habitat_area", "Real_habitat_area_km2"))
     if (!is.na(col_dens_val)) {
       setnames(raw, col_dens_val, "Density_value")
       if (!is.na(col_dens_unit)) setnames(raw, col_dens_unit, "Density_unit") else raw[, Density_unit := NA_character_]
       if (!is.na(col_depth_min)) setnames(raw, col_depth_min, "Depth_min_m") else raw[, Depth_min_m := NA_real_]
       if (!is.na(col_depth_max)) setnames(raw, col_depth_max, "Depth_max_m") else raw[, Depth_max_m := NA_real_]
       if (!is.na(col_hab_sp)) setnames(raw, col_hab_sp, "Habitat_species") else raw[, Habitat_species := NA_character_]
+      if (!is.na(col_hab_area)) setnames(raw, col_hab_area, "Habitat_area_km2") else raw[, Habitat_area_km2 := NA_real_]
       raw[, `:=`(Density_value = as.numeric(Density_value), Depth_min_m = as.numeric(Depth_min_m),
-                 Depth_max_m = as.numeric(Depth_max_m))]
+                 Depth_max_m = as.numeric(Depth_max_m), Habitat_area_km2 = as.numeric(Habitat_area_km2))]
       needs_row <- which(!is.na(raw$Density_value) & (is.na(raw$group_biomass_t) | raw$group_biomass_t == 0))
       if (length(needs_row) > 0) {
+        n_with_override <- sum(!is.na(raw$Habitat_area_km2[needs_row]))
         message("[", label, "] ", length(needs_row), " row(s) supply Density_value instead of Biomass_t - ",
-                "extrapolating via real habitat area (see Source_citation for the per-row audit trail).")
+                "extrapolating via real habitat area (", n_with_override, " using an explicit Habitat_area_km2",
+                " override, ", length(needs_row) - n_with_override, " estimated from depth range instead;",
+                " see Source_citation for the per-row audit trail).")
         for (i in needs_row) {
           row_result <- extrapolate_density_row(
             density_value = raw$Density_value[i], density_unit = raw$Density_unit[i],
             depth_min_m = raw$Depth_min_m[i], depth_max_m = raw$Depth_max_m[i],
             habitat_species = raw$Habitat_species[i], strata_area_by_area = strata_area_by_area,
-            strata_def = MEDITS_STRATA, label = label)
+            strata_def = MEDITS_STRATA, label = label,
+            habitat_area_km2_override = raw$Habitat_area_km2[i])
           set(raw, i, "group_biomass_t", row_result$biomass_t)
           set(raw, i, "Source_citation",
               paste0(if (is.na(raw$Source_citation[i])) "" else paste0(raw$Source_citation[i], " | "),
