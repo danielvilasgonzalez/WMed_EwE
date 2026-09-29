@@ -759,13 +759,13 @@ for (png_path in existing_pngs) {
 
 ## FG_PB_QB_comparison_*.png - the final, chosen PB/QB-by-FG figure(s)
 ## (03_pbqb-traits.R's save_paginated_pb_qb_plot(), one or more numbered
-## pages depending on how many FGs there are). This is a genuine
-## deliverable, not a QA check, so it deliberately stays in
-## 03_pbqb-traits.R's OWN plot_dir (out_dir/plots/pbqb-traits), not
-## validation_plot_dir - but Andrea still wants it in the compiled
-## validation deck, so it's embedded here via Sys.glob (page count isn't
-## fixed) rather than moved out of its own folder.
-pb_qb_comparison_pngs <- sort(Sys.glob(file.path(out_dir, "plots", "pbqb-traits", "FG_PB_QB_comparison*.png")))
+## pages depending on how many FGs there are). 2026-09-29, per Andrea
+## ("no, all plots produced in validation05 should go to
+## /output/plots/validation"): 03_pbqb-traits.R now saves this directly
+## into validation_plot_dir (out_dir/plots/validation) rather than its
+## own pbqb-traits folder - matched here. Still globbed rather than a
+## fixed filename, since the number of pages varies with FG count.
+pb_qb_comparison_pngs <- sort(Sys.glob(file.path(out_dir, "plots", "validation", "FG_PB_QB_comparison*.png")))
 for (png_path in pb_qb_comparison_pngs) {
   embedded_png_pages[[basename(png_path)]] <- tryCatch({
     img <- png::readPNG(png_path)

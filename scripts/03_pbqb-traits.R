@@ -3799,17 +3799,28 @@ fg_qb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
 
 ## 2026-09-27: the pbqb-traits plots folder was ending up empty - this
 ## is this script's main deliverable figure (the final, chosen PB/QB
-## per FG - not a methods comparison), so it belongs in this script's
-## own plot_dir (out_dir/plots/pbqb-traits), not validation_plot_dir.
-## plot_dir was defined near the top of this script but nothing
-## actually saved to it before this - every ggsave() call below used
-## to point at validation_plot_dir instead, leaving plot_dir/pbqb-
-## traits on disk but empty. F_by_fg.png and PQ_ratio_by_fg.png further
-## down are the same kind of "final result" figure and move here too;
-## fg_pb_qb_scatter.png and the two fish_*_methods_comparison_by_FG.png
-## plots stay in validation_plot_dir since those specifically compare
-## candidate METHODS against each other, which is what validation_plot_dir
-## is for.
+## per FG - not a methods comparison), so it was moved into this
+## script's own plot_dir (out_dir/plots/pbqb-traits).
+##
+## 2026-09-29, per Andrea ("all plots in validation code should be
+## included in the validation subfolders, also the fishing mortality and
+## PB QB comparison") and then again, more plainly, ("no, all plots
+## produced in validation05 should go to /output/plots/validation"):
+## REVERSED the 2026-09-27 change in full. F_by_fg.png and
+## PQ_ratio_by_fg.png already moved back to validation_plot_dir earlier
+## today; this does the same for FG_PB_QB_comparison*.png (the "PB QB
+## comparison" figure itself, not just the methods-comparison ones) -
+## previously it stayed in plot_dir and was only pulled into
+## validation_plots_ALL.pdf via a Sys.glob() reference into that other
+## folder. Andrea was clear that isn't good enough - every plot that
+## feeds the validation deck needs to physically live in
+## output/plots/validation, not just be readable from there. All of this
+## script's validation-type figures - FG_PB_QB_comparison*.png,
+## F_by_fg.png, PQ_ratio_by_fg.png, fg_pb_qb_scatter.png, and the two
+## fish_*_methods_comparison_by_FG.png plots - now save into
+## validation_plot_dir uniformly. (plot_dir, out_dir/plots/pbqb-traits,
+## is consequently unused again - left defined rather than removed, in
+## case a future genuinely pbqb-traits-only figure needs it.)
 save_paginated_pb_qb_plot(
   pb_mean   = copy(fg_pb_mean)[, .(Label = FG_label, Mean = PB_mean, SD = PB_sd)],
   pb_long   = copy(fg_pb_by_method)[, .(Label = FG_label, Value = PB, method)],
@@ -3819,10 +3830,10 @@ save_paginated_pb_qb_plot(
   pb_x_lab  = expression(P/B~(year^-1)),
   qb_x_lab  = expression(Q/B~(year^-1)),
   file_prefix = "FG_PB_QB_comparison",
-  plot_dir    = plot_dir
+  plot_dir    = validation_plot_dir
 )
 
-message("\nSaved: FG_PB_QB_comparison*.png (in ", plot_dir, ")")
+message("\nSaved: FG_PB_QB_comparison*.png (in ", validation_plot_dir, ")")
 
 ## =================================================================
 ## OUTPUT 2b: Fishing mortality (F) by FG, and the P/Q (PB_FG/QB_FG)
@@ -3863,9 +3874,9 @@ p_f_by_fg <- tryCatch({
     theme_minimal(base_size = 7) + theme(legend.position = "bottom")
 }, error = function(e) { message("[F by FG plot] skipped - ", conditionMessage(e)); NULL })
 if (!is.null(p_f_by_fg)) {
-  ggsave(file.path(plot_dir, "F_by_fg.png"), p_f_by_fg,
+  ggsave(file.path(validation_plot_dir, "F_by_fg.png"), p_f_by_fg,
          width = 10, height = max(8, 0.16 * nrow(p_f_by_fg$data)), dpi = 150, bg = "white", limitsize = FALSE)
-  message("Saved: F_by_fg.png (in ", plot_dir, ")")
+  message("Saved: F_by_fg.png (in ", validation_plot_dir, ")")
 }
 
 ## --- P/Q ratio check --------------------------------------------------
@@ -3932,9 +3943,9 @@ p_pq_ratio <- tryCatch({
     theme_minimal(base_size = 7) + theme(legend.position = "bottom")
 }, error = function(e) { message("[P/Q ratio plot] skipped - ", conditionMessage(e)); NULL })
 if (!is.null(p_pq_ratio)) {
-  ggsave(file.path(plot_dir, "PQ_ratio_by_fg.png"), p_pq_ratio,
+  ggsave(file.path(validation_plot_dir, "PQ_ratio_by_fg.png"), p_pq_ratio,
          width = 10, height = max(8, 0.16 * nrow(p_pq_ratio$data)), dpi = 150, bg = "white", limitsize = FALSE)
-  message("Saved: PQ_ratio_by_fg.png (in ", plot_dir, ")")
+  message("Saved: PQ_ratio_by_fg.png (in ", validation_plot_dir, ")")
 }
 
 ## =================================================================
