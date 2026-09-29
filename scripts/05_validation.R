@@ -679,22 +679,94 @@ validation_plots[["10_old_workbook_unmatched_names"]] <- tryCatch({
                  "Neither an exact nor a fuzzy name match - check for a renamed or split/merged group")
 }, error = function(e) { message("[05_validation.R plot] old-workbook unmatched names skipped - ", conditionMessage(e)); NULL })
 
+## 2026-09-29, per Andrea ("i am missing a plot with other validation like
+## the biomass of FG relative to old model"): p_comparison (now
+## "01_old_vs_new_comparison") plots every metric together as an old-vs-
+## new scatter, faceted by metric - useful for spotting outliers overall,
+## but it doesn't answer "how does THIS FG's biomass compare to the old
+## model" at a glance, since FG identity isn't readable off a scatter
+## with ~90 overlapping points. This is a dedicated per-FG view for
+## Biomass specifically: one horizontal bar per FG, the new/old ratio on
+## a log axis, a reference line at ratio = 1 (no change), colored by the
+## same flag as comparison_with_old_westmed_estimates_REVIEW.csv, sorted
+## by ratio so the biggest increases and decreases are at the ends.
+validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- tryCatch({
+  d <- comparison_dt[metric == "Biomass" & !is.na(ratio) & is.finite(ratio) & ratio > 0]
+  if (nrow(d) == 0) stop("no FG has both an old and new Biomass value to plot")
+  d[, fg_label := paste0(FG_num, " - ", FG_name)]
+  d <- d[order(ratio)]
+  d[, fg_label := factor(fg_label, levels = fg_label)]
+  ggplot(d, aes(x = ratio, y = fg_label, color = flag)) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+    geom_segment(aes(x = 1, xend = ratio, y = fg_label, yend = fg_label), linewidth = 0.4, alpha = 0.6) +
+    geom_point(size = 1.8) +
+    scale_x_log10() +
+    scale_color_manual(values = c("Within review range" = "grey30", "Large deviation - review" = "firebrick",
+                                  "Old was zero, new is nonzero" = "darkorange",
+                                  "NEW value where old had none" = "steelblue",
+                                  "OLD value now MISSING in the new pipeline" = "grey60")) +
+    labs(title = "New pipeline Biomass vs. old West Med model, by functional group",
+         subtitle = paste0("Dashed line = no change (ratio = 1, log scale). ", nrow(d), " of ", length(unique(comparison_dt$FG_name)),
+                           " FGs had a usable old-model biomass to compare against - see comparison_with_old_westmed_estimates_REVIEW.csv for the rest."),
+         x = "New Ecopath_B / old workbook Biomass (log scale)", y = NULL, color = NULL) +
+    theme_minimal(base_size = 8) +
+    theme(legend.position = "bottom", axis.text.y = element_text(size = 6))
+}, error = function(e) { message("[05_validation.R plot] biomass_vs_old_model_by_fg skipped - ", conditionMessage(e)); NULL })
+
 validation_plots <- c(list("01_old_vs_new_comparison" = p_comparison), validation_plots)
 validation_plots <- validation_plots[!sapply(validation_plots, is.null)]
 
 ## --- embed the standalone validation PNGs the other four scripts ------
 ## --- already produce, so the compiled PDF really is "everything in ----
 ## --- one place" rather than just this script's own new checks. --------
+## 2026-09-29, per Andrea ("all plots in validation code should be
+## included in the validation subfolders, also the fishing mortality and
+## PB QB comparison"): two things fixed here.
+##   1) F_by_fg.png and PQ_ratio_by_fg.png were actually being written by
+##      03_pbqb-traits.R into ITS OWN plot_dir (out_dir/plots/pbqb-traits)
+##      rather than validation_plot_dir (out_dir/plots/validation) - a
+##      2026-09-27 change moved them there and never got reconciled with
+##      this embed list, which always assumed validation_plot_dir. Fixed
+##      at the source in 03_pbqb-traits.R (both now ggsave() into
+##      validation_plot_dir) - listed here unchanged since the PATH this
+##      list expects was always the right one.
+##   2) fish_PB_methods_comparison_by_FG.png / fish_QB_methods_comparison_
+##      by_FG.png (03_pbqb-traits.R's PB/QB-by-candidate-method comparison
+##      figures - the literal "PB QB comparison" Andrea means) were always
+##      written to the correct validation_plot_dir, but were simply never
+##      added to this embed list, so they never made it into
+##      validation_plots_ALL.pdf. Added below.
 existing_pngs <- c(
   file.path(out_dir, "plots", "validation", "PQ_ratio_by_fg.png"),
   file.path(out_dir, "plots", "validation", "fg_pb_qb_scatter.png"),
   file.path(out_dir, "plots", "validation", "F_by_fg.png"),
+  file.path(out_dir, "plots", "validation", "fish_PB_methods_comparison_by_FG.png"),
+  file.path(out_dir, "plots", "validation", "fish_QB_methods_comparison_by_FG.png"),
   file.path(out_dir, "plots", "validation", "biomass_by_fg_source.png"),
   file.path(out_dir, "plots", "diets", "diet_matrix_heatmap.png")
 )
 embedded_png_pages <- list()
 for (png_path in existing_pngs) {
   if (!file.exists(png_path)) next
+  embedded_png_pages[[basename(png_path)]] <- tryCatch({
+    img <- png::readPNG(png_path)
+    ggplot() + annotation_raster(img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+      xlim(0, 1) + ylim(0, 1) +
+      labs(caption = paste0("(already produced by an earlier pipeline script: ", basename(png_path), ")")) +
+      theme_void() + theme(plot.caption = element_text(size = 7, colour = "grey50"))
+  }, error = function(e) { message("[05_validation.R plot] could not embed ", png_path, " - ", conditionMessage(e)); NULL })
+}
+
+## FG_PB_QB_comparison_*.png - the final, chosen PB/QB-by-FG figure(s)
+## (03_pbqb-traits.R's save_paginated_pb_qb_plot(), one or more numbered
+## pages depending on how many FGs there are). This is a genuine
+## deliverable, not a QA check, so it deliberately stays in
+## 03_pbqb-traits.R's OWN plot_dir (out_dir/plots/pbqb-traits), not
+## validation_plot_dir - but Andrea still wants it in the compiled
+## validation deck, so it's embedded here via Sys.glob (page count isn't
+## fixed) rather than moved out of its own folder.
+pb_qb_comparison_pngs <- sort(Sys.glob(file.path(out_dir, "plots", "pbqb-traits", "FG_PB_QB_comparison*.png")))
+for (png_path in pb_qb_comparison_pngs) {
   embedded_png_pages[[basename(png_path)]] <- tryCatch({
     img <- png::readPNG(png_path)
     ggplot() + annotation_raster(img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
@@ -718,8 +790,18 @@ if (length(validation_plots) == 0) {
   pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)   # same open-loop-close PDF pattern 02_fisheries.R's own validation_plots list uses
   for (p in validation_plots) print(p)
   dev.off()
+  ## 2026-09-29: the per-FG biomass-vs-old-model plot has ~one row per FG
+  ## (potentially 90+) - the shared 10x7in PNG size every other check uses
+  ## would cram all those labels unreadably. Its OWN standalone PNG (not
+  ## the PDF page, which stays a fixed page size like every other page)
+  ## gets a height that scales with how many FGs it actually plotted, so
+  ## the labels stay legible even if it's a tall image.
+  n_fg_biomass_plot <- tryCatch(
+    comparison_dt[metric == "Biomass" & !is.na(ratio) & is.finite(ratio) & ratio > 0, uniqueN(FG_name)],
+    error = function(e) 0)
   for (nm in names(validation_plots)) {
-    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = 7, dpi = 150, bg = "white", limitsize = FALSE),
+    ht <- if (nm == "01b_biomass_vs_old_model_by_fg" && n_fg_biomass_plot > 0) max(7, 0.16 * n_fg_biomass_plot) else 7
+    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = 150, bg = "white", limitsize = FALSE),
              error = function(e) NULL)
   }
   message("\n[05_validation.R] STEP C - ", length(validation_plots), " page(s) written to '", VALIDATION_PLOTS_PDF,
