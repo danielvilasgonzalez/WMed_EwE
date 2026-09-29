@@ -1177,12 +1177,29 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     if (nrow(bad_sum) > 0) {
       message("[04_diets.R] WARNING - diet column(s) not summing to 1 (EwE's own \"Sum to one\" convention): ",
               paste0(bad_sum$predator_fg, " (", round(bad_sum$total, 4), ")", collapse = ", "))
+      ## 2026-09-29, per Andrea's validation request (cross-referencing
+      ## pipeline_code_review_and_validation_findings.md finding 5): this
+      ## check previously only ever printed a console message, easy to
+      ## miss on a long run - now also written to a REVIEW csv, same
+      ## audit-trail convention every other fallback/plausibility check
+      ## in this pipeline already uses. The concrete failure mode this
+      ## catches: a prey species with no species_to_fg mapping is folded
+      ## into a pseudo-FG (its own scientific name) for the PER-TIER
+      ## normalization denominator, but that pseudo-FG is never one of
+      ## the real FGs the export functions iterate over - so its share
+      ## silently vanishes from the exported column, leaving the real
+      ## column sum below 1 even though every individual tier normalized
+      ## correctly on its own.
+      fwrite(bad_sum, file.path(csv_out_dir, "diet_matrix_column_sum_REVIEW.csv"))
+      message("[04_diets.R] -> written to diet_matrix_column_sum_REVIEW.csv (", nrow(bad_sum), " predator FG(s)).")
     }
     cannibalism <- fg_diet[predator_fg == prey_fg & weight > 0.1]
     if (nrow(cannibalism) > 0) {
       message("[04_diets.R] WARNING - self-prey (cannibalism) fraction exceeds the ~0.1 guideline for: ",
               paste0(cannibalism$predator_fg, " (", round(cannibalism$weight, 3), ")", collapse = ", "),
               " - EwE User Guide: avoid a group's own diet fraction of itself going much above 0.1.")
+      fwrite(cannibalism[, .(predator_fg, prey_fg, weight)], file.path(csv_out_dir, "diet_cannibalism_REVIEW.csv"))
+      message("[04_diets.R] -> written to diet_cannibalism_REVIEW.csv (", nrow(cannibalism), " FG(s)).")
     }
   }
   

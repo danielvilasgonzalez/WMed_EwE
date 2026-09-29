@@ -3876,6 +3876,40 @@ if (!is.null(p_f_by_fg)) {
 ## group can't out-produce what it eats for long). These reference
 ## lines are a REVIEW PROMPT, not a hard rule - some groups (e.g.
 ## detritivores, some invertebrates) legitimately sit outside it.
+## 2026-09-29, per Andrea's validation request (cross-referencing
+## pipeline_code_review_and_validation_findings.md finding 4: "no
+## plausibility bounds exist anywhere on the final PB, QB, or GE values
+## before they reach the Ecopath input sheet... an FG could reach
+## ecopath_ready_PB_QB.csv with an impossible GE >= 1 or a nonsensical
+## negative value with nothing in the pipeline raising a flag"). The
+## PQ_ratio_by_fg_REVIEW.csv/plot below already existed but only ever
+## covered FGs with PB_FG/QB_FG both non-NA AND QB_FG > 0 - anything
+## negative, zero, or NA on either side (the genuinely IMPOSSIBLE cases,
+## not just "unusual") was silently excluded from the check entirely
+## rather than flagged. plausibility_flag_REVIEW.csv below now covers
+## every FG with a non-NA PB_FG or QB_FG, explicitly distinguishing
+## "impossible" (QB_FG <= PB_FG i.e. P/Q >= 1, or either value <= 0)
+## from "outside typical range" (the existing 0.05-0.3 review band) from
+## "plausible".
+plausibility_dt <- fg_weighted[!is.na(PB_FG) | !is.na(QB_FG), .(FG, FG_name, PB_FG, QB_FG)]
+plausibility_dt[, plausibility_flag := fcase(
+  is.na(PB_FG) | is.na(QB_FG), "INCOMPLETE (missing PB_FG or QB_FG)",
+  PB_FG <= 0, "IMPOSSIBLE (PB_FG <= 0)",
+  QB_FG <= 0, "IMPOSSIBLE (QB_FG <= 0)",
+  QB_FG <= PB_FG, "IMPOSSIBLE (QB_FG <= PB_FG, i.e. P/Q >= 1 - a group cannot out-produce what it eats)",
+  (PB_FG / QB_FG) < 0.05 | (PB_FG / QB_FG) > 0.3, "Outside typical 0.05-0.3 P/Q range - review",
+  default = "Plausible"
+)]
+n_impossible <- plausibility_dt[startsWith(plausibility_flag, "IMPOSSIBLE"), .N]
+if (n_impossible > 0) {
+  message("[PB/QB plausibility check] ", n_impossible, " FG(s) have an IMPOSSIBLE PB/QB/GE combination",
+          " (negative/zero value, or QB_FG <= PB_FG) - see plausibility_flag_REVIEW.csv. These reached",
+          " fg_weighted with nothing else in the pipeline catching them before this check.")
+}
+fwrite(plausibility_dt, file.path(csv_out_dir, "plausibility_flag_REVIEW.csv"))
+message("[PB/QB plausibility check] plausibility_flag_REVIEW.csv written (", nrow(plausibility_dt), " FG(s): ",
+        plausibility_dt[, .N, by = plausibility_flag][, paste0(plausibility_flag, "=", N, collapse = ", ")], ").")
+
 p_pq_ratio <- tryCatch({
   pq_dt <- fg_weighted[!is.na(PB_FG) & !is.na(QB_FG) & QB_FG > 0, .(FG, FG_name, PB_FG, QB_FG)]
   if (nrow(pq_dt) == 0) stop("no FG has both PB_FG and QB_FG")
@@ -3970,6 +4004,39 @@ setorder(ecopath_ready, FG_num)
 ## real file's own convention for its seagrass/algae/phytoplankton rows
 is_primary_producer <- ecopath_ready$FG_num %in% species_df[dispatch_group == "phytoplankton", FG]
 
+## 2026-09-29, per Andrea's validation request (cross-referencing
+## ewe_user_guide_compliance_review_2026-09-28.md finding 4, "real gap,
+## not fixed"): the EwE User Guide's own guidance is that unassimilated
+## consumption should VARY by trophic guild - roughly 0.2 for carnivorous
+## fish, up to 0.4 for herbivores/zooplankton (undigested plant material
+## passes through in greater proportion than animal prey) - not a flat
+## 0.2 for every consumer FG regardless of what it eats. This pipeline
+## already computes a biomass-weighted FG-level TrophicLevel
+## (`fg_traits_weighted$TrophicLevel_FG`, from FishBase/SeaLifeBase
+## ecology data) for the Ecopath_traits sheet - reused here rather than
+## building a separate herbivore/carnivore classification from scratch.
+## Threshold (TrophicLevel_FG < 2.5 -> herbivore/zooplankton-like,
+## Unassim. = 0.4; otherwise carnivore-like, Unassim. = 0.2) is a
+## judgment call, not a value from the User Guide itself - flagged here
+## rather than hidden, and easy to adjust if Andrea has a better cutoff.
+## An FG with no TrophicLevel_FG at all (e.g. no species matched
+## FishBase/SeaLifeBase ecology data) falls back to the previous flat
+## 0.2 default, unchanged from before this fix.
+trophic_level_fg <- if (exists("fg_traits_weighted") && "TrophicLevel_FG" %in% names(fg_traits_weighted)) {
+  fg_traits_weighted[, .(FG_num, TrophicLevel_FG)]
+} else {
+  message("[Unassim. consumption] fg_traits_weighted$TrophicLevel_FG not available -",
+          " every consumer FG falls back to the flat 0.2 default (unchanged from before this fix).")
+  data.table(FG_num = integer(), TrophicLevel_FG = numeric())
+}
+ecopath_ready <- merge(ecopath_ready, trophic_level_fg, by = "FG_num", all.x = TRUE)
+unassim_consumption <- fifelse(is.na(ecopath_ready$TrophicLevel_FG), "0,2000",
+                               fifelse(ecopath_ready$TrophicLevel_FG < 2.5, "0,4000", "0,2000"))
+n_herbivore_unassim <- sum(!is.na(ecopath_ready$TrophicLevel_FG) & ecopath_ready$TrophicLevel_FG < 2.5 & !is_primary_producer)
+message("[Unassim. consumption] ", n_herbivore_unassim, " consumer FG(s) classified herbivore/zooplankton-like",
+        " (TrophicLevel_FG < 2.5) and given Unassim. consumption = 0.4; the rest keep the carnivore-like 0.2",
+        " default (EwE User Guide guidance, not a computed value).")
+
 ecopath_final <- data.table(
   ` ` = ecopath_ready$FG_num,                                             # blank header, matches the real file's unnamed first column
   `Group name` = ecopath_ready$FG_name,
@@ -3981,7 +4048,7 @@ ecopath_final <- data.table(
   `Ecotrophic Efficiency` = "",                                            # Ecopath solves for this - not an input
   `Other mortality` = "",
   `Production / consumption` = "",                                        # redundant once PB and QB are both given
-  `Unassim. consumption` = fifelse(is_primary_producer, "", "0,2000"),     # standard default for consumers
+  `Unassim. consumption` = fifelse(is_primary_producer, "", unassim_consumption),  # varies by trophic guild - see note above
   `Detritus import (t/km^2/year)` = ""                                    # only relevant for Detritus/Discards housekeeping groups
 )
 

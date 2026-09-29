@@ -1,369 +1,735 @@
 ## =================================================================
-## VALIDATION MASTER SCRIPT - ONE SELF-CONTAINED SOURCE FILE.
-## Created 2026-09-24, per Andrea's request to start a validation layer
-## that checks pipeline inputs/outputs against INDEPENDENT sources,
-## rather than trusting the pipeline's own numbers uncritically. Same
-## conventions as 01/02/03/04: every source is OPTIONAL and fails soft
-## (message + skip, never a hard stop), every comparison is written to
-## its own CSV for human review, and every gap is stated explicitly
-## rather than silently skipped.
+## PIPELINE STEP 5 (new, 2026-09-29) - run AFTER 01_biomass.R /
+## 02_fisheries.R / 03_pbqb-traits.R / 04_diets.R have written (or
+## re-written) ecopath_ecosim_inputs.xlsx.
 ##
-## SIX validation checks were asked for. Scope for THIS pass, per
-## Andrea's own prioritization (2026-09-24: "GFW should be compare with
-## the input ts... FDI for some countries and later SAU maybe"):
+## Per Andrea: "can you work on the validation code, including some
+## validation process ... like the comparison with the input values
+## from the old west med [workbook] ... in sheet estimates, and other
+## validation in the ewe manual and this points i highlighted."
 ##
-##   BUILT NOW:
-##   1) GFW effort vs. this pipeline's own effort input time series
-##      (STECF FDI 2014+ / SAU-hindcasted pre-2014 for Spain/France/
-##      Italy, FishMIP for Morocco/Algeria/Tunisia) - SECTION 1 below.
-##   2) Comparison against the PREVIOUS WMed model's own biomass
-##      figures - now buildable, Andrea gave the file path
-##      (FG_WMed_old.xlsx) - SECTION 2 below.
+## Two jobs:
+##   STEP A - compare this pipeline's new Ecopath_B/Ecopath_L/
+##            Ecopath_Di/Ecopath_PBQB values against the OLD West Med
+##            model's own "estimates" sheet, FG by FG, and flag large
+##            deviations - NOT a pass/fail gate, a REVIEW prompt (a
+##            real difference can be a real improvement, e.g. this
+##            session's literature-sourced biomass fixes; the point is
+##            to surface every large difference so a human decides
+##            which number is right).
+##   STEP B - consolidate every plausibility/validation REVIEW csv this
+##            pipeline already writes (PB/QB/GE bounds, diet-matrix
+##            column-sum/cannibalism, EcoBase-fallback rejections, the
+##            fleet-coverage check, temporal-mismatch flags, etc. - see
+##            pipeline_code_review_and_validation_findings.md and
+##            ewe_user_guide_compliance_review_2026-09-28.md for the
+##            full list these come from) into ONE summary table, since
+##            today they only exist as separate files scattered across
+##            each script's own output subfolder with nothing tying
+##            them together.
 ##
-##   STUBBED (clear TODO, not yet built - each needs either a dataset
-##   Andrea/Daniel still has to locate, or a scope decision):
-##   3) Visual census, regional scale - "internal dataset pending to
-##      get" (Andrea's own words) - SECTION 3.
-##   4) Diet validation (FishBase/EcoBase) inside the diet block -
-##      "to rethink" (Andrea's own words, i.e. the approach itself is
-##      still undecided, not just the data) - SECTION 4.
-##   5) Sector split (industrial/artisanal) - SAU vs. a possible
-##      regional Catalan database - SECTION 5.
-##   6) RLS (Reef Life Survey) visual census, 2015 only, qualitative -
-##      SECTION 6.
+## This script does NOT re-implement checks that already live inside
+## 01_biomass.R/02_fisheries.R/03_pbqb-traits.R/04_diets.R (PB/QB/GE
+## plausibility, diet-sum, EcoBase-fallback plausibility, group
+## ordering, cannibalism) - it only READS what they already wrote.
+## Still-open EwE User Guide gaps NOT covered anywhere in this pipeline
+## yet (see ewe_user_guide_compliance_review_2026-09-28.md): discard
+## mortality rate (no column for it anywhere in the 9-sheet workbook
+## contract - a scope decision, not a bug, left for Andrea to decide
+## whether it belongs in this pipeline's output at all) and formal
+## multi-stanza input blocks (only a juvenile/adult biomass-split
+## heuristic exists, not a real EwE stanza parameter table).
 ## =================================================================
 
-pkgs <- c("data.table", "openxlsx", "httr", "jsonlite")
+## 2026-09-29, per Andrea ("the validation code should be a compilation of
+## plots to check these validations"): STEP C at the end of this file now
+## builds an actual plot for every check this script can interpret, and
+## compiles them - together with the standalone validation PNGs the other
+## four scripts already produce (PQ_ratio_by_fg.png, fg_pb_qb_scatter.png,
+## F_by_fg.png, diet_matrix_heatmap.png, biomass_by_fg_source.png) - into
+## ONE multi-page PDF, `validation_plots_ALL.pdf`, so there's a single
+## file to look through instead of hunting across every script's own plot
+## folder. `validation_summary_ALL.csv` (STEP B) is kept alongside it as
+## a plain-text index of the same checks, for grepping/filtering rather
+## than paging through.
+
+pkgs <- c("data.table", "openxlsx", "ggplot2", "png")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 ## =================================================================
-## CONFIGURATION - same resolve_config_dir() convention as 01/02/03/04.
+## STEP 1: Configuration - same out_dir/pcloud_dir/git_dir convention
+## as every other script in this pipeline (pre-set by a driver script,
+## Daniel's hardcoded defaults, or an interactive RStudio picker).
 ## =================================================================
-if (!exists("resolve_config_dir")) {
-  resolve_config_dir <- function(var_name, hardcoded_value, prompt_title, prompt_message) {
-    if (exists(var_name, envir = .GlobalEnv, inherits = FALSE)) {
-      val <- get(var_name, envir = .GlobalEnv)
-      if (!is.null(val) && is.character(val) && length(val) == 1 && !is.na(val) && val != "" && dir.exists(val)) return(val)
-    }
-    if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") return(hardcoded_value)
-    stop("This script requires ", var_name, " set manually before running - ", prompt_message)
+if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
+    exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
+    exists("git_dir", envir = .GlobalEnv, inherits = FALSE)) {
+  message("[05_validation.R] Using pre-set out_dir/pcloud_dir/git_dir from calling environment:\n  out_dir  = ", out_dir, "\n  pcloud_dir = ", pcloud_dir, "\n  git_dir  = ", git_dir)
+  if (!dir.exists(out_dir)) {
+    stop("[05_validation.R] out_dir was pre-set by the calling script but doesn't exist on this machine: \"",
+         out_dir, "\". Fix it in the driver script (e.g. run_pipeline_demo.R) before sourcing this file.")
   }
-}
-out_dir    <- resolve_config_dir("out_dir", "/Users/daniel/Work/iMARES/WMed EwE Model/output/",
-                                 "Select Output Directory", "Please select the directory where output files are saved.")
-pcloud_dir <- resolve_config_dir("pcloud_dir", "/Users/daniel/pCloud Drive/EwE Western Med 2026/",
-                                 "Select pCloud EwE West Med Directory", "Please select the pCloud Drive/EwE Western Med 2026 folder.")
-
-csv_out_dir       <- file.path(out_dir, "fisheries")
-BIOMASS_CSV_DIR   <- file.path(out_dir, "biomass")
-VALIDATION_DIR    <- file.path(out_dir, "validation")
-if (!dir.exists(VALIDATION_DIR)) dir.create(VALIDATION_DIR, recursive = TRUE)
-
-if (!exists("START_YEAR", envir = .GlobalEnv, inherits = FALSE)) START_YEAR <- 1994
-if (!exists("END_YEAR",   envir = .GlobalEnv, inherits = FALSE)) END_YEAR   <- 2023
-if (!exists("WESTMED_BBOX", envir = .GlobalEnv, inherits = FALSE)) {
-  WESTMED_BBOX <- list(lon_min = -6.0, lon_max = 12.5, lat_min = 34.0, lat_max = 45.0)  # same bbox used throughout 01/03b
-}
-
-## =================================================================
-## SECTION 1: GFW (Global Fishing Watch) apparent fishing effort vs.
-## this pipeline's own effort input time series.
-##
-## WHAT THIS VALIDATES: a TREND check, not an absolute-magnitude check
-## - GFW's AIS-based "apparent fishing hours" and this pipeline's own
-## kW-days-based effort are different units measuring different things
-## (AIS-detectable vessel-hours vs. engine-power x days-at-sea), so they
-## are compared as INDEXED series (each rescaled to its own first
-## common year = 1), same "relative, not absolute" convention already
-## used for Ecosim_ts's own Biomass/Effort columns (see
-## lib_survey_fg_density_functions.R's build_ts_column()).
-##
-## COVERAGE MISMATCH, stated up front, not papered over: GFW's AIS
-## fishing-effort dataset only starts ~2012 (AIS transceivers were not
-## required/widespread on most Mediterranean small-scale vessels before
-## then) - it CANNOT validate this pipeline's 1994-2011 effort figures
-## at all, only whatever of 2012-END_YEAR both series cover. Also: GFW
-## is AIS-detected effort only - most Mediterranean artisanal/small-
-## scale vessels do not carry AIS at all, so GFW's own coverage is
-## itself biased toward industrial/larger vessels, not a ground truth.
-##
-## REQUIRES a free GFW API token (https://globalfishingwatch.org/our-apis/)
-## set as the GFW_API_TOKEN environment variable - fails soft (message +
-## skip) if absent, same convention as CMEMS/copernicusmarine credentials
-## in lib_cmems_phytoplankton_biomass.R.
-## =================================================================
-fetch_gfw_effort_by_year <- function(bbox = WESTMED_BBOX, start_year = max(2012, START_YEAR), end_year = END_YEAR,
-                                     out_dir = VALIDATION_DIR, force_refresh = FALSE) {
-  out_csv <- file.path(out_dir, "gfw_apparent_fishing_effort_by_year.csv")
-  if (!force_refresh && file.exists(out_csv)) {
-    message("fetch_gfw_effort_by_year(): using cached ", out_csv, " (pass force_refresh = TRUE to re-query GFW).")
-    return(fread(out_csv))
-  }
-  token <- Sys.getenv("GFW_API_TOKEN")
-  if (!nzchar(token)) {
-    message("\n[GFW validation] GFW_API_TOKEN environment variable not set - skipping. Register for a free",
-            " token at https://globalfishingwatch.org/our-apis/ (Stats/4wings API) and set",
-            " Sys.setenv(GFW_API_TOKEN = '...') before sourcing this script to enable this check.")
-    return(data.table(Year = integer(0), gfw_apparent_fishing_hours = numeric(0)))
-  }
-
-  ## GFW's 4wings/report endpoint aggregates apparent fishing effort
-  ## (hours) within a polygon/bbox, one call per year (the API's own
-  ## date-range aggregation is coarser than a clean per-year total, so
-  ## looping one year at a time keeps this simple and auditable, at the
-  ## cost of one HTTP call per year - fine for a ~12-year window).
-  years <- seq(start_year, end_year)
-  results <- vector("list", length(years))
-  for (i in seq_along(years)) {
-    yr <- years[i]
-    url <- "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
-    body <- list(
-      spatialResolution = "LOW",
-      temporalResolution = "YEARLY",
-      datasets = list("public-global-fishing-effort:latest"),
-      filters = list(),
-      region = list(
-        dataset = "public-eez-areas",
-        geojson = list(
-          type = "Polygon",
-          coordinates = list(list(
-            c(bbox$lon_min, bbox$lat_min), c(bbox$lon_max, bbox$lat_min),
-            c(bbox$lon_max, bbox$lat_max), c(bbox$lon_min, bbox$lat_max),
-            c(bbox$lon_min, bbox$lat_min)
-          ))
-        )
-      ),
-      `date-range` = paste0(yr, "-01-01,", yr, "-12-31")
-    )
-    resp <- tryCatch(
-      httr::POST(url, httr::add_headers(Authorization = paste("Bearer", token), `Content-Type` = "application/json"),
-                 body = jsonlite::toJSON(body, auto_unbox = TRUE)),
-      error = function(e) { message("[GFW validation] Request failed for ", yr, ": ", conditionMessage(e)); NULL }
-    )
-    if (is.null(resp) || httr::status_code(resp) != 200) {
-      message("[GFW validation] Year ", yr, ": HTTP ", if (!is.null(resp)) httr::status_code(resp) else "no response",
-              " - skipping this year (this endpoint/payload shape is UNVERIFIED against the real API in this",
-              " sandbox - no outbound access to globalfishingwatch.org was available here. If this fires on the",
-              " first real run, check the actual v3 4wings/report request shape against",
-              " https://globalfishingwatch.org/our-apis/documentation/docs/api-workflows/analyzing-fishing-effort-in-a-region",
-              " and fix the body above - it is a best-effort guess, not a confirmed-working call.")
-      next
-    }
-    parsed <- tryCatch(jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"), simplifyVector = TRUE),
-                       error = function(e) NULL)
-    hours_total <- tryCatch(sum(unlist(parsed$entries), na.rm = TRUE), error = function(e) NA_real_)
-    results[[i]] <- data.table(Year = yr, gfw_apparent_fishing_hours = hours_total)
-  }
-  gfw_by_year <- rbindlist(results, fill = TRUE)
-  gfw_by_year <- gfw_by_year[!is.na(gfw_apparent_fishing_hours)]
-  if (nrow(gfw_by_year) == 0) {
-    message("[GFW validation] No usable year returned anything - see per-year messages above.")
-    return(gfw_by_year)
-  }
-  fwrite(gfw_by_year, out_csv)
-  message("[GFW validation] gfw_apparent_fishing_effort_by_year.csv: ", nrow(gfw_by_year), " year(s), ",
-          min(gfw_by_year$Year), "-", max(gfw_by_year$Year), ".")
-  gfw_by_year
-}
-
-## --- This pipeline's OWN effort input ts (Andrea: "compare with the
-## input ts... FDI for some countries and later SAU maybe") - reads the
-## two files 02_fisheries.R already writes, rather than re-deriving
-## anything: effort_by_fleettype_eu3_hindcast.csv (Spain/France/Italy -
-## STECF FDI's own effort 2014+, SAU-hindcasted 1994-2013) and
-## fishing_effort_by_fleet_timeseries_FishMIP.csv (Morocco/Algeria/
-## Tunisia - FishMIP nom_active, the only source for these 3 countries).
-pipeline_effort_path_eu3    <- file.path(csv_out_dir, "effort_by_fleettype_eu3_hindcast.csv")
-pipeline_effort_path_fishmip <- file.path(csv_out_dir, "fishing_effort_by_fleet_timeseries_FishMIP.csv")
-
-pipeline_effort_by_year <- data.table(Year = integer(0), pipeline_effort_kWdays = numeric(0))
-eu3_ok <- file.exists(pipeline_effort_path_eu3)
-fishmip_ok <- file.exists(pipeline_effort_path_fishmip)
-if (!eu3_ok && !fishmip_ok) {
-  message("\n[GFW validation] Neither '", pipeline_effort_path_eu3, "' nor '", pipeline_effort_path_fishmip,
-          "' exists - run 02_fisheries.R first (this script reads its effort output, never re-derives it).")
+} else if (tolower(Sys.info()[["user"]]) == "daniel" && .Platform$OS.type == "unix") {
+  out_dir <- "/Users/daniel/Work/iMARES/WMed EwE Model/output/"
+  pcloud_dir   <- "/Users/daniel/pCloud Drive/EwE Western Med 2026/"
+  git_dir <-"/Users/daniel/Documents/GitHub/WMed_EwE/"
 } else {
-  parts <- list()
-  if (eu3_ok) {
-    eu3 <- fread(pipeline_effort_path_eu3)
-    val_col_eu3 <- intersect(c("Effort_kWdays_total_effective", "Effort_kWdays_total"), names(eu3))[1]
-    if (!is.na(val_col_eu3)) {
-      parts$eu3 <- eu3[, .(pipeline_effort_kWdays = sum(get(val_col_eu3), na.rm = TRUE)), by = Year]
-      message("[GFW validation] Spain/France/Italy effort from '", basename(pipeline_effort_path_eu3), "' ('", val_col_eu3, "').")
-    }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    stop("This script requires RStudio. Please select the output directory manually.")
   }
-  if (fishmip_ok) {
-    fm <- fread(pipeline_effort_path_fishmip)
-    val_col_fm <- intersect(c("nom_active_kWdays_effective", "nom_active_kWdays", "nom_active"), names(fm))[1]
-    if (!is.na(val_col_fm)) {
-      parts$fishmip <- fm[, .(pipeline_effort_kWdays = sum(get(val_col_fm), na.rm = TRUE)), by = Year]
-      message("[GFW validation] Morocco/Algeria/Tunisia effort from '", basename(pipeline_effort_path_fishmip), "' ('", val_col_fm, "').")
-    }
-  }
-  if (length(parts) > 0) {
-    pipeline_effort_by_year <- rbindlist(parts)[, .(pipeline_effort_kWdays = sum(pipeline_effort_kWdays, na.rm = TRUE)), by = Year]
-  }
+  rstudioapi::showQuestion(title = "Select Output Directory",
+                           message = "Please select the directory where output files and intermediate results are saved (same folder 01_biomass.R etc. wrote to).")
+  out_dir <- rstudioapi::selectDirectory()
+  if (is.null(out_dir) || out_dir == "" || !dir.exists(out_dir)) stop("No valid output directory selected.")
+  
+  rstudioapi::showQuestion(title = "Select pCloud EwE West Med Directory",
+                           message = "Please select the location of the pCloud Drive/EwE Western Med 2026 folder.")
+  pcloud_dir <- rstudioapi::selectDirectory()
+  if (is.null(pcloud_dir) || pcloud_dir == "" || !dir.exists(pcloud_dir)) stop("No valid pcloud directory selected.")
+  
+  rstudioapi::showQuestion(title = "Select Github WMed_EwE Directory",
+                           message = "Please select the directory where you cloned the WMed_EwE repository.")
+  git_dir <- rstudioapi::selectDirectory()
+  if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) stop("No valid Github directory selected.")
 }
 
-gfw_effort_by_year <- fetch_gfw_effort_by_year()
+if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "validation")
+if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
+## 2026-09-29: matches the folder convention set in output_subfolder_
+## refactor_notes.md ("05_validation.R -> output/plots/validation/... this
+## is the folder 03_pbqb-traits.R's own validation plots already target" -
+## previously noted there as "NOT YET APPLIED to 05_validation.R itself,"
+## now fixed) - PQ_ratio_by_fg.png/fg_pb_qb_scatter.png/F_by_fg.png (03's
+## own validation-type plots) already live here, so this script's own
+## validation plots land right alongside them, not in a separate folder.
+if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.path(out_dir, "plots", "validation")
+if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
-gfw_validation <- merge(pipeline_effort_by_year, gfw_effort_by_year, by = "Year", all = FALSE)
-if (nrow(gfw_validation) < 2) {
-  message("\n[GFW validation] Fewer than 2 overlapping years between this pipeline's effort ts and GFW",
-          " (pipeline: ", nrow(pipeline_effort_by_year), " year(s); GFW: ", nrow(gfw_effort_by_year), " year(s)) -",
-          " nothing to compare yet. Most likely cause: GFW_API_TOKEN not set (see message above), or 02_fisheries.R",
-          " hasn't been run for this out_dir yet.")
-} else {
-  setorder(gfw_validation, Year)
-  ## Index both series to their FIRST COMMON year = 1 - same
-  ## "relative, not absolute" convention as every Ecosim_ts Biomass/
-  ## Effort column (build_ts_column()) - absolute magnitudes are not
-  ## comparable across these two completely different effort metrics,
-  ## but a shared trend (both rising, both falling, diverging) is a
-  ## real, meaningful signal.
-  gfw_validation[, `:=`(
-    pipeline_effort_index = pipeline_effort_kWdays / pipeline_effort_kWdays[1],
-    gfw_effort_index       = gfw_apparent_fishing_hours / gfw_apparent_fishing_hours[1]
-  )]
-  corr <- suppressWarnings(cor(gfw_validation$pipeline_effort_index, gfw_validation$gfw_effort_index, use = "complete.obs"))
-  fwrite(gfw_validation, file.path(VALIDATION_DIR, "gfw_effort_validation.csv"))
-  message("\n[GFW validation] ", nrow(gfw_validation), " overlapping year(s) (", min(gfw_validation$Year), "-",
-          max(gfw_validation$Year), ") - indexed-trend correlation (pipeline effort vs. GFW apparent fishing",
-          " hours) = ", round(corr, 3), ". Written to gfw_effort_validation.csv (raw + indexed columns for both",
-          " series) - LOOK AT THE PLOT/TABLE, not just this one number: a correlation near 1 across only a few",
-          " years is not strong evidence, and GFW cannot see most Mediterranean small-scale/artisanal vessels",
-          " (no AIS), so a real divergence there is expected, not necessarily a pipeline error.")
-}
-
-## =================================================================
-## SECTION 2: comparison against the PREVIOUS WMed model's own biomass
-## figures (Andrea: '/Users/daniel/pCloud Drive/EwE Western Med 2026/
-## data/Complementary data/FG_WMed_old.xlsx').
-##
-## Reads the old model's own FG/biomass sheet and this pipeline's
-## current Ecopath_B (via fg_missing_ecopath_B_REVIEW.csv's companion
-## table - the actual current biomass CSV written by 01_biomass.R,
-## survey_fg_annual_index_regional_combined.csv, restricted to
-## YEAR_ECOPATH) and compares FG by FG. Matched by FG_name text
-## (case-insensitive, trimmed) - NOT by FG_num, since FG numbering is
-## not guaranteed stable between the old and new model's own FG
-## tables; a name that doesn't match either side is reported, not
-## silently dropped.
-## =================================================================
-OLD_MODEL_PATH <- file.path(pcloud_dir, "data/Complementary data/FG_WMed_old.xlsx")
-
-if (!file.exists(OLD_MODEL_PATH)) {
-  message("\n[Old-model comparison] '", OLD_MODEL_PATH, "' not found - skipping.")
-} else {
-  old_sheets <- readxl::excel_sheets(OLD_MODEL_PATH)
-  ## The old workbook's own sheet/column names are UNCONFIRMED against
-  ## a real look at this file in this sandbox (no file access here) -
-  ## tries the most likely candidates, prints the actual sheet names/
-  ## columns found either way so a wrong guess is visible, not silent.
-  candidate_sheets <- intersect(c("Ecopath_B", "FG_spp", "Biomass", "EcopathB", "Sheet1"), old_sheets)
-  if (length(candidate_sheets) == 0) {
-    message("[Old-model comparison] None of the expected sheet names (Ecopath_B/FG_spp/Biomass/EcopathB) found in",
-            " '", OLD_MODEL_PATH, "' - actual sheets present: ", paste(old_sheets, collapse = ", "),
-            ". Open the file and tell me the right sheet/column names to fix this.")
+## The OLD West Med model workbook, sheet "estimates" - the comparison
+## baseline. 2026-09-29, per Andrea ("it should come from the pclouddir
+## to allow other to run it (not daniel my personal computer)"): this is
+## now derived from pcloud_dir - the same shared pCloud folder every
+## other script in this pipeline already resolves per-machine (via the
+## pre-set-by-driver-script / Daniel's-hardcoded-default / RStudio-picker
+## chain at the top of this file) - rather than a second, separate list
+## of one person's hardcoded absolute machine path. Whoever's pcloud_dir
+## resolved correctly gets the right old-workbook path too, with no new
+## per-user hardcoding to maintain. Falls back to an RStudio file picker,
+## same "ask rather than crash" convention used everywhere else here, if
+## it isn't at the expected place within pcloud_dir (e.g. a differently
+## named subfolder on someone's machine).
+if (!exists("OLD_WMED_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) {
+  pcloud_default <- file.path(pcloud_dir, "data", "WMed_EwE.xlsx")
+  if (file.exists(pcloud_default)) {
+    OLD_WMED_WORKBOOK_PATH <- pcloud_default
+  } else if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+    rstudioapi::showQuestion(title = "Select the OLD West Med workbook",
+                             message = "Please select the old WMed_EwE.xlsx file (the one with the 'estimates' sheet) to validate against.")
+    OLD_WMED_WORKBOOK_PATH <- rstudioapi::selectFile(caption = "Select WMed_EwE.xlsx", filter = "Excel Files (*.xlsx)")
+    if (is.null(OLD_WMED_WORKBOOK_PATH) || OLD_WMED_WORKBOOK_PATH == "") stop("No old-workbook file selected.")
   } else {
-    old_raw <- readxl::read_excel(OLD_MODEL_PATH, sheet = candidate_sheets[1])
-    old_raw <- as.data.table(old_raw)
-    name_col_old <- intersect(c("FG_name", "Group name", "GroupName", "Name", "Group"), names(old_raw))[1]
-    bio_col_old  <- intersect(c("Biomass", "B", "Biomass (t/km2)", "Biomass_t_km2"), names(old_raw))[1]
-    if (is.na(name_col_old) || is.na(bio_col_old)) {
-      message("[Old-model comparison] Sheet '", candidate_sheets[1], "' found but couldn't identify a",
-              " name/biomass column pair - columns present: ", paste(names(old_raw), collapse = ", "),
-              ". Tell me the right column names to fix this.")
-    } else {
-      old_biomass <- old_raw[, .(FG_name_norm = tolower(trimws(get(name_col_old))), old_biomass_t_km2 = as.numeric(get(bio_col_old)))]
-      old_biomass <- old_biomass[!is.na(old_biomass_t_km2)]
-
-      new_biomass_path <- file.path(BIOMASS_CSV_DIR, "survey_fg_annual_index_regional_combined.csv")
-      if (!file.exists(new_biomass_path)) {
-        message("[Old-model comparison] '", new_biomass_path, "' not found - run 01_biomass.R first.")
-      } else {
-        new_raw <- fread(new_biomass_path)
-        new_biomass <- new_raw[Year %in% (if (exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH else 1994:1996),
-                               .(new_biomass_t_km2 = mean(mean_density, na.rm = TRUE)), by = .(FG_name_norm = tolower(trimws(FG_name)))]
-
-        model_comparison <- merge(old_biomass, new_biomass, by = "FG_name_norm", all = TRUE)
-        model_comparison[, pct_diff := fifelse(!is.na(old_biomass_t_km2) & !is.na(new_biomass_t_km2) & old_biomass_t_km2 > 0,
-                                               round(100 * (new_biomass_t_km2 - old_biomass_t_km2) / old_biomass_t_km2, 1), NA_real_)]
-        fwrite(model_comparison, file.path(VALIDATION_DIR, "old_model_biomass_comparison.csv"))
-        n_only_old <- model_comparison[is.na(new_biomass_t_km2), .N]
-        n_only_new <- model_comparison[is.na(old_biomass_t_km2), .N]
-        n_big_diff <- model_comparison[!is.na(pct_diff) & abs(pct_diff) > 50, .N]
-        message("\n[Old-model comparison] ", nrow(model_comparison), " FG name(s) total - ", n_only_old,
-                " only in the OLD model, ", n_only_new, " only in the CURRENT pipeline (name-matching gap or a",
-                " genuinely new/removed FG - check by hand), ", n_big_diff, " with a biomass differing by more",
-                " than 50% between old and new. Written to old_model_biomass_comparison.csv - positive",
-                " pct_diff = current pipeline's biomass is HIGHER than the old model's.")
-      }
-    }
+    stop("[05_validation.R] OLD_WMED_WORKBOOK_PATH not set, the expected path within pcloud_dir (",
+         pcloud_default, ") doesn't exist, and RStudio isn't available for an interactive picker.",
+         " Set OLD_WMED_WORKBOOK_PATH explicitly before sourcing this file.")
   }
+}
+if (!exists("OLD_WMED_ESTIMATES_SHEET", envir = .GlobalEnv, inherits = FALSE)) OLD_WMED_ESTIMATES_SHEET <- "estimates"
+
+## Review thresholds - adjustable constants, not tuned against a real
+## distribution this session. A ratio this far from 1 (new/old) gets
+## flagged for a human look; it is NOT evidence the new value is wrong
+## - many of this session's fixes (real literature citations replacing
+## a generic EcoBase-fallback guess, the FG_spp architecture switch,
+## the temporal-baseline corrections) are EXPECTED to move some FGs
+## a long way from the old workbook's own figure.
+if (!exists("VALIDATION_RATIO_HIGH", envir = .GlobalEnv, inherits = FALSE)) VALIDATION_RATIO_HIGH <- 2
+if (!exists("VALIDATION_RATIO_LOW",  envir = .GlobalEnv, inherits = FALSE)) VALIDATION_RATIO_LOW  <- 0.5
+## Fuzzy FG-name matching tolerance (base R agrep's max.distance, as a
+## fraction of pattern length) - used only for names that don't match
+## exactly after normalization, e.g. "Sardine" (old) vs "European
+## sardine" (new). Kept deliberately tight so it doesn't produce a
+## false match between two genuinely different FGs.
+if (!exists("VALIDATION_FUZZY_MAX_DIST", envir = .GlobalEnv, inherits = FALSE)) VALIDATION_FUZZY_MAX_DIST <- 0.15
+
+## Same lightweight column-alias resolver used throughout this codebase
+## (01_biomass.R/02_fisheries.R each carry their own copy under the
+## same name) - kept local here too rather than sourcing another
+## script just for this one helper.
+## 2026-09-29: broadened a THIRD time. The "Group.name" fix (folding "."
+## to a space) only covers make.names()-mangled SPACES. R's make.names()
+## actually mangles EVERY character it doesn't allow in a name - not just
+## spaces - into a dot: confirmed directly, make.names("Biomass (t/km^2)")
+## -> "Biomass..t.km.2.", make.names("Production / biomass (/year)") ->
+## "Production...biomass...year.". The biomass/PB/QB/landings/discards
+## aliases all contain "(", ")", "/", "^" - none of which the previous
+## norm_colname() touched - so those would have kept failing to match
+## even with the Group.name case fixed. Now strips down to alphanumeric
+## characters only (letters + digits, lowercased) on BOTH sides before
+## comparing, which matches regardless of whether the sheet was read with
+## its original punctuated headers or make.names()-mangled ones. Verified
+## directly in R against real make.names() output for every alias used
+## below.
+norm_colname <- function(x) tolower(gsub("[^[:alnum:]]+", "", x))
+resolve_col <- function(dt_names, aliases) {
+  hit <- aliases[norm_colname(aliases) %in% norm_colname(dt_names)]
+  if (length(hit) == 0) return(NA_character_)
+  dt_names[norm_colname(dt_names) == norm_colname(hit[1])][1]
+}
+
+normalize_name <- function(x) tolower(trimws(gsub("[[:space:]]+", " ", gsub("[._-]+", " ", x))))
+
+message("\n[05_validation.R] STEP A - comparing new pipeline output against the old West Med workbook's '",
+        OLD_WMED_ESTIMATES_SHEET, "' sheet (", OLD_WMED_WORKBOOK_PATH, ").")
+
+## =================================================================
+## STEP A1: read the new pipeline's own Ecopath_B / Ecopath_L /
+## Ecopath_Di / Ecopath_PBQB sheets, straight from the shared workbook
+## - not from CSVs, so this validates exactly what a real EwE import
+## would see.
+## =================================================================
+if (!file.exists(ECOPATH_WORKBOOK_PATH)) {
+  stop("[05_validation.R] ", ECOPATH_WORKBOOK_PATH, " doesn't exist yet - run 01_biomass.R (and ideally",
+       " 02_fisheries.R/03_pbqb-traits.R too) first.")
+}
+wb_sheets <- openxlsx::getSheetNames(ECOPATH_WORKBOOK_PATH)
+
+read_sheet_safe <- function(sheet_name, needed_cols) {
+  if (!sheet_name %in% wb_sheets) {
+    message("[05_validation.R] '", sheet_name, "' not found in the workbook yet - skipping that metric",
+            " (run the script that writes it first).")
+    return(NULL)
+  }
+  dt <- as.data.table(openxlsx::read.xlsx(ECOPATH_WORKBOOK_PATH, sheet = sheet_name))
+  missing <- setdiff(needed_cols, names(dt))
+  if (length(missing) > 0) {
+    message("[05_validation.R] '", sheet_name, "' is missing expected column(s): ", paste(missing, collapse = ", "),
+            " (found: ", paste(names(dt), collapse = ", "), ") - skipping that metric.")
+    return(NULL)
+  }
+  dt[, FG_num := as.integer(FG_num)]
+  dt
+}
+
+new_B    <- read_sheet_safe("Ecopath_B",    c("FG_num", "FG_name", "Biomass"))
+new_L    <- read_sheet_safe("Ecopath_L",    c("FG_num", "FG_name", "Landings_t_km2_broad"))
+new_Di   <- read_sheet_safe("Ecopath_Di",   c("FG_num", "FG_name", "Discard_t_km2_broad"))
+new_PBQB <- read_sheet_safe("Ecopath_PBQB", c("FG_num", "FG_name", "PB_FG", "QB_FG"))
+
+new_metrics <- list()
+if (!is.null(new_B))    new_metrics[["Biomass"]]  <- new_B[,    .(FG_num, FG_name, new_value = as.numeric(Biomass))]
+if (!is.null(new_L))    new_metrics[["Landings"]] <- new_L[,    .(FG_num, FG_name, new_value = as.numeric(Landings_t_km2_broad))]
+if (!is.null(new_Di))   new_metrics[["Discards"]] <- new_Di[,   .(FG_num, FG_name, new_value = as.numeric(Discard_t_km2_broad))]
+if (!is.null(new_PBQB)) {
+  new_metrics[["PB"]] <- new_PBQB[, .(FG_num, FG_name, new_value = as.numeric(PB_FG))]
+  new_metrics[["QB"]] <- new_PBQB[, .(FG_num, FG_name, new_value = as.numeric(QB_FG))]
+}
+
+if (length(new_metrics) == 0) {
+  stop("[05_validation.R] None of Ecopath_B/Ecopath_L/Ecopath_Di/Ecopath_PBQB have the expected columns yet -",
+       " nothing to validate. Run the upstream scripts first.")
 }
 
 ## =================================================================
-## SECTION 3: Visual census, regional scale.
-## STUB - per Andrea (2026-09-24): "internal dataset pending to get".
-## Nothing built here on purpose - there is no source file yet to read.
-## Fill in VISUAL_CENSUS_PATH below once that dataset is in hand; the
-## comparison itself should follow the exact same shape as SECTION 2
-## above (match by FG_name/species, compare density/biomass, %diff,
-## write a REVIEW csv) once real data exists.
+## STEP A2: read the OLD workbook's 'estimates' sheet, with flexible
+## column-name resolution - this session has never seen this file's
+## actual columns, so every alias list below is a best guess at common
+## Ecopath-estimates-sheet naming, not a confirmed match. Anything not
+## resolved is reported (not guessed).
 ## =================================================================
-message("\n[Visual census validation] STUB - internal dataset not yet available (per Andrea, 2026-09-24).",
-        " Set VISUAL_CENSUS_PATH and mirror SECTION 2's comparison pattern once the data is in hand.")
+if (!file.exists(OLD_WMED_WORKBOOK_PATH)) {
+  stop("[05_validation.R] OLD_WMED_WORKBOOK_PATH ('", OLD_WMED_WORKBOOK_PATH, "') doesn't exist - check the",
+       " path (it needs to be reachable from wherever this script actually runs).")
+}
+old_sheets <- openxlsx::getSheetNames(OLD_WMED_WORKBOOK_PATH)
+if (!OLD_WMED_ESTIMATES_SHEET %in% old_sheets) {
+  stop("[05_validation.R] Sheet '", OLD_WMED_ESTIMATES_SHEET, "' not found in ", OLD_WMED_WORKBOOK_PATH,
+       " - sheets actually present: ", paste(old_sheets, collapse = ", "),
+       ". Set OLD_WMED_ESTIMATES_SHEET to the right one and re-run.")
+}
+old_raw <- as.data.table(openxlsx::read.xlsx(OLD_WMED_WORKBOOK_PATH, sheet = OLD_WMED_ESTIMATES_SHEET))
+message("[05_validation.R] Old workbook '", OLD_WMED_ESTIMATES_SHEET, "' sheet columns found: ",
+        paste(names(old_raw), collapse = ", "))
+
+old_col_aliases <- list(
+  group_num = c("Group_num", "FG_num", "Group", "No", "#", "Group number"),
+  group_name = c("Group name", "Group", "FG_name", "Name", "Functional group", "Functional Group"),
+  ## 2026-09-29: "Biomass (t/km^2)" (the whole-model-domain density, what
+  ## Ecopath_B is) now listed BEFORE "Biomass in habitat area (t/km^2)"
+  ## (biomass density only within the FG's own habitat patch - a
+  ## DIFFERENT, larger number whenever Hab area proportion < 1). Actual
+  ## WMed_EwE.xlsx "estimates" sheet has BOTH columns; the old alias
+  ## order picked "...in habitat area..." first purely because it was
+  ## listed first, which would have silently compared Ecopath_B against
+  ## the wrong old-sheet column for any FG with a habitat-area
+  ## restriction below 1. Domain-wide is the correct comparator.
+  biomass   = c("Biomass (t/km^2)", "Biomass (t/km2)", "Biomass", "B", "Biomass in habitat area (t/km^2)"),
+  pb        = c("Production / biomass (/year)", "P/B (/year)", "PB", "P/B", "Production/biomass"),
+  qb        = c("Consumption / biomass (/year)", "Q/B (/year)", "QB", "Q/B", "Consumption/biomass"),
+  landings  = c("Landings", "Landings (t/km2/year)", "Catch", "Catch (t/km2/year)", "Fishery Catch"),
+  discards  = c("Discards", "Discards (t/km2/year)", "Discard")
+)
+col_num  <- resolve_col(names(old_raw), old_col_aliases$group_num)
+col_name <- resolve_col(names(old_raw), old_col_aliases$group_name)
+if (is.na(col_name)) {
+  ## 2026-09-29: include the actual column names read from the file
+  ## directly in the error itself (not just what was tried) - self-
+  ## contained diagnosis without needing to scroll up to the earlier
+  ## message(). Also print each column name's raw character codes, since
+  ## the earlier real failure here turned out to be an invisible
+  ## character (e.g. a non-breaking space) in the header that looked
+  ## identical to "Group name" printed to the console.
+  stop("[05_validation.R] Could not find a group-name column in the old '", OLD_WMED_ESTIMATES_SHEET,
+       "' sheet (tried: ", paste(old_col_aliases$group_name, collapse = ", "), "). Columns actually found in",
+       " the file: ", paste(names(old_raw), collapse = " | "), ". If one of those looks like it should have",
+       " matched (e.g. \"Group name\"), it likely contains an invisible character (non-breaking space, etc.)",
+       " - run dput(names(old_raw)) on the old sheet to see it, or just add that exact string to",
+       " old_col_aliases$group_name above. Cannot match FGs without a name column.")
+}
+
+## 2026-09-29: the real WMed_EwE.xlsx "estimates" sheet mixes true numeric
+## cells with text cells typed using a European comma decimal (e.g. QB
+## "23,2"). Plain as.numeric() on a comma-decimal string returns NA, which
+## would have silently dropped every such cell from the comparison. This
+## converts "," to "." before parsing - a safe, unambiguous fix for text
+## cells. It does NOT and cannot fix a separate, more serious problem in
+## the same sheet (see the sanity check right after old_dt below): many
+## already-numeric cells in that file appear to have LOST their decimal
+## point entirely (e.g. a biomass of 322207 where the true value is very
+## likely 0.322207 - it prints as a plain integer in the file itself, so
+## there is no "," left to convert, and no safe way to know how many
+## places to shift it back without guessing).
+parse_num_eu <- function(x) suppressWarnings(as.numeric(gsub(",", ".", trimws(as.character(x)), fixed = TRUE)))
+
+old_dt <- data.table(
+  Old_FG_num  = if (!is.na(col_num)) suppressWarnings(as.integer(old_raw[[col_num]])) else NA_integer_,
+  Old_FG_name = as.character(old_raw[[col_name]])
+)
+for (metric in c("biomass", "pb", "qb", "landings", "discards")) {
+  col <- resolve_col(names(old_raw), old_col_aliases[[metric]])
+  old_dt[[metric]] <- if (!is.na(col)) parse_num_eu(old_raw[[col]]) else NA_real_
+  if (is.na(col)) message("[05_validation.R] Old sheet has no recognizable '", metric, "' column - that metric",
+                          " will be skipped in the comparison (tried: ", paste(old_col_aliases[[metric]], collapse = ", "), ").")
+}
+old_dt <- old_dt[!is.na(Old_FG_name) & trimws(Old_FG_name) != ""]
+old_dt[, norm_name := normalize_name(Old_FG_name)]
+
+## 2026-09-29: sanity check for the "lost decimal point" problem described
+## above - flag it loudly rather than let it silently blow up every ratio
+## in STEP A4. Heuristic: a metric column where most of the NUMERIC
+## (non-comma-text) values look implausibly large for that metric is very
+## likely affected. This does not touch the data, it only warns.
+suspect_numeric_corruption <- function(colvals, raw_colname, typical_max) {
+  v <- suppressWarnings(as.numeric(colvals))
+  v <- v[!is.na(v) & v != 0]
+  if (length(v) < 5) return(invisible(NULL))
+  frac_too_big <- mean(v > typical_max)
+  if (frac_too_big > 0.5) {
+    message("[05_validation.R] WARNING: old sheet column '", raw_colname, "' - ", round(100 * frac_too_big),
+            "% of its numeric values exceed a plausible upper bound (", typical_max, ") for this metric.",
+            " This looks like the known 'missing decimal point' issue in WMed_EwE.xlsx (values typed with a",
+            " comma decimal, e.g. 0,322207, that got stored as a whole number, e.g. 322207, somewhere upstream",
+            " of this file) rather than a real biology signal. NOT auto-corrected here - the true decimal",
+            " position isn't safely inferable per-cell. Recommend re-checking/re-exporting this column at the",
+            " source before trusting comparisons against it.")
+  }
+}
+if (!is.na(resolve_col(names(old_raw), old_col_aliases$biomass))) {
+  suspect_numeric_corruption(old_raw[[resolve_col(names(old_raw), old_col_aliases$biomass)]],
+                             resolve_col(names(old_raw), old_col_aliases$biomass), typical_max = 500)
+}
+if (!is.na(resolve_col(names(old_raw), old_col_aliases$pb))) {
+  suspect_numeric_corruption(old_raw[[resolve_col(names(old_raw), old_col_aliases$pb)]],
+                             resolve_col(names(old_raw), old_col_aliases$pb), typical_max = 20)
+}
 
 ## =================================================================
-## SECTION 4: Diet validation (FishBase/EcoBase) inside the diet block.
-## STUB - per Andrea (2026-09-24): "to rethink" - i.e. the APPROACH
-## itself (not just the data) still needs deciding: e.g. compare
-## 04_diets.R's fg_diet output diet-composition percentages against
-## EcoBase's own diet-matrix inputs for matching predator groups
-## (fetch_ecobase_literature_pb_qb()'s sibling function for diet
-## composition doesn't exist yet - would need building), and/or
-## against FishBase's own qualitative diet descriptions (much harder
-## to turn into a quantitative %diff). Deliberately not started until
-## Andrea decides which of these (or something else) is the right
-## comparison to build.
+## STEP A3: match old FG names to new FG_num/FG_name - exact
+## normalized match first, then a tight fuzzy match (base R agrep) for
+## whatever's left, then report anything still unmatched rather than
+## guessing.
 ## =================================================================
-message("\n[Diet validation] STUB - approach still to be decided (per Andrea, 2026-09-24: 'to rethink').",
-        " Candidates: 04_diets.R's fg_diet vs. EcoBase's own diet-matrix inputs (needs a new EcoBase diet",
-        " fetcher, not yet built); vs. FishBase's qualitative diet descriptions (harder to quantify).")
+new_fg_lookup <- unique(rbindlist(lapply(new_metrics, function(d) d[, .(FG_num, FG_name)])))
+new_fg_lookup <- unique(new_fg_lookup)
+new_fg_lookup[, norm_name := normalize_name(FG_name)]
+
+exact_match <- merge(old_dt, new_fg_lookup[, .(FG_num, FG_name, norm_name)], by = "norm_name", all.x = TRUE)
+still_unmatched <- exact_match[is.na(FG_num)]
+exact_match <- exact_match[!is.na(FG_num)]
+
+if (nrow(still_unmatched) > 0) {
+  fuzzy_rows <- lapply(seq_len(nrow(still_unmatched)), function(i) {
+    nm <- still_unmatched$norm_name[i]
+    hit_idx <- agrep(nm, new_fg_lookup$norm_name, max.distance = VALIDATION_FUZZY_MAX_DIST, ignore.case = TRUE)
+    if (length(hit_idx) == 0) return(NULL)
+    ## agrep can return more than one candidate - keep only the single
+    ## best (shortest edit distance isn't directly exposed by base
+    ## agrep, so ties are reported, not silently picked) to avoid a
+    ## many-to-one false match.
+    if (length(hit_idx) > 1) {
+      message("[05_validation.R] '", still_unmatched$Old_FG_name[i], "' fuzzy-matched MORE than one new FG (",
+              paste(new_fg_lookup$FG_name[hit_idx], collapse = " / "), ") - left UNMATCHED rather than guessing",
+              " which one is right.")
+      return(NULL)
+    }
+    cbind(still_unmatched[i], new_fg_lookup[hit_idx, .(FG_num, FG_name)])
+  })
+  fuzzy_matched <- rbindlist(fuzzy_rows[!vapply(fuzzy_rows, is.null, logical(1))], fill = TRUE)
+  if (nrow(fuzzy_matched) > 0) {
+    message("[05_validation.R] ", nrow(fuzzy_matched), " old FG name(s) matched a new FG only via fuzzy matching",
+            " (not an exact name match) - double-check these are really the same group:")
+    print(fuzzy_matched[, .(Old_FG_name, FG_name)])
+  }
+  still_unmatched <- still_unmatched[!Old_FG_name %in% fuzzy_matched$Old_FG_name]
+  matched_dt <- rbindlist(list(exact_match, fuzzy_matched), fill = TRUE)
+} else {
+  matched_dt <- exact_match
+}
+
+if (nrow(still_unmatched) > 0) {
+  fwrite(still_unmatched[, .(Old_FG_name)], file.path(csv_out_dir, "old_workbook_unmatched_fg_names_REVIEW.csv"))
+  message("[05_validation.R] ", nrow(still_unmatched), " old FG name(s) could not be matched to any new FG at all",
+          " (exact or fuzzy) - see old_workbook_unmatched_fg_names_REVIEW.csv. Common causes: the old model used",
+          " a different FG breakdown entirely (e.g. one combined group split into several new ones, or vice",
+          " versa), or a genuinely renamed group this fuzzy match is too conservative to catch.")
+}
 
 ## =================================================================
-## SECTION 5: sector split (industrial/artisanal) validation - SAU vs.
-## possibly a regional Catalan database.
-## STUB - Andrea's own note flags this as an open question ("maybe it
-## is worth it to get regional catalan database to validate regional
-## catches?"), not yet a decision. SAU's own Industrial/Artisanal/
-## Recreational sector proportions are already used as an INPUT in
-## 02_fisheries.R (not a validation source there) - using it again
-## here as its own validation check would be circular for whatever
-## cells 02_fisheries.R already took SAU's sector split FROM. A
-## genuinely independent regional Catalan fisheries database (if one
-## with a sector breakdown exists and covers the right species/years)
-## would be the real, non-circular check - not yet located/confirmed.
+## STEP A4: build the long comparison table and flag large deviations.
 ## =================================================================
-message("\n[Sector-split validation] STUB - SAU vs. SAU would be circular wherever 02_fisheries.R already used",
-        " SAU's own sector split as an input; a genuinely independent regional Catalan database is the right",
-        " check but hasn't been located/confirmed yet (per Andrea, 2026-09-24).")
+comparison_rows <- list()
+for (metric_name in names(new_metrics)) {
+  old_col <- switch(metric_name, Biomass = "biomass", Landings = "landings", Discards = "discards",
+                    PB = "pb", QB = "qb")
+  if (all(is.na(matched_dt[[old_col]]))) next  # old sheet had no usable column for this metric at all
+  new_dt <- new_metrics[[metric_name]]
+  cmp <- merge(matched_dt[, .(Old_FG_name, FG_num, FG_name, old_value = get(old_col))],
+               new_dt[, .(FG_num, new_value)], by = "FG_num", all.x = TRUE)
+  cmp[, metric := metric_name]
+  cmp[, ratio := new_value / old_value]
+  cmp[, flag := fcase(
+    is.na(old_value) & !is.na(new_value), "NEW value where old had none",
+    !is.na(old_value) & old_value > 0 & is.na(new_value), "OLD value now MISSING in the new pipeline",
+    !is.na(old_value) & old_value == 0 & !is.na(new_value) & new_value > 0, "Old was zero, new is nonzero",
+    !is.na(ratio) & is.finite(ratio) & (ratio > VALIDATION_RATIO_HIGH | ratio < VALIDATION_RATIO_LOW), "Large deviation - review",
+    default = "Within review range"
+  )]
+  comparison_rows[[metric_name]] <- cmp
+}
+comparison_dt <- rbindlist(comparison_rows, fill = TRUE)
+setcolorder(comparison_dt, c("FG_num", "FG_name", "Old_FG_name", "metric", "old_value", "new_value", "ratio", "flag"))
+setorder(comparison_dt, metric, -ratio, na.last = TRUE)
+fwrite(comparison_dt, file.path(csv_out_dir, "comparison_with_old_westmed_estimates_REVIEW.csv"))
+
+n_flagged <- comparison_dt[flag != "Within review range", .N]
+message("\n[05_validation.R] comparison_with_old_westmed_estimates_REVIEW.csv written: ", nrow(comparison_dt),
+        " FG x metric row(s), ", n_flagged, " flagged (ratio outside ", VALIDATION_RATIO_LOW, "-",
+        VALIDATION_RATIO_HIGH, "x, a value that appeared/disappeared, or a zero that became nonzero).",
+        " A flag here is a REVIEW PROMPT, not proof the new value is wrong - many of this session's own fixes",
+        " (real literature citations, the FG_spp architecture switch, temporal-baseline corrections) are",
+        " expected to move some FGs a long way from the old workbook's figure.")
+
+p_comparison <- tryCatch({
+  d <- comparison_dt[!is.na(old_value) & !is.na(new_value) & old_value > 0 & new_value > 0]
+  if (nrow(d) == 0) stop("no FG x metric row has both a real old and new value to plot")
+  ggplot(d, aes(x = old_value, y = new_value, color = flag)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_point(alpha = 0.7) +
+    scale_x_log10() + scale_y_log10() +
+    facet_wrap(~metric, scales = "free") +
+    scale_color_manual(values = c("Within review range" = "grey30", "Large deviation - review" = "firebrick",
+                                  "Old was zero, new is nonzero" = "darkorange")) +
+    labs(title = "New pipeline vs. old West Med 'estimates' sheet",
+         subtitle = "Dashed line = perfect agreement (log-log axes) - points far from it are flagged, not necessarily wrong",
+         x = "Old workbook value", y = "New pipeline value", color = NULL) +
+    theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R] comparison plot skipped - ", conditionMessage(e)); NULL })
+if (!is.null(p_comparison)) {
+  ggsave(file.path(plot_dir, "comparison_with_old_westmed_estimates.png"), p_comparison,
+         width = 10, height = 8, dpi = 150, bg = "white", limitsize = FALSE)
+  message("[05_validation.R] Saved: comparison_with_old_westmed_estimates.png (in ", plot_dir, ")")
+}
 
 ## =================================================================
-## SECTION 6: RLS (Reef Life Survey) visual census, 2015 only.
-## STUB - Andrea's own note: qualitative only, single year (2015), so
-## this can only ever be a "does the model's relative FG ranking/
-## presence agree with what RLS actually observed that one year"
-## sanity check, never a quantitative biomass %diff like SECTION 2.
-## RLS's own public data portal (https://reeflifesurvey.com/data/) is
-## the real source once/if a West Med RLS transect subset is confirmed
-## to exist - not yet checked this session.
+## STEP B: consolidate every plausibility/validation REVIEW csv this
+## pipeline's other scripts already write, into one summary table -
+## purely a convenience index (reads existing files, writes nothing
+## new to any of them). File names/locations below reflect this
+## session's own additions (03/04_diets.R plausibility + diet-sum
+## checks; 01_biomass.R's EcoBase-fallback rejection and temporal-
+## mismatch flags) plus the pre-existing ones documented in
+## pipeline_code_review_and_validation_findings.md /
+## ewe_user_guide_compliance_review_2026-09-28.md. Any file not found
+## yet (script hasn't run, or an older pipeline version) is listed as
+## "not found" rather than causing an error - this index degrades
+## gracefully the same way every other cross-script read in this
+## pipeline does.
 ## =================================================================
-message("\n[RLS validation] STUB - qualitative-only by nature (2015, single year) - would compare presence/",
-        "relative-abundance RANKING against the model's FGs, not a biomass %diff. RLS data portal:",
-        " https://reeflifesurvey.com/data/ - not yet checked whether it has a usable West Med subset.")
+known_review_files <- list(
+  list(name = "PB/QB/GE plausibility (impossible or out-of-range)", dir = "pbqb-traits", file = "plausibility_flag_REVIEW.csv"),
+  list(name = "P/Q ratio outside typical 0.05-0.3 range",           dir = "pbqb-traits", file = "PQ_ratio_by_fg_REVIEW.csv"),
+  list(name = "Diet matrix predator column doesn't sum to 1",       dir = "diet",        file = "diet_matrix_column_sum_REVIEW.csv"),
+  list(name = "Diet matrix cannibalism fraction > 0.1",             dir = "diet",        file = "diet_cannibalism_REVIEW.csv"),
+  list(name = "Diet composition still missing after all fallbacks", dir = "diet",        file = "diet_still_missing_REVIEW.csv"),
+  list(name = "EcoBase biomass fallback REJECTED as implausible",   dir = "biomass",     file = "ecobase_fallback_implausible_REJECTED_REVIEW.csv"),
+  list(name = "EcoBase biomass fallback ACCEPTED (auto-draft, still review)", dir = "biomass", file = "fg_missing_biomass_ecobase_fallback_REVIEW.csv"),
+  list(name = "FG(s) with no Ecopath_B biomass at all",             dir = "biomass",     file = "fg_missing_ecopath_B_REVIEW.csv"),
+  list(name = "FG species-level split still on an even-split guess", dir = "biomass",    file = "fg_species_biomass_needs_review.csv"),
+  list(name = "ICCAT stock-assessment temporal-baseline mismatch",  dir = "biomass",     file = "stock_assessment_temporal_mismatch_REVIEW.csv"),
+  list(name = "Primary producer temporal-trend note (Posidonia/gorgonians)", dir = "biomass", file = "primary_producer_temporal_trend_REVIEW.csv"),
+  list(name = "Generic Collection_year temporal mismatch (any manual-cited CSV)", dir = "biomass", file = "temporal_mismatch_REVIEW_Marine megafauna biomass.csv"),
+  list(name = "Fleet-level landings coverage (named-country share of total)", dir = "fisheries", file = "ecopath_L_fg_coverage_check.csv"),
+  list(name = "Zero-catch FG diagnostic",                          dir = "fisheries",   file = "fg_zero_catch_diagnostic.csv"),
+  list(name = "Old-workbook FG names that couldn't be matched",     dir = "validation",  file = "old_workbook_unmatched_fg_names_REVIEW.csv")
+)
+summary_rows <- lapply(known_review_files, function(spec) {
+  path <- file.path(out_dir, spec$dir, spec$file)
+  if (!file.exists(path)) {
+    return(data.table(check = spec$name, file = path, status = "not found (script hasn't run, or nothing to flag)", n_rows = NA_integer_))
+  }
+  n <- tryCatch(nrow(fread(path)), error = function(e) NA_integer_)
+  data.table(check = spec$name, file = path,
+             status = if (is.na(n)) "found but unreadable" else if (n == 0) "found, 0 rows (clean)" else paste0("found, ", n, " row(s) flagged"),
+             n_rows = n)
+})
+validation_summary <- rbindlist(summary_rows)
+fwrite(validation_summary, file.path(csv_out_dir, "validation_summary_ALL.csv"))
+message("\n[05_validation.R] STEP B - validation_summary_ALL.csv written (", nrow(validation_summary),
+        " known checks indexed). Console summary:")
+print(validation_summary[, .(check, status)])
 
-message("\n[05_validation.R] Done. Outputs in ", VALIDATION_DIR, ".")
+## =================================================================
+## STEP C: a compilation of plots, one per validation check - per
+## Andrea, 2026-09-29: "the validation code should be a compilation of
+## plots to check these validations." STEP B above already indexes every
+## REVIEW csv as a row count, which is fast to scan but doesn't show
+## WHERE the problem is or how bad it is - a plot does that at a glance.
+## Every check below reads a file STEP B already listed (nothing new is
+## computed here), builds the most informative plot that file's own
+## columns support, and - together with the standalone validation PNGs
+## 01-04_*.R already produce - all of it gets compiled into ONE PDF,
+## `validation_plots_ALL.pdf`, so there's a single file to page through
+## instead of opening every script's own plot folder in turn. Each
+## check degrades independently (tryCatch, same convention as every
+## other plot in this pipeline) - one broken/missing check never blocks
+## the rest, and only checks that actually produced a plot make it into
+## the final PDF.
+## =================================================================
+validation_plots <- list()
+
+## --- helper: a simple "list of names" page for a check whose CSV has ---
+## --- no natural numeric axis to plot (e.g. a bare list of unmatched ----
+## --- FG names) - still a page in the compiled PDF, not a silent gap. ---
+plot_text_list <- function(lines, title, subtitle = NULL, max_lines = 45) {
+  if (length(lines) == 0) return(NULL)
+  shown <- if (length(lines) > max_lines) c(lines[seq_len(max_lines)], paste0("... and ", length(lines) - max_lines, " more (see the REVIEW csv)")) else lines
+  ggplot() +
+    annotate("text", x = 0, y = rev(seq_along(shown)), label = shown, hjust = 0, size = 3.1, family = "mono") +
+    xlim(0, 1) + ylim(0, length(shown) + 1) +
+    labs(title = title, subtitle = subtitle) +
+    theme_void(base_size = 10) +
+    theme(plot.title = element_text(hjust = 0, face = "bold"), plot.subtitle = element_text(hjust = 0, size = 8, colour = "grey40"))
+}
+
+## 1) PB/QB plausibility - richer than the pre-existing PQ_ratio_by_fg.png
+## (that one only ever covered QB_FG > 0 rows; this reads the newer
+## plausibility_flag_REVIEW.csv, which also covers the genuinely
+## IMPOSSIBLE cases - QB_FG <= PB_FG, or either <= 0 - that the older
+## plot silently excluded).
+validation_plots[["02_pbqb_plausibility"]] <- tryCatch({
+  p <- fread(file.path(out_dir, "pbqb-traits", "plausibility_flag_REVIEW.csv"))
+  d <- p[!is.na(PB_FG) & !is.na(QB_FG) & PB_FG > 0 & QB_FG > 0]
+  if (nrow(d) == 0) stop("no FG has both a positive PB_FG and QB_FG to plot")
+  ggplot(d, aes(x = PB_FG, y = QB_FG, color = plausibility_flag)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +           # QB = PB (P/Q = 1, the impossible boundary)
+    geom_abline(slope = 1/0.05, intercept = 0, linetype = "dotted", colour = "grey70") +      # P/Q = 0.05 (bottom of typical band)
+    geom_abline(slope = 1/0.3, intercept = 0, linetype = "dotted", colour = "grey70") +       # P/Q = 0.3 (top of typical band)
+    geom_point(size = 2, alpha = 0.8) +
+    scale_x_log10() + scale_y_log10() +
+    scale_color_manual(values = c("Plausible" = "grey30", "Outside typical 0.05-0.3 P/Q range - review" = "darkorange",
+                                  "IMPOSSIBLE (PB_FG <= 0)" = "firebrick", "IMPOSSIBLE (QB_FG <= 0)" = "firebrick",
+                                  "IMPOSSIBLE (QB_FG <= PB_FG, i.e. P/Q >= 1 - a group cannot out-produce what it eats)" = "firebrick")) +
+    labs(title = "PB/QB plausibility by functional group", subtitle = "Dashed = QB=PB (impossible boundary); dotted = typical 0.05-0.3 P/Q band",
+         x = "PB_FG (log scale)", y = "QB_FG (log scale)", color = NULL) +
+    theme_minimal(base_size = 9) + theme(legend.position = "bottom", legend.text = element_text(size = 6))
+}, error = function(e) { message("[05_validation.R plot] PB/QB plausibility skipped - ", conditionMessage(e)); NULL })
+
+## 2) Diet matrix column sum (should be 1 for every predator FG).
+validation_plots[["03_diet_column_sum"]] <- tryCatch({
+  d <- fread(file.path(out_dir, "diet", "diet_matrix_column_sum_REVIEW.csv"))
+  if (nrow(d) == 0) stop("no predator FG flagged")
+  d <- d[order(total)]
+  d[, predator_fg := factor(predator_fg, levels = predator_fg)]
+  ggplot(d, aes(x = total, y = predator_fg)) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+    geom_point(size = 2, colour = "firebrick") +
+    labs(title = "Diet matrix columns NOT summing to 1", subtitle = "Every predator FG's diet column should sum to 1 (EwE's own 'Sum to one' convention) - dashed line = 1",
+         x = "Column sum", y = NULL) +
+    theme_minimal(base_size = 9)
+}, error = function(e) { message("[05_validation.R plot] diet column sum skipped - ", conditionMessage(e)); NULL })
+
+## 3) Diet cannibalism (self-prey fraction should stay under ~0.1).
+validation_plots[["04_diet_cannibalism"]] <- tryCatch({
+  d <- fread(file.path(out_dir, "diet", "diet_cannibalism_REVIEW.csv"))
+  if (nrow(d) == 0) stop("no FG flagged")
+  d <- d[order(weight)]
+  d[, predator_fg := factor(predator_fg, levels = predator_fg)]
+  ggplot(d, aes(x = weight, y = predator_fg)) +
+    geom_vline(xintercept = 0.1, linetype = "dashed", colour = "grey50") +
+    geom_col(fill = "firebrick", width = 0.6) +
+    labs(title = "Cannibalism (self-prey) fraction above the ~0.1 guideline", subtitle = "EwE User Guide: avoid a group's own diet fraction of itself going much above 0.1",
+         x = "Self-prey fraction of diet", y = NULL) +
+    theme_minimal(base_size = 9)
+}, error = function(e) { message("[05_validation.R plot] diet cannibalism skipped - ", conditionMessage(e)); NULL })
+
+## 4) EcoBase biomass-fallback candidates - accepted vs. rejected as
+## implausible (>8x the highest already-seen non-fallback density),
+## side by side so the rejected ones' scale relative to the accepted
+## ones is visible at a glance.
+validation_plots[["05_ecobase_fallback_plausibility"]] <- tryCatch({
+  acc_path <- file.path(out_dir, "biomass", "fg_missing_biomass_ecobase_fallback_REVIEW.csv")
+  rej_path <- file.path(out_dir, "biomass", "ecobase_fallback_implausible_REJECTED_REVIEW.csv")
+  acc <- if (file.exists(acc_path)) fread(acc_path)[, .(FG_num, Biomass_t_km2, status = "Accepted")] else NULL
+  rej <- if (file.exists(rej_path)) fread(rej_path)[, .(FG_num, Biomass_t_km2, status = "REJECTED (implausible)")] else NULL
+  d <- rbindlist(list(acc, rej), fill = TRUE)
+  if (is.null(d) || nrow(d) == 0) stop("no EcoBase fallback candidates in either file")
+  d[, FG_num := factor(FG_num, levels = FG_num[order(Biomass_t_km2)])]
+  ggplot(d, aes(x = Biomass_t_km2, y = FG_num, colour = status)) +
+    geom_point(size = 2) +
+    scale_x_log10() +
+    scale_color_manual(values = c("Accepted" = "grey30", "REJECTED (implausible)" = "firebrick")) +
+    labs(title = "EcoBase last-resort biomass fallback: accepted vs. rejected", subtitle = "Rejected = more than 8x the highest density already seen among this model's own non-fallback FGs",
+         x = "Candidate Biomass_t_km2 (log scale)", y = "FG_num", color = NULL) +
+    theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R plot] EcoBase fallback plausibility skipped - ", conditionMessage(e)); NULL })
+
+## 5) How much of each FG's total biomass rides on an even-split
+## (no real per-species measurement) species-level assumption.
+validation_plots[["06_species_even_split_biomass_at_risk"]] <- tryCatch({
+  d <- fread(file.path(out_dir, "biomass", "fg_species_biomass_needs_review.csv"))
+  if (nrow(d) == 0) stop("no FG on an even split")
+  d <- d[order(-FG_total_Biomass_t_km2)][seq_len(min(.N, 20))]
+  d[, FG_label := paste0(FG_num, " - ", FG_name)]
+  d[, FG_label := factor(FG_label, levels = rev(FG_label))]
+  ggplot(d, aes(x = FG_total_Biomass_t_km2, y = FG_label, fill = n_species)) +
+    geom_col() +
+    scale_fill_gradient(low = "grey70", high = "firebrick") +
+    labs(title = "FG biomass riding on an even-split species assumption (top 20 by biomass)",
+         subtitle = "No real per-species density/literature measurement exists for these species within their FG",
+         x = "FG total Biomass_t_km2", y = NULL, fill = "n species") +
+    theme_minimal(base_size = 9)
+}, error = function(e) { message("[05_validation.R plot] species even-split skipped - ", conditionMessage(e)); NULL })
+
+## 6) Temporal-baseline mismatches (any manual-cited CSV with a
+## Collection_year column differing from the Ecopath target Year) -
+## every temporal_mismatch_REVIEW_*.csv this run produced, combined.
+validation_plots[["07_temporal_mismatch"]] <- tryCatch({
+  files <- Sys.glob(file.path(out_dir, "biomass", "temporal_mismatch_REVIEW_*.csv"))
+  if (length(files) == 0) stop("no temporal_mismatch_REVIEW_*.csv files found")
+  d <- rbindlist(lapply(files, function(f) { x <- fread(f); x[, source_file := basename(f)]; x }), fill = TRUE)
+  if (nrow(d) == 0) stop("all temporal_mismatch_REVIEW_*.csv files were empty")
+  d[, label := paste0(Group, " (", source_file, ")")]
+  d <- d[order(-abs(gap_years))][seq_len(min(.N, 25))]
+  d[, label := factor(label, levels = rev(label))]
+  ggplot(d, aes(x = gap_years, y = label, fill = source_file)) +
+    geom_col() +
+    geom_vline(xintercept = 0, colour = "grey50") +
+    labs(title = "Temporal-baseline mismatch: how far each measurement is from the Ecopath target year",
+         subtitle = "Positive = measured AFTER the Ecopath baseline year; flagged, not numerically corrected",
+         x = "Gap (years)", y = NULL, fill = "Source file") +
+    theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R plot] temporal mismatch skipped - ", conditionMessage(e)); NULL })
+
+## 7) Fleet-level landings coverage - which FGs get most of their
+## landings from the "Other GFCM countries - Unclassified" residual
+## rather than a named 6-country fleet.
+validation_plots[["08_fleet_coverage"]] <- tryCatch({
+  d <- fread(file.path(out_dir, "fisheries", "ecopath_L_fg_coverage_check.csv"))
+  d <- d[Landings_t_broad > 0][order(named_fleet_share)][seq_len(min(.N, 25))]
+  if (nrow(d) == 0) stop("no FG with nonzero landings")
+  d[, FG_label := paste0(FG_num, " - ", FG_name)]
+  d[, FG_label := factor(FG_label, levels = rev(FG_label))]
+  ggplot(d, aes(x = named_fleet_share, y = FG_label, fill = mostly_other_countries)) +
+    geom_col() +
+    geom_vline(xintercept = 0.5, linetype = "dashed", colour = "grey50") +
+    scale_fill_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey30")) +
+    labs(title = "Named 6-country fleet share of total landings (25 lowest-coverage FGs)",
+         subtitle = "The rest sits in Ecopath_L/Di's 'Other GFCM countries - Unclassified' column, not lost - just coarser fleet/gear detail",
+         x = "Named-fleet share", y = NULL, fill = "< 50% named") +
+    theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R plot] fleet coverage skipped - ", conditionMessage(e)); NULL })
+
+## 8) FG(s) with no Ecopath_B biomass at all, and old-workbook FG names
+## that couldn't be matched - simple text-list pages (no numeric axis to
+## plot, but still a page, not a silent gap).
+validation_plots[["09_fg_missing_ecopath_b"]] <- tryCatch({
+  d <- fread(file.path(out_dir, "biomass", "fg_missing_ecopath_B_REVIEW.csv"))
+  if (nrow(d) == 0) stop("no FG missing Ecopath_B")
+  plot_text_list(paste0(d$FG_num, " - ", d$FG_name), "FG(s) with NO Ecopath_B biomass at all",
+                 "Every biomass source (survey, stock assessment, EcoBase, manual-cited literature) came back empty for these")
+}, error = function(e) { message("[05_validation.R plot] fg_missing_ecopath_B skipped - ", conditionMessage(e)); NULL })
+
+validation_plots[["10_old_workbook_unmatched_names"]] <- tryCatch({
+  path <- file.path(csv_out_dir, "old_workbook_unmatched_fg_names_REVIEW.csv")
+  d <- fread(path)
+  if (nrow(d) == 0) stop("every old FG name matched")
+  plot_text_list(d$Old_FG_name, "Old-workbook FG names that couldn't be matched to any new FG",
+                 "Neither an exact nor a fuzzy name match - check for a renamed or split/merged group")
+}, error = function(e) { message("[05_validation.R plot] old-workbook unmatched names skipped - ", conditionMessage(e)); NULL })
+
+validation_plots <- c(list("01_old_vs_new_comparison" = p_comparison), validation_plots)
+validation_plots <- validation_plots[!sapply(validation_plots, is.null)]
+
+## --- embed the standalone validation PNGs the other four scripts ------
+## --- already produce, so the compiled PDF really is "everything in ----
+## --- one place" rather than just this script's own new checks. --------
+existing_pngs <- c(
+  file.path(out_dir, "plots", "validation", "PQ_ratio_by_fg.png"),
+  file.path(out_dir, "plots", "validation", "fg_pb_qb_scatter.png"),
+  file.path(out_dir, "plots", "validation", "F_by_fg.png"),
+  file.path(out_dir, "plots", "validation", "biomass_by_fg_source.png"),
+  file.path(out_dir, "plots", "diets", "diet_matrix_heatmap.png")
+)
+embedded_png_pages <- list()
+for (png_path in existing_pngs) {
+  if (!file.exists(png_path)) next
+  embedded_png_pages[[basename(png_path)]] <- tryCatch({
+    img <- png::readPNG(png_path)
+    ggplot() + annotation_raster(img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+      xlim(0, 1) + ylim(0, 1) +
+      labs(caption = paste0("(already produced by an earlier pipeline script: ", basename(png_path), ")")) +
+      theme_void() + theme(plot.caption = element_text(size = 7, colour = "grey50"))
+  }, error = function(e) { message("[05_validation.R plot] could not embed ", png_path, " - ", conditionMessage(e)); NULL })
+}
+embedded_png_pages <- embedded_png_pages[!sapply(embedded_png_pages, is.null)]
+if (length(embedded_png_pages) > 0) {
+  message("[05_validation.R] Embedding ", length(embedded_png_pages), " already-existing validation PNG(s) from",
+          " earlier pipeline scripts into the compiled PDF too: ", paste(names(embedded_png_pages), collapse = ", "), ".")
+}
+validation_plots <- c(validation_plots, embedded_png_pages)
+
+VALIDATION_PLOTS_PDF <- file.path(plot_dir, "validation_plots_ALL.pdf")
+if (length(validation_plots) == 0) {
+  message("\n[05_validation.R] STEP C - no validation plot could be built (every source REVIEW csv was either",
+          " missing or empty) - nothing written to ", VALIDATION_PLOTS_PDF, ".")
+} else {
+  pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)   # same open-loop-close PDF pattern 02_fisheries.R's own validation_plots list uses
+  for (p in validation_plots) print(p)
+  dev.off()
+  for (nm in names(validation_plots)) {
+    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = 7, dpi = 150, bg = "white", limitsize = FALSE),
+             error = function(e) NULL)
+  }
+  message("\n[05_validation.R] STEP C - ", length(validation_plots), " page(s) written to '", VALIDATION_PLOTS_PDF,
+          "' (one PDF, every check this script could build a plot for, plus the standalone validation PNGs already",
+          " produced by 01-04_*.R) and as individual PNGs under '", plot_dir, "'. A check missing from this PDF",
+          " either had nothing to flag (clean) or its source REVIEW csv doesn't exist yet - see the message above",
+          " naming which one and why, and validation_summary_ALL.csv for the full checklist either way.")
+}
+
+message("\n[05_validation.R] Done. Three files to look at first: ",
+        "validation_plots_ALL.pdf (a compiled page per check - start here), ",
+        "comparison_with_old_westmed_estimates_REVIEW.csv (old vs. new, by FG), and ",
+        "validation_summary_ALL.csv (a plain-text index of every check, in one place).")
