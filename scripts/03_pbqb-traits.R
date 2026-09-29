@@ -403,6 +403,11 @@ if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 BIOMASS_CSV_DIR   <- file.path(out_dir, "biomass")
 FISHERIES_CSV_DIR <- file.path(out_dir, "fisheries")
 
+## 2026-09-29: no longer read for species_df's Biomass (see the
+## species_df build below) - Biomass now comes straight from
+## BIOMASS_PROPORTION_CSV instead of being re-derived from this raw,
+## multi-year, per-observation table. Left defined only in case some
+## other block still wants raw survey density directly.
 SURVEY_DENSITY_CSV <- file.path(BIOMASS_CSV_DIR, "species_density_regional_combined.csv")
 
 ## Same shared workbook 01_biomass.R and 02_fao_catches.R
@@ -479,96 +484,77 @@ if (SPECIES_DF_SOURCE == "survey") {
           " (", uniqueN(fg_species_universe$FG), " distinct FG(s)) - this, not the survey, now defines which",
           " species enter species_df.")
   
-  ## --- Real survey density, where it exists (same source as before,
-  ## just no longer what DEFINES the species list - merged onto the
-  ## universe above by Species alone, trusting FG_REFERENCE_CSV_PATH's
-  ## own FG assignment rather than the survey table's) ------------------
-  survey_biomass <- data.table(Species = character(), Biomass_survey = numeric())
-  if (file.exists(SURVEY_DENSITY_CSV)) {
-    sp_density <- fread(SURVEY_DENSITY_CSV)
-    required_cols <- c("Year", "FG_num", "FG_name", "ScientificName", "mean_density")
-    missing_cols <- setdiff(required_cols, names(sp_density))
-    if (length(missing_cols) > 0) {
-      stop("species_density_regional_combined.csv is missing expected column(s): ", paste(missing_cols, collapse = ", "),
-           " - check it wasn't regenerated with a different schema.")
-    }
-    in_range <- sp_density[Year %in% YEAR_ECOPATH]
-    message("Loaded ", nrow(sp_density), " species/FG/year rows from ", SURVEY_DENSITY_CSV, "; ", nrow(in_range),
-            " within YEAR_ECOPATH (", paste(range(YEAR_ECOPATH), collapse = "-"), ").")
-    
-    dup_fg <- unique(in_range[, .(ScientificName, FG_num)])[, .N, by = ScientificName][N > 1, ScientificName]
-    if (length(dup_fg) > 0) {
-      message("NOTE: ", length(dup_fg), " species have more than one FG_num within species_density_regional_combined.csv's",
-              " own YEAR_ECOPATH rows - their survey density is still averaged in below, but FG_REFERENCE_CSV_PATH's",
-              " own FG assignment (not the survey's) is what's actually used for these species: ", paste(dup_fg, collapse = ", "))
-    }
-    survey_biomass <- in_range[, .(Biomass_survey = mean(mean_density, na.rm = TRUE)), by = .(Species = ScientificName)]
-    message("Real survey-observed density available for ", nrow(survey_biomass), " species (YEAR_ECOPATH average).")
-  } else {
-    message(SURVEY_DENSITY_CSV, " not found - every species in the FG universe will fall back to its FG's own",
-            " density (see below). Run 01_biomass.R first for real survey-observed species-level values.")
+  ## --- Biomass: read straight from FG_spp / biomass_proportion_by_
+  ## species_fg.csv, NOT re-derived from the raw multi-year survey table.
+  ##
+  ## 2026-09-29 fix, per Andrea: "I prefer to use the FG_spp if that
+  ## [is] the proportion of species of ecopath biomass" (in response to
+  ## the question this script's old approach raised: why re-read
+  ## species_density_regional_combined.csv and immediately filter it to
+  ## YEAR_ECOPATH, when 01_biomass.R's FG_spp_Ecopath/
+  ## biomass_proportion_by_species_fg.csv already does exactly that same
+  ## filtering AND folds in every fix this session made (the FG/Species
+  ## dedup-collision fix, the even-split/literature-weighted overrides
+  ## for cetaceans, the Biomass_t_km2 reconciliation against Ecopath_B).
+  ##
+  ## The old approach had a real bug hiding in it, too: it merged raw
+  ## species-level density (mean_density, possibly a real numeric 0 for
+  ## an FG the survey doesn't sample representatively - e.g. cetaceans/
+  ## seabirds) onto species_df as Biomass_survey, then only fell back to
+  ## the FG-level split when Biomass_survey was NA. A density of 0 is
+  ## NOT NA, so `!is.na(Biomass_survey)` was TRUE for those species and
+  ## they got Biomass = 0 here regardless of what FG_spp/Ecopath_B said
+  ## - silently discarding this session's megafauna-weighting fixes
+  ## before they ever reached PB/QB. Reading Biomass_t_km2 straight from
+  ## biomass_proportion_by_species_fg.csv sidesteps that entirely: it is
+  ## already the reconciled species-level number (prop_sp_fg x that FG's
+  ## real Ecopath_B Biomass), for every species in every FG, whatever the
+  ## FG's own biomass source (MEDITS/MEDIAS survey, stock assessment,
+  ## EcoBase, marine-megafauna/primary-producer literature).
+  if (!file.exists(BIOMASS_PROPORTION_CSV)) {
+    stop("BIOMASS_PROPORTION_CSV ('", BIOMASS_PROPORTION_CSV, "') not found - run 01_biomass.R against this",
+         " workbook first. species_df's Biomass now comes from this file (FG_spp's reconciled species-level",
+         " biomass), not from re-deriving it here.")
   }
-  
-  ## --- FG-level density fallback, for species the survey never observed
-  ## (now includes stock-assessment/megafauna-only FGs, per 01_biomass.R's
-  ## matching 2026-09-24 fix - previously this table had no row at all
-  ## for those FGs) --------------------------------------------------------
-  fg_biomass <- data.table(FG = integer(), Biomass_fg = numeric())
-  if (file.exists(FG_INDEX_COMBINED_CSV)) {
-    fg_idx <- fread(FG_INDEX_COMBINED_CSV)
-    fg_biomass <- fg_idx[Year %in% YEAR_ECOPATH, .(Biomass_fg = mean(mean_density, na.rm = TRUE)), by = .(FG = FG_num)]
-    message("Loaded FG-level density (fallback for species with no direct survey observation) for ", nrow(fg_biomass),
-            " FG(s), YEAR_ECOPATH average, from ", FG_INDEX_COMBINED_CSV, ".")
-  } else {
-    message(FG_INDEX_COMBINED_CSV, " not found - species with no direct survey observation will have NA Biomass",
-            " (no FG-level density to fall back to either). Run 01_biomass.R first.")
+  bp <- fread(BIOMASS_PROPORTION_CSV)
+  required_bp_cols <- c("FG_num", "Species", "prop_sp_fg", "prop_sp_fg_basis", "Biomass_t_km2")
+  missing_bp_cols <- setdiff(required_bp_cols, names(bp))
+  if (length(missing_bp_cols) > 0) {
+    stop("biomass_proportion_by_species_fg.csv is missing expected column(s): ", paste(missing_bp_cols, collapse = ", "),
+         " - check it wasn't regenerated with an older/different schema (re-run 01_biomass.R with the",
+         " current lib_survey_fg_density_functions.R).")
   }
+  species_biomass <- unique(bp[, .(Species, FG = as.integer(FG_num), Biomass = Biomass_t_km2,
+                                   Biomass_source = prop_sp_fg_basis)])
+  message("Loaded ", nrow(species_biomass), " species/FG biomass row(s) from ", BIOMASS_PROPORTION_CSV,
+          " (01_biomass.R's FG_spp - already YEAR_ECOPATH-filtered and reconciled to Ecopath_B).")
   
-  ## --- Per-species share of its FG's biomass, where known - same file
-  ## 04_diets.R already reads for the identical purpose. Falls back to an
-  ## equal split among whichever OTHER species in that FG also need this
-  ## same fallback (not among every species in the FG - a species with
-  ## real survey density already has its own Biomass_survey and isn't
-  ## touched by this split at all).
-  species_share <- data.table(Species = character(), prop_sp_fg = numeric())
-  if (file.exists(BIOMASS_PROPORTION_CSV)) {
-    bp <- fread(BIOMASS_PROPORTION_CSV)
-    if (all(c("Species", "prop_sp_fg") %in% names(bp))) {
-      species_share <- unique(bp[, .(Species, prop_sp_fg)])
-    }
-  }
-  
-  species_df <- merge(fg_species_universe, survey_biomass, by = "Species", all.x = TRUE)
-  species_df <- merge(species_df, fg_biomass, by = "FG", all.x = TRUE)
-  species_df <- merge(species_df, species_share, by = "Species", all.x = TRUE)
-  
-  needs_fallback <- is.na(species_df$Biomass_survey)
-  species_df[needs_fallback & is.na(prop_sp_fg), n_needing_fallback_in_fg := .N, by = FG]
-  species_df[needs_fallback & is.na(prop_sp_fg), prop_sp_fg := 1 / n_needing_fallback_in_fg]
-  species_df[, n_needing_fallback_in_fg := NULL]
-  
-  species_df[, Biomass := fifelse(!is.na(Biomass_survey), Biomass_survey, Biomass_fg * prop_sp_fg)]
-  species_df[, Biomass_source := fifelse(!is.na(Biomass_survey), "survey (MEDITS/MEDIAS, species-level)",
-                                         fifelse(!is.na(Biomass_fg), "FG-level density split by biomass share (stock assessment/megafauna/survey FG total)", NA_character_))]
+  species_df <- merge(fg_species_universe, species_biomass, by = c("Species", "FG"), all.x = TRUE)
   species_df[, Yield := NA_real_]
   species_df <- species_df[, .(Species, FG, FG_name, Biomass, Biomass_source, Yield)]
   
   n_no_biomass <- species_df[is.na(Biomass), .N]
   if (n_no_biomass > 0) {
-    message("WARNING: ", n_no_biomass, " species in FG_WMed_2026.csv have NO Biomass at all (no survey observation",
-            " AND no FG-level density to fall back to) - excluded from PB/QB weighting downstream since there's",
-            " nothing to weight by. Affected:")
+    message("WARNING: ", n_no_biomass, " species in FG_WMed_2026.csv have NO Biomass at all (not present in",
+            " biomass_proportion_by_species_fg.csv for their FG - check that FG_WMed_2026.csv and",
+            " 01_biomass.R's own species/FG catalog agree) - excluded from PB/QB weighting downstream",
+            " since there's nothing to weight by. Affected:")
     print(species_df[is.na(Biomass), .(Species, FG, FG_name)])
   }
   
-  n_from_fg_fallback <- species_df[!is.na(Biomass_source) & Biomass_source %like% "FG-level", .N]
-  message("\nBuilt species_df: ", nrow(species_df), " species x FG rows from FG_WMed_2026.csv (",
-          nrow(species_df[!is.na(Biomass_source) & Biomass_source %like% "survey"]), " with real species-level",
-          " survey density, ", n_from_fg_fallback, " filled from their FG's own density - this is what now lets",
-          " bluefin tuna/swordfish/megafauna species reach calc_fish()/calc_mammal()/calc_seabird() at all,",
-          " instead of never entering species_df in the first place). Yield is NA for all rows (no catch/",
-          " landings data in this survey pipeline - F = Yield/Biomass will not be computable downstream unless",
-          " you fill this in separately from landings data, in matching t/km^2/year units).")
+  n_even_split <- species_df[!is.na(Biomass_source) & grepl("^even split", Biomass_source), .N]
+  n_density_weighted <- species_df[!is.na(Biomass_source) & grepl("^density-weighted", Biomass_source), .N]
+  n_single_species <- species_df[!is.na(Biomass_source) & grepl("^single species", Biomass_source), .N]
+  n_override <- species_df[!is.na(Biomass_source) & !grepl("^even split|^density-weighted|^single species", Biomass_source), .N]
+  message("\nBuilt species_df: ", nrow(species_df), " species x FG rows from FG_WMed_2026.csv, Biomass sourced from",
+          " FG_spp (", n_density_weighted, " real MEDITS/MEDIAS density-weighted, ", n_single_species,
+          " single species in FG, ", n_override, " documented literature/relative-abundance override, ",
+          n_even_split, " still on the even-split fallback - see fg_species_biomass_needs_review.csv from",
+          " 01_biomass.R for that list). This is what lets bluefin tuna/swordfish/megafauna species reach",
+          " calc_fish()/calc_mammal()/calc_seabird() at all, and now also lets this session's cetacean/",
+          " seabird weighting fixes actually reach PB/QB instead of stopping at FG_spp. Yield is NA for all",
+          " rows (no catch/landings data in this survey pipeline - F = Yield/Biomass will not be computable",
+          " downstream unless you fill this in separately from landings data, in matching t/km^2/year units).")
   
   survey_species_df_rds_path <- file.path(out_dir, "survey_species_df.rds")
   saveRDS(species_df, survey_species_df_rds_path)
@@ -3099,6 +3085,24 @@ ecobase_sheet_dt <- build_ecobase_sheet_dt(csv_out_dir, target_year = round(mean
 if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
   upsert_workbook_sheets(list(Ecobase = ecobase_sheet_dt), ECOPATH_WORKBOOK_PATH)
 }
+
+## 2026-09-29, per Andrea: "i dont see the references for each
+## estimates of B, L, Di, PBQB, traits" - build_fg_references_sheet()/
+## append_reference_columns_to_final_sheets() used to be called ONLY
+## from 04_diets.R, which is documented as OPTIONAL - so anyone running
+## just 01 -> 02 -> 03 never got a Reference column (or a
+## FG_References sheet) at all, including for THIS script's own
+## Ecopath_PBQB/Ecopath_traits. Called here too now (same "safe any
+## time, skips what's not ready" convention) - see 01_biomass.R's
+## matching call for the fuller explanation. Run right before this
+## script's own trim so the Reference column survives into the final
+## trimmed workbook, same as every other final-sheet write here.
+build_fg_references_sheet(ECOPATH_WORKBOOK_PATH,
+                          biomass_csv_dir   = BIOMASS_CSV_DIR,
+                          fisheries_csv_dir = FISHERIES_CSV_DIR,
+                          pbqb_csv_dir      = csv_out_dir,
+                          diet_csv_dir      = file.path(out_dir, "diet"))
+append_reference_columns_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
 ## the intended sheets, trimmed script by script - trim the workbook

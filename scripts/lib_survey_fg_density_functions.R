@@ -4500,8 +4500,17 @@ build_fg_references_sheet <- function(out_path,
       cite_lookup <- setNames(method_citation_lookup$Citation, method_citation_lookup$Method)
       cite_one <- function(method_name) {
         if (is.na(method_name) || method_name == "") return(NA_character_)
-        hit <- cite_lookup[[method_name]]
-        if (is.null(hit)) paste0(method_name, " (no citation on file in pbqb_method_references.csv - check the Method name spelling)") else hit
+        ## 2026-09-29 fix: `[[` on an ATOMIC named vector (this is a
+        ## character vector, not a list) throws "subscript out of
+        ## bounds" the moment method_name doesn't match any name - it
+        ## does NOT return NULL the way list indexing would, so the
+        ## `is.null(hit)` check below never got a chance to fire; the
+        ## very first PB_method/QB_method value missing from
+        ## pbqb_method_references.csv crashed this whole function.
+        ## `[` (single bracket) returns NA for a no-match instead of
+        ## erroring - safe for any method name, matched or not.
+        hit <- unname(cite_lookup[method_name])
+        if (is.na(hit)) paste0(method_name, " (no citation on file in pbqb_method_references.csv - check the Method name spelling)") else hit
       }
       m_by_fg <- spp[, .(
         pb_cites = paste(sort(unique(vapply(unique(na.omit(PB_method)), cite_one, character(1)))), collapse = " || "),
@@ -4545,13 +4554,32 @@ build_fg_references_sheet <- function(out_path,
   refs[is.na(PBQB_method_ref) & !is.na(PBQB_ref) & grepl("EcoBase", PBQB_ref),
        PBQB_method_ref := "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"]
   
-  ## --- traits_ref: 03_pbqb-traits.R writes Ecopath_traits directly
-  ## from FG_WMed_2026.csv's own traits_ewe sheet (a static, literature-
-  ## compiled reference table, not something computed per-run with its
-  ## own per-FG source column) - so every FG gets the same fixed note
-  ## rather than a per-FG lookup. Update this string if traits_ewe ever
-  ## gains its own per-row citation column to read instead.
-  refs[, traits_ref := "FG_WMed_2026.csv 'traits_ewe' sheet (literature-compiled, static per-FG values - see that file's own source notes for individual trait citations)"]
+  ## --- traits_ref: corrected 2026-09-29, per Andrea ("i would like
+  ## real reference to be cited in the FG_ref"). The OLD text here
+  ## ("FG_WMed_2026.csv 'traits_ewe' sheet - literature-compiled,
+  ## static") was itself wrong, not just generic: 03_pbqb-traits.R's
+  ## traits_ewe/Ecopath_traits table is NOT a static hand-curated sheet
+  ## - its trait columns (Max_length/Mean_length/Mean_weight/
+  ## Mean_lifespan_years/Vulnerability_index/Ecology/IUCN_conservation_
+  ## status/Exploitation_status/Occurrence_status) are live per-species
+  ## fetches from FishBase/SeaLifeBase via the rfishbase package
+  ## (species()/country() - see that script's own "traits_ewe sheet"
+  ## comment block for exactly which field feeds which column), with
+  ## Organism from the taxonomic Class/Phylum/Kingdom lookup (Step 1).
+  ## Every FG gets the same fixed citation (real, but not per-FG) since
+  ## this is a database source, not a per-FG literature figure - the
+  ## per-species GROWTH/maturity study behind the underlying life-
+  ## history parameters (a different, finer-grained thing) is already
+  ## in PBQB_ref's "parameter studies" rollup above.
+  refs[, traits_ref := paste0(
+    "FishBase / SeaLifeBase (via the rfishbase R package, species()/country() calls) - Max_length, ",
+    "Mean_length, Mean_weight, Mean_lifespan_years, Vulnerability_index, Ecology, IUCN_conservation_status, ",
+    "Exploitation_status, Occurrence_status. Froese, R. and D. Pauly, Editors. FishBase. World Wide Web ",
+    "electronic publication. www.fishbase.org; Palomares, M.L.D. and D. Pauly, Editors. SeaLifeBase. World ",
+    "Wide Web electronic publication. www.sealifebase.org. Organism from taxonomic classification (WoRMS). ",
+    "See PBQB_ref's 'parameter studies' entries for the specific growth/maturity study behind each species' ",
+    "own life-history parameters."
+  )]
   
   ## --- diet_ref: from 04_diets.R's own diet_references_by_fg.csv
   ## (per-FG study citations, rolled up from the metaweb's own

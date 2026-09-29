@@ -6411,6 +6411,23 @@ finalize_ecopath_ecosim_summary_sheets(
   biomass_csv_dir    = BIOMASS_CSV_DIR,
   fisheries_csv_dir  = csv_out_dir
 )
+
+## 2026-09-29, per Andrea: "i dont see the references for each
+## estimates of B, L, Di, PBQB, traits" - build_fg_references_sheet()/
+## append_reference_columns_to_final_sheets() used to be called ONLY
+## from 04_diets.R, which is documented as OPTIONAL - so anyone running
+## just 01 -> 02 -> 03 never got a Reference column (or a
+## FG_References sheet) at all. Called here too now (same "safe any
+## time, skips what's not ready" convention as build_fg_references_
+## sheet()'s own header comment) - see 01_biomass.R's matching call
+## for the fuller explanation.
+build_fg_references_sheet(ECOPATH_WORKBOOK_PATH,
+                          biomass_csv_dir   = BIOMASS_CSV_DIR,
+                          fisheries_csv_dir = csv_out_dir,
+                          pbqb_csv_dir      = file.path(out_dir, "pbqb-traits"),
+                          diet_csv_dir      = file.path(out_dir, "diet"))
+append_reference_columns_to_final_sheets(ECOPATH_WORKBOOK_PATH)
+
 trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 message("\n=== Done (02_fisheries.R) === Wrote ", length(sheets_to_write), " sheet(s) directly, plus",
