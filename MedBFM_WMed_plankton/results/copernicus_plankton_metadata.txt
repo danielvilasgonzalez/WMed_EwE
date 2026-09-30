@@ -1,0 +1,4 @@
+Usage: copernicusmarine describe [OPTIONS]
+Try 'copernicusmarine describe --help' for help.
+
+Error: No such option '--show-full'. Did you mean '--show-all-versions'?

@@ -1,0 +1,144 @@
+path,value
+products > [1] > title,Mediterranean Sea Biogeochemistry Reanalysis
+products > [1] > product_id,MEDSEA_MULTIYEAR_BGC_006_008
+products > [1] > thumbnail_url,https://mdl-metadata.s3.waw3-1.cloudferro.com/metadata/thumbnails/MEDSEA_MULTIYEAR_BGC_006_008.jpg
+products > [1] > description,"The Mediterranean Sea biogeochemical reanalysis at 1/24° of horizontal resolution (ca. 4 km) covers the period from Jan 1999 to 1 month to the present and is produced by means of the MedBFM3 model system. MedBFM3, which is run by OGS (IT), includes the transport model OGSTM v4.0 coupled with the biogeochemical flux model BFM v5 and the variational data assimilation module 3DVAR-BIO v2.1 for surface chlorophyll. MedBFM3 is forced by the physical reanalysis (MEDSEA_MULTIYEAR_PHY_006_004 product run by CMCC) that provides daily forcing fields (i.e., currents, temperature, salinity, diffusivities, wind and solar radiation). The ESA-CCI database of surface chlorophyll concentration (CMEMS-OCTAC REP product) is assimilated with a weekly frequency. 
+
+Cossarini, G., Feudale, L., Teruzzi, A., Bolzon, G., Coidessa, G., Solidoro C., Amadio, C., Lazzari, P., Brosich, A., Di Biagio, V., and Salon, S., 2021. High-resolution reanalysis of the Mediterranean Sea biogeochemistry (1999-2019). Frontiers in Marine Science. Front. Mar. Sci. 8:741486.doi: 10.3389/fmars.2021.741486
+
+
+
+_DOI (Interim dataset)_:
+https://doi.org/10.25423/CMCC/MEDSEA_MULTIYEAR_BGC_006_008_MEDBFM3I
+
+**References:**
+
+* Teruzzi, A., Di Biagio, V., Feudale, L., Bolzon, G., Lazzari, P., Salon, S., Coidessa, G., & Cossarini, G. (2021). Mediterranean Sea Biogeochemical Reanalysis (CMEMS MED-Biogeochemistry, MedBFM3 system) (Version 1) [Data set]. Copernicus Monitoring Environment Marine Service (CMEMS). https://doi.org/10.25423/CMCC/MEDSEA_MULTIYEAR_BGC_006_008_MEDBFM3
+* Teruzzi, A., Feudale, L., Bolzon, G., Lazzari, P., Salon, S., Di Biagio, V., Coidessa, G., & Cossarini, G. (2021). Mediterranean Sea Biogeochemical Reanalysis INTERIM (CMEMS MED-Biogeochemistry, MedBFM3i system) (Version 1) [Data set]. Copernicus Monitoring Environment Marine Service (CMEMS) https://doi.org/10.25423/CMCC/MEDSEA_MULTIYEAR_BGC_006_008_MEDBFM3I
+"
+products > [1] > digital_object_identifier,10.25423/CMCC/MEDSEA_MULTIYEAR_BGC_006_008_MEDBFM3I
+products > [1] > sources > [1],Numerical models
+products > [1] > processing_level,Level 4
+products > [1] > production_center,OGS (Italy)
+products > [1] > keywords > [1],oceanographic-geographical-features
+products > [1] > keywords > [2],numerical-model
+products > [1] > keywords > [3],surface-downward-mass-flux-of-carbon-dioxide-expressed-as-carbon
+products > [1] > keywords > [4],mole-concentration-of-nitrate-in-sea-water
+products > [1] > keywords > [5],sea-water-alkalinity-expressed-as-mole-equivalent
+products > [1] > keywords > [6],surface-partial-pressure-of-carbon-dioxide-in-sea-water
+products > [1] > keywords > [7],model-level-number-at-sea-floor
+products > [1] > keywords > [8],mole-concentration-of-dissolved-inorganic-carbon-in-sea-water
+products > [1] > keywords > [9],sea-water-ph-reported-on-total-scale
+products > [1] > keywords > [10],cell-thickness
+products > [1] > keywords > [11],sea-floor-depth-below-geoid
+products > [1] > keywords > [12],mass-concentration-of-chlorophyll-a-in-sea-water
+products > [1] > keywords > [13],mole-concentration-of-ammonium-in-sea-water
+products > [1] > keywords > [14],mole-concentration-of-dissolved-molecular-oxygen-in-sea-water
+products > [1] > keywords > [15],net-primary-production-of-biomass-expressed-as-carbon-per-unit-volume-in-sea-water
+products > [1] > keywords > [16],mole-concentration-of-phytoplankton-expressed-as-carbon-in-sea-water
+products > [1] > keywords > [17],sea-binary-mask
+products > [1] > keywords > [18],mole-concentration-of-phosphate-in-sea-water
+products > [1] > keywords > [19],multi-year
+products > [1] > keywords > [20],coastal-marine-environment
+products > [1] > keywords > [21],marine-safety
+products > [1] > keywords > [22],marine-resources
+products > [1] > keywords > [23],weather-climate-and-seasonal-forecasting
+products > [1] > keywords > [24],mediterranean-sea
+products > [1] > keywords > [25],level-4
+products > [1] > keywords > [26],satellite-chlorophyll
+products > [1] > datasets > [1] > dataset_id,cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m
+products > [1] > datasets > [1] > dataset_name,Phytoplankton Carbon Biomass and Chlorophyll (3D) - Yearly Mean
+products > [1] > datasets > [1] > product_id,MEDSEA_MULTIYEAR_BGC_006_008
+products > [1] > datasets > [1] > digital_object_identifier,10.25423/CMCC/MEDSEA_MULTIYEAR_BGC_006_008_MEDBFM3I
+products > [1] > datasets > [1] > versions > [1] > label,202211
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > name,default
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > service_name,original-files
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > service_short_name,files
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > uri,https://s3.waw3-1.cloudferro.com/mdl-native-12/native/MEDSEA_MULTIYEAR_BGC_006_008/cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m_202211
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [1] > short_name,chl
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [1] > standard_name,mass_concentration_of_chlorophyll_a_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [1] > units,mg m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [2] > short_name,phyc
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [2] > standard_name,mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [1] > variables > [2] > units,mmol m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > service_name,wmts
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > service_short_name,wmts
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > uri,https://wmts.marine.copernicus.eu/teroWmts/MEDSEA_MULTIYEAR_BGC_006_008/cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m_202211?service=WMTS&request=GetCapabilities
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [1] > short_name,chl
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [1] > standard_name,mass_concentration_of_chlorophyll_a_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [1] > units,mg m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [2] > short_name,phyc
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [2] > standard_name,mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [2] > variables > [2] > units,mmol m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > service_name,arco-geo-series
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > service_short_name,geoseries
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > service_format,zarr
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > uri,https://s3.waw3-1.cloudferro.com/mdl-arco-time-034/arco/MEDSEA_MULTIYEAR_BGC_006_008/cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m_202211/timeChunked.zarr
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > short_name,chl
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > standard_name,mass_concentration_of_chlorophyll_a_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > units,mg m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [1] > coordinate_id,time
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [1] > coordinate_unit,milliseconds since 1970-01-01 00:00:00Z (no leap seconds)
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [1] > axis,t
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [2] > coordinate_id,depth
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [2] > coordinate_unit,m
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [2] > axis,z
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [3] > coordinate_id,latitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [3] > coordinate_unit,degrees_north
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [3] > axis,y
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [4] > coordinate_id,longitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [4] > coordinate_unit,degrees_east
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [1] > coordinates > [4] > axis,x
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > short_name,phyc
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > standard_name,mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > units,mmol m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [1] > coordinate_id,time
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [1] > coordinate_unit,milliseconds since 1970-01-01 00:00:00Z (no leap seconds)
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [1] > axis,t
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [2] > coordinate_id,depth
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [2] > coordinate_unit,m
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [2] > axis,z
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [3] > coordinate_id,latitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [3] > coordinate_unit,degrees_north
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [3] > axis,y
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [4] > coordinate_id,longitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [4] > coordinate_unit,degrees_east
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [3] > variables > [2] > coordinates > [4] > axis,x
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > service_name,arco-time-series
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > service_short_name,timeseries
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > service_format,zarr
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > uri,https://s3.waw3-1.cloudferro.com/mdl-arco-geo-034/arco/MEDSEA_MULTIYEAR_BGC_006_008/cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m_202211/geoChunked.zarr
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > short_name,chl
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > standard_name,mass_concentration_of_chlorophyll_a_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > units,mg m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [1] > coordinate_id,time
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [1] > coordinate_unit,milliseconds since 1970-01-01 00:00:00Z (no leap seconds)
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [1] > axis,t
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [2] > coordinate_id,depth
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [2] > coordinate_unit,m
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [2] > axis,z
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [3] > coordinate_id,latitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [3] > coordinate_unit,degrees_north
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [3] > axis,y
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [4] > coordinate_id,longitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [4] > coordinate_unit,degrees_east
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [1] > coordinates > [4] > axis,x
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > short_name,phyc
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > standard_name,mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > units,mmol m-3
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [1] > coordinate_id,time
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [1] > coordinate_unit,milliseconds since 1970-01-01 00:00:00Z (no leap seconds)
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [1] > axis,t
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [2] > coordinate_id,depth
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [2] > coordinate_unit,m
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [2] > axis,z
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [3] > coordinate_id,latitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [3] > coordinate_unit,degrees_north
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [3] > axis,y
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [4] > coordinate_id,longitude
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [4] > coordinate_unit,degrees_east
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > services > [4] > variables > [2] > coordinates > [4] > axis,x
+products > [1] > datasets > [1] > versions > [1] > parts > [1] > url_metadata,https://s3.waw3-1.cloudferro.com/mdl-metadata/metadata/MEDSEA_MULTIYEAR_BGC_006_008/cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m_202211/dataset.stac.json
+products > [1] > product_user_manual,https://documentation.marine.copernicus.eu/PUM/CMEMS-MED-PUM-006-008.pdf
+products > [1] > quality_information_document,https://documentation.marine.copernicus.eu/QUID/CMEMS-MED-QUID-006-008.pdf
+products > [1] > synthesis_quality_overview,https://documentation.marine.copernicus.eu/SQO/CMEMS-MED-SQO-006-008.pdf
