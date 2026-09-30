@@ -3,7 +3,7 @@
 ## 02_fisheries.R / 03_pbqb-traits.R / 04_diets.R have written (or
 ## re-written) ecopath_ecosim_inputs.xlsx.
 ##
-## Per Andrea: "can you work on the validation code, including some
+## Per "can you work on the validation code, including some
 ## validation process ... like the comparison with the input values
 ## from the old west med [workbook] ... in sheet estimates, and other
 ## validation in the ewe manual and this points i highlighted."
@@ -35,25 +35,25 @@
 ## Still-open EwE User Guide gaps NOT covered anywhere in this pipeline
 ## yet (see ewe_user_guide_compliance_review_2026-09-28.md): discard
 ## mortality rate (no column for it anywhere in the 9-sheet workbook
-## contract - a scope decision, not a bug, left for Andrea to decide
+## contract - a scope decision, not a bug, left for the project owner to decide
 ## whether it belongs in this pipeline's output at all) and formal
 ## multi-stanza input blocks (only a juvenile/adult biomass-split
 ## heuristic exists, not a real EwE stanza parameter table).
 ## =================================================================
 
-## 2026-09-29, per Andrea ("the validation code should be a compilation of
-## plots to check these validations"): STEP C at the end of this file now
-## builds an actual plot for every check this script can interpret, and
-## compiles them - together with the standalone validation PNGs the other
-## four scripts already produce (PQ_ratio_by_fg.png, fg_pb_qb_scatter.png,
-## F_by_fg.png, diet_matrix_heatmap.png, biomass_by_fg_source.png) - into
-## ONE multi-page PDF, `validation_plots_ALL.pdf`, so there's a single
-## file to look through instead of hunting across every script's own plot
-## folder. `validation_summary_ALL.csv` (STEP B) is kept alongside it as
-## a plain-text index of the same checks, for grepping/filtering rather
-## than paging through.
+## STEP C (further below) builds an actual plot for every check this
+## script can interpret, plus the PB/QB/F/method-comparison plots
+## (fg_pb_qb_scatter.png, F_by_fg.png, PQ_ratio_by_fg.png, the fish PB/QB
+## method-comparison plots, FG_PB_QB_comparison*.png) built directly from
+## 03_pbqb-traits.R's own CSVs, and the standalone PNGs 04_diets.R and
+## 01_biomass.R produce (diet_matrix_heatmap.png, biomass_by_fg_source.png)
+## - compiling all of it into ONE multi-page PDF, `validation_plots_ALL.pdf`,
+## so there's a single file to look through instead of hunting across
+## every script's own plot folder. `validation_summary_ALL.csv` (STEP B)
+## is kept alongside it as a plain-text index of the same checks, for
+## grepping/filtering rather than paging through.
 
-pkgs <- c("data.table", "openxlsx", "ggplot2", "png")
+pkgs <- c("data.table", "openxlsx", "ggplot2", "png", "patchwork")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
@@ -98,18 +98,15 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "validation")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
-## 2026-09-29: matches the folder convention set in output_subfolder_
-## refactor_notes.md ("05_validation.R -> output/plots/validation/... this
-## is the folder 03_pbqb-traits.R's own validation plots already target" -
-## previously noted there as "NOT YET APPLIED to 05_validation.R itself,"
-## now fixed) - PQ_ratio_by_fg.png/fg_pb_qb_scatter.png/F_by_fg.png (03's
-## own validation-type plots) already live here, so this script's own
-## validation plots land right alongside them, not in a separate folder.
+## Matches the folder convention in output_subfolder_refactor_notes.md -
+## every validation-type plot for reviewing Ecopath inputs, including
+## the PB/QB/F/method-comparison plots this script itself builds
+## further below, lands in one place: out_dir/plots/validation.
 if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.path(out_dir, "plots", "validation")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## The OLD West Med model workbook, sheet "estimates" - the comparison
-## baseline. 2026-09-29, per Andrea ("it should come from the pclouddir
+## baseline. 2026-09-29, per project decision ("it should come from the pclouddir
 ## to allow other to run it (not daniel my personal computer)"): this is
 ## now derived from pcloud_dir - the same shared pCloud folder every
 ## other script in this pipeline already resolves per-machine (via the
@@ -473,12 +470,12 @@ known_review_files <- list(
   list(name = "Diet matrix predator column doesn't sum to 1",       dir = "diet",        file = "diet_matrix_column_sum_REVIEW.csv"),
   list(name = "Diet matrix cannibalism fraction > 0.1",             dir = "diet",        file = "diet_cannibalism_REVIEW.csv"),
   list(name = "Diet composition still missing after all fallbacks", dir = "diet",        file = "diet_still_missing_REVIEW.csv"),
-  list(name = "EcoBase biomass fallback REJECTED as implausible",   dir = "biomass",     file = "ecobase_fallback_implausible_REJECTED_REVIEW.csv"),
-  list(name = "EcoBase biomass fallback ACCEPTED (auto-draft, still review)", dir = "biomass", file = "fg_missing_biomass_ecobase_fallback_REVIEW.csv"),
+  list(name = "EcoBase biomass evaluation (reference only, NOT incorporated into Ecopath_B)", dir = "biomass", file = "ecobase_biomass_evaluation_NOT_INCORPORATED.csv"),
+  list(name = "EcoBase biomass evaluation for primary producers/plankton (reference only, NOT incorporated)", dir = "biomass", file = "ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv"),
   list(name = "FG(s) with no Ecopath_B biomass at all",             dir = "biomass",     file = "fg_missing_ecopath_B_REVIEW.csv"),
   list(name = "FG species-level split still on an even-split guess", dir = "biomass",    file = "fg_species_biomass_needs_review.csv"),
   list(name = "ICCAT stock-assessment temporal-baseline mismatch",  dir = "biomass",     file = "stock_assessment_temporal_mismatch_REVIEW.csv"),
-  list(name = "Primary producer temporal-trend note (Posidonia/gorgonians)", dir = "biomass", file = "primary_producer_temporal_trend_REVIEW.csv"),
+  list(name = "Manual-cited biomass temporal-trend note (Posidonia/gorgonians)", dir = "biomass", file = "manual_cited_biomass_temporal_trend_REVIEW.csv"),
   list(name = "Generic Collection_year temporal mismatch (any manual-cited CSV)", dir = "biomass", file = "temporal_mismatch_REVIEW_Marine megafauna biomass.csv"),
   list(name = "Fleet-level landings coverage (named-country share of total)", dir = "fisheries", file = "ecopath_L_fg_coverage_check.csv"),
   list(name = "Zero-catch FG diagnostic",                          dir = "fisheries",   file = "fg_zero_catch_diagnostic.csv"),
@@ -502,7 +499,7 @@ print(validation_summary[, .(check, status)])
 
 ## =================================================================
 ## STEP C: a compilation of plots, one per validation check - per
-## Andrea, 2026-09-29: "the validation code should be a compilation of
+## the project owner, 2026-09-29: "the validation code should be a compilation of
 ## plots to check these validations." STEP B above already indexes every
 ## REVIEW csv as a row count, which is fast to scan but doesn't show
 ## WHERE the problem is or how bad it is - a plot does that at a glance.
@@ -584,26 +581,32 @@ validation_plots[["04_diet_cannibalism"]] <- tryCatch({
     theme_minimal(base_size = 9)
 }, error = function(e) { message("[05_validation.R plot] diet cannibalism skipped - ", conditionMessage(e)); NULL })
 
-## 4) EcoBase biomass-fallback candidates - accepted vs. rejected as
-## implausible (>8x the highest already-seen non-fallback density),
-## side by side so the rejected ones' scale relative to the accepted
-## ones is visible at a glance.
+## 4) EcoBase biomass EVALUATION (reference only, since 2026-09-30 per
+## the project owner - "ecobase biomass should be evaluated but it shouldnt be
+## incorporated in the Ecopath_B" - so this is no longer an accepted-vs-
+## rejected fallback plot, just every candidate EcoBase found, plausible
+## or not, clearly labeled as reference material rather than applied
+## values). Combines both the general missing-biomass evaluation and the
+## primary-producer/plankton one into one page.
 validation_plots[["05_ecobase_fallback_plausibility"]] <- tryCatch({
-  acc_path <- file.path(out_dir, "biomass", "fg_missing_biomass_ecobase_fallback_REVIEW.csv")
-  rej_path <- file.path(out_dir, "biomass", "ecobase_fallback_implausible_REJECTED_REVIEW.csv")
-  acc <- if (file.exists(acc_path)) fread(acc_path)[, .(FG_num, Biomass_t_km2, status = "Accepted")] else NULL
-  rej <- if (file.exists(rej_path)) fread(rej_path)[, .(FG_num, Biomass_t_km2, status = "REJECTED (implausible)")] else NULL
-  d <- rbindlist(list(acc, rej), fill = TRUE)
-  if (is.null(d) || nrow(d) == 0) stop("no EcoBase fallback candidates in either file")
+  gen_path <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_NOT_INCORPORATED.csv")
+  pp_path  <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv")
+  gen <- if (file.exists(gen_path)) fread(gen_path)[, .(FG_num = as.character(FG_num), Biomass_t_km2,
+                                                        plausible = as.character(plausible))] else NULL
+  pp  <- if (file.exists(pp_path))  fread(pp_path)[, .(FG_num = Group, Biomass_t_km2 = Biomass_t, plausible = NA_character_)] else NULL
+  d <- rbindlist(list(gen, pp), fill = TRUE)
+  if (is.null(d) || nrow(d) == 0) stop("no EcoBase evaluation candidates in either file")
+  d[, plausible := fifelse(is.na(plausible) | plausible == "NA", "Not checked", plausible)]
   d[, FG_num := factor(FG_num, levels = FG_num[order(Biomass_t_km2)])]
-  ggplot(d, aes(x = Biomass_t_km2, y = FG_num, colour = status)) +
+  ggplot(d, aes(x = Biomass_t_km2, y = FG_num, colour = plausible)) +
     geom_point(size = 2) +
     scale_x_log10() +
-    scale_color_manual(values = c("Accepted" = "grey30", "REJECTED (implausible)" = "firebrick")) +
-    labs(title = "EcoBase last-resort biomass fallback: accepted vs. rejected", subtitle = "Rejected = more than 8x the highest density already seen among this model's own non-fallback FGs",
-         x = "Candidate Biomass_t_km2 (log scale)", y = "FG_num", color = NULL) +
+    scale_color_manual(values = c("TRUE" = "grey30", "FALSE" = "firebrick", "Not checked" = "steelblue")) +
+    labs(title = "EcoBase biomass evaluation - reference only, NOT incorporated into Ecopath_B",
+         subtitle = "EcoBase is evaluated for context but never applied to Ecopath_B - a human decides whether to add a real cited row",
+         x = "EcoBase candidate Biomass_t_km2 (log scale)", y = "FG_num / Group", color = "Plausible vs. known densities") +
     theme_minimal(base_size = 9) + theme(legend.position = "bottom")
-}, error = function(e) { message("[05_validation.R plot] EcoBase fallback plausibility skipped - ", conditionMessage(e)); NULL })
+}, error = function(e) { message("[05_validation.R plot] EcoBase evaluation skipped - ", conditionMessage(e)); NULL })
 
 ## 5) How much of each FG's total biomass rides on an even-split
 ## (no real per-species measurement) species-level assumption.
@@ -621,6 +624,23 @@ validation_plots[["06_species_even_split_biomass_at_risk"]] <- tryCatch({
          x = "FG total Biomass_t_km2", y = NULL, fill = "n species") +
     theme_minimal(base_size = 9)
 }, error = function(e) { message("[05_validation.R plot] species even-split skipped - ", conditionMessage(e)); NULL })
+
+## 5b) EcoBase-sourced rows excluded from a manual-cited biomass CSV -
+## any row someone (or an older pipeline version) put into
+## marine_megafauna_biomass.csv / primary_producer_plankton_biomass.csv /
+## benthic_habitat_biomass_literature.csv with an EcoBase citation gets
+## pulled out by 01b_biomass_unsurveyed.R's load_manual_cited_biomass_group()
+## rather than incorporated into Ecopath_B (EcoBase is reference-only) -
+## text-list page since these need a real citation added by hand, not a plot.
+validation_plots[["05b_ecobase_sourced_rows_excluded"]] <- tryCatch({
+  files <- Sys.glob(file.path(out_dir, "biomass", "*_ecobase_sourced_rows_EXCLUDED_REVIEW.csv"))
+  if (length(files) == 0) stop("no *_ecobase_sourced_rows_EXCLUDED_REVIEW.csv files found")
+  d <- rbindlist(lapply(files, function(f) { x <- fread(f); x[, source_file := basename(f)]; x }), fill = TRUE)
+  if (nrow(d) == 0) stop("all *_ecobase_sourced_rows_EXCLUDED_REVIEW.csv files were empty")
+  lines <- paste0(d$Group, " (", d$Year, ", from ", d$source_file, "): ", d$Source_citation)
+  plot_text_list(lines, "EcoBase-sourced row(s) excluded from Ecopath_B - need a real citation",
+                 "These carried an EcoBase citation in a manual-cited biomass CSV and were pulled out rather than incorporated - EcoBase is reference-only in this pipeline")
+}, error = function(e) { message("[05_validation.R plot] ecobase-sourced rows excluded skipped - ", conditionMessage(e)); NULL })
 
 ## 6) Temporal-baseline mismatches (any manual-cited CSV with a
 ## Collection_year column differing from the Ecopath target Year) -
@@ -679,7 +699,7 @@ validation_plots[["10_old_workbook_unmatched_names"]] <- tryCatch({
                  "Neither an exact nor a fuzzy name match - check for a renamed or split/merged group")
 }, error = function(e) { message("[05_validation.R plot] old-workbook unmatched names skipped - ", conditionMessage(e)); NULL })
 
-## 2026-09-29, per Andrea ("i am missing a plot with other validation like
+## 2026-09-29, per project decision ("i am missing a plot with other validation like
 ## the biomass of FG relative to old model"): p_comparison (now
 ## "01_old_vs_new_comparison") plots every metric together as an old-vs-
 ## new scatter, faceted by metric - useful for spotting outliers overall,
@@ -716,26 +736,273 @@ validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- tryCatch({
 validation_plots <- c(list("01_old_vs_new_comparison" = p_comparison), validation_plots)
 validation_plots <- validation_plots[!sapply(validation_plots, is.null)]
 
-## --- embed the standalone validation PNGs the other four scripts ------
-## --- already produce, so the compiled PDF really is "everything in ----
-## --- one place" rather than just this script's own new checks. --------
-## 2026-09-29, per Andrea ("all plots in validation code should be
-## included in the validation subfolders, also the fishing mortality and
-## PB QB comparison"): two things fixed here.
-##   1) F_by_fg.png and PQ_ratio_by_fg.png were actually being written by
-##      03_pbqb-traits.R into ITS OWN plot_dir (out_dir/plots/pbqb-traits)
-##      rather than validation_plot_dir (out_dir/plots/validation) - a
-##      2026-09-27 change moved them there and never got reconciled with
-##      this embed list, which always assumed validation_plot_dir. Fixed
-##      at the source in 03_pbqb-traits.R (both now ggsave() into
-##      validation_plot_dir) - listed here unchanged since the PATH this
-##      list expects was always the right one.
-##   2) fish_PB_methods_comparison_by_FG.png / fish_QB_methods_comparison_
-##      by_FG.png (03_pbqb-traits.R's PB/QB-by-candidate-method comparison
-##      figures - the literal "PB QB comparison" Andrea means) were always
-##      written to the correct validation_plot_dir, but were simply never
-##      added to this embed list, so they never made it into
-##      validation_plots_ALL.pdf. Added below.
+## =================================================================
+## STEP C0: the PB/QB/F/method-comparison validation plots - moved here
+## from 03_pbqb-traits.R (per project decision: "some of the plots can
+## be moved on validation code and save the plots on validation
+## subfolders"). Built directly from the CSVs 03_pbqb-traits.R already
+## writes to out_dir/pbqb-traits (species_pb_qb_by_taxon_group.csv,
+## fg_pb_qb_weighted.csv / fg_pb_qb_weighted_with_F.csv,
+## PQ_ratio_by_fg_REVIEW.csv - STEP B above already indexes the last
+## one), not from in-memory objects, since this script runs as its own
+## step after 03_pbqb-traits.R has already finished. Every PNG is saved
+## into plot_dir (out_dir/plots/validation) under the same filename the
+## embed step right below expects, so that step needs no change.
+## =================================================================
+PBQB_CSV_DIR <- file.path(out_dir, "pbqb-traits")
+species_pb_qb_path <- file.path(PBQB_CSV_DIR, "species_pb_qb_by_taxon_group.csv")
+fg_pb_qb_with_f_path <- file.path(PBQB_CSV_DIR, "fg_pb_qb_weighted_with_F.csv")
+fg_pb_qb_path <- file.path(PBQB_CSV_DIR, "fg_pb_qb_weighted.csv")
+
+if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || file.exists(fg_pb_qb_path))) {
+  message("[05_validation.R] Skipping PB/QB/F validation plots - species_pb_qb_by_taxon_group.csv and/or",
+          " fg_pb_qb_weighted*.csv not found in ", PBQB_CSV_DIR, " (run 03_pbqb-traits.R first).")
+} else {
+  results_pb_qb <- fread(species_pb_qb_path)
+  ## fg_pb_qb_weighted_with_F.csv (has F_FG) is preferred over the plain
+  ## fg_pb_qb_weighted.csv - it only exists when FG_YIELD_SOURCE ==
+  ## "fg_catch_csv" was set, same conditional 03_pbqb-traits.R itself uses.
+  fg_weighted_pb_qb <- fread(if (file.exists(fg_pb_qb_with_f_path)) fg_pb_qb_with_f_path else fg_pb_qb_path)
+  
+  ## --- FG-level PB vs QB scatter (fg_pb_qb_scatter.png) - lets a -------
+  ## --- reviewer see every FG's final PB_FG/QB_FG position at a glance, -
+  ## --- colored by dominant dispatch group, sized by FG biomass. --------
+  p_fg_pb_qb <- tryCatch({
+    dg_by_fg <- results_pb_qb[!is.na(dispatch_group), .(Biomass_dg = sum(Biomass, na.rm = TRUE)), by = .(FG, dispatch_group)]
+    dg_dominant <- dg_by_fg[dg_by_fg[, .I[which.max(Biomass_dg)], by = FG]$V1][, .(FG, dispatch_group)]
+    d <- merge(fg_weighted_pb_qb, dg_dominant, by = "FG", all.x = TRUE)
+    d <- d[!is.na(PB_FG) & !is.na(QB_FG)]
+    if (nrow(d) == 0) stop("no FG has both PB_FG and QB_FG")
+    label_layer <- if (requireNamespace("ggrepel", quietly = TRUE)) {
+      ggrepel::geom_text_repel(aes(label = FG_name), size = 2.2, max.overlaps = 15, show.legend = FALSE)
+    } else {
+      geom_text(aes(label = FG_name), size = 2.2, vjust = -0.6, show.legend = FALSE)
+    }
+    ggplot(d, aes(x = PB_FG, y = QB_FG, color = dispatch_group, size = Biomass_FG)) +
+      geom_point(alpha = 0.75) +
+      label_layer +
+      scale_size_continuous(guide = "none") +
+      labs(title = "PB vs. QB by functional group", subtitle = "Point size = FG biomass; color = dominant dispatch group (fish/mammal/seabird/invertebrate)",
+           x = "PB_FG (/year)", y = "QB_FG (/year)", color = NULL) +
+      theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+  }, error = function(e) { message("[05_validation.R plot] FG PB/QB scatter skipped - ", conditionMessage(e)); NULL })
+  if (!is.null(p_fg_pb_qb)) ggsave(file.path(plot_dir, "fg_pb_qb_scatter.png"), p_fg_pb_qb, width = 11, height = 9, dpi = 150, bg = "white")
+  
+  ## --- Fishing mortality (F) by FG (F_by_fg.png). F isn't one single ---
+  ## --- column: a fish FG with at least one species carrying a real -----
+  ## --- per-species Fmort has F already folded into PB_FG upstream; -----
+  ## --- every other FG relies on fg_weighted's own F_FG (Yield_FG / -----
+  ## --- Biomass_FG). Combined into one F_for_plot per FG. ----------------
+  p_f_by_fg <- tryCatch({
+    species_F_by_fg <- results_pb_qb[!is.na(Fmort), .(
+      F_species_weighted = sum(Biomass * Fmort, na.rm = TRUE) / sum(Biomass[!is.na(Fmort)], na.rm = TRUE)
+    ), by = .(FG, FG_name)]
+    f_dt <- merge(fg_weighted_pb_qb[, .(FG, FG_name, Biomass_FG,
+                                        F_FG = if ("F_FG" %in% names(fg_weighted_pb_qb)) F_FG else NA_real_)],
+                  species_F_by_fg, by = c("FG", "FG_name"), all = TRUE)
+    f_dt[, F_for_plot := fifelse(!is.na(F_species_weighted), F_species_weighted, F_FG)]
+    f_dt <- f_dt[!is.na(F_for_plot)]
+    if (nrow(f_dt) == 0) stop("no FG has an F value yet (species-level Fmort AND fg_weighted's F_FG both empty)")
+    f_dt[, F_source := fifelse(!is.na(F_species_weighted), "Species-level (Fmort)", "FG-level (Yield_FG/Biomass_FG)")]
+    f_dt[, FG_label := paste0(as.integer(FG), "_", FG_name)]
+    f_dt <- f_dt[order(-F_for_plot)]
+    f_dt[, FG_label := factor(FG_label, levels = FG_label)]
+    ggplot(f_dt, aes(x = F_for_plot, y = reorder(FG_label, F_for_plot), fill = F_source)) +
+      geom_col() +
+      labs(title = "Fishing mortality (F) by functional group",
+           subtitle = "Biomass-weighted mean of species-level Fmort where any exists, else Yield_FG / Biomass_FG",
+           x = expression(F~(year^-1)), y = NULL, fill = "Source") +
+      theme_minimal(base_size = 7) + theme(legend.position = "bottom")
+  }, error = function(e) { message("[05_validation.R plot] F by FG skipped - ", conditionMessage(e)); NULL })
+  if (!is.null(p_f_by_fg)) {
+    ggsave(file.path(plot_dir, "F_by_fg.png"), p_f_by_fg,
+           width = 10, height = max(8, 0.16 * nrow(p_f_by_fg$data)), dpi = 150, bg = "white", limitsize = FALSE)
+  }
+  
+  ## --- P/Q ratio (PQ_ratio_by_fg.png), from the REVIEW csv -------------
+  ## --- 03_pbqb-traits.R already writes (STEP B above already indexes ---
+  ## --- it as a row count; this reads the same file back and plots it). -
+  p_pq_ratio <- tryCatch({
+    pq_path <- file.path(PBQB_CSV_DIR, "PQ_ratio_by_fg_REVIEW.csv")
+    if (!file.exists(pq_path)) stop("PQ_ratio_by_fg_REVIEW.csv not found")
+    pq_dt <- fread(pq_path)
+    if (nrow(pq_dt) == 0) stop("PQ_ratio_by_fg_REVIEW.csv is empty")
+    pq_dt[, FG_label := paste0(as.integer(FG), "_", FG_name)]
+    pq_dt <- pq_dt[order(-PQ_ratio)]
+    pq_dt[, FG_label := factor(FG_label, levels = FG_label)]
+    ggplot(pq_dt, aes(x = PQ_ratio, y = reorder(FG_label, PQ_ratio), color = flag)) +
+      geom_point(size = 2) +
+      geom_vline(xintercept = c(0.05, 0.3), linetype = "dashed", colour = "grey40") +
+      scale_color_manual(values = c("Within typical range" = "grey30", "Outside typical 0.05-0.3 range" = "firebrick")) +
+      labs(title = "P/Q ratio (PB_FG / QB_FG) by functional group",
+           subtitle = "Dashed lines = typical 0.05-0.3 review band, not a hard cutoff",
+           x = "P/Q", y = NULL, color = NULL) +
+      theme_minimal(base_size = 7) + theme(legend.position = "bottom")
+  }, error = function(e) { message("[05_validation.R plot] P/Q ratio skipped - ", conditionMessage(e)); NULL })
+  if (!is.null(p_pq_ratio)) {
+    ggsave(file.path(plot_dir, "PQ_ratio_by_fg.png"), p_pq_ratio,
+           width = 10, height = max(8, 0.16 * nrow(p_pq_ratio$data)), dpi = 150, bg = "white", limitsize = FALSE)
+  }
+  
+  ## --- Fish PB/QB method-comparison plots (fish only - the group with --
+  ## --- the most independent methods: 6 for PB, 4 for QB). One point ----
+  ## --- per method per species, faceted by FG, chosen method -----------
+  ## --- highlighted distinctly from the rest. ----------------------------
+  fish_results <- results_pb_qb[dispatch_group == "fish"]
+  if (nrow(fish_results) == 0) {
+    message("[05_validation.R plot] fish PB/QB method comparison skipped - no dispatch_group == 'fish' rows in species_pb_qb_by_taxon_group.csv")
+  } else {
+    fish_results[, FG_label := paste0(FG, "_", FG_name)]
+    fish_fg_label_order <- unique(fish_results[, .(FG, FG_label)])[order(FG)]$FG_label
+    
+    pb_cols <- intersect(c("PB_Pauly_1980", "PB_FishLife_2023", "PB_Gascuel_2008", "PB_Hoenig_1983", "PB_Then_2015", "PB_AlversonCarney_1975"), names(fish_results))
+    fish_pb_long <- melt(fish_results[, c("Species", "FG_label", "PB_method", ..pb_cols)],
+                         id.vars = c("Species", "FG_label", "PB_method"), variable.name = "method", value.name = "PB")
+    fish_pb_long[, method := gsub("^PB_", "", method)]
+    fish_pb_long <- fish_pb_long[!is.na(PB)]
+    fish_pb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
+    method_label_map <- c(Pauly_1980 = "Pauly 1980", FishLife_2023 = "FishLife",
+                          Gascuel_2008 = "Gascuel 2008", Hoenig_1983 = "Hoenig 1983",
+                          Then_2015 = "Then et al. 2015", AlversonCarney_1975 = "Alverson & Carney 1975")
+    fish_pb_long[, is_chosen := mapply(function(m, chosen) grepl(method_label_map[[m]], chosen, ignore.case = TRUE),
+                                       method, PB_method)]
+    p_pb_methods <- ggplot(fish_pb_long, aes(x = method, y = PB)) +
+      geom_point(aes(color = is_chosen, size = is_chosen)) +
+      scale_color_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey50"),
+                         labels = c(`TRUE` = "Chosen for FG average", `FALSE` = "Other method"), name = NULL) +
+      scale_size_manual(values = c(`TRUE` = 4, `FALSE` = 2.5), guide = "none") +
+      facet_wrap(~ FG_label, scales = "free_y") +
+      theme_bw(base_size = 11) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
+      labs(title = "P/B method comparison - fish, by functional group",
+           subtitle = "Each point is one species x method; panels are FGs (not individual species)",
+           x = NULL, y = expression(P/B~(year^-1)))
+    ggsave(file.path(plot_dir, "fish_PB_methods_comparison_by_FG.png"), p_pb_methods, width = 14, height = 11, dpi = 150)
+    
+    qb_cols <- intersect(c("QB_PalomaresPauly_1998Z", "QB_PalomaresPauly_1998noZ", "QB_ChristensenPauly_1992", "QB_ChristensenEtAl_2008"), names(fish_results))
+    fish_qb_long <- melt(fish_results[, c("Species", "FG_label", "QB_method", ..qb_cols)],
+                         id.vars = c("Species", "FG_label", "QB_method"), variable.name = "method", value.name = "QB")
+    fish_qb_long[, method := gsub("^QB_", "", method)]
+    fish_qb_long <- fish_qb_long[!is.na(QB)]
+    fish_qb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
+    qb_label_map <- c(PalomaresPauly_1998Z = "Z-based", PalomaresPauly_1998noZ = "non-Z",
+                      ChristensenPauly_1992 = "Christensen & Pauly", ChristensenEtAl_2008 = "Q/P=3")
+    fish_qb_long[, is_chosen := mapply(function(m, chosen) grepl(qb_label_map[[m]], chosen, fixed = TRUE),
+                                       method, QB_method)]
+    p_qb_methods <- ggplot(fish_qb_long, aes(x = method, y = QB)) +
+      geom_point(aes(color = is_chosen, size = is_chosen)) +
+      scale_color_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey50"),
+                         labels = c(`TRUE` = "Chosen for FG average", `FALSE` = "Other method"), name = NULL) +
+      scale_size_manual(values = c(`TRUE` = 4, `FALSE` = 2.5), guide = "none") +
+      facet_wrap(~ FG_label, scales = "free_y") +
+      theme_bw(base_size = 11) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
+      labs(title = "Q/B method comparison - fish, by functional group",
+           subtitle = "Each point is one species x method; panels are FGs (not individual species)",
+           x = NULL, y = expression(Q/B~(year^-1)))
+    ggsave(file.path(plot_dir, "fish_QB_methods_comparison_by_FG.png"), p_qb_methods, width = 14, height = 11, dpi = 150)
+  }
+  
+  ## --- FG_PB_QB_comparison*.png - the final, chosen PB/QB-by-FG figure -
+  ## --- (dot-whisker, spread across ALL methods/dispatch groups, not ----
+  ## --- just fish). Paginated since height scales with FG count and -----
+  ## --- ggsave has a 50in hard limit. -------------------------------------
+  save_paginated_pb_qb_plot <- function(pb_mean, pb_long, qb_mean, qb_long, label_order,
+                                        pb_x_lab, qb_x_lab, file_prefix, plot_dir,
+                                        height_per_row = 0.35, width_in = 16, dpi = 150,
+                                        max_height_in = 40) {
+    n_per_page <- max(10, floor(max_height_in / height_per_row))
+    pages <- if (length(label_order) <= n_per_page) list(label_order) else split(label_order, ceiling(seq_along(label_order) / n_per_page))
+    saved <- character(0)
+    for (i in seq_along(pages)) {
+      page_labels <- pages[[i]]
+      page_height <- max(6, height_per_row * length(page_labels))
+      p_pb_i <- ggplot() +
+        geom_segment(data = pb_mean[Label %in% page_labels], aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label), linewidth = 0.7, colour = "black") +
+        geom_point(data = pb_mean[Label %in% page_labels], aes(x = Mean, y = Label), shape = "|", size = 5, colour = "black") +
+        geom_point(data = pb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method), shape = 21, size = 2.5, alpha = 0.7) +
+        scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
+        theme_bw(base_size = 12) + theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+        labs(x = pb_x_lab, y = NULL, colour = "Method", fill = "Method")
+      p_qb_i <- ggplot() +
+        geom_segment(data = qb_mean[Label %in% page_labels], aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label), linewidth = 0.7, colour = "black") +
+        geom_point(data = qb_mean[Label %in% page_labels], aes(x = Mean, y = Label), shape = "|", size = 5, colour = "black") +
+        geom_point(data = qb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method), shape = 21, size = 2.5, alpha = 0.7) +
+        scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
+        theme_bw(base_size = 12) + theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
+        labs(x = qb_x_lab, y = NULL, colour = "Method", fill = "Method")
+      p_combined_i <- p_pb_i + p_qb_i
+      fname <- if (length(pages) > 1) paste0(file_prefix, "_page", i, ".png") else paste0(file_prefix, ".png")
+      fpath <- file.path(plot_dir, fname)
+      ggsave(fpath, p_combined_i, width = width_in, height = page_height, dpi = dpi)
+      saved <- c(saved, fpath)
+    }
+    message("[05_validation.R plot] Saved: ", paste(basename(saved), collapse = ", "))
+    invisible(saved)
+  }
+  
+  exclude_cols <- c("PB", "QB", "PB_method", "QB_method")
+  all_pb_method_cols <- setdiff(grep("^PB_", names(results_pb_qb), value = TRUE), c(exclude_cols, grep("_source$", names(results_pb_qb), value = TRUE)))
+  all_qb_method_cols <- setdiff(grep("^QB_", names(results_pb_qb), value = TRUE), c(exclude_cols, grep("_source$", names(results_pb_qb), value = TRUE)))
+  
+  if (length(all_pb_method_cols) == 0 && length(all_qb_method_cols) == 0) {
+    message("[05_validation.R plot] FG_PB_QB_comparison skipped - no PB_*/QB_* method columns found in species_pb_qb_by_taxon_group.csv")
+  } else {
+    species_pb_long <- melt(results_pb_qb[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_pb_method_cols)],
+                            id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"), variable.name = "method", value.name = "PB")
+    species_pb_long[, method := gsub("^PB_", "", method)]
+    species_pb_long <- species_pb_long[!is.na(PB)]
+    
+    species_qb_long <- melt(results_pb_qb[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_qb_method_cols)],
+                            id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"), variable.name = "method", value.name = "QB")
+    species_qb_long[, method := gsub("^QB_", "", method)]
+    species_qb_long <- species_qb_long[!is.na(QB)]
+    
+    fg_pb_by_method <- species_pb_long[, .(PB = sum(Biomass * PB, na.rm = TRUE) / sum(Biomass[!is.na(PB)], na.rm = TRUE)), by = .(FG, FG_name, method)]
+    fg_qb_by_method <- species_qb_long[, .(QB = sum(Biomass * QB, na.rm = TRUE) / sum(Biomass[!is.na(QB)], na.rm = TRUE)), by = .(FG, FG_name, method)]
+    
+    ## FG_name already comes straight from species_pb_qb_by_taxon_group.csv
+    ## (03_pbqb-traits.R already resolved it there, including its own
+    ## FG_WMed_2026.csv fallback) - no separate external-reference join
+    ## needed here.
+    fg_pb_by_method[, FG_num := as.character(as.integer(FG))]
+    fg_qb_by_method[, FG_num := as.character(as.integer(FG))]
+    fg_pb_by_method[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), as.character(FG_num))]
+    fg_qb_by_method[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), as.character(FG_num))]
+    
+    fg_pb_mean <- fg_pb_by_method[, .(PB_mean = mean(PB, na.rm = TRUE), PB_sd = sd(PB, na.rm = TRUE)), by = .(FG_num, FG_label)]
+    fg_qb_mean <- fg_qb_by_method[, .(QB_mean = mean(QB, na.rm = TRUE), QB_sd = sd(QB, na.rm = TRUE)), by = .(FG_num, FG_label)]
+    
+    ## sorted NUMERICALLY by FG number, descending so the lowest FG number
+    ## sits at the TOP of the y-axis - same order shared by both PB and QB
+    ## plots so an FG sits on the same row in both.
+    fg_order_dt <- unique(rbindlist(list(fg_pb_mean[, .(FG_num, FG_label)], fg_qb_mean[, .(FG_num, FG_label)])))
+    fg_order_dt[, FG_num := as.numeric(FG_num)]
+    setorder(fg_order_dt, -FG_num)
+    fg_label_order <- fg_order_dt$FG_label
+    
+    fg_pb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
+    fg_pb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
+    fg_qb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
+    fg_qb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
+    
+    save_paginated_pb_qb_plot(
+      pb_mean   = copy(fg_pb_mean)[, .(Label = FG_label, Mean = PB_mean, SD = PB_sd)],
+      pb_long   = copy(fg_pb_by_method)[, .(Label = FG_label, Value = PB, method)],
+      qb_mean   = copy(fg_qb_mean)[, .(Label = FG_label, Mean = QB_mean, SD = QB_sd)],
+      qb_long   = copy(fg_qb_by_method)[, .(Label = FG_label, Value = QB, method)],
+      label_order = fg_label_order,
+      pb_x_lab  = expression(P/B~(year^-1)),
+      qb_x_lab  = expression(Q/B~(year^-1)),
+      file_prefix = "FG_PB_QB_comparison",
+      plot_dir    = plot_dir
+    )
+  }
+}
+
+## --- embed the standalone validation PNGs generated just above (and by --
+## --- 04_diets.R), so the compiled PDF really is "everything in one -----
+## --- place" rather than just this script's own new checks. -------------
 existing_pngs <- c(
   file.path(out_dir, "plots", "validation", "PQ_ratio_by_fg.png"),
   file.path(out_dir, "plots", "validation", "fg_pb_qb_scatter.png"),
@@ -757,14 +1024,10 @@ for (png_path in existing_pngs) {
   }, error = function(e) { message("[05_validation.R plot] could not embed ", png_path, " - ", conditionMessage(e)); NULL })
 }
 
-## FG_PB_QB_comparison_*.png - the final, chosen PB/QB-by-FG figure(s)
-## (03_pbqb-traits.R's save_paginated_pb_qb_plot(), one or more numbered
-## pages depending on how many FGs there are). 2026-09-29, per Andrea
-## ("no, all plots produced in validation05 should go to
-## /output/plots/validation"): 03_pbqb-traits.R now saves this directly
-## into validation_plot_dir (out_dir/plots/validation) rather than its
-## own pbqb-traits folder - matched here. Still globbed rather than a
-## fixed filename, since the number of pages varies with FG count.
+## FG_PB_QB_comparison_*.png - the final, chosen PB/QB-by-FG figure(s),
+## one or more numbered pages depending on how many FGs there are,
+## generated by save_paginated_pb_qb_plot() just above. Still globbed
+## rather than a fixed filename, since the page count varies with FG count.
 pb_qb_comparison_pngs <- sort(Sys.glob(file.path(out_dir, "plots", "validation", "FG_PB_QB_comparison*.png")))
 for (png_path in pb_qb_comparison_pngs) {
   embedded_png_pages[[basename(png_path)]] <- tryCatch({

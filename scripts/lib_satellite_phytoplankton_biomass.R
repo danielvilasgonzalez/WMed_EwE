@@ -49,6 +49,13 @@
 ## https://coastwatch.pfeg.noaa.gov/erddap/griddap/index.html?searchFor=chlorophyll
 ## for the current dataset id/variable name and pass them in directly.
 ##
+## 2026-09-30, per Andrea: same diagnostics upgrade as
+## lib_cmems_phytoplankton_biomass.R - every step below now prints its
+## own "[Satellite diag] ..." line with an explicit ok/fail verdict and,
+## on failure, the specific reason, so a blank Ecopath_B phytoplankton
+## row can be traced to an exact step from the console output alone.
+## grep for "[Satellite diag]" to see the whole trail in one place.
+##
 ##   out_dir              - where to write the output CSV (same out_dir
 ##                           the rest of the pipeline uses)
 ##   force_refresh         - FALSE (default): reuse the cached CSV if present.
@@ -80,70 +87,78 @@
 ##                           implement it later).
 ##   timeout_sec           - per-request HTTP timeout, default 60.
 fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
-                                                   bbox = c(lon_min = -2, lon_max = 12, lat_min = 36, lat_max = 44),
-                                                   proxy_years = 1997:1999,
-                                                   erddap_base = "https://coastwatch.pfeg.noaa.gov/erddap/griddap/",
-                                                   dataset_id = "erdSWchlamday",
-                                                   chl_var = "chlorophyll",
-                                                   c_chl_ratio = 50,
-                                                   integration_depth_m = 50,
-                                                   wet_weight_per_c = 10,
-                                                   large_phyto_fraction = 0.35,
-                                                   timeout_sec = 60) {
+                                                  bbox = c(lon_min = -2, lon_max = 12, lat_min = 36, lat_max = 44),
+                                                  proxy_years = 1997:1999,
+                                                  erddap_base = "https://coastwatch.pfeg.noaa.gov/erddap/griddap/",
+                                                  dataset_id = "erdSWchlamday",
+                                                  chl_var = "chlorophyll",
+                                                  c_chl_ratio = 50,
+                                                  integration_depth_m = 50,
+                                                  wet_weight_per_c = 10,
+                                                  large_phyto_fraction = 0.35,
+                                                  timeout_sec = 60) {
+  message("[Satellite diag] === fetch_satellite_phytoplankton_biomass() starting ===",
+          " dataset_id='", dataset_id, "', chl_var='", chl_var, "', proxy_years=",
+          min(proxy_years), "-", max(proxy_years), ".")
+  
   out_csv_path <- file.path(out_dir, "satellite_phytoplankton_biomass_by_fg.csv")
-
+  
   if (!force_refresh && file.exists(out_csv_path)) {
-    message("fetch_satellite_phytoplankton_biomass(): using cached ", out_csv_path,
+    message("[Satellite diag] Cache check: using cached ", out_csv_path,
             " (pass force_refresh = TRUE to re-query instead).")
     return(invisible(as.data.table(fread(out_csv_path))))
   }
-
+  message("[Satellite diag] Cache check: no cached file at ", out_csv_path, " (or force_refresh = TRUE) - proceeding to fetch.")
+  
   if (!requireNamespace("httr", quietly = TRUE)) {
-    message("fetch_satellite_phytoplankton_biomass(): 'httr' package is required - skipping.",
-            " Install it to enable this step.")
+    message("[Satellite diag] === RESULT: FAILED at package check === 'httr' package is required -",
+            " install it to enable this step.")
     return(invisible(NULL))
   }
-
+  message("[Satellite diag] Package check: ok ('httr' available).")
+  
   result <- tryCatch({
     library(httr); library(data.table)
-
+    
     t0 <- paste0(min(proxy_years), "-01-01")
     t1 <- paste0(max(proxy_years), "-12-31")
     url <- paste0(erddap_base, dataset_id, ".csv?", chl_var,
-                 "[(", t0, "):1:(", t1, ")]",
-                 "[(", bbox["lat_min"], "):1:(", bbox["lat_max"], ")]",
-                 "[(", bbox["lon_min"], "):1:(", bbox["lon_max"], ")]")
-    message("Fetching satellite chlorophyll-a from ERDDAP:\n  ", url,
+                  "[(", t0, "):1:(", t1, ")]",
+                  "[(", bbox["lat_min"], "):1:(", bbox["lat_max"], ")]",
+                  "[(", bbox["lon_min"], "):1:(", bbox["lon_max"], ")]")
+    message("[Satellite diag] Fetch attempt: GET ", url,
             "\n(", min(proxy_years), "-", max(proxy_years), " - the earliest ocean-colour years available at",
             " all, used here as the closest proxy to 1994-1996, which NO satellite record reaches back to.)")
-
+    
     resp <- tryCatch(httr::GET(url, httr::timeout(timeout_sec)),
                      error = function(e) {
-                       message("Failed to reach ERDDAP endpoint: ", conditionMessage(e))
+                       message("[Satellite diag] Fetch attempt: FAILED to reach ERDDAP endpoint - ", conditionMessage(e))
                        NULL
                      })
-    if (is.null(resp) || httr::status_code(resp) != 200) {
+    status <- if (!is.null(resp)) httr::status_code(resp) else NA
+    if (is.null(resp) || status != 200) {
       stop("Could not fetch chlorophyll data from '", url, "' (status: ",
-           if (!is.null(resp)) httr::status_code(resp) else "no response", "). The dataset_id ('",
+           if (!is.null(resp)) status else "no response", "). The dataset_id ('",
            dataset_id, "') or chl_var ('", chl_var, "') may have moved/changed - browse",
            " https://coastwatch.pfeg.noaa.gov/erddap/griddap/index.html?searchFor=chlorophyll",
            " for the current id/variable name and pass them in as arguments.")
     }
-
+    message("[Satellite diag] Fetch attempt: ok (HTTP 200).")
+    
     ## ERDDAP .csv responses have 2 header rows (names, then units) -
     ## skip the units row explicitly rather than assuming a fixed layout.
     raw_text <- httr::content(resp, as = "text", encoding = "UTF-8")
     chl_raw <- fread(text = raw_text, skip = 0, header = TRUE)
     chl_raw <- chl_raw[-1]  # drop the units row (row 1 after the header)
-    message("\nColumns returned by ERDDAP (verify one of these is really the chlorophyll",
-            " concentration, not just time/lat/lon):")
-    print(names(chl_raw))
-
+    message("[Satellite diag] Column check: columns returned by ERDDAP: ", paste(names(chl_raw), collapse = ", "),
+            " (looking for chl_var='", chl_var, "' or a known alias).")
+    
     col_chl <- intersect(c(chl_var, "chlorophyll", "chla", "chlor_a", "CHL1_mean"), names(chl_raw))[1]
     if (is.na(col_chl)) {
       stop("None of the expected chlorophyll column names were found in the ERDDAP response",
            " (columns present: ", paste(names(chl_raw), collapse = ", "), ").")
     }
+    message("[Satellite diag] Column check: ok (using '", col_chl, "').")
     chl_values <- as.numeric(chl_raw[[col_chl]])
     chl_values <- chl_values[is.finite(chl_values) & chl_values > 0]
     if (length(chl_values) == 0) {
@@ -151,18 +166,18 @@ fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE
            " range above directly in a browser.")
     }
     chl_mean_mg_m3 <- mean(chl_values)
-    message("\nMean Chl-a over ", length(chl_values), " grid cell x time observation(s), ",
+    message("[Satellite diag] Mean Chl-a over ", length(chl_values), " grid cell x time observation(s), ",
             min(proxy_years), "-", max(proxy_years), ", bbox lon ", bbox["lon_min"], " to ",
             bbox["lon_max"], "/lat ", bbox["lat_min"], " to ", bbox["lat_max"], ": ",
             round(chl_mean_mg_m3, 4), " mg/m3 (range ", round(min(chl_values), 4), "-",
             round(max(chl_values), 4), ").")
-
+    
     ## Conversion chain (see function header comment for the source/
     ## caveat behind each constant) - g/m2 numerically equals t/km2
     ## (1 t/km2 = 1e6 g / 1e6 m2 = 1 g/m2), so no further unit juggling
     ## is needed once wet weight is expressed per m2.
     total_biomass_t_km2 <- (chl_mean_mg_m3 * c_chl_ratio / 1000) * integration_depth_m * wet_weight_per_c
-
+    
     citation <- paste0("Satellite ocean-colour chlorophyll-a (ERDDAP ", dataset_id, ", ", chl_var,
                        "), ", min(proxy_years), "-", max(proxy_years), " mean (", round(chl_mean_mg_m3, 3),
                        " mg Chl/m3) - closest available years to 1994-1996 (no ocean-colour sensor reaches",
@@ -172,26 +187,26 @@ fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE
                        " Large/Small split is a fixed ", large_phyto_fraction, "/", round(1 - large_phyto_fraction, 2),
                        " fraction (a simplification - Uitz et al. 2006's Chl-based size-class model would",
                        " be more precise if implemented later).")
-
+    
     satellite_result <- data.table(
       TargetGroup = c("LargePhytoplankton", "SmallPhytoplankton"),
       Biomass_t_km2 = c(total_biomass_t_km2 * large_phyto_fraction,
                         total_biomass_t_km2 * (1 - large_phyto_fraction)),
       Source_citation = citation
     )
-
+    
     fwrite(satellite_result, out_csv_path)
-    message("\nSaved satellite_phytoplankton_biomass_by_fg.csv (", round(total_biomass_t_km2, 4),
-            " t/km2 total, split ", large_phyto_fraction, "/", round(1 - large_phyto_fraction, 2),
-            " Large/Small).")
-
+    message("[Satellite diag] === RESULT: SUCCESS === Saved satellite_phytoplankton_biomass_by_fg.csv (",
+            round(total_biomass_t_km2, 4), " t/km2 total, split ", large_phyto_fraction, "/",
+            round(1 - large_phyto_fraction, 2), " Large/Small).")
+    
     satellite_result
-
+    
   }, error = function(e) {
-    message("fetch_satellite_phytoplankton_biomass(): failed - ", conditionMessage(e),
-            ". Continuing without a satellite-derived phytoplankton biomass figure.")
+    message("[Satellite diag] === RESULT: FAILED === ", conditionMessage(e),
+            "\nContinuing without a satellite-derived phytoplankton biomass figure.")
     NULL
   })
-
+  
   invisible(result)
 }

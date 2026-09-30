@@ -3887,55 +3887,20 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                           out_dir)
   sheets_to_write <- list(Ecopath_B = ecopath_sheet)
   
-  ## --- PB_QB_spp scaffold (species x FG list, no PB/QB yet) --------------
-  ## Written here so the PB_QB_spp sheet EXISTS after Step 1 alone, not
-  ## only once 04_pbqb_calc.R (Step 4) has run - Step 1 has no PB/QB
-  ## computation of its own (that's entirely Step 4's job: life-history-
-  ## based estimates from FishBase/SeaLifeBase - growth, mortality,
-  ## trophic level - not derivable from survey density), so this
-  ## scaffold only carries what Step 1 DOES already know: which species
-  ## make up each FG and their biomass share (the same Species/FG_num/
-  ## Biomass/proportion as fg_spp_sheet above, renamed to PB_QB_spp's own
-  ## column convention: Density -> Biomass, prop_sp_fg -> prop_biomass_FG).
-  ## PB/QB and their own proportion columns are left blank (NA) until
-  ## Step 4 fills them in for real.
-  ##
-  ## Guarded against clobbering: if PB_QB_spp already exists in out_path
-  ## WITH real (non-NA) PB values - i.e. 04_pbqb_calc.R has already run
-  ## against this exact workbook - this scaffold is skipped entirely, so
-  ## re-running Step 1 (e.g. to refresh biomass after new survey data)
-  ## never wipes Step 4's real numbers back to blank. Step 4 itself
-  ## always fully replaces whatever PB_QB_spp it finds (scaffold or not)
-  ## via add_pbqb_to_ecopath_workbook()/upsert_workbook_sheets() - no
-  ## special-casing needed on that side.
-  ## 2026-09-17 update: PB_QB_spp is a native/intermediate table (not one
-  ## of the 9 final sheets), so its cross-run "has real data" guard now
-  ## reads the CSV written by add_pbqb_to_ecopath_workbook() instead of a
-  ## workbook sheet - that CSV is the only place PB_QB_spp lives now.
-  pbqb_spp_has_real_data <- FALSE
-  existing_pbqb_spp <- read_native_sheet_csv("PB_QB_spp", out_dir)
-  if (!is.null(existing_pbqb_spp) && "PB" %in% names(existing_pbqb_spp) &&
-      any(!is.na(existing_pbqb_spp$PB))) {
-    pbqb_spp_has_real_data <- TRUE
-  }
-  
-  if (!pbqb_spp_has_real_data) {
-    pbqb_spp_scaffold <- fg_spp_sheet[, .(FG_num, FG_name, Species,
-                                          Biomass = Density, prop_biomass_FG = prop_sp_fg)]
-    pbqb_spp_scaffold[, `:=`(PB = NA_real_, prop_biomass_PB = NA_real_,
-                             QB = NA_real_, prop_biomass_QB = NA_real_,
-                             Note = "PB/QB not yet computed - run 04_pbqb_calc.R (Step 4) to fill in")]
-    setorder(pbqb_spp_scaffold, FG_num, -Biomass)
-    write_native_sheet_csv(pbqb_spp_scaffold, "PB_QB_spp", out_dir)
-    message("PB_QB_spp written as a SCAFFOLD CSV (Species/FG_num/Biomass/prop_biomass_FG only -",
-            " PB/QB left blank) since Step 4 (04_pbqb_calc.R) hasn't run against this workbook",
-            " yet. Run 04_pbqb_calc.R afterward to fill in real PB/QB values - it replaces this",
-            " scaffold CSV with the full table automatically, no extra step needed here.")
-  } else {
-    message("PB_QB_spp already has real PB/QB data (04_pbqb_calc.R has already run against",
-            " this workbook) - leaving its CSV untouched rather than overwriting it with a",
-            " blank scaffold.")
-  }
+  ## 2026-09-30, per Andrea ("why is PB_QB_spp.csv here in the biomass",
+  ## " folder created? it shouldnt"): this used to write a PB_QB_spp
+  ## SCAFFOLD (species/FG_num/Biomass/prop_biomass_FG, PB/QB left blank)
+  ## into 01_biomass.R's own "biomass" output folder, so the sheet's
+  ## STRUCTURE existed after Step 1 alone, before 03_pbqb-traits.R
+  ## (Step 4) had run. Andrea doesn't want PB_QB_spp appearing in the
+  ## biomass folder at all - it belongs to 03_pbqb-traits.R exclusively
+  ## (add_pbqb_to_ecopath_workbook(), which writes it with REAL PB/QB
+  ## values into out_dir/pbqb-traits), same as traits_ewe.csv (see that
+  ## script's own comment on traits_ewe for the parallel fix). Removed
+  ## this scaffold step entirely - PB_QB_spp.csv now only ever exists
+  ## after 03_pbqb-traits.R has actually run, with real PB/QB in it from
+  ## the start, never a blank placeholder version living in a different
+  ## script's folder first.
   
   ## extra_sheets: named list of additional data.tables/data.frames the
   ## caller wants in the FINAL workbook alongside Ecopath_B - kept as a

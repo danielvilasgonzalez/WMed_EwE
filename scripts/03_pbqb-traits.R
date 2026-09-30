@@ -187,20 +187,15 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 plot_dir <- file.path(out_dir, "plots", "pbqb-traits")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
-## 2026-09-27: every plot below whose job is to QA/validate
-## the Ecopath inputs (PB vs QB scatter, method-comparison plots, F by
-## FG, the P/Q ratio check) goes into out_dir/plots/validation - nested
-## under plots/ (moved here from a separate top-level out_dir/validation
-## folder) - the SAME folder
-## 05_validation.R's own VALIDATION_DIR should point at (update that
-## script too if it still points at the old out_dir/validation path -
-## it wasn't part of this pass) - rather than the general plots/ folder,
-## so every diagnostic check for reviewing Ecopath inputs lives in one
-## place regardless of which script produced it. Non-validation plots
-## (e.g. traits/diet exploratory figures, if any) stay in plot_dir
+## The PB vs QB scatter, method-comparison plots, F by FG, and the P/Q
+## ratio plot all now live in 05_validation.R (built there from this
+## script's own species_pb_qb_by_taxon_group.csv/fg_pb_qb_weighted*.csv/
+## plausibility_flag_REVIEW.csv/PQ_ratio_by_fg_REVIEW.csv), so this
+## script no longer needs its own validation_plot_dir - every diagnostic
+## plot for reviewing Ecopath inputs is now built, and saved into
+## out_dir/plots/validation, from one place. Non-validation plots (e.g.
+## traits/diet exploratory figures, if any) stay in plot_dir
 ## (out_dir/plots/pbqb-traits) as before.
-validation_plot_dir <- file.path(out_dir, "plots", "validation")
-if (!dir.exists(validation_plot_dir)) dir.create(validation_plot_dir, recursive = TRUE)
 
 ## =================================================================
 ## FISHERIES_DATA_SOURCE: which of 02a_fisheries_multisource.R's four
@@ -2994,38 +2989,18 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
           " lower bound for any FG that's actually fished.")
 }
 
-## 2026-09-26: the standard Ecopath PB-vs-QB diagnostic scatter, at the
-## FG level (not species-level like p_pb/p_qb further down, which
-## compare estimation METHODS within one species) - lets a reviewer see
-## every FG's final PB_FG/QB_FG position at a glance, colored by which
-## dispatch group actually drove the calculation (fish/mammal/seabird/
-## invertebrate use different underlying methods - see calc_fish()/
-## calc_mammal()/calc_seabird()/calc_invertebrate() above), sized by
-## FG biomass so the ecologically-dominant groups stand out. A point
-## sitting well above the QB=PB reference line (P/Q ratio too high) or
-## with PB/QB both implausibly extreme for its dispatch group is
-## exactly what this plot is for catching before it goes into Ecopath.
-p_fg_pb_qb <- tryCatch({
-  dg_by_fg <- results[!is.na(dispatch_group), .(Biomass_dg = sum(Biomass, na.rm = TRUE)), by = .(FG, dispatch_group)]
-  dg_dominant <- dg_by_fg[dg_by_fg[, .I[which.max(Biomass_dg)], by = FG]$V1][, .(FG, dispatch_group)]
-  d <- merge(fg_weighted, dg_dominant, by = "FG", all.x = TRUE)
-  d <- d[!is.na(PB_FG) & !is.na(QB_FG)]
-  if (nrow(d) == 0) stop("no FG has both PB_FG and QB_FG")
-  label_layer <- if (requireNamespace("ggrepel", quietly = TRUE)) {
-    ggrepel::geom_text_repel(aes(label = FG_name), size = 2.2, max.overlaps = 15, show.legend = FALSE)
-  } else {
-    message("[FG PB/QB scatter] ggrepel not installed - falling back to plain (possibly overlapping) geom_text labels.")
-    geom_text(aes(label = FG_name), size = 2.2, vjust = -0.6, show.legend = FALSE)
-  }
-  ggplot(d, aes(x = PB_FG, y = QB_FG, color = dispatch_group, size = Biomass_FG)) +
-    geom_point(alpha = 0.75) +
-    label_layer +
-    scale_size_continuous(guide = "none") +
-    labs(title = "PB vs. QB by functional group", subtitle = "Point size = FG biomass; color = dominant dispatch group (fish/mammal/seabird/invertebrate)",
-         x = "PB_FG (/year)", y = "QB_FG (/year)", color = NULL) +
-    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
-}, error = function(e) { message("[FG PB/QB scatter] skipped - ", conditionMessage(e)); NULL })
-if (!is.null(p_fg_pb_qb)) ggsave(file.path(validation_plot_dir, "fg_pb_qb_scatter.png"), p_fg_pb_qb, width = 11, height = 9, dpi = 150, bg = "white")
+## The FG-level PB-vs-QB diagnostic scatter (fg_pb_qb_scatter.png) - and
+## every other validation-only plot this script used to build here (the
+## fish PB/QB methods-comparison plots, the FG_PB_QB_comparison dot-
+## whisker plot, F_by_fg.png, PQ_ratio_by_fg.png) - now lives in
+## 05_validation.R instead, built there directly from
+## species_pb_qb_by_taxon_group.csv and fg_pb_qb_weighted.csv (both
+## written just above), so every validation/QA plot's code sits in one
+## place (05_validation.R) rather than split across the two scripts that
+## happen to also write the CSVs it reads. This script's own job stays
+## computing and exporting those CSVs; 05_validation.R's job is
+## everything downstream of "is this plausible" - reading them back and
+## plotting.
 
 ## =================================================================
 ## Add PB_QB (+ PB_QB_spp) to output/ecopath_ecosim_inputs.xlsx
@@ -3114,101 +3089,12 @@ append_reference_columns_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 ## 02_fisheries.R already trimmed it earlier this session.
 trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
-## =================================================================
-## Method comparison plots - fish only, since that's the group with
-## the most independent methods (6 for PB, 4 for QB) and therefore the
-## most informative to compare. One point per method per species,
-## faceted by species so you can see at a glance how much the methods
-## agree or disagree - the CHOSEN method (the one actually used for the
-## FG-weighted average) is highlighted distinctly from the rest.
-## =================================================================
-
-fish_results <- results[dispatch_group == "fish"]
-
-## 2026-09-27 fix: faceting one panel per SPECIES produced mostly
-## single-point panels once there are hundreds of fish species, which
-## doesn't read as a useful comparison. Facet by FG instead: every fish species in
-## that FG shows up as its own set of points inside the same panel, so
-## the comparison is now "how much do these methods agree WITHIN this
-## FG" rather than one throwaway panel per species. FG_label built
-## straight off FG/FG_name already sitting on fish_results (from
-## species_df/results) - the external FG_WMed_2026.csv fallback
-## (build_fg_label(), defined further below) isn't needed here since
-## every fish species already has both.
-fish_results[, FG_label := paste0(FG, "_", FG_name)]
-fish_fg_order <- unique(fish_results[, .(FG, FG_label)])[order(FG)]
-fish_fg_label_order <- fish_fg_order$FG_label
-
-## --- PB methods ---------------------------------------------------------
-
-pb_cols <- c("PB_Pauly_1980", "PB_FishLife_2023", "PB_Gascuel_2008", "PB_Hoenig_1983", "PB_Then_2015", "PB_AlversonCarney_1975")
-fish_pb_long <- melt(fish_results[, c("Species", "FG_label", "PB_method", ..pb_cols)],
-                     id.vars = c("Species", "FG_label", "PB_method"), variable.name = "method", value.name = "PB")
-fish_pb_long[, method := gsub("^PB_", "", method)]
-fish_pb_long <- fish_pb_long[!is.na(PB)]
-fish_pb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
-
-## mark which row corresponds to the method actually chosen - PB_method
-## has suffixes like "+F(Y/B)" appended, so match on the method name
-## being contained in PB_method rather than requiring an exact match.
-## Keys here must match what gsub("^PB_", "", ...) produces from the
-## Estimate_Author_Year column names above.
-method_label_map <- c(Pauly_1980 = "Pauly 1980", FishLife_2023 = "FishLife",
-                      Gascuel_2008 = "Gascuel 2008", Hoenig_1983 = "Hoenig 1983",
-                      Then_2015 = "Then et al. 2015", AlversonCarney_1975 = "Alverson & Carney 1975")
-fish_pb_long[, is_chosen := mapply(function(m, chosen) grepl(method_label_map[[m]], chosen, ignore.case = TRUE),
-                                   method, PB_method)]
-
-p_pb <- ggplot(fish_pb_long, aes(x = method, y = PB)) +
-  geom_point(aes(color = is_chosen, size = is_chosen)) +
-  scale_color_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey50"),
-                     labels = c(`TRUE` = "Chosen for FG average", `FALSE` = "Other method"),
-                     name = NULL) +
-  scale_size_manual(values = c(`TRUE` = 4, `FALSE` = 2.5), guide = "none") +
-  facet_wrap(~ FG_label, scales = "free_y") +
-  theme_bw(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
-  labs(title = "P/B method comparison - fish, by functional group",
-       subtitle = "Each point is one species x method; panels are FGs (not individual species)",
-       x = NULL, y = expression(P/B~(year^-1)))
-
-ggsave(file.path(validation_plot_dir, "fish_PB_methods_comparison_by_FG.png"), p_pb, width = 14, height = 11, dpi = 150)
-
-## --- QB methods ---------------------------------------------------------
-
-qb_cols <- c("QB_PalomaresPauly_1998Z", "QB_PalomaresPauly_1998noZ", "QB_ChristensenPauly_1992", "QB_ChristensenEtAl_2008")
-fish_qb_long <- melt(fish_results[, c("Species", "FG_label", "QB_method", ..qb_cols)],
-                     id.vars = c("Species", "FG_label", "QB_method"), variable.name = "method", value.name = "QB")
-fish_qb_long[, method := gsub("^QB_", "", method)]
-fish_qb_long <- fish_qb_long[!is.na(QB)]
-fish_qb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
-
-qb_label_map <- c(PalomaresPauly_1998Z = "Z-based", PalomaresPauly_1998noZ = "non-Z",
-                  ChristensenPauly_1992 = "Christensen & Pauly", ChristensenEtAl_2008 = "Q/P=3")
-fish_qb_long[, is_chosen := mapply(function(m, chosen) grepl(qb_label_map[[m]], chosen, fixed = TRUE),
-                                   method, QB_method)]
-
-p_qb <- ggplot(fish_qb_long, aes(x = method, y = QB)) +
-  geom_point(aes(color = is_chosen, size = is_chosen)) +
-  scale_color_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey50"),
-                     labels = c(`TRUE` = "Chosen for FG average", `FALSE` = "Other method"),
-                     name = NULL) +
-  scale_size_manual(values = c(`TRUE` = 4, `FALSE` = 2.5), guide = "none") +
-  facet_wrap(~ FG_label, scales = "free_y") +
-  theme_bw(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
-  labs(title = "Q/B method comparison - fish, by functional group",
-       subtitle = "Each point is one species x method; panels are FGs (not individual species)",
-       x = NULL, y = expression(Q/B~(year^-1)))
-
-ggsave(file.path(validation_plot_dir, "fish_QB_methods_comparison_by_FG.png"), p_qb, width = 14, height = 11, dpi = 150)
-
-print(p_pb)
-print(p_qb)
-
-message("\nSaved: fish_PB_methods_comparison_by_FG.png, fish_QB_methods_comparison_by_FG.png (in ",
-        validation_plot_dir, ")")
-invisible(STAGE_PB$tick(tokens = list(stage_name = "Export CSVs + generate plots")))
+## Fish PB/QB method-comparison plots (one point per method per species,
+## faceted by FG, chosen method highlighted) also moved to
+## 05_validation.R - built there from species_pb_qb_by_taxon_group.csv's
+## own PB_method/QB_method and per-method PB_*/QB_* columns, filtered to
+## dispatch_group == "fish", the same data this block used in place.
+invisible(STAGE_PB$tick(tokens = list(stage_name = "Export CSVs")))
 
 ## =================================================================
 ## OUTPUT 1: Reference/provenance table - which study (Locality, Year)
@@ -3598,286 +3484,12 @@ message("Saved: workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
         " matching the old FG_WMed.xlsx sheet's visual convention. Anything reading this data back",
         " programmatically should use traits_ewe.csv instead of the Ecopath_traits sheet.")
 
-## =================================================================
-## OUTPUT 2: Dot-whisker comparison plots - species-level (spread
-## across ALL methods attempted, any dispatch group) and FG-level
-## (spread across the chosen PB/QB of species within each FG). PB and
-## QB shown side by side via patchwork for both.
-## =================================================================
-
-## patchwork already loaded at the top of this script.
-
-## --- Species-level: melt EVERY method column across ALL groups, not
-## just fish - dynamically detected by column name pattern rather than
-## hardcoded per group, so this stays correct if methods are added later
-exclude_cols <- c("PB", "QB", "PB_method", "QB_method")
-all_pb_method_cols <- setdiff(grep("^PB_", names(results), value = TRUE),
-                              c(exclude_cols, grep("_source$", names(results), value = TRUE)))
-all_qb_method_cols <- setdiff(grep("^QB_", names(results), value = TRUE),
-                              c(exclude_cols, grep("_source$", names(results), value = TRUE)))
-
-species_pb_long <- melt(results[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_pb_method_cols)],
-                        id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"),
-                        variable.name = "method", value.name = "PB")
-species_pb_long[, method := gsub("^PB_", "", method)]
-species_pb_long <- species_pb_long[!is.na(PB)]
-
-species_qb_long <- melt(results[, c("Species", "FG", "FG_name", "dispatch_group", "Biomass", ..all_qb_method_cols)],
-                        id.vars = c("Species", "FG", "FG_name", "dispatch_group", "Biomass"),
-                        variable.name = "method", value.name = "QB")
-species_qb_long[, method := gsub("^QB_", "", method)]
-species_qb_long <- species_qb_long[!is.na(QB)]
-
-species_pb_mean <- species_pb_long[, .(PB_mean = mean(PB, na.rm = TRUE), PB_sd = sd(PB, na.rm = TRUE)), by = .(Species, FG)]
-species_qb_mean <- species_qb_long[, .(QB_mean = mean(QB, na.rm = TRUE), QB_sd = sd(QB, na.rm = TRUE)), by = .(Species, FG)]
-
-## y-axis label includes the FG number in brackets, e.g. "Diplodus
-## annularis (35)" - built from FG (a species belongs to exactly one,
-## so this is a 1:1 label, not an aggregation)
-species_pb_mean[, Species_label := paste0(Species, " (", FG, ")")]
-species_pb_long[, Species_label := paste0(Species, " (", FG, ")")]
-species_qb_mean[, Species_label := paste0(Species, " (", FG, ")")]
-species_qb_long[, Species_label := paste0(Species, " (", FG, ")")]
-
-## Species ordered ALPHABETICALLY on the species name itself (not by
-## mean value, and not thrown off by the "(FG)" suffix), and the SAME
-## order used for both PB and QB plots so a species sits on the same
-## row in both, making the side-by-side comparison meaningful
-species_order_dt <- unique(rbindlist(list(species_pb_mean[, .(Species, Species_label)],
-                                          species_qb_mean[, .(Species, Species_label)])))
-setorder(species_order_dt, -Species)  # reversed so A is at the top, not bottom, on a ggplot y-axis
-species_label_order <- species_order_dt$Species_label
-
-species_pb_mean[, Species_label := factor(Species_label, levels = species_label_order)]
-species_pb_long[, Species_label := factor(Species_label, levels = species_label_order)]
-species_qb_mean[, Species_label := factor(Species_label, levels = species_label_order)]
-species_qb_long[, Species_label := factor(Species_label, levels = species_label_order)]
-
-## =================================================================
-## save_paginated_pb_qb_plot()
-##
-## height = 0.35 * n_rows (one row per species/FG) exceeds ggsave's
-## 50in hard limit once there are more than ~140 rows - hit exactly
-## this on the species-level plot. Raising the limit
-## (limitsize = FALSE) would "fix" the error but produce an image
-## nobody can actually read at any zoom level; paginating into
-## several page-sized PNGs is the useful fix, not a bigger file.
-##
-## Takes standardized-name copies of the mean/long data (Label, Mean,
-## SD, method, Value - renamed at each call site from the real
-## Species_label/PB_mean/... or FG_label/... columns) so this one
-## function serves both the species-level and FG-level plots below,
-## which are otherwise near-identical ggplot code.
-## =================================================================
-save_paginated_pb_qb_plot <- function(pb_mean, pb_long, qb_mean, qb_long, label_order,
-                                      pb_x_lab, qb_x_lab, file_prefix, plot_dir,
-                                      height_per_row = 0.35, width_in = 16, dpi = 150,
-                                      max_height_in = 40) {
-  n_per_page <- max(10, floor(max_height_in / height_per_row))
-  pages <- if (length(label_order) <= n_per_page) {
-    list(label_order)
-  } else {
-    split(label_order, ceiling(seq_along(label_order) / n_per_page))
-  }
-  
-  if (length(pages) > 1) {
-    message(length(label_order), " rows would need height = ",
-            round(height_per_row * length(label_order), 1), "in - over ggsave's 50in hard",
-            " limit. Split into ", length(pages), " page(s) of up to ", n_per_page,
-            " rows each (", file_prefix, "_page1.png, _page2.png, ...) instead of one",
-            " oversized image nobody could actually read.")
-  }
-  
-  saved <- character(0)
-  for (i in seq_along(pages)) {
-    page_labels <- pages[[i]]
-    page_height <- max(6, height_per_row * length(page_labels))
-    
-    p_pb_i <- ggplot() +
-      geom_segment(data = pb_mean[Label %in% page_labels],
-                   aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label),
-                   linewidth = 0.7, colour = "black") +
-      geom_point(data = pb_mean[Label %in% page_labels], aes(x = Mean, y = Label),
-                 shape = "|", size = 5, colour = "black") +
-      geom_point(data = pb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method),
-                 shape = 21, size = 2.5, alpha = 0.7) +
-      scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
-      theme_bw(base_size = 12) +
-      theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-      labs(x = pb_x_lab, y = NULL, colour = "Method", fill = "Method")
-    
-    p_qb_i <- ggplot() +
-      geom_segment(data = qb_mean[Label %in% page_labels],
-                   aes(x = Mean - SD, xend = Mean + SD, y = Label, yend = Label),
-                   linewidth = 0.7, colour = "black") +
-      geom_point(data = qb_mean[Label %in% page_labels], aes(x = Mean, y = Label),
-                 shape = "|", size = 5, colour = "black") +
-      geom_point(data = qb_long[Label %in% page_labels], aes(x = Value, y = Label, colour = method, fill = method),
-                 shape = 21, size = 2.5, alpha = 0.7) +
-      scale_colour_brewer(palette = "Set1") + scale_fill_brewer(palette = "Set1") +
-      theme_bw(base_size = 12) +
-      theme(legend.position = "bottom", panel.grid.minor.y = element_blank()) +
-      labs(x = qb_x_lab, y = NULL, colour = "Method", fill = "Method")
-    
-    p_combined_i <- p_pb_i + p_qb_i
-    fname <- if (length(pages) > 1) paste0(file_prefix, "_page", i, ".png") else paste0(file_prefix, ".png")
-    fpath <- file.path(plot_dir, fname)
-    ggsave(fpath, p_combined_i, width = width_in, height = page_height, dpi = dpi)
-    saved <- c(saved, fpath)
-    if (i == 1) print(p_combined_i)   # only the first page previewed inline
-  }
-  message("Saved: ", paste(basename(saved), collapse = ", "))
-  invisible(saved)
-}
-
-## 2026-09-27: the species-level view doesn't add much once FGs group
-## many species together - the species-level dot-whisker plot this
-## block used to save (species_PB_QB_comparison*.png, one row per
-## species) is no longer written. species_pb_mean/species_pb_long
-## themselves stay - the FG-level aggregation right below is built
-## directly from species_pb_long, so removing only the SAVE call here
-## costs nothing downstream.
-
-## --- FG-level: for EACH method, a biomass-weighted average across the
-## species within that FG that have a value for that method - mirrors
-## exactly what the species-level plot does (spread across methods),
-## just aggregated up one level, and colour-coded by method using the
-## SAME palette/mapping so a colour means the same thing in both plots.
-fg_pb_by_method <- species_pb_long[, .(
-  PB = sum(Biomass * PB, na.rm = TRUE) / sum(Biomass[!is.na(PB)], na.rm = TRUE)
-), by = .(FG, FG_name, method)]
-
-fg_qb_by_method <- species_qb_long[, .(
-  QB = sum(Biomass * QB, na.rm = TRUE) / sum(Biomass[!is.na(QB)], na.rm = TRUE)
-), by = .(FG, FG_name, method)]
-
-## Build "FGnum_FGname" labels - PRIORITIZES FG_name already present in
-## species_df/results (the reliable source: known FGs hand-labeled at
-## the input stage) over the external FG_WMed_2026.csv join, which is only
-## used as a fallback for FGs where species_df didn't already have a
-## name (e.g. a real run with many species not individually annotated).
-build_fg_label <- function(dt, label = "") {
-  dt[, FG_num := as.character(as.integer(FG))]
-  
-  ## fall back to the external reference ONLY where FG_name is missing
-  if (!is.null(fg_ref_unique) && dt[is.na(FG_name), .N] > 0) {
-    match_idx <- match(dt$FG_num, fg_ref_unique$FG)
-    dt[is.na(FG_name), FG_name := fg_ref_unique$FG_name[match_idx[is.na(FG_name)]]]
-  }
-  
-  n_matched <- dt[!is.na(FG_name), uniqueN(FG_num)]
-  n_total <- uniqueN(dt$FG_num)
-  message("  [", label, "] FG name available: ", n_matched, "/", n_total, " FGs.")
-  if (n_matched < n_total) {
-    message("    Still missing a name for FG numbers: ", paste(sort(unique(dt[is.na(FG_name), FG_num])), collapse = ", "))
-  }
-  
-  dt[, FG_label := fifelse(!is.na(FG_name), paste0(FG_num, "_", FG_name), as.character(FG_num))]
-  dt
-}
-fg_pb_by_method <- build_fg_label(fg_pb_by_method, "PB")
-fg_qb_by_method <- build_fg_label(fg_qb_by_method, "QB")
-
-fg_pb_mean <- fg_pb_by_method[, .(PB_mean = mean(PB, na.rm = TRUE), PB_sd = sd(PB, na.rm = TRUE)),
-                              by = .(FG_num, FG_label)]
-fg_qb_mean <- fg_qb_by_method[, .(QB_mean = mean(QB, na.rm = TRUE), QB_sd = sd(QB, na.rm = TRUE)),
-                              by = .(FG_num, FG_label)]
-
-## sorted NUMERICALLY by FG number (not alphabetically on the label,
-## which would wrongly put "10_x" before "2_y"), same order shared by
-## both PB and QB plots so an FG sits on the same row in both
-fg_order_dt <- unique(rbindlist(list(fg_pb_mean[, .(FG_num, FG_label)],
-                                     fg_qb_mean[, .(FG_num, FG_label)])))
-fg_order_dt[, FG_num := as.numeric(FG_num)]
-setorder(fg_order_dt, -FG_num)  # descending so lowest FG number is at the TOP of the y-axis
-fg_label_order <- fg_order_dt$FG_label
-
-fg_pb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
-fg_pb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
-fg_qb_mean[, FG_label := factor(FG_label, levels = fg_label_order)]
-fg_qb_by_method[, FG_label := factor(FG_label, levels = fg_label_order)]
-
-## 2026-09-27: the pbqb-traits plots folder was ending up empty - this
-## is this script's main deliverable figure (the final, chosen PB/QB
-## per FG - not a methods comparison), so it was moved into this
-## script's own plot_dir (out_dir/plots/pbqb-traits).
-##
-## 2026-09-29, per Andrea ("all plots in validation code should be
-## included in the validation subfolders, also the fishing mortality and
-## PB QB comparison") and then again, more plainly, ("no, all plots
-## produced in validation05 should go to /output/plots/validation"):
-## REVERSED the 2026-09-27 change in full. F_by_fg.png and
-## PQ_ratio_by_fg.png already moved back to validation_plot_dir earlier
-## today; this does the same for FG_PB_QB_comparison*.png (the "PB QB
-## comparison" figure itself, not just the methods-comparison ones) -
-## previously it stayed in plot_dir and was only pulled into
-## validation_plots_ALL.pdf via a Sys.glob() reference into that other
-## folder. Andrea was clear that isn't good enough - every plot that
-## feeds the validation deck needs to physically live in
-## output/plots/validation, not just be readable from there. All of this
-## script's validation-type figures - FG_PB_QB_comparison*.png,
-## F_by_fg.png, PQ_ratio_by_fg.png, fg_pb_qb_scatter.png, and the two
-## fish_*_methods_comparison_by_FG.png plots - now save into
-## validation_plot_dir uniformly. (plot_dir, out_dir/plots/pbqb-traits,
-## is consequently unused again - left defined rather than removed, in
-## case a future genuinely pbqb-traits-only figure needs it.)
-save_paginated_pb_qb_plot(
-  pb_mean   = copy(fg_pb_mean)[, .(Label = FG_label, Mean = PB_mean, SD = PB_sd)],
-  pb_long   = copy(fg_pb_by_method)[, .(Label = FG_label, Value = PB, method)],
-  qb_mean   = copy(fg_qb_mean)[, .(Label = FG_label, Mean = QB_mean, SD = QB_sd)],
-  qb_long   = copy(fg_qb_by_method)[, .(Label = FG_label, Value = QB, method)],
-  label_order = fg_label_order,
-  pb_x_lab  = expression(P/B~(year^-1)),
-  qb_x_lab  = expression(Q/B~(year^-1)),
-  file_prefix = "FG_PB_QB_comparison",
-  plot_dir    = validation_plot_dir
-)
-
-message("\nSaved: FG_PB_QB_comparison*.png (in ", validation_plot_dir, ")")
-
-## =================================================================
-## OUTPUT 2b: Fishing mortality (F) by FG, and the P/Q (PB_FG/QB_FG)
-## ratio check - 2026-09-27: added fishing-mortality and P/Q validation
-## figures alongside the existing Ecopath-input QA plots. Both written to validation_plot_dir alongside
-## the other QA plots above.
-## =================================================================
-
-## --- F by FG --------------------------------------------------------
-## F isn't one single column today: for a fish FG with at least one
-## species carrying a real per-species Fmort (calc_fish()'s own Y/B
-## fallback - see n_species_with_F above), F lives at the SPECIES
-## level and was already folded into PB_FG upstream; for every other
-## FG (no species-level F at all), fg_weighted$F_FG (Yield_FG /
-## Biomass_FG, added above when FG_YIELD_SOURCE == "fg_catch_csv") is
-## the only F this run has. This combines both into one F_for_plot
-## per FG so the plot doesn't just silently omit every fish FG.
-p_f_by_fg <- tryCatch({
-  species_F_by_fg <- results[!is.na(Fmort), .(
-    F_species_weighted = sum(Biomass * Fmort, na.rm = TRUE) / sum(Biomass[!is.na(Fmort)], na.rm = TRUE)
-  ), by = .(FG, FG_name)]
-  f_dt <- merge(fg_weighted[, .(FG, FG_name, Biomass_FG,
-                                F_FG = if ("F_FG" %in% names(fg_weighted)) F_FG else NA_real_)],
-                species_F_by_fg, by = c("FG", "FG_name"), all = TRUE)
-  f_dt[, F_for_plot := fifelse(!is.na(F_species_weighted), F_species_weighted, F_FG)]
-  f_dt <- f_dt[!is.na(F_for_plot)]
-  if (nrow(f_dt) == 0) stop("no FG has an F value yet (species-level Fmort AND fg_weighted$F_FG both empty - ",
-                            "run 02_fisheries.R first and set FG_YIELD_SOURCE <- 'fg_catch_csv')")
-  f_dt[, F_source := fifelse(!is.na(F_species_weighted), "Species-level (Fmort)", "FG-level (Yield_FG/Biomass_FG)")]
-  f_dt[, FG_label := paste0(as.integer(FG), "_", FG_name)]
-  f_dt <- f_dt[order(-F_for_plot)]
-  f_dt[, FG_label := factor(FG_label, levels = FG_label)]
-  ggplot(f_dt, aes(x = F_for_plot, y = reorder(FG_label, F_for_plot), fill = F_source)) +
-    geom_col() +
-    labs(title = "Fishing mortality (F) by functional group",
-         subtitle = "Biomass-weighted mean of species-level Fmort where any exists, else Yield_FG / Biomass_FG",
-         x = expression(F~(year^-1)), y = NULL, fill = "Source") +
-    theme_minimal(base_size = 7) + theme(legend.position = "bottom")
-}, error = function(e) { message("[F by FG plot] skipped - ", conditionMessage(e)); NULL })
-if (!is.null(p_f_by_fg)) {
-  ggsave(file.path(validation_plot_dir, "F_by_fg.png"), p_f_by_fg,
-         width = 10, height = max(8, 0.16 * nrow(p_f_by_fg$data)), dpi = 150, bg = "white", limitsize = FALSE)
-  message("Saved: F_by_fg.png (in ", validation_plot_dir, ")")
-}
+## OUTPUT 2 (dot-whisker species/FG PB-QB comparison, FG_PB_QB_comparison*.png)
+## and the F-by-FG plot (F_by_fg.png) both moved to 05_validation.R -
+## built there from species_pb_qb_by_taxon_group.csv and
+## fg_pb_qb_weighted.csv/fg_pb_qb_weighted_with_F.csv, the same data
+## this block used directly in memory. This script's job stops at
+## exporting those CSVs.
 
 ## --- P/Q ratio check --------------------------------------------------
 ## Standard Ecopath sanity check: P/Q (= PB_FG / QB_FG) outside a
@@ -3921,31 +3533,24 @@ fwrite(plausibility_dt, file.path(csv_out_dir, "plausibility_flag_REVIEW.csv"))
 message("[PB/QB plausibility check] plausibility_flag_REVIEW.csv written (", nrow(plausibility_dt), " FG(s): ",
         plausibility_dt[, .N, by = plausibility_flag][, paste0(plausibility_flag, "=", N, collapse = ", ")], ").")
 
-p_pq_ratio <- tryCatch({
-  pq_dt <- fg_weighted[!is.na(PB_FG) & !is.na(QB_FG) & QB_FG > 0, .(FG, FG_name, PB_FG, QB_FG)]
-  if (nrow(pq_dt) == 0) stop("no FG has both PB_FG and QB_FG")
-  pq_dt[, PQ_ratio := PB_FG / QB_FG]
-  pq_dt[, flag := fifelse(PQ_ratio < 0.05 | PQ_ratio > 0.3, "Outside typical 0.05-0.3 range", "Within typical range")]
-  pq_dt[, FG_label := paste0(as.integer(FG), "_", FG_name)]
-  pq_dt <- pq_dt[order(-PQ_ratio)]
-  pq_dt[, FG_label := factor(FG_label, levels = FG_label)]
+## PQ_ratio_by_fg_REVIEW.csv is still written HERE (the data check stays
+## with the rest of this script's own QA computations, right alongside
+## plausibility_flag_REVIEW.csv above) - only the PQ_ratio_by_fg.png
+## PLOT itself moved to 05_validation.R, which reads this CSV back and
+## draws it there, consistent with every other validation plot.
+pq_dt <- tryCatch({
+  d <- fg_weighted[!is.na(PB_FG) & !is.na(QB_FG) & QB_FG > 0, .(FG, FG_name, PB_FG, QB_FG)]
+  if (nrow(d) == 0) stop("no FG has both PB_FG and QB_FG")
+  d[, PQ_ratio := PB_FG / QB_FG]
+  d[, flag := fifelse(PQ_ratio < 0.05 | PQ_ratio > 0.3, "Outside typical 0.05-0.3 range", "Within typical range")]
+  d
+}, error = function(e) { message("[P/Q ratio check] skipped - ", conditionMessage(e)); NULL })
+if (!is.null(pq_dt)) {
   n_flagged <- pq_dt[flag != "Within typical range", .N]
   message("[P/Q ratio check] ", n_flagged, " of ", nrow(pq_dt), " FG(s) fall outside the typical 0.05-0.3",
-          " P/Q range - not necessarily wrong, but worth a second look (see P_Q_ratio_by_fg.png / REVIEW csv).")
+          " P/Q range - not necessarily wrong, but worth a second look (see PQ_ratio_by_fg_REVIEW.csv,",
+          " plotted in 05_validation.R's PQ_ratio_by_fg.png).")
   fwrite(pq_dt, file.path(csv_out_dir, "PQ_ratio_by_fg_REVIEW.csv"))
-  ggplot(pq_dt, aes(x = PQ_ratio, y = reorder(FG_label, PQ_ratio), color = flag)) +
-    geom_point(size = 2) +
-    geom_vline(xintercept = c(0.05, 0.3), linetype = "dashed", colour = "grey40") +
-    scale_color_manual(values = c("Within typical range" = "grey30", "Outside typical 0.05-0.3 range" = "firebrick")) +
-    labs(title = "P/Q ratio (PB_FG / QB_FG) by functional group",
-         subtitle = "Dashed lines = typical 0.05-0.3 review band, not a hard cutoff",
-         x = "P/Q", y = NULL, color = NULL) +
-    theme_minimal(base_size = 7) + theme(legend.position = "bottom")
-}, error = function(e) { message("[P/Q ratio plot] skipped - ", conditionMessage(e)); NULL })
-if (!is.null(p_pq_ratio)) {
-  ggsave(file.path(validation_plot_dir, "PQ_ratio_by_fg.png"), p_pq_ratio,
-         width = 10, height = max(8, 0.16 * nrow(p_pq_ratio$data)), dpi = 150, bg = "white", limitsize = FALSE)
-  message("Saved: PQ_ratio_by_fg.png (in ", validation_plot_dir, ")")
 }
 
 ## =================================================================

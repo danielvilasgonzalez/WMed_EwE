@@ -311,10 +311,14 @@ source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # load 
 ## of their own) - this script's area figure below should never depend
 ## on whether 01_biomass.R happened to run first against this out_dir.
 download_gfcm_gsa_shapefile <- function() {
+  ## Same "shapefiles" subfolder convention as 01_biomass.R's copy of
+  ## this function - reads out_dir/shapefiles/GFCM_GSA_shp/GFCM_GSA/
+  ## gfcm_gsa.shp whenever it's already there, and only downloads/
+  ## unzips into that same subfolder when it's missing.
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-  gsa_zip_file <- file.path(out_dir, "GFCM_GSA.zip")
-  gsa_shp_dir  <- file.path(out_dir, "GFCM_GSA_shp")
-  if (!dir.exists(gsa_shp_dir)) {
+  gsa_shp_dir  <- file.path(out_dir, "shapefiles", "GFCM_GSA_shp")
+  gsa_zip_file <- file.path(out_dir, "shapefiles", "GFCM_GSA.zip")
+  if (!dir.exists(gsa_shp_dir) || length(list.files(gsa_shp_dir, pattern = "\\.shp$", recursive = TRUE)) == 0) {
     if (!file.exists(gsa_zip_file)) {
       dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
       download.file(gsa_zip_url, destfile = gsa_zip_file, mode = "wb", method = "libcurl")
@@ -500,7 +504,7 @@ extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull 
 
 ## =================================================================
 ## Bare taxonomic-rank matching + biomass-weighted FG split (2026-09-24,
-## per Andrea: "in the scientific name, sometimes appear family or
+## per project decision: "in the scientific name, sometimes appear family or
 ## order or class or phylum ... matching with taxonomy in FG_WMed_2026
 ## could get more[/less] the FGs that this catch belongs and we can
 ## split if multiple"). Both GFCM's own cascade and STECF FDI's (via
@@ -589,6 +593,44 @@ split_by_biomass <- function(fg_weights) {
     fg_weights[, Split_weight := 1 / .N]
   }
   fg_weights[, .(FG_num, FG_name, Split_weight, matched_rank)]
+}
+
+## 2026-09-30, per the review of species_fg_matched.csv (unresolved-
+## but-matchable examples: "anomuran decapods", "aquatic invertebrates
+## nei", "edible crab", "marine crabs nei", "marine crustaceans nei",
+## "various squids nei", "various sharks nei"): match_bare_rank_to_fg()'s
+## tiered ladder is Genus > Family > Order > Class > Phylum -
+## taxonomy_rank_ref (species_inventory_with_taxonomy.csv, from
+## 01_biomass.R) only carries those 5 standard Linnean ranks. But FAO's
+## own ASFIS aggregate/NEI names for invertebrates very often resolve
+## (via fao_species$Scientific_Name) to an INFRAORDER/SUPERORDER Latin
+## name that sits BETWEEN Family and Order taxonomically (e.g. "Anomura"
+## and "Brachyura" - both infraorders of the crab/hermit-crab-like
+## Decapoda) - a rank the 5-tier ladder has no column for at all, so
+## these silently fell through every tier and stayed "unresolved"
+## (dropped, not even equally split) rather than reaching the biomass-
+## weighted split this whole mechanism exists to do. This alias table
+## rewrites a handful of the common ones onto the real Order they belong
+## to (verified standard taxonomy, not a guess) so they now hit the
+## existing Order tier and get a real biomass-weighted multi-FG split
+## like any other bare-rank match - no new matching logic, just letting
+## known infraorder synonyms reach the tier that already handles them.
+## NOTE: this does not by itself guarantee e.g. "Edible crab" (a common
+## name for the single species Cancer pagurus, not an aggregate/NEI
+## code at all) resolves - that depends on Cancer pagurus actually being
+## present in FG_WMed_2026.csv's own species list; if it's still
+## unresolved after this fix, the species is most likely just missing
+## from FG_WMed_2026.csv itself (a species-list completeness gap, not a
+## matching-cascade gap) and should be checked there.
+RANK_ALIAS_TO_ORDER <- c(
+  "Anomura" = "Decapoda", "Brachyura" = "Decapoda", "Reptantia" = "Decapoda",
+  "Natantia" = "Decapoda", "Caridea" = "Decapoda", "Penaeidea" = "Decapoda",
+  "Dendrobranchiata" = "Decapoda", "Macrura" = "Decapoda",
+  "Sepioidea" = "Sepiida", "Teuthoidea" = "Teuthida", "Decapodiformes" = "Teuthida"
+)
+apply_rank_alias <- function(query_clean) {
+  hit <- RANK_ALIAS_TO_ORDER[names(RANK_ALIAS_TO_ORDER) == query_clean]
+  if (length(hit) > 0) unname(hit[1]) else query_clean
 }
 
 blank_row <- unmatched_species[is.na(Species) | Species == ""]  # rows with no species name at all
@@ -881,7 +923,7 @@ rank_split_matches <- data.table(Species = character(), FG_num = numeric(), FG_n
 if (!is.null(taxonomy_rank_ref) && nrow(remaining) > 0) {
   rank_candidates <- unique(fao_sci_bridge[Species %in% remaining$Species, .(Species, Scientific_Name)])
   if (nrow(rank_candidates) > 0) {
-    rank_candidates[, query_clean := strip_rank_suffixes(Scientific_Name)]
+    rank_candidates[, query_clean := vapply(strip_rank_suffixes(Scientific_Name), apply_rank_alias, character(1))]
     for (i in seq_len(nrow(rank_candidates))) {
       fg_weights <- match_bare_rank_to_fg(rank_candidates$query_clean[i], taxonomy_rank_ref)
       if (!is.null(fg_weights)) {
@@ -1063,7 +1105,7 @@ rerun_species_fg_cascade <- function(species_names) {
   todo <- todo[!Species %in% out$Species]
   
   ## Bare taxonomic-rank match + biomass-weighted split (2026-09-24,
-  ## per Andrea) - same step as the main GFCM cascade above, just
+  ## per project decision) - same step as the main GFCM cascade above, just
   ## callable again here since this rerun cascade is the ONLY matching
   ## STECF FDI's still-unmatched codes ever go through (via
   ## code_has_name$Species, further down in this script).
@@ -1072,7 +1114,7 @@ rerun_species_fg_cascade <- function(species_names) {
                                            .(Name_En, Scientific_Name)]),
                   by.x = "Species", by.y = "Name_En")
     if (nrow(fsb2) > 0) {
-      fsb2[, query_clean := strip_rank_suffixes(Scientific_Name)]
+      fsb2[, query_clean := vapply(strip_rank_suffixes(Scientific_Name), apply_rank_alias, character(1))]
       for (i in seq_len(nrow(fsb2))) {
         fg_weights <- match_bare_rank_to_fg(fsb2$query_clean[i], taxonomy_rank_ref)
         if (!is.null(fg_weights)) {
@@ -1558,13 +1600,13 @@ fleet_prop[is.na(fleet_split_source) | fleet_split_source == "", fleet_split_sou
 message("\n[Fleet split] fleet_prop: ", nrow(fleet_prop), " Country x FG x FleetType share row(s).")
 
 ## --- GFCM Fleet Register vessel-count override (Morocco/Algeria) -----
-## 2026-09-23, per Andrea: real registered-vessel counts by gear exist
+## 2026-09-23, per project decision: real registered-vessel counts by gear exist
 ## for every FLEET_REGISTER country in GFCM-FleetRegister.xlsx
 ## (pcloud_dir/data/Complementary data/GFCM-FleetRegister.xlsx, sheet
 ## "FleetRegister") - a genuine GFCM fleet-register source (checked:
 ## GFCM's own public Regional Fleet Register is a view-only Power BI
 ## dashboard with no bulk export, so this local copy is the only usable
-## form of it). Applied HERE only to Morocco and Algeria, per Andrea's
+## form of it). Applied HERE only to Morocco and Algeria, per the
 ## explicit scope (Tunisia intentionally excluded this round; France/
 ## Spain/Italy already have a better source - STECF FDI's own real
 ## per-year catch-based split). Vessel-count share is used directly as
@@ -1584,7 +1626,7 @@ message("\n[Fleet split] fleet_prop: ", nrow(fleet_prop), " Country x FG x Fleet
 ## data rows, then a blank row before the next country's block.
 GFCM_FLEET_REGISTER_XLSX <- file.path(pcloud_dir, "data/Complementary data/GFCM-FleetRegister.xlsx")
 GFCM_FLEET_REGISTER_SHEET <- "FleetRegister"
-GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- c("Morocco", "Algeria")  # scope, per Andrea - add "Tunisia" here if she wants it included later
+GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- c("Morocco", "Algeria")  # scope, per project decision - add "Tunisia" here if she wants it included later
 GFCM_FLEET_REGISTER_SOURCE_LABEL <- "GFCM Fleet Register (real registered-vessel count by gear, Complementary data/GFCM-FleetRegister.xlsx) - assumes roughly equal catch-per-vessel across gears, no FG/year variation"
 
 parse_gfcm_fleet_register <- function(path, sheet) {
@@ -1595,7 +1637,7 @@ parse_gfcm_fleet_register <- function(path, sheet) {
   ## Algeria/Tunisia's blocks start with a "c2 == 'Operant a:'" sub-
   ## header row, but France/Spain/Italy's blocks are just a bare country-
   ## name row (c2/c3/c4 all blank) straight into data rows, confirmed
-  ## against Andrea's actual pasted sheet content (2026-09-23) - relying
+  ## against the project's actual pasted sheet content (2026-09-23) - relying
   ## on "Operant a:" alone silently mis-attributed every France/Spain/
   ## Italy row to whichever country came right before them. Robust rule
   ## instead: c4 (Number of vessels) is a real number ONLY on an actual
@@ -2390,7 +2432,7 @@ if (!dir.exists(stecf_catches_dir)) {
           rerun_code_to_fg <- unique(merge(code_has_name, rerun_matches[, .(Species, FG_num, FG_name, Split_weight)], by = "Species")[, .(SpeciesCode, FG_num, FG_name, Split_weight)])
           ## 2026-09-24: was an in-place `:=` update via match() (grabs
           ## only the FIRST FG per code) - replaced with a proper fan-out
-          ## merge, since a taxonomy-rank-split code (per Andrea: a bare
+          ## merge, since a taxonomy-rank-split code (per project decision: a bare
           ## Family/Order/Class/Phylum name in the resolved "scientific
           ## name") now correctly resolves to MORE than one candidate FG,
           ## and match()-based assignment would silently keep only the
@@ -2596,7 +2638,7 @@ if (nrow(multistanza_fg_pairs) == 0) {
         ## Loader shared by both Age files - deliberately defensive about
         ## the exact schema (long: one row per age class via an "age"-
         ## like column; or wide: one column per age class) since neither
-        ## has been confirmed against Andrea/Daniel's real download yet -
+        ## has been confirmed against the team's real download yet -
         ## every column-detection step below prints what it actually
         ## found so a schema mismatch is visible in the console, not a
         ## silent zero.
@@ -3290,7 +3332,7 @@ if (nrow(stecf_fdi_catch_by_gsa) > 0) {
             " tonnage runs higher than GFCM's for that Country x FG, and vice versa).")
     
     ## -----------------------------------------------------------------
-    ## Zero-catch backfill (2026-09, added per Andrea): the calibration
+    ## Zero-catch backfill (2026-09, added per project decision): the calibration
     ## above is purely MULTIPLICATIVE (Catch_t_stecf / Catch_t_gfcm), so
     ## it can never fix a Country x FG cell where GFCM's own overlap-year
     ## average is ~0 - the ratio is undefined (NA) and gets filtered out
@@ -3356,7 +3398,7 @@ if (nrow(gfcm_zero_catch_fdi_backfill) > 0) {
   ## Year-specific real STECF catch, where it exists, is used DIRECTLY -
   ## not the flat overlap-year average - and only years STECF has NO
   ## coverage for at all (pre-2014 always; a gap year even within
-  ## 2014+) fall back to the average (2026-09, per Andrea's own review:
+  ## 2014+) fall back to the average (2026-09, per the own review:
   ## "if no fdi data the species will be present during the whole time
   ## simulation" - a flat merge on Country x FG alone, ignoring Year,
   ## was overwriting EVERY year - including 2014+ years where FDI's own
@@ -3829,7 +3871,7 @@ ICCAT_COL_ALIASES <- list(
   flag         = c("FlagName", "Flag", "Country"),  # 2026-09-26: FlagName preferred over the generic "Flag" alias below - see the FlagName/PartyName note further down
   catch_t      = c("Qty_t", "Qty", "Catch_t", "CatchWt", "Catch(t)", "Value"),
   ## 2026-09-26, added once a real ICCAT Task I download (t1nc_20260129_ALL.xlsx,
-  ## sent by Andrea) was available to check against: its "Data" sheet's real
+  ## sent by the project owner) was available to check against: its "Data" sheet's real
   ## headers are RecID/Species/ScieName/SPFamily/SpeciesGrp/YearC/Decade/Lustrum/
   ## PartyStatus/PartyName/FlagName/FleetCode/Stock/SampAreaCode/Area/SpcGearGrp/
   ## GearGrp/GearCode/CatchTypeCode/FishZoneCode/QualInfoCode/CnvFactor/
@@ -3869,7 +3911,7 @@ fetch_iccat_task1_nominal_catches <- function(cache_dir) {
   }
   
   ## 2026-09-26: check for a manually-placed file directly in cache_dir
-  ## FIRST, before attempting any download - lets Andrea/Daniel just drop
+  ## FIRST, before attempting any download - lets the team just drop
   ## ICCAT's own Task I export (downloaded by hand from
   ## https://www.iccat.int/en/accesingdb.HTML, e.g. "t1nc_20260129_ALL.xlsx")
   ## straight into ICCAT_DIR (pcloud_dir/data/fisheries/ICCAT) without
@@ -3980,7 +4022,7 @@ fetch_iccat_task1_nominal_catches <- function(cache_dir) {
 
 ## =====================================================================
 ## ICCAT Task I "Vessels Actively Fishing" (ST01 form), 2026-09-26.
-## Andrea asked whether this would help refine the ICCAT-derived catch
+## it was asked whether this would help refine the ICCAT-derived catch
 ## numbers - it does NOT (it has no catch weights at all, see below),
 ## but it DOES give something the T1NC catch data can never provide:
 ## real per-vessel length (LOA_m) by country + gear, which is exactly
@@ -4121,7 +4163,7 @@ if (is.null(iccat_raw)) {
   ## "Flag" alias, and why the crosswalk below matches on FlagName, not
   ## PartyName/Country.
   ##
-  ## Per Andrea's explicit decision (2026-09-26): Catches_Ecopath/
+  ## Per the project's explicit decision (2026-09-26): Catches_Ecopath/
   ## Ecopath_L should reflect only THIS model's own 6 target countries'
   ## real ICCAT-reported catch - NOT the full Mediterranean-wide ICCAT
   ## total for these highly-migratory stocks (checked against the real
@@ -4304,7 +4346,7 @@ if (is.null(iccat_raw)) {
   ## Whole-Mediterranean total, EVERY reporting flag included - kept only
   ## as a transparency cross-check (written below), NOT used for
   ## Catches_Ecopath/Ecopath_L (see the FlagName/PartyName comment above
-  ## for why: per Andrea's 2026-09-26 decision, this model only counts
+  ## for why: per the 2026-09-26 decision, this model only counts
   ## catch from its own 6 target countries, same as every other FG).
   iccat_wholemed_by_fg <- iccat_raw[, .(iccat_wholemed_catches_t = sum(Catch_t_iccat, na.rm = TRUE)),
                                     by = .(FG_num, FG_name, Year)]
@@ -4317,7 +4359,7 @@ if (is.null(iccat_raw)) {
   ## combined figure when reporting the whole assessed stock's total
   ## removals (iccat_wholemed_by_fg's purpose). But once catch is being
   ## attributed to THIS WEST MED MODEL's own countries specifically (per
-  ## Andrea's decision above), what matters is where the fish was caught,
+  ## the project's decision above), what matters is where the fish was caught,
   ## not which stock-assessment unit it's counted against - and Task I
   ## still records a real Area/SampAreaCode per row regardless of stock
   ## unit (checked directly against the real download: Spain/France/
@@ -5182,7 +5224,7 @@ message("\n[Fleet split] fleet_prop_final: ", n_stecf_cells, " cell(s) use STECF
         " Total: ", nrow(catch_country_fg_year), " cell(s).")
 
 ## --- Catch-preservation top-up for (Country, FG_num) pairs fleet_prop ---
-## never anticipated. 2026-09-23, per Andrea: "try to minimize leaving
+## never anticipated. 2026-09-23, per project decision: "try to minimize leaving
 ## landings out of fg or fleet countries". ROOT CAUSE: fleet_prop's own
 ## cross-join (built earlier, from unique(gfcm_country_fg$FG_num) as it
 ## stood AT THAT POINT) is every downstream tier's foundation, including
@@ -5313,7 +5355,7 @@ if (nrow(sau_sector_prop) > 0) {
   }
 }
 
-## 2026-09-24 fix, per Andrea's real run: hake/anglerfish/conger (and
+## 2026-09-24 fix, per the real run: hake/anglerfish/conger (and
 ## any other FG/fleet cell where discard rate is genuinely unknown -
 ## NA, not zero - for every YEAR_ECOPATH year) were showing ZERO
 ## landings in Ecopath_L/Ecopath_Di despite real, correctly-split
@@ -5362,7 +5404,7 @@ message("\n[Fleet split] fleet_split_out: ", nrow(fleet_split_out), " Country x 
 ## added as a third source at all) - so without this step, Bluefin
 ## tuna/Swordfish kept showing zero across every fleet column in
 ## Ecopath_L/Ecopath_Di even after the FG-total fix above (confirmed
-## against Andrea's real iccat_catch_by_fg_crosscheck.csv - correct FG
+## against the project's real iccat_catch_by_fg_crosscheck.csv - correct FG
 ## totals, but Ecopath_L still empty). Every Country x FG x Year cell
 ## ICCAT covers here REPLACES whatever GFCM-derived fleet row(s) existed
 ## for that cell entirely (never merged/added), so the two sources are
@@ -5381,7 +5423,7 @@ if (nrow(iccat_country_fleet_catch) > 0) {
     Catch_t_incl_unreported = NA_real_,  # ICCAT's own reported catch - no separate "unreported/IUU" adjustment applied to it (unlike the GFCM-derived pathway)
     discard_source = "ICCAT Task I nominal catches (CatchTypeCode DD/DM)",
     discard_split_source = "ICCAT's own real Country x Gear breakdown (GearGrp) - not estimated",
-    fleet_split_source = "ICCAT Task I nominal catches - real per-country/per-gear attribution, replacing the GFCM-derived value (this model's own 6 target countries only, per Andrea's 2026-09-26 decision)"
+    fleet_split_source = "ICCAT Task I nominal catches - real per-country/per-gear attribution, replacing the GFCM-derived value (scoped to this model's own 6 target countries only)"
   )]
   
   fleet_split_out <- rbindlist(list(fleet_split_out, iccat_fleet_rows[, .(
@@ -5396,7 +5438,7 @@ if (nrow(iccat_country_fleet_catch) > 0) {
 }
 
 ## =================================================================
-## STAR/RAM fleet-split magnitude correction (2026-09-26, per Andrea -
+## STAR/RAM fleet-split magnitude correction (2026-09-26, per project decision -
 ## code review finding: Sardine, Anchovy, hake and ~30 other single-
 ## species/stanza assessed FGs show ~0% attribution to Spain/France/
 ## Italy/Morocco/Algeria/Tunisia's own fleets in Ecopath_L, with their
@@ -5424,7 +5466,7 @@ if (nrow(iccat_country_fleet_catch) > 0) {
 ## catch_magnitude_calibration, GFCM scaled to STECF FDI's magnitude).
 ## Where GFCM has NO country-level row at all for that FG x Year (a
 ## multiplicative scale is undefined with nothing to scale from - this
-## is exactly the "0% attribution" case Andrea flagged, most likely for
+## is exactly the "0% attribution" case the project owner flagged, most likely for
 ## small pelagics like sardine/anchovy that GFCM's own West-Med country-
 ## level capture-production data barely resolves at species level),
 ## falls back to distributing the corrected total equally across the 6
@@ -5814,7 +5856,7 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
 ## all-NA group returns NaN in R, so Catch_t_avg - NaN = NaN, which the
 ## later 0-fill cleanup step then quietly zeroed out (is.na(NaN) is
 ## TRUE in R) even though real, nonzero landings existed all along -
-## confirmed against Andrea's own run for hake/anglerfish/conger in
+## confirmed against the project's own run for hake/anglerfish/conger in
 ## France/Italy/Spain. See fleet_split_out's own comment for the full
 ## trace.
 ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & (Sector != "Recreational" | !is.na(Catch_t)),
@@ -5847,7 +5889,7 @@ for (cc in discards_fleet_cols) discards_ecopath_by_fleet_wide[is.na(get(cc)), (
 setorder(discards_ecopath_by_fleet_wide, FG_num)
 
 ## --- Residual "Other GFCM countries" fleet column - closes the ------
-## country-scope gap Andrea flagged (2026-09-23), comparing
+## country-scope gap the project owner flagged (2026-09-23), comparing
 ## species_group_fg_crosswalk.csv against this sheet: FLEET_REGISTER only
 ## defines named fleets for 6 countries (Morocco/Algeria/Tunisia/France/
 ## Spain/Italy), so ecopath_fleet_long/fleet_split_out structurally has
@@ -5902,7 +5944,7 @@ upsert_workbook_sheets(
 
 ## --- Diagnostic: does Ecopath_L's fleet-split scope match the broader
 ## FG-level catch total everyone else is built from? -------------------
-## 2026-09-23, added per Andrea: "i dont know if [it] doesnt update the
+## 2026-09-23, added per project decision: "i dont know if [it] doesnt update the
 ## sheets... or that the FG are not accounted in the landings sheet,
 ## because in the crosswalk i see a lot of fg with catches". Root cause:
 ## Ecopath_L/Ecopath_Di are built ONLY from fleet_split_out/ecopath_fleet_long
@@ -6005,11 +6047,30 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   f_by_fg <- merge(fg_biomass_avg, fg_catch_avg, by = c("FG_num", "FG_name"), all.x = TRUE)  # pair up biomass and catch by FG
   f_by_fg[, `:=`(
     Catch_density_avg = Catch_t_avg / Total_Area_km2,  # catch as a density, matching biomass's units
-    F = (Catch_t_avg / Total_Area_km2) / Biomass_density_avg  # fishing mortality = catch density / biomass density
+    ## F is left NA, not a literal 0, whenever Catch_t_avg is exactly 0.
+    ## catches_discards_fg (this script's own catch grid) deliberately
+    ## keeps an explicit Catch_t = 0 row for every FG with no matched
+    ## GFCM catch in a given year - a real, intentional accounting
+    ## choice so the catch grid stays complete - but a group like
+    ## Cymodocea/Posidonia/other primary-producer or benthic-habitat FGs
+    ## was never a fishing target at all, so "no catch was ever matched"
+    ## and "this FG was fished and caught nothing" are two different
+    ## claims. Computing F = 0/Biomass = 0 collapses them into the same
+    ## number and makes every never-fished FG show up in the F_by_fg
+    ## plot with a real-looking zero fishing-mortality value, rather
+    ## than the "not applicable" it actually is. F is only computed
+    ## where there is a real, nonzero matched catch; every zero-catch
+    ## FG gets F = NA here, which then drops out of the F_by_fg plot
+    ## (05_validation.R filters to !is.na(F_for_plot) when it builds
+    ## F_by_fg.png from this file) instead of plotting as F = 0.
+    F = fifelse(!is.na(Catch_t_avg) & Catch_t_avg > 0,
+                (Catch_t_avg / Total_Area_km2) / Biomass_density_avg, NA_real_)
   )]
   message("[F] F_by_FG (", paste(range(YEAR_ECOPATH), collapse = "-"), " average): ", nrow(f_by_fg), " FG(s).",
-          " F undefined (NA/Inf) where Catch_t_avg is 0 (no GFCM catch matched to that FG for those years)",
-          " or Biomass_density_avg is 0/NA (FG not observed in the survey).")
+          " F left NA (not 0) where Catch_t_avg is 0/NA (no real catch ever matched to that FG for those",
+          " years - includes both never-fished FGs like primary producers/benthic habitat and any fishable",
+          " FG that genuinely had zero recorded catch) or Biomass_density_avg is 0/NA (FG not observed in",
+          " the survey).")
   fwrite(f_by_fg, file.path(csv_out_dir, "F_by_fg.csv"))
   
   ## Species-resolved view of the same F. GFCM catch (catches_discards_fg)
@@ -6316,7 +6377,7 @@ fwrite(fleet_split_out, file.path(csv_out_dir, "catches_by_country_fleet_sector_
 ## --- Diagnostic: how much of the fleet split is a REAL per-gear ------
 ## breakdown vs. a fallback that just divides a country-level (or
 ## equal-share) total evenly across that country's named fleets?
-## 2026-09-23, added per Andrea: "I cant believe all countries have
+## 2026-09-23, added per project decision: "I cant believe all countries have
 ## catches on sardine anchovy etc... and other groups" - looking at a
 ## real Ecopath_L export, several FG rows show the EXACT SAME catch
 ## value repeated across every one of a country's fleet columns (e.g.
@@ -6412,7 +6473,7 @@ finalize_ecopath_ecosim_summary_sheets(
   fisheries_csv_dir  = csv_out_dir
 )
 
-## 2026-09-29, per Andrea: "i dont see the references for each
+## 2026-09-29, per project decision: "i dont see the references for each
 ## estimates of B, L, Di, PBQB, traits" - build_fg_references_sheet()/
 ## append_reference_columns_to_final_sheets() used to be called ONLY
 ## from 04_diets.R, which is documented as OPTIONAL - so anyone running
@@ -6644,7 +6705,7 @@ validation_plots[["06_data_source_coverage"]] <- tryCatch({
 
 ## =================================================================
 ## Completeness check - which FGs have NO Ecopath_L/Ecopath_Di catch or
-## discards at all (2026-09-24, per Andrea: "print the FGs at the end of
+## discards at all (2026-09-24, per project decision: "print the FGs at the end of
 ## the scripts that dont have data on Ecopath B, or L or Di"). Checked
 ## against catches_discards_fg (the exact table that feeds Ecopath_L/
 ## Ecopath_Di), restricted to the Ecopath base year(s) (YEAR_ECOPATH).
