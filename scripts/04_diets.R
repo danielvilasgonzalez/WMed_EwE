@@ -21,16 +21,16 @@
 ## =================================================================
 ## 04_diets.R
 ##
-## (2026-09-16, two rounds of changes; updated again to stop reading
-## FG_WMed.xlsx entirely): species->FG membership is read from
-## FG_WMed_2026.csv (same file 01_biomass.R's fg_species_file reads),
-## NOT a hand-built species_to_fg.csv and NOT the old FG_WMed.xlsx, and each species' share
-## of its FG's biomass is read from the biomass code's own output
+## Species->FG membership is read from FG_WMed_2026.csv (same file
+## 01_biomass.R's fg_species_file reads), not a hand-built
+## species_to_fg.csv or the old FG_WMed.xlsx. Each species' share of
+## its FG's biomass is read from the biomass code's own output
 ## (01_biomass.R's biomass_proportion_by_species_fg.csv, prop_sp_fg
-## column) - NOT a hand-built species_biomass_in_fg.csv either. Both manual CSVs are
-## now fallback-only, for species this diet run needs that genuinely
-## aren't covered by either source. Everything else (predator/prey
-## identity, diet proportions) comes straight from the metaweb file.
+## column), not a hand-built species_biomass_in_fg.csv. Both manual
+## CSVs are fallback-only, for species this diet run needs that
+## genuinely aren't covered by either source. Everything else
+## (predator/prey identity, diet proportions) comes straight from the
+## metaweb file.
 ## =================================================================
 
 pkgs <- c("data.table", "openxlsx", "stringr")
@@ -58,9 +58,9 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("git_dir", envir = .GlobalEnv, inherits = FALSE)) {
   message("[04_diets.R] Using pre-set out_dir/pcloud_dir/git_dir from calling environment:\n  out_dir  = ", out_dir, "\n  pcloud_dir = ", pcloud_dir, "\n  git_dir  = ", git_dir)
-  ## 2026-09-27: same fail-fast check as 03_pbqb-traits.R - a pre-set
-  ## out_dir that doesn't exist on this machine used to fail silently or
-  ## crash later with a cryptic error instead of here.
+  ## Same fail-fast check as 03_pbqb-traits.R: catch a pre-set out_dir
+  ## that doesn't exist on this machine here, rather than failing
+  ## silently or with a cryptic error later.
   if (!dir.exists(out_dir)) {
     stop("[04_diets.R] out_dir was pre-set by the calling script but doesn't exist on this machine: \"",
          out_dir, "\". Fix it in the driver script (e.g. run_pipeline_demo.R) before sourcing this file.")
@@ -89,15 +89,22 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
   if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) stop("No valid Github directory selected.")
 }
 
+## --- Run log (plain text, for sharing/debugging) ------------------------
+.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_04_diets_log.txt"))
+.run_log_con  <- file(.run_log_path, open = "wt")
+sink(.run_log_con, split = TRUE)
+sink(.run_log_con, split = TRUE, type = "message")
+message("[Log] This run's console output is also being written to: ", .run_log_path)
+
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # for upsert_workbook_sheets() - writes Ecopath_diet into the same shared workbook
 source(file.path(git_dir, "scripts/03b_ecobase.R"))  # for fetch_ecobase_raw_inputs()/WESTMED_BBOX (biomass/PB-QB fallback machinery, reused here - STEP 3c - for the EcoBase diet-matrix fallback) and fetch_ecobase_diet_matrix() added below in that same file
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")   # same shared workbook 01_biomass.R/02_fisheries.R/03_pbqb-traits.R write to
 
-## 2026-09-17 update: this block's own native/intermediate CSV outputs
-## go into their own "diet" subfolder, matching the other three blocks.
-## BIOMASS_CSV_DIR points at 01_biomass.R's subfolder for this script's
-## cross-block read of biomass_proportion_by_species_fg.csv.
+## This block's own native/intermediate CSV outputs go into their own
+## "diet" subfolder, matching the other three blocks. BIOMASS_CSV_DIR
+## points at 01_biomass.R's subfolder for this script's cross-block
+## read of biomass_proportion_by_species_fg.csv.
 if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "diet")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 if (!exists("BIOMASS_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
@@ -109,32 +116,44 @@ if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) M
 if (!exists("FG_REFERENCE_CSV_PATH",    envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH    <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_CSV_PATH; ok if the file doesn't exist (treated as empty)
 if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_BIOMASS_IN_FG_CSV_PATH <- file.path(pcloud_dir, "data/species_biomass_in_fg_missing.csv")   # species, fg_name, biomass_proportion - ONLY for species x FG pairs not covered by ECOPATH_WORKBOOK_PATH's own FG_spp_Ecopath sheet; ok if the file doesn't exist
-## 2026-09-27: group_number/group_name/is_predator (row/column universe of
-## the output diet matrix) used to require a separate, fully manually-
-## maintained ewe_group_table.csv - group_number/group_name duplicated
-## FG_WMed_2026.csv, and is_predator had no source at all if that file
-## didn't exist yet. build_group_table_auto() below now derives both
-## automatically: group_number/group_name from the same FG_lookup
-## reference 01_biomass.R already writes; is_predator defaults to TRUE
-## for every FG except Detritus/Discards and primary producers (see that
-## function's own header comment - rule rewritten 2026-09-28, no longer
-## reads 03_pbqb-traits.R's output at all). EWE_GROUP_TABLE_CSV_PATH is
-## an OPTIONAL override, only read if it exists - for any FG where the
+## group_number/group_name/is_predator (row/column universe of the
+## output diet matrix) are derived automatically by
+## build_group_table_auto() below: group_number/group_name from the
+## same FG_lookup reference 01_biomass.R already writes; is_predator
+## defaults to TRUE for every FG except Detritus/Discards and primary
+## producers (see that function's own header comment). No dependency
+## on 03_pbqb-traits.R's output. EWE_GROUP_TABLE_CSV_PATH is an
+## OPTIONAL override, only read if it exists - for any FG where the
 ## default rule needs a manual correction, not a required input.
 if (!exists("EWE_GROUP_TABLE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) EWE_GROUP_TABLE_CSV_PATH <- file.path(pcloud_dir, "data/ewe_group_table.csv")   # OPTIONAL is_predator override (group_number, is_predator) - safe to not exist
 if (!exists("OUTPUT_CSV_PATH",          envir = .GlobalEnv, inherits = FALSE)) OUTPUT_CSV_PATH          <- file.path(csv_out_dir, "diet_composition_ewe.csv")
 
-## 2026-09-26: 04_diets.R previously never defined its own YEAR_ECOPATH
-## default at all - it only READ it (line ~850, target_year_ecobase) if
-## already set in the global env by a prior script/driver, else fell back
-## to NULL. That means running this script standalone (not through
-## run_pipeline_demo.R after 01/02/03) silently disabled the EcoBase
-## diet-matrix fallback's year-targeting with no message explaining why.
-## Guarded exactly like 01_biomass.R/02_fisheries.R/03_pbqb-traits.R's own
-## YEAR_ECOPATH default (same WMed default: 1994:1996) - a driver script
-## setting YEAR_ECOPATH before source()-ing this file still overrides it,
-## same override pattern as every other numbered script.
+## YEAR_ECOPATH default, used by the EcoBase diet-matrix fallback's
+## year-targeting (target_year_ecobase below). Guarded exactly like
+## 01_biomass.R/02_fisheries.R/03_pbqb-traits.R's own YEAR_ECOPATH
+## default (same WMed default: 1994:1996) - a driver script setting
+## YEAR_ECOPATH before source()-ing this file still overrides it.
 if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996
+
+## DIET_REFERENCE_DIR: hand-typed reference/lookup tables for this
+## script, externalized to CSV so they're editable without touching
+## code - same convention as read_medits_reference()/MEDITS_REFERENCE_DIR
+## in 01_biomass.R, read_fisheries_reference()/FISHERIES_REFERENCE_DIR
+## in 02_fisheries.R, and read_pbqb_reference()/PBQB_REFERENCE_DIR in
+## 03_pbqb-traits.R.
+DIET_REFERENCE_DIR <- file.path(pcloud_dir, "data/Complementary data/diet_reference_tables")
+read_diet_reference <- function(filename, required_cols = NULL) {
+  path <- file.path(DIET_REFERENCE_DIR, filename)
+  if (!file.exists(path)) {
+    stop("[read_diet_reference] Reference table not found: \"", path, "\".")
+  }
+  dt <- fread(path, encoding = "UTF-8")
+  if (!is.null(required_cols) && !all(required_cols %in% names(dt))) {
+    stop("[read_diet_reference] \"", filename, "\" is missing required column(s): ",
+         paste(setdiff(required_cols, names(dt)), collapse = ", "))
+  }
+  dt
+}
 
 ## Which diet metric to use, in priority order, when a DATA_ENTRY row
 ## has more than one filled in (a study rarely reports all of them for
@@ -145,12 +164,13 @@ if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH 
 ## proportion); Presence (1/0) is the last resort, treated as an equal
 ## split among a study's present prey when nothing else is available.
 if (!exists("DIET_METRIC_PRIORITY", envir = .GlobalEnv, inherits = FALSE)) {
-  DIET_METRIC_PRIORITY <- c("IRI", "WEIGHT", "NUMBER", "FREQUENCY", "Presence_(no_number_data)")
+  DIET_METRIC_PRIORITY <- read_diet_reference("diet_metric_priority.csv",
+                                              required_cols = c("rank", "metric"))[order(rank)]$metric
 }
 
-## --- Fallback tiers (added 2026-09-24) for predators the metaweb has
-## NO usable DATA_ENTRY rows for - see STEP 3b/3c below and the
-## run_pipeline() rewrite at the bottom. Metaweb rows always win where
+## --- Fallback tiers for predators the metaweb has NO usable
+## DATA_ENTRY rows for - see STEP 3b/3c below and run_pipeline() at
+## the bottom. Metaweb rows always win where
 ## they exist; these only ever fill a GAP, never override a real
 ## metaweb entry, and every predator's diet is tagged with which of
 ## the three tiers (or "still missing") it actually came from.
@@ -262,13 +282,12 @@ build_species_diet <- function(data_entry, lookup) {
   
   dt <- dt[!is.na(diet_value)]
   if (nrow(dt) == 0) {
-    ## 2026-09-24 change: no longer a hard stop() - the empty metaweb
-    ## template genuinely ships with zero usable DATA_ENTRY rows, and
-    ## run_pipeline() now has two more fallback tiers (FishBase/
-    ## SeaLifeBase diet(), then EcoBase - see STEP 3b/3c below) it can
-    ## try per-predator instead of failing the whole diet block. An
-    ## empty result here just means "the metaweb tier contributes
-    ## nothing this run", which is a normal, expected state, not an error.
+    ## Not a hard stop(): the empty metaweb template genuinely ships
+    ## with zero usable DATA_ENTRY rows, and run_pipeline() has two
+    ## more fallback tiers (FishBase/SeaLifeBase diet(), then EcoBase -
+    ## see STEP 3b/3c below) it can try per-predator instead of failing
+    ## the whole diet block. An empty result here just means "the
+    ## metaweb tier contributes nothing this run" - a normal state.
     message("[04_diets.R] build_species_diet(): no usable diet records after applying DIET_METRIC_PRIORITY - ",
             "the metaweb DATA_ENTRY tab has no real diet-study rows yet (the empty template ships with none). ",
             "Falling through to the FishBase/SeaLifeBase and EcoBase fallback tiers for every predator.")
@@ -293,40 +312,35 @@ build_species_diet <- function(data_entry, lookup) {
   
   species_diet[, proportion := proportion / sum(proportion), by = predator_name]
   
-  ## predator_references (added 2026-09-17): the distinct study
-  ## citations (metaweb's own "Reference" column) actually used for
-  ## each predator - carried separately from species_diet itself
-  ## (which only keeps a study COUNT, n_studies) so run_pipeline() can
-  ## roll this up to per-FG citations for the final workbook's
-  ## References sheet (ref_diet column) without re-reading DATA_ENTRY.
+  ## predator_references: the distinct study citations (metaweb's own
+  ## "Reference" column) used for each predator - carried separately
+  ## from species_diet (which only keeps a study COUNT, n_studies) so
+  ## run_pipeline() can roll this up to per-FG citations for the final
+  ## workbook's References sheet (ref_diet column) without re-reading
+  ## DATA_ENTRY.
   predator_references <- dt[, .(references = paste(sort(unique(Reference)), collapse = "; ")), by = predator_name]
   
   list(species_diet = species_diet[], predator_references = predator_references[])
 }
 
 ## =================================================================
-## STEP 3b (added 2026-09-24, prey-composition source fixed 2026-09-28):
-## FishBase/SeaLifeBase diet fallback for predators with NO usable
-## metaweb DATA_ENTRY rows. Same rfishbase dependency 03_pbqb-traits.R
-## already uses (see that file's own version-pinning check - NOT
-## repeated here since this tier is optional/best-effort, not required
-## for this script to run at all).
+## STEP 3b: FishBase/SeaLifeBase diet fallback for predators with NO
+## usable metaweb DATA_ENTRY rows. Same rfishbase dependency
+## 03_pbqb-traits.R already uses (see that file's own version-pinning
+## check - NOT repeated here since this tier is optional/best-effort,
+## not required for this script to run at all).
 ##
-## 2026-09-28 fix: a real run showed rfishbase::diet() returning ONLY
-## study-level metadata (Species/SpecCode/DietCode/SampleStage/
-## SampleSize/monthly columns/Troph/... - no prey-item name or
-## percentage field at all), so the original "resolve a prey-item
-## column out of diet()'s own output" approach below always failed and
-## skipped this tier entirely. Per rfishbase's own issue tracker
-## (ropensci/rfishbase#87, #155), this is not a bug in this pipeline -
-## FishBase split diet() into two tables: diet() is the study/sample
-## record, and the actual prey composition (FoodI/FoodII/FoodIII/Stage/
-## DietPercent per prey item, joined back to a study via DietCode) now
-## lives in a separate diet_items() table. diet_items() itself takes no
-## species filter (it's the whole reference table), so this queries
-## diet() first per species (as before, to get the DietCode(s) that
-## belong to the requested predators) and then pulls diet_items(),
-## filtered down to just those DietCode(s), for the prey rows.
+## rfishbase::diet() returns only study-level metadata (Species/
+## SpecCode/DietCode/SampleStage/SampleSize/monthly columns/Troph/...)
+## - no prey-item name or percentage field. Per rfishbase's own issue
+## tracker (ropensci/rfishbase#87, #155), FishBase splits diet() into
+## two tables: diet() is the study/sample record, and the actual prey
+## composition (FoodI/FoodII/FoodIII/Stage/DietPercent per prey item,
+## joined back to a study via DietCode) lives in a separate
+## diet_items() table. diet_items() takes no species filter (it's the
+## whole reference table), so this queries diet() first per species
+## (to get the DietCode(s) for the requested predators) and then pulls
+## diet_items(), filtered to those DietCode(s), for the prey rows.
 ## rfishbase::fooditems() (species-keyed directly, no DietCode join
 ## needed) is tried as a second fallback if diet_items() comes up empty
 ## for a predator - a coarser species-level food-item list without the
@@ -479,7 +493,7 @@ fetch_fishbase_diet_for_species <- function(species_names) {
 }
 
 ## =================================================================
-## STEP 3c (added 2026-09-24): EcoBase diet-matrix fallback, for
+## STEP 3c: EcoBase diet-matrix fallback, for
 ## predator FGs still uncovered after metaweb + FishBase/SeaLifeBase
 ## (STEP 3b above). Unlike those two tiers, this one operates at the
 ## FG level directly (predator_fg/prey_fg/weight - the SAME shape
@@ -572,7 +586,7 @@ read_species_to_fg_from_reference <- function(path) {
 }
 
 ## =================================================================
-## STEP 6c (added 2026-09-17): taxonomy-based fallback for
+## STEP 6c: taxonomy-based fallback for
 ## species the metaweb needs but that are in NEITHER FG_WMed_2026.csv NOR
 ## the manual missing-species CSV. The diet database's own sheet of
 ## classification of diet items means the taxonomic classification can
@@ -699,10 +713,8 @@ build_species_to_fg <- function(needed_species, reference_path, missing_csv_path
 ## 01_biomass.R's own biomass_proportion_by_species_fg.csv (columns
 ## FG_num, FG_name, Species, Density, prop_sp_fg), written next to the
 ## shared workbook - NOT a workbook sheet, and NOT a hand-typed number.
-## The diet code should grab the proportion of biomass of species
-## within FG that was produced as CSV from the biomass code run
-## (2026-09-17): this is exactly that CSV, the same one
-## 01_biomass.R's FG_spp_Ecopath.csv duplicates in wide form. Falls
+## This is the same CSV 01_biomass.R's FG_spp_Ecopath.csv duplicates in
+## wide form. Falls
 ## back to SPECIES_BIOMASS_IN_FG_CSV_PATH only for species x FG pairs
 ## that CSV doesn't cover (e.g. a species added via the missing-species
 ## fallback above, which 01_biomass.R never saw). Any pair covered by
@@ -838,7 +850,7 @@ export_ewe_matrix_csv <- function(fg_diet, group_table, out_path) {
 }
 
 ## =================================================================
-## STEP 8b: Ecopath_diet sheet (added 2026-09-16) - the
+## STEP 8b: Ecopath_diet sheet - the
 ## SAME predator-by-FG-number x prey-by-FG-number matrix as the CSV
 ## above, written into ECOPATH_WORKBOOK_PATH as plain numeric values
 ## (no decimal-comma/quoting - that convention is specific to EwE's
@@ -861,7 +873,7 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 }
 
 ## =================================================================
-## build_group_table_auto() - 2026-09-27, replaces a required, fully
+## build_group_table_auto() replaces a required, fully
 ## manually-maintained ewe_group_table.csv.
 ##
 ## group_number/group_name: read from the same FG_lookup reference
@@ -869,7 +881,7 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 ## helper this script's own FG_References-sheet step already calls
 ## further down) - no separate file, no duplication of FG_WMed_2026.csv.
 ##
-## is_predator (rule rewritten 2026-09-28, per Andrea: "all FG should be
+## is_predator (per Andrea: "all FG should be
 ## predators except detritus discards and primary producers (phyto,
 ## posidonia....)"): TRUE by DEFAULT for every FG, FALSE only for the
 ## two non-living compartments (NON_LIVING_FG_NAMES, defined near the
@@ -1104,9 +1116,9 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     file.remove(DIET_STILL_MISSING_CSV_PATH)   # clean up a stale review file from an earlier, less-complete run
   }
   
-  ## diet_references_by_fg.csv (added 2026-09-17; 2026-09-24: now also
-  ## folds in the FishBase/SeaLifeBase + EcoBase fallback tiers'
-  ## citations, not just the metaweb's) - rolls predator_references up
+  ## diet_references_by_fg.csv folds in the FishBase/SeaLifeBase +
+  ## EcoBase fallback tiers' citations, not just the metaweb's - rolls
+  ## predator_references up
   ## to per-FG, via the same species_to_fg mapping used for the diet
   ## matrix itself. Read back by build_fg_references_sheet()
   ## (lib_survey_fg_density_functions.R) to populate the final
@@ -1128,13 +1140,13 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
             " will be blank until it is.")
   }
   
-  ## 2026-09-26: diet-matrix heatmap - predator FG (x) x prey FG (y),
+  ## Diet-matrix heatmap - predator FG (x) x prey FG (y),
   ## fill = proportion of predator's diet - the standard EwE diet-check
   ## figure, and the single most useful "does this diet matrix look
   ## sane" view (columns should each sum to ~1, since fg_diet's own
   ## weight is already normalized per predator_fg - see the `weight :=
   ## weight / sum(weight), by = predator_fg` line in build_fg_diet()).
-  ## 2026-09-27: this script's own plots go in its own
+  ## This script's own plots go in its own
   ## named subfolder, out_dir/plots/diets - matching out_dir/plots/
   ## biomass (01_biomass.R), out_dir/plots/fisheries (02_fisheries.R)
   ## and out_dir/plots/pbqb-traits (03_pbqb-traits.R) - one subfolder
@@ -1177,19 +1189,15 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     if (nrow(bad_sum) > 0) {
       message("[04_diets.R] WARNING - diet column(s) not summing to 1 (EwE's own \"Sum to one\" convention): ",
               paste0(bad_sum$predator_fg, " (", round(bad_sum$total, 4), ")", collapse = ", "))
-      ## 2026-09-29, per Andrea's validation request (cross-referencing
-      ## pipeline_code_review_and_validation_findings.md finding 5): this
-      ## check previously only ever printed a console message, easy to
-      ## miss on a long run - now also written to a REVIEW csv, same
-      ## audit-trail convention every other fallback/plausibility check
-      ## in this pipeline already uses. The concrete failure mode this
-      ## catches: a prey species with no species_to_fg mapping is folded
-      ## into a pseudo-FG (its own scientific name) for the PER-TIER
-      ## normalization denominator, but that pseudo-FG is never one of
-      ## the real FGs the export functions iterate over - so its share
-      ## silently vanishes from the exported column, leaving the real
-      ## column sum below 1 even though every individual tier normalized
-      ## correctly on its own.
+      ## Also written to a REVIEW csv, same audit-trail convention every
+      ## other fallback/plausibility check in this pipeline uses. The
+      ## concrete failure mode this catches: a prey species with no
+      ## species_to_fg mapping is folded into a pseudo-FG (its own
+      ## scientific name) for the PER-TIER normalization denominator,
+      ## but that pseudo-FG is never one of the real FGs the export
+      ## functions iterate over - so its share silently vanishes from
+      ## the exported column, leaving the real column sum below 1 even
+      ## though every individual tier normalized correctly on its own.
       fwrite(bad_sum, file.path(csv_out_dir, "diet_matrix_column_sum_REVIEW.csv"))
       message("[04_diets.R] -> written to diet_matrix_column_sum_REVIEW.csv (", nrow(bad_sum), " predator FG(s)).")
     }
@@ -1208,27 +1216,22 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   upsert_workbook_sheets(list(Ecopath_diet = ecopath_diet_sheet), workbook_path)
   message("[04_diets.R] Wrote Ecopath_diet sheet to ", workbook_path, ".")
   
-  ## --- Final workbook trim (2026-09-17 update, revised) --------------
+  ## --- Final workbook trim --------------------------------------------
   ## 04_diets.R is the LAST script in the documented run order (01 -> 02
   ## -> 03 -> 04), so this is where the workbook gets reduced to EXACTLY
   ## the 10 final target sheets: "info" (run metadata), "FG_spp" (FG x
   ## species x taxonomy list, written by 01_biomass.R), "FG_References"
   ## (built just above by build_fg_references_sheet()), plus the seven
   ## Ecopath_*/Ecosim_ts summary sheets. Every native/intermediate table
-  ## the individual scripts wrote along the way (Ecopath, Catches_Ecopath,
-  ## PB_QB, Ecosim, Catches_Ecosim, Fishing_Effort_by_Fleet, FG_spp_Ecopath,
-  ## FG_spp_Ecosim, FG_lookup, traits_ewe, fg_traits_weighted, PB_QB_spp,
-  ## References (species-parameter-level, 03_pbqb-traits.R's own CSV -
-  ## not the same table as the FG_References workbook sheet above),
-  ## Ecobase, Catches_Discards_FG_ts, diet_references_by_fg, ...) lives
-  ## only as CSV now (never a workbook sheet), so there's nothing left
-  ## to drop here except whatever leftovers an older run of this
-  ## workbook might still be carrying - trim_workbook_to_final_sheets()
+  ## the individual scripts wrote along the way lives only as CSV now
+  ## (never a workbook sheet), so there's nothing left to drop here
+  ## except whatever leftovers an older run of this workbook might
+  ## still be carrying - trim_workbook_to_final_sheets()
   ## (drop_extras = TRUE) handles that regardless.
   info_sheet <- build_info_sheet()
   upsert_workbook_sheets(list(info = info_sheet), workbook_path)
   
-  ## References sheet (added 2026-09-17): one row per FG, consolidating
+  ## References sheet: one row per FG, consolidating
   ## which data source/citation fed each block - see build_fg_references_
   ## sheet()'s own header comment (lib_survey_fg_density_functions.R) for
   ## exactly what each column is read from. Run here (04_diets.R, always
@@ -1259,3 +1262,8 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
 
 diet_result <- run_pipeline()
 message("[04_diets.R] Done - ", nrow(diet_result), " predator-FG x prey-FG diet fraction(s) computed.")
+
+## --- Close run log --------------------------------------------------------
+sink(type = "message")
+sink()
+close(.run_log_con)

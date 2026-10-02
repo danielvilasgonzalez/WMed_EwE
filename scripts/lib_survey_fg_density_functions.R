@@ -122,7 +122,7 @@ library(sf)
 ## area filters, etc.) the same way.
 
 ## =================================================================
-## resolve_pcloud_file() - added 2026-09-16, pCloud data
+## resolve_pcloud_file() - pCloud data
 ## keeps getting reorganized into "complementary" subfolders (a file
 ## that used to sit directly under pcloud_dir/data/ moves one or two
 ## levels deeper), which breaks every hardcoded `paste0(pcloud_dir,
@@ -390,7 +390,7 @@ fetch_taxonomy_worms <- function(species_names, cache_path = NULL) {
 }
 
 ## =================================================================
-## fetch_taxonomy_metaweb(): a THIRD taxonomy source, added 2026-09-17
+## fetch_taxonomy_metaweb(): a THIRD taxonomy source,
 ## for 04_diets.R - not an API call at all. The metaweb
 ## workbook's own "Taxonomic_codes" tab already carries a full WoRMS-
 ## derived classification (Kingdom -> ... -> Species, 3350 rows in the
@@ -701,57 +701,43 @@ fetch_taxonomy <- function(species_names, taxonomy_source = "fishbase", cache_pa
 ## derived automatically on the next run rather than needing manual
 ## updates to a separate rules table.
 ##
-## 2026-09-17 review update (after inspecting real fallback output):
-## several systemic mismatches, fixed here rather than by hand-patching
-## individual species:
-##   - Phylum DROPPED from the default rank_levels ("phylum usually
-##     wrong" - a phylum is almost always too broad to safely stand in
-##     for one specific FG). Still usable if a caller explicitly asks
-##     for it via rank_levels, but no longer tried by default.
-##   - allow_majority_vote now defaults to FALSE ("avoid match if
-##     matched by multiple groups") - an ambiguous rank value (already-
-##     assigned relatives split across 2+ FGs) is now left unresolved
-##     rather than guessed at the FG with the most relatives. This
-##     supersedes the earlier majority-vote behavior; set
-##     allow_majority_vote = TRUE to restore it.
+## Several systemic mismatches found by inspecting real fallback output,
+## fixed here rather than by hand-patching individual species:
+##   - Phylum DROPPED from the default rank_levels - almost always too
+##     broad to safely stand in for one specific FG. Still usable if a
+##     caller explicitly asks for it via rank_levels, but not tried by
+##     default.
+##   - allow_majority_vote defaults to FALSE: an ambiguous rank value
+##     (already-assigned relatives split across 2+ FGs) is left
+##     unresolved rather than guessed at the FG with the most relatives.
+##     Set allow_majority_vote = TRUE to restore the old majority-vote
+##     behavior.
 ##   - exclude_fg_regex (case-insensitive, matched against FG_name)
-##     removes whole FGs as fallback TARGETS - i.e. taxonomy is never
-##     used to assign an unmatched species INTO one of these FGs, no
-##     matter how exclusive the rank match looks. Default covers three
-##     confirmed-bad cases: "commercial" (e.g. "Non-commercial decapods"
-##     vs "Other commercial decapods" - a taxonomy-invisible distinction,
-##     a name/commercial-status split, not a taxonomic one - Squilla
-##     mantis is the real-world example: it needed to resolve to "Other
-##     commercial decapods" despite being Order Stomatopoda, which this
-##     exclusion keeps this fallback from getting wrong. [2026-09-22:
-##     Squilla mantis is now listed by name in FG_WMed_2026.csv itself,
-##     so it resolves via the ordinary direct scientific-name match
-##     before this fallback ever runs - the SPECIES_EXCEPTIONS override
-##     that used to guard this case has been removed entirely, see
-##     01_biomass.R's "Seed FG rules: REMOVED ENTIRELY" comment]),
-##     "jellyfish" ("jellyfish usually wrong"), and "suprabenthos"/
-##     "macrozooplankton" (ecologically-, not taxonomically-, defined
-##     groups with no real rank of their own - e.g. Suprabenthos is
-##     "small crustaceans living just above the seabed", a habitat/size
-##     definition covering parts of Isopoda/Amphipoda, not those orders
-##     whole - this exclusion blocks the GENERIC genus/family/class
-##     fallback from roping in unrelated relatives. [2026-09-22: the
-##     SEED_RULES mechanism that used to separately hand-assign a few
-##     species into these excluded FGs by exact Order name has been
-##     removed entirely - see 01_biomass.R's "Seed FG rules: REMOVED
-##     ENTIRELY" comment. A species that only this exclusion blocks
-##     from an automatic match now surfaces as genuinely unresolved
-##     (manual review), same as everything else this fallback can't
-##     safely resolve on its own - it is no longer assigned anywhere
-##     by this file.]
+##     removes whole FGs as fallback TARGETS - taxonomy is never used to
+##     assign an unmatched species INTO one of these FGs, no matter how
+##     exclusive the rank match looks. Default covers three confirmed-bad
+##     cases: "commercial" (e.g. "Non-commercial decapods" vs "Other
+##     commercial decapods" - a name/commercial-status split, not a
+##     taxonomic one; Squilla mantis is the real-world example, now
+##     listed by name in FG_WMed_2026.csv so it resolves via the ordinary
+##     direct scientific-name match before this fallback ever runs),
+##     "jellyfish", and "suprabenthos"/"macrozooplankton" (ecologically-,
+##     not taxonomically-, defined groups with no real rank of their own
+##     - e.g. Suprabenthos is "small crustaceans living just above the
+##     seabed", a habitat/size definition covering parts of
+##     Isopoda/Amphipoda, not those orders whole - this exclusion blocks
+##     the GENERIC genus/family/class fallback from roping in unrelated
+##     relatives. A species that only this exclusion blocks from an
+##     automatic match surfaces as genuinely unresolved (manual review),
+##     same as everything else this fallback can't safely resolve on its
+##     own.
 ##   - single_species_fg_broad_ranks: for these ranks (default Class,
 ##     Order), an FG that currently has only ONE species already
-##     assigned is excluded as a fallback target - "if a single sp is
-##     the FG then avoid that match" (e.g. a FG that's really just "the
-##     purple sea urchin", "red coral", or "mackerels" as one specific
-##     species shouldn't absorb every other unmatched species that
-##     happens to share its Class/Order; Genus/Family fallback into a
-##     single-species FG is still allowed, since a shared genus/family
+##     assigned is excluded as a fallback target (e.g. a FG that's really
+##     just "the purple sea urchin", "red coral", or "mackerels" as one
+##     specific species shouldn't absorb every other unmatched species
+##     that happens to share its Class/Order; Genus/Family fallback into
+##     a single-species FG is still allowed, since a shared genus/family
 ##     is specific enough to be a real signal).
 fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = "fishbase",
                                           rank_levels = c("Genus", "Family", "Order", "Class"),
@@ -797,14 +783,11 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
     message("No unmatched species - taxonomy fallback not needed.")
     ## Still set the SAME attributes a normal run sets (all empty, same
     ## column structure as the non-empty case below) rather than
-    ## returning bare dt (2026-09-22 fix). Every caller of this function
-    ## treats these attributes as always-present, not conditional on
-    ## whether a fetch actually happened - apply_seed_fg_rules() in
-    ## particular hard-requires 'fetched_taxonomy' and errors if it's
-    ## missing. Before this fix, a run where the FG reference already
-    ## matched every species directly (zero unmatched here) hit exactly
-    ## that error downstream, even though "everything already matched"
-    ## is a SUCCESS case, not a reason to skip setting the attribute.
+    ## returning bare dt. Every caller treats these attributes as
+    ## always-present, not conditional on whether a fetch actually
+    ## happened - apply_seed_fg_rules() hard-requires 'fetched_taxonomy'
+    ## and errors if it's missing, even though "everything already
+    ## matched" (zero unmatched here) is a SUCCESS case.
     empty_taxonomy <- data.table(ScientificName = character(0), Genus = character(0), Family = character(0),
                                  Order = character(0), Class = character(0), Phylum = character(0))
     attr(dt, "fetched_taxonomy") <- empty_taxonomy
@@ -874,8 +857,8 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
   ## for the main taxonomy-driven loop just below - same rule either way: exclusive
   ## if every already-assigned relative at this rank agrees on one FG;
   ## "majority" (most, not all, agree) is only ever returned when
-  ## allow_majority_vote = TRUE (default FALSE as of 2026-09-17 - see
-  ## this function's header comment).
+  ## allow_majority_vote = TRUE (default FALSE - see this function's
+  ## header comment).
   resolve_fg_votes_for_rank <- function(rank) {
     if (!rank %in% names(fg_lookup_safe)) {
       return(data.table(rank_value_lower = character(0), FG_num = numeric(0), FG_name = character(0),
@@ -984,9 +967,8 @@ fallback_match_fg_by_taxonomy <- function(dt, fg_lookup_safe, taxonomy_source = 
         remaining <- remaining[!ScientificName %in% level_matches$ScientificName]
       }
     }
-    ## 2026-09-17 update: majority-vote-among-ambiguous-relatives is now
-    ## OFF by default (allow_majority_vote = FALSE - "avoid match if
-    ## matched by multiple groups") - an unmatched species whose rank
+    ## majority-vote-among-ambiguous-relatives is OFF by default
+    ## (allow_majority_vote = FALSE) - an unmatched species whose rank
     ## value spans 2+ FGs among its already-assigned relatives is left
     ## unresolved (falls through to the next, coarser rank_levels entry
     ## or into "still_unresolved_taxonomy") rather than guessed at
@@ -1114,12 +1096,12 @@ summarize_unresolved_species <- function(dt, taxonomy = NULL) {
 }
 
 ## =================================================================
-## build_fg_manual_review_template() - added 2026-09-18. Turns the two
-## per-source "still unmatched, needs manual review" exports written
-## above (survey_unmatched_for_manual_review.csv from 01_biomass.R's
-## MEDITS pass, medias_unmatched_for_manual_review.csv from its MEDIAS
-## pass) into ONE combined, de-duplicated review workbook, with GF/
-## FG_name columns ready to hand-fill.
+## build_fg_manual_review_template() - combines the two per-source
+## "still unmatched, needs manual review" exports written above
+## (survey_unmatched_for_manual_review.csv from 01_biomass.R's MEDITS
+## pass, medias_unmatched_for_manual_review.csv from its MEDIAS pass)
+## into ONE combined, de-duplicated review workbook, with GF/FG_name
+## columns ready to hand-fill.
 ##
 ## Uses the exact same 3 column names FG_WMed.xlsx's own sheet 4
 ## (fg_wmed_95) uses - ESPECIE, GF, FG_name (see `dataframe2 <-
@@ -1146,13 +1128,12 @@ summarize_unresolved_species <- function(dt, taxonomy = NULL) {
 ## =================================================================
 
 ## combine_unmatched_review_csvs() - shared helper factored out of
-## build_fg_manual_review_template() on 2026-09-19 so
-## build_full_fg_species_catalog() (below) can reuse the exact same
-## read/merge/de-duplicate logic for its own "needs review" tail,
-## rather than a second, driftable copy of it. Returns NULL if
-## neither unmatched CSV exists. Does NOT add ESPECIE/GF/FG_name -
-## callers add those themselves, since the two callers want slightly
-## different final column sets.
+## build_fg_manual_review_template() so build_full_fg_species_catalog()
+## (below) can reuse the exact same read/merge/de-duplicate logic for
+## its own "needs review" tail, rather than a second, driftable copy of
+## it. Returns NULL if neither unmatched CSV exists. Does NOT add
+## ESPECIE/GF/FG_name - callers add those themselves, since the two
+## callers want slightly different final column sets.
 combine_unmatched_review_csvs <- function(csv_out_dir) {
   taxonomy_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
   
@@ -1252,9 +1233,8 @@ build_fg_manual_review_template <- function(csv_out_dir,
 }
 
 ## =================================================================
-## snapshot_full_extent_species() - added 2026-09-19, rewritten
-## 2026-09-20. Writes ONE row per distinct species a given source's
-## FG-matching step actually saw - BEFORE that source's own
+## snapshot_full_extent_species() - writes ONE row per distinct species
+## a given source's FG-matching step actually saw - BEFORE that source's own
 ## FILTER_AREAS/year restriction, i.e. every species anywhere in the
 ## raw file(s) that source loaded (every GSA, every year the raw data
 ## covers), independent of whatever FILTER_AREAS/YEAR_ECOPATH/TS_YEARS
@@ -1295,12 +1275,11 @@ snapshot_full_extent_species <- function(matched_dt, species_taxonomy, source_la
 }
 
 ## =================================================================
-## build_full_fg_species_catalog() - added 2026-09-19, rewritten
-## 2026-09-20 to (a) cover MEDITS + MEDIAS + stock assessment, not just
-## MEDITS+MEDIAS, (b) always reflect the whole available extent
+## build_full_fg_species_catalog() - (a) covers MEDITS + MEDIAS + stock
+## assessment, (b) always reflects the whole available extent
 ## regardless of this run's FILTER_AREAS/YEAR_ECOPATH/TS_YEARS - not
 ## something that requires a special "widest FILTER_AREAS" run - and
-## (c) write a plain CSV instead of an .xlsx workbook.
+## (c) writes a plain CSV instead of an .xlsx workbook.
 ##
 ## Reads back the three all_species_<source>_full_extent.csv snapshots
 ## snapshot_full_extent_species() writes during Steps 3-4 (MEDITS), 9
@@ -2109,7 +2088,26 @@ compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 
 }
 
 compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_def,
-                                        cache_path = NULL, resolution = 1) {
+                                        cache_path = NULL, resolution = 1,
+                                        area_id_label = "AreaID") {
+  ## The output alone would carry only Stratum (a bare integer, 1:5 for
+  ## MEDITS_STRATA) and a generic "AreaID" column, with no indication
+  ## that AreaID actually means GSA in the Western Med run, and no real
+  ## depth bounds to go with the stratum number. Two additive changes,
+  ## same cache format either way
+  ## (cache_valid below only checks for "area_km2", so an old cache file
+  ## without Depth_min_m/Depth_max_m is still reused as-is - delete it to
+  ## pick up the new columns on a re-run):
+  ##   - area_id_label lets the caller rename the id column to "GSA"
+  ##     when area_ids really are GSA numbers (AREA_MODE == "westmed", or
+  ##     AREA_MODE == "custom" with CUSTOM_AREA_TYPE == "gsa") - left as
+  ##     the generic "AreaID" (the default) for a bbox/shapefile custom
+  ##     area, where the id is NOT a real GSA.
+  ##   - strata_def's own Depth_min_m/Depth_max_m (already known for
+  ##     every strata_def this function is ever called with - MEDITS_
+  ##     STRATA, the AquaMaps-extended set, or MEDIAS_DEPTH_RANGE) are
+  ##     merged in by Stratum, so the real meter bounds travel with the
+  ##     row instead of just the bare stratum number.
   if (is.character(area_shp)) area_shp <- sf::st_read(area_shp, quiet = TRUE)
   
   cache_valid <- !is.null(cache_path) && file.exists(cache_path) &&
@@ -2130,8 +2128,21 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
   })
   strata_area_by_area <- rbindlist(results, fill = TRUE)
   
+  strata_depth_bounds <- unique(as.data.table(strata_def)[, .(Stratum = stratum_num,
+                                                              Depth_min_m = depth_min,
+                                                              Depth_max_m = depth_max)])
+  strata_area_by_area <- merge(strata_area_by_area, strata_depth_bounds, by = "Stratum", all.x = TRUE)
+  setcolorder(strata_area_by_area, c("Stratum", "Depth_min_m", "Depth_max_m",
+                                     setdiff(names(strata_area_by_area), c("Stratum", "Depth_min_m", "Depth_max_m"))))
+  ## Written to disk under area_id_label (e.g. "GSA") when requested, but
+  ## the OBJECT RETURNED keeps the plain "AreaID" name regardless - every
+  ## downstream merge in this library (weight_by_strata(), weight_species_
+  ## by_area(), etc.) still looks for "AreaID" and would break silently
+  ## otherwise. Only the on-disk CSV's column header changes.
   if (!is.null(cache_path)) {
-    fwrite(strata_area_by_area, cache_path)
+    on_disk <- copy(strata_area_by_area)
+    if (!identical(area_id_label, "AreaID")) setnames(on_disk, "AreaID", area_id_label)
+    fwrite(on_disk, cache_path)
     message("Saved to ", cache_path, " - delete this file to force recomputation.")
   }
   strata_area_by_area
@@ -2737,16 +2748,44 @@ plot_fg_timeseries_by_area <- function(fg_index, title = "FG density by area", y
 }
 
 plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, region-wide",
-                                        y_lab = "Area-weighted density", top_n_fg = 40) {
+                                        y_lab = "Area-weighted density", top_n_fg = 40,
+                                        normalize = FALSE) {
   fg_totals <- fg_index_regional[, .(tot = sum(mean_density, na.rm = TRUE)), by = FG_name]
   top_fg <- fg_totals[order(-tot)][seq_len(min(top_n_fg, .N)), FG_name]
   plot_data <- as_tibble(fg_index_regional[FG_name %in% top_fg])
+  
+  ## normalize = TRUE rescales each FG's own series to its first
+  ## NON-ZERO value (that value becomes 1, every other year relative to
+  ## it) - same
+  ## "first value = reference index" idea export_ecopath_ecosim_excel()'s
+  ## normalize_ts already uses for the Ecosim sheet, just applied here
+  ## directly to fg_index_regional (not ts_years-gapped/zero-filled) so
+  ## the raw survey time series itself can be read as relative change
+  ## rather than absolute density. An FG with every value zero/NA is
+  ## left as-is (can't normalize to nothing) and will show as a flat
+  ## line at 0/NA, same as it would un-normalized.
+  if (normalize) {
+    setDT(plot_data)
+    setorder(plot_data, FG_name, Year)
+    plot_data[, mean_density := {
+      first_nonzero <- mean_density[which(!is.na(mean_density) & mean_density != 0)[1]]
+      if (is.na(first_nonzero) || length(first_nonzero) == 0) mean_density else mean_density / first_nonzero
+    }, by = FG_name]
+    plot_data <- as_tibble(plot_data)
+    y_lab <- paste0(y_lab, " (relative to first non-zero value = 1)")
+  }
+  
+  ## Facet labels (FG_name) get cut off against each other / the panel
+  ## edge for long FG names - wrapped at ~22 characters instead of left
+  ## as one unbroken line, using label_wrap_gen() ggplot2 already ships
+  ## for exactly this.
   ggplot(plot_data, aes(x = Year, y = mean_density)) +
     geom_line(linewidth = 0.6, alpha = 0.8, colour = "steelblue") +
-    facet_wrap(vars(FG_name), scales = "free_y") +
+    facet_wrap(vars(FG_name), scales = "free_y", labeller = label_wrap_gen(width = 22)) +
     labs(title = title, x = "Year", y = y_lab) +
     theme_minimal(base_size = 11) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(size = 7))
 }
 
 ## Depth-strata validation plot: raw per-sample density across strata,
@@ -2791,13 +2830,14 @@ plot_strata_profile <- function(fg_index_stratified, strata_def, top_n_fg = 40) 
   }
   
   profile <- merge(profile, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
-  ## round to 2 decimals for the axis label - the underlying depth_min/
-  ## depth_max can carry long floating-point tails (e.g. the AquaMaps
-  ## shallow pseudo-stratum's depth_max = 10 - 0.0001 = 9.9999...) that
-  ## are meaningless past 2 decimals for a depth label.
+  ## Rounded to whole meters for the x-axis label - the underlying
+  ## depth_min/depth_max can carry long floating-point tails (e.g. the
+  ## AquaMaps shallow pseudo-stratum's depth_max = 10 - 0.0001 =
+  ## 9.9999...) that are meaningless clutter on an axis label at any
+  ## precision finer than whole meters.
   profile[, depth_label := fifelse(
     is.na(depth_min) | is.na(depth_max), "unknown depth range",
-    paste0(formatC(depth_min, format = "f", digits = 2), "-", formatC(depth_max, format = "f", digits = 2), "m"))]
+    paste0(formatC(depth_min, format = "f", digits = 0), "-", formatC(depth_max, format = "f", digits = 0), "m"))]
   profile[, stratum_label := paste0(Stratum, " (", depth_label, ")")]
   profile[, stratum_label := factor(stratum_label, levels = unique(stratum_label[order(Stratum)]))]
   
@@ -2866,14 +2906,29 @@ plot_outlier_diagnostic <- function(dt_before, flagged_outliers, top_n_species =
 ## reflects whichever strata_def actually built fg_index_stratified
 ## (5 real strata, or the 8-strata AquaMaps-extended set).
 ## =================================================================
-plot_area_weight_donut <- function(fg_index_stratified, strata_def, area_ids = NULL) {
-  per_stratum <- attr(fg_index_stratified, "per_stratum")
-  if (is.null(per_stratum)) {
-    stop("plot_area_weight_donut() needs the per_stratum attribute from weight_by_strata()",
-         " (the area-merged one, since this plot is specifically about each stratum's AREA",
-         " weight - prop - not just whether it has samples).")
-  }
-  props <- unique(per_stratum[, .(AreaID, Stratum, prop)])
+## Notes:
+##   1. The deepest AquaMaps pseudo-strata (800-1000m/1000-2850m) could
+##      go missing from the donut if `props` were derived from
+##      fg_index_stratified's own "per_stratum" attribute
+##      (weight_by_strata()'s output), which is FG/catch-conditioned -
+##      an AreaID x Stratum cell only survives into that attribute if
+##      at least one FG actually had a sample there. A real, computed
+##      area proportion for a deep stratum with few/no catches (exactly
+##      what the deepest strata are) could therefore be silently absent
+##      from the donut even though strata_area_by_area/its AquaMaps-
+##      extended version has a perfectly good area% for it. Avoided by
+##      taking strata_area_by_area (or its AquaMaps-extended
+##      equivalent) DIRECTLY as a required argument - it already
+##      carries Stratum/area_km2/prop/AreaID for every stratum
+##      regardless of whether anything was ever caught there, which is
+##      what this plot is actually about (area weight, not catch
+##      presence).
+##   2. facet labels say "GSA: <n>" instead of "AreaID: <n>" when
+##      area_id_label = "GSA" (the caller already knows whether AreaID
+##      really is a GSA - same area_id_label convention
+##      compute_strata_area_by_area() uses).
+plot_area_weight_donut <- function(strata_area_by_area, strata_def, area_ids = NULL, area_id_label = "AreaID") {
+  props <- unique(strata_area_by_area[, .(AreaID, Stratum, prop)])
   if (!is.null(area_ids)) props <- props[AreaID %in% area_ids]
   
   props <- merge(props, strata_def, by.x = "Stratum", by.y = "stratum_num", all.x = TRUE)
@@ -2888,12 +2943,13 @@ plot_area_weight_donut <- function(fg_index_stratified, strata_def, area_ids = N
   ## be punched via xlim() rather than needing a separate library
   props[, ymax := cumsum(prop), by = AreaID]
   props[, ymin := ymax - prop, by = AreaID]
+  setnames(props, "AreaID", area_id_label)
   
   ggplot(props, aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = depth_label)) +
     geom_rect() +
     coord_polar(theta = "y") +
     xlim(c(2, 4)) +
-    facet_wrap(vars(AreaID), labeller = label_both) +
+    facet_wrap(vars(!!rlang::sym(area_id_label)), labeller = label_both) +
     labs(title = "Area proportion (prop) by depth stratum", fill = "Depth stratum") +
     theme_void(base_size = 11) +
     theme(legend.position = "right")
@@ -3013,10 +3069,10 @@ upsert_workbook_sheets <- function(sheets, out_path) {
 ## =================================================================
 ## write_native_sheet_csv() / write_native_sheets_csv() / read_native_sheet_csv()
 ##
-## Added 2026-09-17: the excel ecopath_ecosim file must have exactly the
-## intended sheets, trimmed script by script - every other table should be
-## saved as a csv file, not kept in the final output excel file. Every
-## table that USED TO go into the
+## The excel ecopath_ecosim file must have exactly the intended sheets,
+## trimmed script by script - every other table is saved as a csv
+## file, not kept in the final output excel file. Every table that
+## USED TO go into the
 ## shared workbook as its own native/intermediate sheet (FG_spp_Ecopath,
 ## Ecopath, Ecosim, Catches_Ecopath, PB_QB, References, Ecobase, and so
 ## on - none of them one of the 9 intended final
@@ -3074,11 +3130,11 @@ read_native_sheet_csv <- function(name, out_dir) {
 trim_workbook_to_final_sheets <- function(out_path) {
   finalize_workbook_sheet_order(
     out_path = out_path,
-    ## FG_References added 2026-09-17 - see build_fg_references_sheet()
-    ## below. Ecobase added 2026-09-24 - see add_ecobase_sheet_to_workbook()
-    ## in 03b_ecobase.R (per-group Biomass/PB/QB/reference-year from other
-    ## published Western Med Ecopath models, for direct comparison against
-    ## this model's own Ecopath_B/Ecopath_PBQB values). 11 final sheets now.
+    ## FG_References: see build_fg_references_sheet() below. Ecobase: see
+    ## add_ecobase_sheet_to_workbook() in 03b_ecobase.R (per-group
+    ## Biomass/PB/QB/reference-year from other published Western Med
+    ## Ecopath models, for direct comparison against this model's own
+    ## Ecopath_B/Ecopath_PBQB values). 11 final sheets total.
     target_order = c("info", "FG_spp", "Ecopath_B", "Ecopath_L", "Ecopath_Di", "Ecopath_PBQB",
                      "Ecopath_traits", "Ecopath_diet", "Ecosim_ts", "FG_References", "Ecobase"),
     drop_extras = TRUE
@@ -3108,8 +3164,8 @@ trim_workbook_to_final_sheets <- function(out_path) {
 ## by DEFAULT (drop_extras = FALSE), kept and appended at the end, in
 ## their original relative order - never silently dropped, just
 ## flagged with a warning so an unexpected/forgotten sheet doesn't
-## slip by unnoticed. Pass drop_extras = TRUE (added 2026-09-16, per
-## the request for a workbook containing ONLY the final summary
+## slip by unnoticed. Pass drop_extras = TRUE for a workbook containing
+## ONLY the final summary
 ## sheets - "info", Ecopath_B/L/Di/PBQB/traits/diet, Ecosim_ts - not
 ## every native sheet the individual pipeline scripts wrote along the
 ## way) to instead REMOVE every sheet not in target_order. Only call
@@ -3228,21 +3284,20 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
 ## =================================================================
 ## finalize_ecopath_ecosim_summary_sheets()
 ##
-## Added 2026-09-16 "beside [keeping] csv files or
-## intermediate files ... the excel file should include the following
-## sheets: Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
-## Ecopath_traits, Ecosim_ts (with B, L, Di and effort)". Ecopath_traits
+## The excel file keeps only: Ecopath_B, Ecopath_L, Ecopath_Di,
+## Ecopath_PBQB, Ecopath_traits, Ecosim_ts (with B, L, Di and effort) -
+## everything else goes to csv/intermediate files. Ecopath_traits
 ## is written directly by 03_pbqb-traits.R, Ecopath_B directly by
 ## export_ecopath_ecosim_excel() (01_biomass.R), and Ecopath_PBQB
 ## directly by add_pbqb_to_ecopath_workbook() (03_pbqb-traits.R) - none
 ## of those three need building here. This function builds the
 ## remaining two, Ecopath_L/Ecopath_Di and Ecosim_ts, by reading the
 ## native/intermediate CSVs 01_biomass.R/02_fisheries.R write via
-## write_native_sheets_csv() (2026-09-17 update: other sheets should be
-## saved as csv files, not kept in the final output excel file - these
-## used to be read back from native WORKBOOK sheets
-## of the same name; the source data is identical, just off disk now
-## instead of out of a sheet that no longer exists in the workbook).
+## write_native_sheets_csv() - other sheets are saved as csv files,
+## not kept in the final output excel file; the source data is
+## identical to what the old native WORKBOOK sheets of the same name
+## held, just off disk now instead of out of a sheet that no longer
+## exists in the workbook.
 ## Call this after 02_fisheries.R (for Ecopath_L/Di and the L/Di/Effort
 ## parts of Ecosim_ts) and again after 03_pbqb-traits.R if anything
 ## upstream changed - a source CSV that doesn't exist yet is skipped
@@ -3276,7 +3331,7 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
   ## now built and written directly in 02_fisheries.R, per FG x Fleet
   ## (one column per fleet, from fleet_split_out's Landings_t/Discard_t)
   ## - this FG-only, no-fleet-dimension time series can't produce that
-  ## shape, so it's no longer used for them (2026-09-17).
+  ## shape, so it's no longer used for them.
   cd_ts <- read_sheet("Catches_Discards_FG_ts", fisheries_csv_dir)
   if (is.null(cd_ts)) {
     message("finalize_ecopath_ecosim_summary_sheets(): 'Catches_Discards_FG_ts.csv' not found in ", fisheries_csv_dir,
@@ -3352,9 +3407,8 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
             v <- effort[Fleet == fl & Year == y, get(value_col)]
             if (length(v) == 0) NA_real_ else v[1]
           }, numeric(1))
-          ## 2026-09-24 fix, per Andrea ("fishing effort, relative?"):
-          ## this used to ship raw FishMIP kW-days as Type="Effort"/
-          ## Scaling="absolute" - but Ecosim doesn't use the Effort
+          ## Shipping raw FishMIP kW-days as Type="Effort"/Scaling="absolute"
+          ## would be wrong here - Ecosim doesn't use the Effort
           ## driver as a physical quantity, it uses it as a MULTIPLIER
           ## on the Ecopath base year's own fishing mortality (F), which
           ## is itself derived here from Catch/Biomass, not from any
@@ -3369,21 +3423,19 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
           ## on baseline F is correct regardless of what physical units
           ## the underlying FishMIP figure is in.
           first_valid_idx <- which(!is.na(ts_vals))[1]
-          ## 2026-09-25 fix, per Daniel's real run (crashed with "Error in
-          ## if (years[first_valid_idx] != years[1]) { : missing value
-          ## where TRUE/FALSE needed"): `years` (parsed via
-          ## suppressWarnings(as.numeric(ecosim_b[[1]][...]))) up above can
-          ## itself contain NA - e.g. a blank/non-numeric cell in
+          ## `years` (parsed via suppressWarnings(as.numeric(ecosim_b[[1]][...])))
+          ## up above can itself contain NA - e.g. a blank/non-numeric cell in
           ## Ecosim.csv's own Year column for one row - and `years[1]`
           ## specifically being NA is enough to make ANY comparison against
           ## it evaluate to NA (real_number != NA is NA, not FALSE), which
-          ## `if()` cannot evaluate. This is a genuinely different failure
-          ## mode than "no non-NA effort values" (already guarded by the
-          ## is.na(first_valid_idx) branch above) - the effort column
-          ## itself can be perfectly fine while the `years` reference
-          ## vector has the hole. Guarded every years[...] comparison
-          ## below with explicit is.na() checks instead of relying on `!=`
-          ## to short-circuit safely (it does not, for NA).
+          ## `if()` cannot evaluate ("Error in if (years[first_valid_idx] !=
+          ## years[1]) { : missing value where TRUE/FALSE needed"). This is a
+          ## genuinely different failure mode than "no non-NA effort values"
+          ## (already guarded by the is.na(first_valid_idx) branch above) -
+          ## the effort column itself can be perfectly fine while the `years`
+          ## reference vector has the hole. Guarded every years[...]
+          ## comparison below with explicit is.na() checks instead of
+          ## relying on `!=` to short-circuit safely (it does not, for NA).
           if (is.na(first_valid_idx)) {
             message("Effort fleet '", fl, "': no non-NA effort values across the whole time series - column left blank.")
             ts_vals_rel <- ts_vals
@@ -3434,9 +3486,8 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
 }
 
 ## =================================================================
-## build_info_sheet() - added 2026-09-16, the final
-## workbook should lead with an "info" sheet ("with data from the run,
-## GSAs, time ecopath, time ecosim region...."). A plain Field/Value
+## build_info_sheet() - the final workbook leads with an "info" sheet
+## (data from the run: GSAs, time ecopath, time ecosim, region). A plain Field/Value
 ## table, best-effort - every argument defaults to reading the matching
 ## config variable straight out of .GlobalEnv (the numbered scripts all
 ## set these - FILTER_AREAS/TARGET_COUNTRIES/YEAR_ECOPATH/TS_YEARS - and
@@ -3476,8 +3527,7 @@ build_info_sheet <- function(filter_areas = NULL, target_countries = NULL, year_
 ## years) WITHOUT requiring that other sheet to have been written
 ## first - if it isn't there yet, this just returns NULL and the
 ## caller falls back to deriving its own range, order-independently.
-## 2026-09-17 update, CSV-not-workbook-sheet refactor: sheet_name
-## (e.g. "Ecosim") is now a native/intermediate table written
+## sheet_name (e.g. "Ecosim") is a native/intermediate table written
 ## as a CSV alongside the workbook, not a workbook sheet - read from
 ## there instead of openxlsx::read.xlsx().
 read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
@@ -3490,8 +3540,8 @@ read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
 }
 
 ## =================================================================
-## resolve_baseline_with_nearest_year_fallback() - added 2026-09-24,
-## per Andrea. Bottom-trawl survey groups (fish, cephalopods, benthos,
+## resolve_baseline_with_nearest_year_fallback() - bottom-trawl survey
+## groups (fish, cephalopods, benthos,
 ## corals, invertebrates - i.e. everything MEDITS/MEDIAS actually
 ## samples) can show a real ZERO or NA density in the 1994-1996
 ## Ecopath baseline years purely from survey catchability/rarity
@@ -3535,20 +3585,20 @@ resolve_baseline_with_nearest_year_fallback <- function(dt, id_cols, value_col =
   baseline_mid <- round(mean(baseline_years))
   
   ## each group's baseline value exactly as computed today, no fallback yet.
-  ## 2026-09-25 fix (Suprabenthos #NUM! bug): mean(x, na.rm=TRUE) over a
-  ## vector that is ENTIRELY NA (every baseline year genuinely missing -
-  ## e.g. a survey_exempt FG with no stock-assessment/EcoBase/manual source
-  ## at all) returns NaN, not NA, because na.rm=TRUE strips the NAs first
-  ## and then takes mean(numeric(0)) = NaN. is.na(NaN) is TRUE in R, so the
-  ## borrowed-value logic below still worked correctly (NaN was treated as
-  ## missing when deciding whether to borrow a nearby year), but whenever
-  ## there was ALSO no other-year value to borrow (nearest_value stays NA,
-  ## borrowed = FALSE), final_value fell back to the untouched baseline_value
-  ## - which was NaN, not NA. openxlsx writes that literal NaN into the
-  ## workbook as Excel's #NUM! error rather than leaving the cell blank.
-  ## Guarded here so an all-NA group's baseline_value is a clean NA_real_
-  ## instead - a genuinely missing figure should render as an empty cell,
-  ## never as a spreadsheet ERROR that looks like something crashed.
+  ## mean(x, na.rm=TRUE) over a vector that is ENTIRELY NA (every baseline
+  ## year genuinely missing - e.g. a survey_exempt FG with no stock-
+  ## assessment/EcoBase/manual source at all) returns NaN, not NA, because
+  ## na.rm=TRUE strips the NAs first and then takes mean(numeric(0)) = NaN.
+  ## is.na(NaN) is TRUE in R, so the borrowed-value logic below still works
+  ## correctly (NaN is treated as missing when deciding whether to borrow a
+  ## nearby year), but whenever there is ALSO no other-year value to borrow
+  ## (nearest_value stays NA, borrowed = FALSE), final_value would fall back
+  ## to the untouched baseline_value - which is NaN, not NA. openxlsx writes
+  ## that literal NaN into the workbook as Excel's #NUM! error rather than
+  ## leaving the cell blank. Guarded here so an all-NA group's baseline_value
+  ## is a clean NA_real_ instead - a genuinely missing figure should render
+  ## as an empty cell, never as a spreadsheet ERROR that looks like
+  ## something crashed.
   baseline_dt <- dt[Year %in% baseline_years,
                     .(baseline_value = {
                       v <- get(value_col)
@@ -3652,7 +3702,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## information from "doesn't belong to this FG", and collapsing them
   ## by omitting the row entirely was losing that distinction.
   all_species_fg <- unique(species_density_regional[, .(FG_num, FG_name, Species = ScientificName)])
-  ## 2026-09-24: same nearest-year borrow fallback as Ecopath_B below,
+  ## Same nearest-year borrow fallback as Ecopath_B below,
   ## applied here at species level for consistency (see that block's
   ## comment for the full reasoning; skipped for "Expanding" FGs).
   species_baseline_fallback <- resolve_baseline_with_nearest_year_fallback(
@@ -3719,7 +3769,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   base_year <- year_ecopath[1]
   ecopath_base <- fg_index_regional[Year == base_year, .(FG_num, Biomass_baseyear = mean_density)]
   
-  ## 2026-09-24, per Andrea: an FG with a zero/no-data year_ecopath
+  ## An FG with a zero/no-data year_ecopath
   ## baseline but a real (>0) density in some OTHER survey year is very
   ## likely a trawl-catchability/rarity artifact, not a true absence -
   ## see resolve_baseline_with_nearest_year_fallback()'s own header for
@@ -3776,7 +3826,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## raw density (whatever unit fg_index_regional is in) is returned
   ## unchanged.
   build_ts_column <- function(fg_num) {
-    ## Aggregated to exactly one row per Year here (2026-09-22 fix), not
+    ## Aggregated to exactly one row per Year here, not
     ## a plain column selection - fg_index_regional is grouped by
     ## .(Year, FG_num, FG_name), so if the SAME FG_num carries more than
     ## one literal FG_name string across its source rows (whitespace,
@@ -3799,7 +3849,7 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
               " Ecosim sheet's fixed-length year column, or crash the column assignment).")
     }
     ## Same NaN-vs-NA guard as resolve_baseline_with_nearest_year_fallback()
-    ## above (2026-09-25, Suprabenthos #NUM! fix) - a Year where every
+    ## above - a Year where every
     ## contributing row is NA must average to NA_real_, not NaN, or this
     ## Ecosim_ts cell renders as Excel's #NUM! error instead of blank.
     vals <- vals[, .(mean_density = {
@@ -3812,6 +3862,20 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     vals <- vals[order(Year)]
     
     if (!normalize_ts) return(vals$mean_density)
+    
+    ## Force the series' first value
+    ## (ts_years[1], normally 1995) to equal the Ecopath_B baseline for
+    ## this FG (the year_ecopath, e.g. 1994-1996, average already
+    ## computed above as ecopath_sheet$Biomass) BEFORE normalizing - so
+    ## the normalized Ecosim series and the separate Ecopath_B baseline
+    ## agree at their shared starting point, instead of the raw survey
+    ## density at ts_years[1] (which can differ slightly from the
+    ## 1994-1996 average) silently becoming the de facto reference value.
+    ecopath_fg_biomass <- ecopath_sheet[FG_num == fg_num, Biomass]
+    if (length(ecopath_fg_biomass) == 1 && !is.na(ecopath_fg_biomass)) {
+      first_year_idx <- which(vals$Year == ts_years[1])
+      if (length(first_year_idx) == 1) vals$mean_density[first_year_idx] <- ecopath_fg_biomass
+    }
     
     first_valid_idx <- which(!is.na(vals$mean_density))[1]
     if (is.na(first_valid_idx)) {
@@ -3870,9 +3934,9 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                                by = c("FG_num", "FG_name", "Species"), all.x = TRUE)
   setorder(fg_spp_ecosim_sheet, FG_num, Species)
   
-  ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+  ## The excel ecopath_ecosim file must have exactly
   ## the intended sheets, trimmed script by script - every other table
-  ## should be saved as a csv file, not kept in the final output excel
+  ## is saved as a csv file, not kept in the final output excel
   ## file. Only Ecopath_B (the final target sheet built here) goes to the
   ## workbook directly. FG_spp_Ecopath / Ecosim / FG_spp_Ecosim are native/
   ## intermediate tables now written as CSV only (never as workbook
@@ -3887,20 +3951,15 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                           out_dir)
   sheets_to_write <- list(Ecopath_B = ecopath_sheet)
   
-  ## 2026-09-30, per Andrea ("why is PB_QB_spp.csv here in the biomass",
-  ## " folder created? it shouldnt"): this used to write a PB_QB_spp
-  ## SCAFFOLD (species/FG_num/Biomass/prop_biomass_FG, PB/QB left blank)
-  ## into 01_biomass.R's own "biomass" output folder, so the sheet's
-  ## STRUCTURE existed after Step 1 alone, before 03_pbqb-traits.R
-  ## (Step 4) had run. Andrea doesn't want PB_QB_spp appearing in the
-  ## biomass folder at all - it belongs to 03_pbqb-traits.R exclusively
+  ## PB_QB_spp.csv belongs to 03_pbqb-traits.R exclusively
   ## (add_pbqb_to_ecopath_workbook(), which writes it with REAL PB/QB
   ## values into out_dir/pbqb-traits), same as traits_ewe.csv (see that
-  ## script's own comment on traits_ewe for the parallel fix). Removed
-  ## this scaffold step entirely - PB_QB_spp.csv now only ever exists
-  ## after 03_pbqb-traits.R has actually run, with real PB/QB in it from
-  ## the start, never a blank placeholder version living in a different
-  ## script's folder first.
+  ## script's own comment on traits_ewe for the parallel case). No
+  ## PB_QB_spp SCAFFOLD (species/FG_num/Biomass/prop_biomass_FG, PB/QB
+  ## left blank) is written here into 01_biomass.R's own "biomass" output
+  ## folder - PB_QB_spp.csv only ever exists after 03_pbqb-traits.R has
+  ## actually run, with real PB/QB in it from the start, never a blank
+  ## placeholder version living in a different script's folder first.
   
   ## extra_sheets: named list of additional data.tables/data.frames the
   ## caller wants in the FINAL workbook alongside Ecopath_B - kept as a
@@ -4157,7 +4216,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     vals <- fg_catch[FG_num == fg_num, .(Year, Catch_t_km2)]
     ## Same "Supplied N items to be assigned to M items" failure mode as
     ## build_ts_column() in fallback_match_fg_by_taxonomy()'s Ecosim-sheet
-    ## path (fixed 2026-09-22): if fg_catch has more than one row for the
+    ## path: if fg_catch has more than one row for the
     ## same (Year, FG_num) - e.g. it wasn't pre-aggregated across sources/
     ## fleets before being passed in here - merging against full_years
     ## (exactly one row per Year) lets the duplicates through, producing
@@ -4200,7 +4259,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
     }
   }
   
-  ## 2026-09-17 update: Catches_Ecopath/Catches_Ecosim/Fleet_Structure are
+  ## Catches_Ecopath/Catches_Ecosim/Fleet_Structure are
   ## native/intermediate tables (not final target sheets) - written as
   ## CSV only, never to the workbook directly. Ecopath_L/Ecopath_Di (the
   ## actual final sheets derived from catch data) are built by
@@ -4259,7 +4318,7 @@ add_catches_to_ecopath_workbook <- function(fg_catch, fg_lookup, out_path, year_
 ## error) if neither sheet exists yet - callers degrade to "whatever
 ## FGs this run's own data happened to cover" the same way they always
 ## did before this existed.
-## 2026-09-17 update: other sheets should be saved as csv files, not
+## Other sheets are saved as csv files, not
 ## kept in the final output excel file - FG_lookup is a native
 ## reference table, not one of the 9 final sheets, so it no longer
 ## lives in the workbook at all (01_biomass.R now writes it via
@@ -4272,9 +4331,7 @@ read_full_fg_reference <- function(out_path, csv_dir = NULL) {
 }
 
 ## =================================================================
-## build_fg_references_sheet() - added 2026-09-17, columns renamed/split
-## 2026-09-24 per Andrea ("an extra sheet for references for each code
-## so, B_ref, L_ref, and so on"). Writes the final workbook's
+## build_fg_references_sheet() - writes the final workbook's
 ## "FG_References" sheet: one row per FG, consolidating WHICH DATA
 ## SOURCE fed each of the OTHER final sheets for that FG, named to
 ## match those sheets' own codes (Ecopath_B -> B_ref, Ecopath_L ->
@@ -4292,7 +4349,7 @@ read_full_fg_reference <- function(out_path, csv_dir = NULL) {
 ## literature behind it - collapsing them would lose real information.
 ##
 ## Each argument is a directory to read that block's own native CSV
-## outputs from (see the 2026-09-17 per-block CSV subfolder update) -
+## outputs from (per-block CSV subfolders) -
 ## every one defaults to dirname(out_path) for back-compat, same
 ## pattern as every other cross-block reader in this file. Safe to
 ## call any time - a block that hasn't run yet simply leaves its
@@ -4315,7 +4372,12 @@ build_fg_references_sheet <- function(out_path,
                                       biomass_csv_dir = NULL,
                                       fisheries_csv_dir = NULL,
                                       pbqb_csv_dir = NULL,
-                                      diet_csv_dir = NULL) {
+                                      diet_csv_dir = NULL,
+                                      dispatch_group_citation_path = if (exists("pcloud_dir", inherits = TRUE)) {
+                                        file.path(pcloud_dir, "data/Complementary data/pbqb_reference_tables", "pbqb_dispatch_group_fallback_citation.csv")
+                                      } else {
+                                        file.path("reference_tables", "pbqb_dispatch_group_fallback_citation.csv")
+                                      }) {
   biomass_csv_dir   <- if (is.null(biomass_csv_dir))   dirname(out_path) else biomass_csv_dir
   fisheries_csv_dir <- if (is.null(fisheries_csv_dir)) dirname(out_path) else fisheries_csv_dir
   pbqb_csv_dir      <- if (is.null(pbqb_csv_dir))      dirname(out_path) else pbqb_csv_dir
@@ -4333,7 +4395,7 @@ build_fg_references_sheet <- function(out_path,
   ## --- B_ref: biomass_source, per FG, from 01_biomass.R's own
   ## survey_fg_annual_index_regional_combined.csv (Year x FG_num, one
   ## biomass_source value per row already - see 01_biomass.R's "FG
-  ## biomass-source priority" section). Includes the 2026-09-24
+  ## biomass-source priority" section). Includes the
   ## nearest-year borrow fallback where it applied (biomass_source
   ## itself doesn't carry a separate "(borrowed from YYYY)" tag - see
   ## species_baseline_year_borrowed_REVIEW.csv / ecopath_B_baseline_
@@ -4389,11 +4451,9 @@ build_fg_references_sheet <- function(out_path,
   ## growth-parameter studies back it); PBQB_method_ref is the actual
   ## calculation EQUATION/literature behind it - both now real, per-FG,
   ## per-method citations, not a generic word like "empirical" or
-  ## "literature". Andrea (2026-09-28): "the literature references are
-  ## not paste it in the FG_ref, neither in pbqb or methods ... all the
-  ## references should appear here for parameters, literature or model
-  ## ecobase or whatever or method equation reference for fish and other
-  ## FGs" - this is that fix.
+  ## "literature" - every reference for parameters, literature, model/
+  ## ecobase source, or method equation (for fish and other FGs alike)
+  ## should appear here, not just a generic placeholder.
   pbqb <- read_native_sheet_csv("PB_QB", pbqb_csv_dir)
   if (!is.null(pbqb)) {
     if (all(c("PB_source", "QB_source") %in% names(pbqb))) {
@@ -4448,15 +4508,24 @@ build_fg_references_sheet <- function(out_path,
   ## every method failed for it) - it should basically never fire once
   ## PB_QB_spp.csv includes PB_method/QB_method.
   method_citation_lookup <- read_native_sheet_csv("PBQB_Method_References", pbqb_csv_dir)
-  dispatch_group_fallback_citation <- c(
-    fish        = "Fish P/B, Q/B from growth (VBGF) and natural/fishing mortality - see pbqb_method_references.csv for the specific equation (no PB_method/QB_method recorded for this FG's species)",
-    mammal      = "Marine mammal P/B, Q/B from taxonomic-surrogate life-history parameters - see pbqb_method_references.csv",
-    seabird     = "Seabird Q/B from daily-ration/body-mass regression - see pbqb_method_references.csv",
-    invertebrate = "Benthic invertebrate P/B, Q/B from empirical length/weight- or temperature/longevity-based relationships - see pbqb_method_references.csv",
-    invert      = "Benthic invertebrate P/B, Q/B from empirical length/weight-based relationships - see pbqb_method_references.csv",
-    cephalopod  = "Cephalopod P/B, Q/B from short-lived life-history convention - see pbqb_method_references.csv",
-    literature  = "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"
-  )
+  ## Fallback citation text per dispatch_group, read from an externalized
+  ## CSV (dispatch_group, citation columns) when available; falls back to
+  ## the hardcoded table below if the CSV is missing, so this still works
+  ## for a caller that hasn't set up reference_tables/.
+  if (file.exists(dispatch_group_citation_path)) {
+    dg_ref <- fread(dispatch_group_citation_path)
+    dispatch_group_fallback_citation <- setNames(dg_ref$citation, dg_ref$dispatch_group)
+  } else {
+    dispatch_group_fallback_citation <- c(
+      fish        = "Fish P/B, Q/B from growth (VBGF) and natural/fishing mortality - see pbqb_method_references.csv for the specific equation (no PB_method/QB_method recorded for this FG's species)",
+      mammal      = "Marine mammal P/B, Q/B from taxonomic-surrogate life-history parameters - see pbqb_method_references.csv",
+      seabird     = "Seabird Q/B from daily-ration/body-mass regression - see pbqb_method_references.csv",
+      invertebrate = "Benthic invertebrate P/B, Q/B from empirical length/weight- or temperature/longevity-based relationships - see pbqb_method_references.csv",
+      invert      = "Benthic invertebrate P/B, Q/B from empirical length/weight-based relationships - see pbqb_method_references.csv",
+      cephalopod  = "Cephalopod P/B, Q/B from short-lived life-history convention - see pbqb_method_references.csv",
+      literature  = "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"
+    )
+  }
   spp <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
   if (!is.null(spp)) {
     has_method_cols <- all(c("PB_method", "QB_method") %in% names(spp))
@@ -4465,15 +4534,12 @@ build_fg_references_sheet <- function(out_path,
       cite_lookup <- setNames(method_citation_lookup$Citation, method_citation_lookup$Method)
       cite_one <- function(method_name) {
         if (is.na(method_name) || method_name == "") return(NA_character_)
-        ## 2026-09-29 fix: `[[` on an ATOMIC named vector (this is a
+        ## `[[` on an ATOMIC named vector (this is a
         ## character vector, not a list) throws "subscript out of
-        ## bounds" the moment method_name doesn't match any name - it
-        ## does NOT return NULL the way list indexing would, so the
-        ## `is.null(hit)` check below never got a chance to fire; the
-        ## very first PB_method/QB_method value missing from
-        ## pbqb_method_references.csv crashed this whole function.
-        ## `[` (single bracket) returns NA for a no-match instead of
-        ## erroring - safe for any method name, matched or not.
+        ## bounds" the moment method_name doesn't match any name, rather
+        ## than returning NULL the way list indexing would. `[` (single
+        ## bracket) returns NA for a no-match instead of erroring - safe
+        ## for any method name, matched or not.
         hit <- unname(cite_lookup[method_name])
         if (is.na(hit)) paste0(method_name, " (no citation on file in pbqb_method_references.csv - check the Method name spelling)") else hit
       }
@@ -4519,10 +4585,7 @@ build_fg_references_sheet <- function(out_path,
   refs[is.na(PBQB_method_ref) & !is.na(PBQB_ref) & grepl("EcoBase", PBQB_ref),
        PBQB_method_ref := "EcoBase model repository (published literature P/B, Q/B) - see Ecobase sheet for the specific model/authors/year"]
   
-  ## --- traits_ref: corrected 2026-09-29, per Andrea ("i would like
-  ## real reference to be cited in the FG_ref"). The OLD text here
-  ## ("FG_WMed_2026.csv 'traits_ewe' sheet - literature-compiled,
-  ## static") was itself wrong, not just generic: 03_pbqb-traits.R's
+  ## --- traits_ref: 03_pbqb-traits.R's
   ## traits_ewe/Ecopath_traits table is NOT a static hand-curated sheet
   ## - its trait columns (Max_length/Mean_length/Mean_weight/
   ## Mean_lifespan_years/Vulnerability_index/Ecology/IUCN_conservation_
@@ -4577,10 +4640,9 @@ build_fg_references_sheet <- function(out_path,
 ## =================================================================
 ## append_reference_columns_to_final_sheets()
 ##
-## Andrea (2026-09-28): "the last column of Ecopath_b Ecopath_l
-## Ecopath_Di Ecopath_pbqb Ecopath-traits sheet should include the
-## reference on where the value ... is calculated - like from this
-## literature reference or medits or x or y". build_fg_references_
+## Ecopath_B/Ecopath_L/Ecopath_Di/Ecopath_PBQB/Ecopath_traits should each
+## include a reference column for where their value is calculated from
+## (e.g. a literature reference, MEDITS, etc). build_fg_references_
 ## sheet() above already tracks exactly this, per FG, but only in its
 ## OWN separate "FG_References" lookup sheet - this function copies
 ## that same provenance onto each of the five sheets themselves, as a
@@ -4739,8 +4801,8 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
   }
   setorder(pbqb_sheet, FG_num)
   
-  ## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
-  ## the intended sheets; other sheets should be saved as csv files, not
+  ## The excel ecopath_ecosim file must have exactly
+  ## the intended sheets; other sheets are saved as csv files, not
   ## kept in the final output excel file. PB_QB (FG-level) IS one
   ## of the 9 final target sheets - written directly to the workbook as
   ## Ecopath_PBQB, plus a PB_QB.csv mirror for audit/back-compat naming
@@ -4825,9 +4887,9 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
 }
 ## =================================================================
 ## Multistanza (juvenile/adult) biomass split - shared support
-## functions, added 2026-09-26 per Andrea's fix for code-review finding
-## #3 (European hake adult, FG "European hake adult", getting no real
-## biomass at all under the current species->FG lookup design - see
+## functions. Addresses European hake adult (FG "European hake adult")
+## getting no real biomass at all under the current species->FG lookup
+## design - see
 ## prepare_fg_lookup()'s own header comment above for the root cause:
 ## its stanza tie-break keeps exactly one row per stanza species,
 ## by lowest FG_num, so a stanza's higher-FG_num FG - "European hake
@@ -4851,8 +4913,8 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
 ##
 ## detect_multistanza_fg_pairs()/compute_multistanza_age_proportion()
 ## below generalize that same approach so 01_biomass.R can compute and
-## apply the IDENTICAL proportion to the BIOMASS/survey side too - per
-## Andrea's explicit choice (2026-09-26) to reuse the catch-side age
+## apply the IDENTICAL proportion to the BIOMASS/survey side too - this
+## reuses the catch-side age
 ## proportion as the best-available real signal for the biomass split,
 ## now that fish FGs are barred from any literature/EcoBase substitute
 ## (see STEP 15b in 01_biomass.R). This is an acknowledged PROXY - catch
@@ -5074,6 +5136,128 @@ compute_multistanza_age_proportion <- function(multistanza_fg_pairs, stecf_bio_d
     print(summary_prop)
   } else {
     message("[Multistanza age split] Discards/Landings Age files loaded but produced no usable juvenile proportion.")
+  }
+  result
+}
+
+## compute_multistanza_age_proportion_from_medits_tc(): an
+## alternative to compute_multistanza_age_proportion() above - that function
+## derives juvenile:adult proportion from STECF FDI's CATCH-at-age (a proxy:
+## catch selectivity at age != standing-biomass age structure). This one
+## derives it directly from MEDITS' own TC.csv (biological/length-frequency
+## file), which actually records maturity STAGE per individual at the haul
+## level - a real survey-based measurement of the standing population's
+## age structure, not a proxy via the fishery.
+##
+## MEDITS/JRC TC.csv does not carry ScientificName - species are coded as
+## genus (4-letter) + species (3-letter) abbreviations per the MEDITS
+## reference list (Annex XV), e.g. Merluccius merluccius -> genus "MERL",
+## species "MER". By default this function DERIVES that code the standard
+## way (first 4 letters of the genus, first 3 of the species epithet,
+## uppercased) rather than requiring a hardcoded per-species lookup - this
+## matches the one confirmed example (hake) exactly. Pass `code_overrides`
+## (a named character vector, "ScientificName" = "GENU_SPE") for any species
+## where the standard truncation doesn't match the real MEDITS code.
+##
+## matsub carries the actual MEDITS maturity stage (Annex VIII: "0"
+## undetermined, "1" immature/virgin, "2A"/"2B"/"2C" virgin-developing/
+## recovering/maturing, "3" mature/spawner, "4A"/"4B" spent/resting - letter
+## suffix is a sub-stage, not used on its own). `maturity` is NOT a stage -
+## per the JRC spec it's NUMBER_OF_INDIVIDUALS_IN_THE_LENGTH_CLASS_AND_
+## MATURITY_STAGE, i.e. the individual COUNT for that length-class/sex/
+## matsub combination - that's the column this function sums over.
+##
+## juvenile_stage_cutoff (default 2): an individual counts as "Adult" once
+## its matsub's LEADING DIGIT is >= this cutoff (so default: stage 1 =
+## juvenile; 2A/2B/2C/3/4A/4B = adult). This is a judgment call, not a
+## measurement - stage 2A ("virgin developing") hasn't spawned yet either,
+## so pass juvenile_stage_cutoff = 3 to count only stage 3+ as adult if
+## that's the more appropriate cutoff for a given species/stock. rows with
+## matsub "0"/"ND"/NA are excluded from the proportion entirely (truly
+## unknown maturity, not assumed either way).
+compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pairs, tc_path,
+                                                              code_overrides = NULL,
+                                                              juvenile_stage_cutoff = 2,
+                                                              year_range = NULL, area_filter = NULL) {
+  empty_result <- data.table()
+  if (nrow(multistanza_fg_pairs) == 0) {
+    message("\n[Multistanza age split - MEDITS TC] No multistanza FG pair to compute a proportion for - skipped.")
+    return(empty_result)
+  }
+  if (!file.exists(tc_path)) {
+    message("\n[Multistanza age split - MEDITS TC] TC.csv not found at '", tc_path, "' - skipped.")
+    return(empty_result)
+  }
+  derive_code <- function(sci_name) {
+    parts <- strsplit(trimws(sci_name), "\\s+")[[1]]
+    if (length(parts) < 2) return(NA_character_)
+    c(genus = toupper(substr(parts[1], 1, 4)), species = toupper(substr(parts[2], 1, 3)))
+  }
+  sci_names <- unique(multistanza_fg_pairs$ScientificName)
+  code_map <- rbindlist(lapply(sci_names, function(sci) {
+    if (!is.null(code_overrides) && sci %in% names(code_overrides)) {
+      parts <- strsplit(code_overrides[[sci]], "_")[[1]]
+      data.table(ScientificName = sci, genus_code = parts[1], species_code = parts[2])
+    } else {
+      dc <- derive_code(sci)
+      data.table(ScientificName = sci, genus_code = dc["genus"], species_code = dc["species"])
+    }
+  }))
+  code_map <- code_map[!is.na(genus_code) & !is.na(species_code)]
+  if (nrow(code_map) == 0) {
+    message("\n[Multistanza age split - MEDITS TC] Could not derive a MEDITS genus/species code for any",
+            " multistanza species - skipped.")
+    return(empty_result)
+  }
+  message("[Multistanza age split - MEDITS TC] Using genus/species code(s): ",
+          paste0(code_map$ScientificName, " -> ", code_map$genus_code, "/", code_map$species_code, collapse = ", "),
+          " - if these don't match the real MEDITS reference-list code for a species, pass it via code_overrides.")
+  
+  tc <- fread(tc_path, encoding = "UTF-8")
+  setnames(tc, tolower(gsub("\\s+", "", names(tc))))
+  required_cols <- c("genus", "species", "matsub", "maturity")
+  missing_cols <- setdiff(required_cols, names(tc))
+  if (length(missing_cols) > 0) {
+    message("\n[Multistanza age split - MEDITS TC] TC.csv is missing expected column(s): ",
+            paste(missing_cols, collapse = ", "), " (found: ", paste(names(tc), collapse = ", "), ") - skipped.")
+    return(empty_result)
+  }
+  tc[, genus := toupper(trimws(genus))]
+  tc[, species := toupper(trimws(species))]
+  tc <- merge(tc, code_map, by.x = c("genus", "species"), by.y = c("genus_code", "species_code"))
+  if (nrow(tc) == 0) {
+    message("\n[Multistanza age split - MEDITS TC] No TC.csv rows matched any derived genus/species code -",
+            " the real MEDITS code for this species likely differs from the standard truncation; pass the",
+            " correct code via code_overrides.")
+    return(empty_result)
+  }
+  if (!is.null(year_range) && "year" %in% names(tc)) tc <- tc[year %in% year_range]
+  if (!is.null(area_filter) && "area" %in% names(tc)) tc <- tc[area %in% area_filter]
+  
+  tc[, matsub_clean := toupper(trimws(matsub))]
+  tc[, stage_num := suppressWarnings(as.numeric(gsub("[^0-9]", "", matsub_clean)))]
+  tc <- tc[!is.na(stage_num) & !(matsub_clean %in% c("ND", ""))]
+  if (nrow(tc) == 0) {
+    message("\n[Multistanza age split - MEDITS TC] No rows with a usable (non-ND/non-blank) matsub stage -",
+            " skipped.")
+    return(empty_result)
+  }
+  tc[, stanza := fifelse(stage_num < juvenile_stage_cutoff, "Juvenile", "Adult")]
+  tc[, n_individuals := suppressWarnings(as.numeric(maturity))]
+  
+  agg <- tc[, .(value = sum(n_individuals, na.rm = TRUE)), by = .(ScientificName, stanza)]
+  wide <- dcast(agg, ScientificName ~ stanza, value.var = "value", fill = 0)
+  if (!"Juvenile" %in% names(wide)) wide[, Juvenile := 0]
+  if (!"Adult" %in% names(wide)) wide[, Adult := 0]
+  wide[, prop_juvenile := fifelse((Juvenile + Adult) > 0, Juvenile / (Juvenile + Adult), NA_real_)]
+  wide[, source_file := "MEDITS TC.csv (matsub maturity staging)"]
+  result <- wide[!is.na(prop_juvenile)]
+  if (nrow(result) > 0) {
+    message("[Multistanza age split - MEDITS TC] Juvenile proportion by species (matsub stage < ",
+            juvenile_stage_cutoff, " = Juvenile):")
+    print(result[, .(ScientificName, Juvenile, Adult, prop_juvenile)])
+  } else {
+    message("[Multistanza age split - MEDITS TC] TC.csv matched but produced no usable juvenile proportion.")
   }
   result
 }

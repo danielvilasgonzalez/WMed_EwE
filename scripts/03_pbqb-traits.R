@@ -104,10 +104,10 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("git_dir", envir = .GlobalEnv, inherits = FALSE)) {
   message("[03_pbqb-traits.R] Using pre-set out_dir/pcloud_dir/git_dir from calling environment:\n  out_dir  = ", out_dir, "\n  pcloud_dir = ", pcloud_dir, "\n  git_dir  = ", git_dir)
-  ## 2026-09-27: a pre-set out_dir that doesn't exist on THIS machine used
-  ## to fail silently or crash much later (e.g. inside ggsave(), with a
+  ## A pre-set out_dir that doesn't exist on THIS machine would otherwise
+  ## fail silently or crash much later (e.g. inside ggsave(), with a
   ## cryptic "cannot open file" error) instead of here, at the point the
-  ## bad path was actually accepted. run_pipeline_demo.R now checks this
+  ## bad path is actually accepted. run_pipeline_demo.R checks this
   ## itself before sourcing anything, but this guard stays here too in
   ## case some other driver script pre-sets these without checking.
   if (!dir.exists(out_dir)) {
@@ -176,14 +176,20 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
   }
 }
 
+## --- Run log (plain text, for sharing/debugging) ------------------------
+.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_03_pbqb-traits_log.txt"))
+.run_log_con  <- file(.run_log_path, open = "wt")
+sink(.run_log_con, split = TRUE)
+sink(.run_log_con, split = TRUE, type = "message")
+message("[Log] This run's console output is also being written to: ", .run_log_path)
+
 ## plot_dir nested inside out_dir, same convention as
 ## 01_biomass.R - everything this script produces lands
 ## somewhere under out_dir, nothing written to a separate location.
-## 2026-09-27: this script's own regular (non-validation)
-## plots now go in their own named subfolder, out_dir/plots/pbqb-traits -
-## matching out_dir/plots/biomass (01_biomass.R) and out_dir/plots/
-## fisheries (02_fisheries.R) - so out_dir/plots/ doesn't mix figures
-## from different scripts together.
+## This script's own regular (non-validation) plots go in their own
+## named subfolder, out_dir/plots/pbqb-traits - matching out_dir/plots/
+## biomass (01_biomass.R) and out_dir/plots/fisheries (02_fisheries.R) -
+## so out_dir/plots/ doesn't mix figures from different scripts together.
 plot_dir <- file.path(out_dir, "plots", "pbqb-traits")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
@@ -293,12 +299,11 @@ PIPELINE_START_TIME <- Sys.time()
 ## per-species loops (which have their own finer-grained progress bars
 ## already). Call STAGE_PB$tick(tokens=list(stage_name="...")) once
 ## each labeled stage below completes.
-## 2026-09-24 fix: this list must have EXACTLY one entry per
-## STAGE_PB$tick() call below, in the same order, or the progress bar's
-## total is wrong. "Fetch 2a2: occurrence status" (the rfishbase::
-## country()-based Occurrence_status fetch, ticked at line ~1675) was
-## added without adding its stage name here, so the bar's total stayed
-## at 13 while 14 ticks actually fire - the 14th tick (at "Export CSVs
+## This list must have EXACTLY one entry per STAGE_PB$tick() call below,
+## in the same order, or the progress bar's total is wrong - "Fetch 2a2:
+## occurrence status" (the rfishbase::country()-based Occurrence_status
+## fetch, ticked at line ~1675) must stay in this list, or the bar's
+## total goes stale while 14 ticks actually fire - the 14th tick (at "Export CSVs
 ## + generate plots") then hits progress::progress_bar's own guard
 ## against ticking past 100% and crashes with "!self$finished is not
 ## TRUE". If you add another STAGE_PB$tick() call anywhere, add its
@@ -387,8 +392,8 @@ if (!exists("SPECIES_DF_SOURCE", envir = .GlobalEnv, inherits = FALSE)) SPECIES_
 ## SURVEY_OUT_DIR removed - it duplicated out_dir from STEP 1 above
 ## (both pointed at the same ".../WMed EwE Model/output/" folder).
 ## out_dir is used directly everywhere below instead.
-## 2026-09-17 update: this block's own native/intermediate CSV outputs
-## go into their own "pbqb-traits" subfolder (matching 01_biomass.R's
+## This block's own native/intermediate CSV outputs go into their own
+## "pbqb-traits" subfolder (matching 01_biomass.R's
 ## "biomass" and 02_fisheries.R's "fisheries" subfolders); the shared
 ## workbook stays at the top-level out_dir. BIOMASS_CSV_DIR/
 ## FISHERIES_CSV_DIR point at the other two blocks' subfolders for this
@@ -398,7 +403,26 @@ if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 BIOMASS_CSV_DIR   <- file.path(out_dir, "biomass")
 FISHERIES_CSV_DIR <- file.path(out_dir, "fisheries")
 
-## 2026-09-29: no longer read for species_df's Biomass (see the
+## PBQB_REFERENCE_DIR: hand-typed reference/lookup tables for this
+## script, externalized to CSV so they're editable without touching
+## code - same convention as read_medits_reference()/MEDITS_REFERENCE_DIR
+## in 01_biomass.R and read_fisheries_reference()/FISHERIES_REFERENCE_DIR
+## in 02_fisheries.R.
+PBQB_REFERENCE_DIR <- file.path(pcloud_dir, "data/Complementary data/pbqb_reference_tables")
+read_pbqb_reference <- function(filename, required_cols = NULL) {
+  path <- file.path(PBQB_REFERENCE_DIR, filename)
+  if (!file.exists(path)) {
+    stop("[read_pbqb_reference] Reference table not found: \"", path, "\".")
+  }
+  dt <- fread(path, encoding = "UTF-8")
+  if (!is.null(required_cols) && !all(required_cols %in% names(dt))) {
+    stop("[read_pbqb_reference] \"", filename, "\" is missing required column(s): ",
+         paste(setdiff(required_cols, names(dt)), collapse = ", "))
+  }
+  dt
+}
+
+## No longer read for species_df's Biomass (see the
 ## species_df build below) - Biomass now comes straight from
 ## BIOMASS_PROPORTION_CSV instead of being re-derived from this raw,
 ## multi-year, per-observation table. Left defined only in case some
@@ -425,41 +449,38 @@ ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996
 
 if (!exists("FG_REFERENCE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # same file 01_biomass.R's fg_species_file / 02_fisheries.R's fg_file / 04_diets.R's FG_REFERENCE_CSV_PATH all read
-FG_INDEX_COMBINED_CSV  <- file.path(BIOMASS_CSV_DIR, "survey_fg_annual_index_regional_combined.csv")   # 01_biomass.R's FG-level table, now (2026-09-24 fix) includes stock-assessment/megafauna-only FGs the survey never samples at all, not just survey-caught ones
+FG_INDEX_COMBINED_CSV  <- file.path(BIOMASS_CSV_DIR, "survey_fg_annual_index_regional_combined.csv")   # 01_biomass.R's FG-level table, includes stock-assessment/megafauna-only FGs the survey never samples at all, not just survey-caught ones
 BIOMASS_PROPORTION_CSV <- file.path(BIOMASS_CSV_DIR, "biomass_proportion_by_species_fg.csv")   # same file 04_diets.R reads for the identical "species' share of its FG's biomass" purpose
 
 if (SPECIES_DF_SOURCE == "survey") {
   if (!file.exists(FG_REFERENCE_CSV_PATH)) {
     stop("SPECIES_DF_SOURCE = 'survey' but FG_REFERENCE_CSV_PATH ('", FG_REFERENCE_CSV_PATH, "') not found.",
-         " 2026-09-24, per Andrea: species_df's species UNIVERSE is now FG_WMed_2026.csv itself - every",
+         " species_df's species UNIVERSE is FG_WMed_2026.csv itself - every",
          " species any FG actually contains - not just whichever species the MEDITS/MEDIAS surveys",
          " happened to observe. Without this file there is no species list to build species_df from at all.")
   }
   
   ## --- Species universe: FG_WMed_2026.csv, NOT the survey -------------
-  ## 2026-09-24 fix, per Andrea ("species_df shouldnt be never
-  ## referenced, should be the FG_WMed_2026.csv"): species_df used to be
-  ## built ENTIRELY from species_density_regional_combined.csv (01_biomass.R's
-  ## MEDITS+MEDIAS combined SURVEY table), which silently limited its
-  ## species list to whatever those two surveys actually caught. Bluefin
-  ## tuna, swordfish (highly migratory - not trawl/acoustic-caught) and
-  ## every cetacean/seabird/turtle megafauna species were therefore
-  ## structurally absent from species_df, so calc_fish()/calc_mammal()/
-  ## calc_seabird() never ran for them at all - not a formula problem,
-  ## those functions are fully able to compute PB/QB once handed a
-  ## Biomass value, they just never got the chance. Flagged by Andrea
-  ## noticing these groups had no PB/QB anywhere in the output.
+  ## species_df is built from FG_WMed_2026.csv, not from
+  ## species_density_regional_combined.csv (01_biomass.R's MEDITS+MEDIAS
+  ## combined SURVEY table) - building it from the survey table alone
+  ## silently limits the species list to whatever those two surveys
+  ## actually caught, structurally excluding bluefin tuna, swordfish
+  ## (highly migratory - not trawl/acoustic-caught) and every cetacean/
+  ## seabird/turtle megafauna species, so calc_fish()/calc_mammal()/
+  ## calc_seabird() never ran for them - not a formula problem, those
+  ## functions compute PB/QB fine once handed a Biomass value, they just
+  ## never got the chance.
   ##
-  ## Now the species list is read directly from FG_REFERENCE_CSV_PATH -
+  ## The species list is read directly from FG_REFERENCE_CSV_PATH -
   ## every species any FG contains - and Biomass is filled per species
   ## from whichever source actually has it, in priority order:
   ##   1. species_density_regional_combined.csv (real MEDITS+MEDIAS
   ##      species-level density, YEAR_ECOPATH average) - used wherever
   ##      the survey genuinely observed that species.
   ##   2. Otherwise, that species' FG's own FG-level density from
-  ##      survey_fg_annual_index_regional_combined.csv - which, after
-  ##      01_biomass.R's matching 2026-09-24 fix, now actually has a row
-  ##      for stock-assessment/megafauna-only FGs the survey never
+  ##      survey_fg_annual_index_regional_combined.csv - which carries a
+  ##      row for stock-assessment/megafauna-only FGs the survey never
   ##      samples at all, instead of silently having none - split across
   ##      the FG's member species by biomass_proportion_by_species_fg.csv's
   ##      prop_sp_fg where available, else an equal split among whichever
@@ -482,17 +503,15 @@ if (SPECIES_DF_SOURCE == "survey") {
   ## --- Biomass: read straight from FG_spp / biomass_proportion_by_
   ## species_fg.csv, NOT re-derived from the raw multi-year survey table.
   ##
-  ## 2026-09-29 fix, per Andrea: "I prefer to use the FG_spp if that
-  ## [is] the proportion of species of ecopath biomass" (in response to
-  ## the question this script's old approach raised: why re-read
-  ## species_density_regional_combined.csv and immediately filter it to
-  ## YEAR_ECOPATH, when 01_biomass.R's FG_spp_Ecopath/
-  ## biomass_proportion_by_species_fg.csv already does exactly that same
-  ## filtering AND folds in every fix this session made (the FG/Species
-  ## dedup-collision fix, the even-split/literature-weighted overrides
-  ## for cetaceans, the Biomass_t_km2 reconciliation against Ecopath_B).
+  ## Reading Biomass straight from FG_spp/biomass_proportion_by_species_fg.csv
+  ## avoids re-reading species_density_regional_combined.csv and
+  ## re-filtering to YEAR_ECOPATH, when 01_biomass.R's FG_spp_Ecopath/
+  ## biomass_proportion_by_species_fg.csv already does that same
+  ## filtering AND folds in the FG/Species dedup-collision fix, the
+  ## even-split/literature-weighted overrides for cetaceans, and the
+  ## Biomass_t_km2 reconciliation against Ecopath_B.
   ##
-  ## The old approach had a real bug hiding in it, too: it merged raw
+  ## Re-deriving it from the raw table has a real bug hiding in it, too: it merged raw
   ## species-level density (mean_density, possibly a real numeric 0 for
   ## an FG the survey doesn't sample representatively - e.g. cetaceans/
   ## seabirds) onto species_df as Biomass_survey, then only fell back to
@@ -792,24 +811,19 @@ FG_CATCH_CSV_PATH <- if (is.null(FISHERIES_DATA_SOURCE) || FISHERIES_DATA_SOURCE
 
 species_df[, Fmort_FG := NA_real_]   # populated below if FG_YIELD_SOURCE == "fg_catch_csv"
 
-## 2026-09-23 addition: 02_fisheries.R (the actual, currently-run
-## fisheries script - NOT 02_fao_catches.R/02a_fisheries_multisource.R,
-## which this file's FG_YIELD_SOURCE/FG_CATCH_CSV_PATH logic just below
-## was written against and which aren't part of this pipeline's real
-## run order per run_pipeline_demo.R) already computes F directly -
-## F_by_species_fg.csv and F_by_fg.csv, written into FISHERIES_CSV_DIR
-## (same folder this script already points FG_CATCH_CSV_PATH at, so no
-## path fix needed there, just the wrong FILENAME). These are F itself
-## (Catch_density/Biomass_density, from GFCM catch + survey biomass, at
-## FG resolution - see 02_fisheries.R's own "# obtain F for species in
-## Ecopath years" section), not a raw catch table this script would
-## need to re-derive F from - so when present, this takes priority over
-## the legacy fg_catch_csv reconstruction below and that whole block is
-## skipped. This is the actual fix for Fmort/PB=M+F silently staying
-## M-only: FG_CATCH_CSV_PATH was pointing at a file 02_fao_catches.R
-## writes (a script that isn't part of this pipeline's run order), so
-## it was never found; F_by_species_fg.csv/F_by_fg.csv are what
-## 02_fisheries.R (the script actually run) produces.
+## 02_fisheries.R (the actual, currently-run fisheries script - NOT
+## 02_fao_catches.R/02a_fisheries_multisource.R, which this file's
+## FG_YIELD_SOURCE/FG_CATCH_CSV_PATH logic just below was written
+## against and which aren't part of this pipeline's real run order per
+## run_pipeline_demo.R) already computes F directly - F_by_species_fg.csv
+## and F_by_fg.csv, written into FISHERIES_CSV_DIR (same folder this
+## script already points FG_CATCH_CSV_PATH at - just the wrong
+## FILENAME). These are F itself (Catch_density/Biomass_density, from
+## GFCM catch + survey biomass, at FG resolution - see 02_fisheries.R's
+## own "# obtain F for species in Ecopath years" section), not a raw
+## catch table this script would need to re-derive F from - so when
+## present, this takes priority over the legacy fg_catch_csv
+## reconstruction below and that whole block is skipped.
 f_by_species_fg_path <- file.path(FISHERIES_CSV_DIR, "F_by_species_fg.csv")
 f_by_fg_path <- file.path(FISHERIES_CSV_DIR, "F_by_fg.csv")
 used_fisheries_R_f <- FALSE
@@ -967,7 +981,7 @@ classify_dispatch <- function(class_vec) {
 
 taxonomy[, dispatch_group := classify_dispatch(Class)]
 
-## 2026-09-24, per Andrea: a SEPARATE, finer classification for the
+## A SEPARATE, finer classification for the
 ## traits_ewe/Ecopath_traits "Organism" column - bacteria/fungi/algae/
 ## plants/invertebrates/fishes/birds/mammals/reptiles/other. Kept
 ## entirely independent of dispatch_group above (which exists only to
@@ -1048,12 +1062,11 @@ if (length(unresolved) > 0) {
   query_map <- data.table(Species = unresolved, query_term = str_trim(str_remove(unresolved, "\\s+spp?\\.?$")))
   unique_terms <- unique(query_map$query_term)
   
-  ## 2026-09-23 fix: this used to call rfishbase::synonyms() ONE QUERY
-  ## TERM AT A TIME via lapply() - with up to a few hundred unresolved
-  ## species, that's a few hundred separate network/duckdb round trips,
-  ## which IS what was "taking ages" here (the earlier fix above only
-  ## batched the taxonomy fetch that follows synonym resolution, not this
-  ## step itself). rfishbase::synonyms(), like its other table-based
+  ## Calling rfishbase::synonyms() ONE QUERY TERM AT A TIME via lapply()
+  ## would mean, with up to a few hundred unresolved species, a few
+  ## hundred separate network/duckdb round trips (the batched taxonomy
+  ## fetch that follows synonym resolution doesn't cover this step
+  ## itself). rfishbase::synonyms(), like its other table-based
   ## functions (species(), ecology(), morphology(), ...), accepts a
   ## VECTOR of names and returns every matching synonym row across all of
   ## them in ONE call - turning up to a few hundred round trips into 1.
@@ -1187,9 +1200,8 @@ message("\nDispatch group counts:")
 print(species_df[, .N, by = dispatch_group])
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (FishBase/SeaLifeBase)")))
 
-## 2026-09-25, per Andrea ("the pbqb code should look for growth
-## parameters and other things only for fish groups. (no invertebrates)"):
-## growth params (Loo/K/Winfinity/tmax, via rfishbase::popgrowth()),
+## Growth parameters and related fetches are restricted to fish groups
+## only (no invertebrates): growth params (Loo/K/Winfinity/tmax, via rfishbase::popgrowth()),
 ## length-weight a/b (poplw()), maturity (Lm/Tmat, maturity()), and
 ## swimming/aspect ratio (swimming()) are all genuinely FISH life-history
 ## concepts - they feed calc_fish() ONLY (Pauly 1980 M, the Froese-
@@ -1653,9 +1665,9 @@ weight_col <- intersect(c("Weight", "WeightMax"), names(sp_table))[1]
 length_col <- intersect(c("Length", "LengthMax"), names(sp_table))[1]
 long_col   <- intersect(c("LongevityWild", "LongevityCaptive", "MaxAge"), names(sp_table))[1]
 ## Vulnerability: FishBase's own Cheung et al. intrinsic vulnerability
-## index (0-100) - added 2026-09-23 so the traits_ewe/Ecopath_traits
-## table below can populate Vulnerability_index straight from FishBase
-## instead of the retired FG_WMed.xlsx sheet.
+## index (0-100) - lets the traits_ewe/Ecopath_traits table below
+## populate Vulnerability_index straight from FishBase instead of the
+## retired FG_WMed.xlsx sheet.
 vuln_col   <- intersect(c("Vulnerability"), names(sp_table))[1]
 ## CommonLength: FishBase's species() table separately carries a
 ## "typical/common length" field (distinct from Length/LengthMax,
@@ -1671,11 +1683,10 @@ vuln_col   <- intersect(c("Vulnerability"), names(sp_table))[1]
 ## message on your first run and add the real column name here if
 ## it's missing from this list.
 common_length_col <- intersect(c("CommonLength", "CommonLengthF", "CommonLengthM"), names(sp_table))[1]
-## 2026-09-24, per Andrea: Ecology/IUCN_conservation_status/Exploitation_
-## status were previously hand-curated (left NA - see the traits_ewe
-## header comment near where traits_reconciled is built) - she correctly
-## identified these as real FishBase/SeaLifeBase species() fields, not
-## something that needs manual entry. Resolved defensively (same pattern
+## Ecology/IUCN_conservation_status/Exploitation_status are real
+## FishBase/SeaLifeBase species() fields, not something that needs
+## hand-curation (see the traits_ewe header comment near where
+## traits_reconciled is built). Resolved defensively (same pattern
 ## as vuln_col/common_length_col above) since this session has no
 ## network access to verify the exact column names against a live
 ## rfishbase pull - the coverage message below prints whichever field
@@ -1792,24 +1803,20 @@ message("Coverage - Occurrence_status: ", nrow(occurrence_traits), "/", length(s
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a2: occurrence status")))
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
-## FISH ONLY (sp_list_fish, not sp_list) - see the 2026-09-25 comment
-## right after dispatch_group is attached to species_df, above.
-## 2026-09-26 fix, per Andrea ("is taking foreverer... optimize that
-## with lower the search only for certain pars for fish"): fetch_both()
-## defaults to ALSO querying SeaLifeBase (fishbase_only = FALSE) - fine
+## FISH ONLY (sp_list_fish, not sp_list) - see the comment right after
+## dispatch_group is attached to species_df, above.
+## fetch_both() defaults to ALSO querying SeaLifeBase (fishbase_only = FALSE) - fine
 ## when sp_list could contain non-fish species, but sp_list_fish is
 ## ALREADY restricted to species whose Class is in FISH_CLASSES (real
 ## fish live in FishBase, not SeaLifeBase). Querying SeaLifeBase for
 ## them anyway was pure waste, and worse: SeaLifeBase's remote parquet
-## backend (the "cboettig/fishbase/slb/..." S3 bucket) was timing out
-## repeatedly in a real run (10+ minutes per failed batch, confirmed from
-## the actual console log: "Operation too slow"/"Connection timed out"),
-## which then fell back to 400+ sequential PER-SPECIES SeaLifeBase calls,
-## each eating the same multi-minute timeout - this alone accounted for
-## multiple hours of the run (ETA readings up to "5d" were observed).
-## Setting fishbase_only = TRUE here (matching what the swimming() call
-## in 2f already correctly did) skips the SeaLifeBase attempt entirely
-## for these three genuinely fish-only fetches.
+## backend (the "cboettig/fishbase/slb/..." S3 bucket) can time out
+## repeatedly (10+ minutes per failed batch: "Operation too slow"/
+## "Connection timed out"), falling back to 400+ sequential PER-SPECIES
+## SeaLifeBase calls, each eating the same multi-minute timeout - easily
+## multiple hours of added runtime. Setting fishbase_only = TRUE here
+## (matching the swimming() call in 2f) skips the SeaLifeBase attempt
+## entirely for these three genuinely fish-only fetches.
 growth_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::popgrowth, sp_list_fish, fishbase_only = TRUE) else data.table()
 growth_best <- select_best_rows(growth_raw)
 tmax_col <- if (nrow(growth_best) > 0) intersect(c("tmax", "TMax"), names(growth_best))[1] else NA
@@ -1830,7 +1837,7 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
 ## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
-## FISHBASE ONLY - same 2026-09-26 fix/reasoning as popgrowth above.
+## FISHBASE ONLY - same reasoning as popgrowth above.
 lw_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::poplw, sp_list_fish, fishbase_only = TRUE) else data.table()
 lw_best <- select_best_rows(lw_raw)
 lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
@@ -1844,7 +1851,7 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b"
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
 ## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
-## FISHBASE ONLY - same 2026-09-26 fix/reasoning as popgrowth above.
+## FISHBASE ONLY - same reasoning as popgrowth above.
 maturity_raw <- if (length(sp_list_fish) > 0) fetch_both(rfishbase::maturity, sp_list_fish, fishbase_only = TRUE) else data.table()
 maturity_best <- select_best_rows(maturity_raw)
 lm_col <- if (nrow(maturity_best) > 0) intersect(c("Lm", "LengthMatMin"), names(maturity_best))[1] else NA
@@ -2415,10 +2422,9 @@ siler_pb <- function(longevity, surrogate_type) {
   lc <- exp(-p$a2 * x / W)
   ls <- exp((p$a3 / p$b3) * (1 - exp(p$b3 * x / W)))
   lx <- lj * lc * ls
-  ## 2026-09-25 fix, per Daniel's real run (crashed with "Error in
-  ## (function (classes, fdef, mtable) ... : unable to find an inherited
-  ## method for function 'shift' for signature '"numeric"'"): a bare
-  ## `shift()` call is ambiguous once a package that registers `shift` as
+  ## A bare `shift()` call can crash with "unable to find an inherited
+  ## method for function 'shift' for signature '"numeric"'" once a
+  ## package that registers `shift` as
   ## an S4 generic for spatial objects is loaded (e.g. `raster`/`terra` -
   ## both are `library()`'d by 01_biomass.R, sourced earlier in the same
   ## pipeline run) - R then dispatches through S4 method lookup instead of
@@ -2431,10 +2437,8 @@ siler_pb <- function(longevity, surrogate_type) {
   mean(-log(survival), na.rm = TRUE)
 }
 
-MAMMAL_SURROGATE_DEFAULT <- data.table(
-  Family = c("Phocidae", "Monachidae", "Otariidae", "Delphinidae", "Ziphiidae", "Physeteridae"),
-  surrogate_type = c(2, 2, 2, 3, 3, 3)
-)
+MAMMAL_SURROGATE_DEFAULT <- read_pbqb_reference("mammal_pb_surrogate_type.csv",
+                                                required_cols = c("Family", "surrogate_type"))
 
 calc_mammal <- function(out) {
   out <- merge(out, MAMMAL_SURROGATE_DEFAULT, by = "Family", all.x = TRUE)
@@ -2584,8 +2588,8 @@ invisible(STAGE_PB$tick(tokens = list(stage_name = "Calculate PB/QB (all groups)
 ## to a narrow PB/QB-only column set (see their own final `out[, .(...)]`
 ## lines above), so these don't survive the rbindlist() above on their
 ## own. Needed for the FG-level trait aggregation right below (feeds
-## the Ecopath_traits summary sheet, added 2026-09-16) -
-## PB/QB themselves are untouched by this, it only adds columns.
+## the Ecopath_traits summary sheet) - PB/QB themselves are untouched by
+## this, it only adds columns.
 trait_cols <- intersect(c("Loo", "K", "Winf", "Longevity", "TrophicLevel", "AspectRatio", "Depth", "Temp"), names(species_df))
 if (length(trait_cols) > 0) {
   results <- merge(results, unique(species_df[, c("Species", trait_cols), with = FALSE], by = "Species"),
@@ -2685,7 +2689,7 @@ fg_weighted <- merge(fg_weighted, fg_name_lookup, by = "FG", all.x = TRUE)
 
 ## =================================================================
 ## Biomass-weighted FG-level TRAITS (feeds the Ecopath_traits summary
-## sheet, added 2026-09-16) - same weighting convention as
+## sheet) - same weighting convention as
 ## PB_FG/QB_FG just above: each species' trait value contributes in
 ## proportion to its own share of the FG's total Biomass, not a plain
 ## unweighted mean across however many species happen to be in the FG.
@@ -2781,17 +2785,12 @@ fwrite(phyto_flagged, file.path(csv_out_dir, "phytoplankton_needs_separate_metho
 ECOBASE_CSV_PATH <- file.path(csv_out_dir, "ecobase_literature_pb_qb_simple.csv")
 
 if (ENABLE_ECOBASE_QUERY) {
-  ## 2026-09-23 fix: this was passing the top-level out_dir, so every
-  ## ecobase_*.csv (and the raw XML dumps) landed one level up from
-  ## where everything else in this script writes - while ECOBASE_CSV_PATH
-  ## just above already (correctly) pointed at csv_out_dir (the pbqb
-  ## subfolder). That mismatch meant a successful query's own CSV was
-  ## never found by the read-back check right below. Now both point at
-  ## csv_out_dir, so the EcoBase CSVs land inside the pbqb subfolder
-  ## alongside this script's other output.
-  ## 2026-09-24, per Andrea: EcoBase should consider each candidate
-  ## model's OWN reference year, not treat every matching model as
-  ## equally relevant - target_year narrows the "simple" CSV below to
+  ## out_dir here must be csv_out_dir, not the top-level out_dir, so
+  ## every ecobase_*.csv (and the raw XML dumps) lands in the same pbqb
+  ## subfolder ECOBASE_CSV_PATH already points at - otherwise a
+  ## successful query's own CSV is never found by the read-back check
+  ## right below.
+  ## target_year narrows the "simple" CSV below to
   ## whichever model is closest to this model's own YEAR_ECOPATH per
   ## FG_name (see fetch_ecobase_literature_pb_qb()'s own header comment;
   ## the full multi-model detail is still written to
@@ -2915,7 +2914,6 @@ if (ENABLE_ECOBASE_QUERY && file.exists(ECOBASE_CSV_PATH)) {
           uniqueN(ecobase_by_model$EwE_model), " distinct published model(s) - the per-model",
           " detail behind Ecobase's own FG-level PB_ecobase/QB_ecobase averages).")
   
-  ## 2026-09-17 update, CSV-not-workbook-sheet refactor:
   ## Ecobase/Ecobase_by_Model are native/intermediate reference tables,
   ## not final target sheets - written as CSV only.
   write_native_sheets_csv(list(Ecobase = ecobase_sheet, Ecobase_by_Model = ecobase_by_model),
@@ -3027,26 +3025,25 @@ add_pbqb_to_ecopath_workbook(fg_weighted = fg_weighted, out_path = ECOPATH_WORKB
                              csv_out_dir = csv_out_dir, biomass_csv_dir = BIOMASS_CSV_DIR)
 
 ## =================================================================
-## Final-sheet consolidation (2026-09-17, revised): the excel file's
+## Final-sheet consolidation: the excel file's
 ## Ecopath_traits sheet is the FG_name/species-level traits table "as
 ## it was saved" - 01_biomass.R writes that directly (from
 ## traits_reconciled, see its STEP 12). This script's OWN
 ## fg_traits_weighted table (biomass-weighted average of those same
 ## traits, rolled up to one row per FG) is a different, coarser shape -
-## useful for review, but not the final Ecopath_traits sheet, and
-## writing it under that same sheet name here would just overwrite
-## whatever 01_biomass.R already wrote depending on run order. Written
-## as an audit-only CSV instead. The other final sheets this script can
-## help complete (Ecopath_L, Ecopath_Di, Ecosim_ts) are consolidated
-## from sheets 01_biomass.R/02_fisheries.R/this script already wrote
-## natively, via finalize_ecopath_ecosim_summary_sheets()
+## useful for review, but not the final Ecopath_traits sheet, so it
+## would just overwrite whatever 01_biomass.R already wrote depending
+## on run order; written as an audit-only CSV instead. The other final
+## sheets this script can help complete (Ecopath_L, Ecopath_Di,
+## Ecosim_ts) are consolidated from sheets 01_biomass.R/02_fisheries.R/
+## this script already wrote natively, via
+## finalize_ecopath_ecosim_summary_sheets()
 ## (lib_survey_fg_density_functions.R) - additive, every native sheet
-## (Ecopath, Catches_Ecopath, Catches_Discards_FG_ts, PB_QB, Ecosim,
-## Catches_Ecosim, Fishing_Effort_by_Fleet) stays in the workbook
-## untouched. Run this LAST, same rule as finalize_workbook_sheet_
-## order() - after 01_biomass.R and 02_fisheries.R have both run at
-## least once against this same out_path (a sheet whose source hasn't
-## run yet is simply skipped with a message, not an error).
+## stays in the workbook untouched. Run this LAST, same rule as
+## finalize_workbook_sheet_order() - after 01_biomass.R and
+## 02_fisheries.R have both run at least once against this same
+## out_path (a sheet whose source hasn't run yet is simply skipped with
+## a message, not an error).
 ## =================================================================
 write_native_sheet_csv(fg_traits_weighted, "fg_traits_weighted", csv_out_dir)
 finalize_ecopath_ecosim_summary_sheets(out_path = ECOPATH_WORKBOOK_PATH, year_ecopath = YEAR_ECOPATH,
@@ -3061,17 +3058,15 @@ if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
   upsert_workbook_sheets(list(Ecobase = ecobase_sheet_dt), ECOPATH_WORKBOOK_PATH)
 }
 
-## 2026-09-29, per Andrea: "i dont see the references for each
-## estimates of B, L, Di, PBQB, traits" - build_fg_references_sheet()/
-## append_reference_columns_to_final_sheets() used to be called ONLY
-## from 04_diets.R, which is documented as OPTIONAL - so anyone running
-## just 01 -> 02 -> 03 never got a Reference column (or a
-## FG_References sheet) at all, including for THIS script's own
-## Ecopath_PBQB/Ecopath_traits. Called here too now (same "safe any
-## time, skips what's not ready" convention) - see 01_biomass.R's
-## matching call for the fuller explanation. Run right before this
-## script's own trim so the Reference column survives into the final
-## trimmed workbook, same as every other final-sheet write here.
+## build_fg_references_sheet()/append_reference_columns_to_final_sheets()
+## must be called here too, not only from 04_diets.R (which is OPTIONAL) -
+## otherwise anyone running just 01 -> 02 -> 03 never gets a Reference
+## column (or a FG_References sheet), including for THIS script's own
+## Ecopath_PBQB/Ecopath_traits. Same "safe any time, skips what's not
+## ready" convention - see 01_biomass.R's matching call for the fuller
+## explanation. Run right before this script's own trim so the
+## Reference column survives into the final trimmed workbook, same as
+## every other final-sheet write here.
 build_fg_references_sheet(ECOPATH_WORKBOOK_PATH,
                           biomass_csv_dir   = BIOMASS_CSV_DIR,
                           fisheries_csv_dir = FISHERIES_CSV_DIR,
@@ -3079,7 +3074,7 @@ build_fg_references_sheet(ECOPATH_WORKBOOK_PATH,
                           diet_csv_dir      = file.path(out_dir, "diet"))
 append_reference_columns_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
-## 2026-09-17 update: the excel ecopath_ecosim file must have exactly
+## The excel ecopath_ecosim file must have exactly
 ## the intended sheets, trimmed script by script - trim the workbook
 ## down to EXACTLY whichever of the 9 final target sheets (info,
 ## FG_spp, Ecopath_B, Ecopath_L, Ecopath_Di, Ecopath_PBQB,
@@ -3121,7 +3116,7 @@ message("\nSaved: species_parameter_references.csv (", nrow(reference_table),
 ## citations already live in their own "Ecobase" sheet (model/year/
 ## authors columns), a different grain that doesn't merge cleanly
 ## into this species-level table.
-## 2026-09-17 update: native/intermediate reference table, not a final
+## Native/intermediate reference table, not a final
 ## target sheet - written as CSV only.
 write_native_sheets_csv(list(References = reference_table), csv_out_dir)
 
@@ -3150,52 +3145,8 @@ write_native_sheets_csv(list(References = reference_table), csv_out_dir)
 ## this script was a wrong year - corrected to 2000 here and in that
 ## comment (see the Loo/K fallback block above, protocol Eq. 11 area).
 ## =================================================================
-METHOD_REFERENCES <- data.table::data.table(
-  Method = c(
-    "M_Pauly_1980", "M_FishLife_2023", "M_Gascuel_2008", "M_Hoenig_1983", "M_Then_2015", "M_AlversonCarney_1975",
-    "Froese_Binohlan_2000_fallback",
-    "QB_PalomaresPauly_1998Z", "QB_PalomaresPauly_1998noZ", "QB_ChristensenPauly_1992", "QB_ChristensenEtAl_2008_QP3",
-    "PB_BarlowBoveng_1991", "QB_InnesTrites_1987_1997",
-    "QB_NilssonNilsson_1976",
-    "PB_TumbioloDowning_1994", "PB_Brey_1999"
-  ),
-  Category = c(
-    "Fish - natural mortality (M)", "Fish - natural mortality (M)", "Fish - natural mortality (M)",
-    "Fish - natural mortality (M)", "Fish - natural mortality (M)", "Fish - natural mortality (M)",
-    "Fish - growth-parameter fallback (Loo/K)",
-    "Fish - consumption/biomass (QB)", "Fish - consumption/biomass (QB)", "Fish - consumption/biomass (QB)", "All groups - QB fallback",
-    "Marine mammals - production/biomass (PB)", "Marine mammals - consumption/biomass (QB)",
-    "Seabirds - consumption/biomass (QB)",
-    "Invertebrates - production/biomass (PB)", "Invertebrates - production/biomass (PB)"
-  ),
-  Citation = c(
-    "Pauly, D. (1980). On the interrelationships between natural mortality, growth parameters, and mean environmental temperature in 175 fish stocks. Journal du Conseil International pour l'Exploration de la Mer, 39(2), 175-192.",
-    "Thorson, J.T. (2020, and updates through 2023). Predicting life history parameters for all fishes worldwide (FishLife R package/database). Originally: Thorson, J.T., Munch, S.B., Cope, J.M., Gao, J. (2017). Predicting life history parameters for all fishes worldwide. Ecological Applications, 27(8), 2262-2276.",
-    "Gascuel, D., Bozec, Y.-M., Chassot, E., Colomb, A., Laurans, M. (2005/2008). The trophic-level based ecosystem modelling approach - trophic-level/temperature empirical M relationship used here as the general fish M fallback (protocol Eq.15).",
-    "Hoenig, J.M. (1983). Empirical use of longevity data to estimate mortality rates. Fishery Bulletin, 81(4), 898-903. (via TropFishR::M_empirical(), method 'Hoenig'.)",
-    "Then, A.Y., Hoenig, J.M., Hall, N.G., Hewitt, D.A. (2015). Evaluating the predictive performance of empirical estimators of natural mortality rate using information on over 200 fish species. ICES Journal of Marine Science, 72(1), 82-92. (via TropFishR::M_empirical(), method 'Then_growth'.)",
-    "Alverson, D.L., Carney, M.J. (1975). A graphic review of the growth and decay of population cohorts. Journal du Conseil International pour l'Exploration de la Mer, 36(2), 133-143. (via TropFishR::M_empirical(), method 'AlversonCarney'.)",
-    "Froese, R., Binohlan, C. (2000). Empirical relationships to estimate asymptotic length, length at first maturity and length at maximum yield per recruit in fishes, with a simple method to evaluate length frequency data. Journal of Fish Biology, 56(4), 758-773.",
-    "Palomares, M.L.D., Pauly, D. (1998). Predicting food consumption of fish populations as functions of mortality, food type, morphometrics, temperature and salinity. Marine and Freshwater Research, 49(5), 447-453. (Eq.27, uses Z/PB.)",
-    "Palomares, M.L.D., Pauly, D. (1998). Predicting food consumption of fish populations as functions of mortality, food type, morphometrics, temperature and salinity. Marine and Freshwater Research, 49(5), 447-453. (Eq.26, does not require Z.)",
-    "Christensen, V., Pauly, D. (1992). ECOPATH II - a software for balancing steady-state ecosystem models and calculating network characteristics. Ecological Modelling, 61(3-4), 169-185. (QB predictor adapted here, protocol Eq.24.)",
-    "Q/P (QB/PB) = 3 heuristic, as conventionally applied in Ecopath models per Christensen, V., Walters, C.J., Pauly, D. (2008 update of the EwE user guide). Fisheries Centre, UBC. Used here as the QB fallback wherever a dedicated QB method/data requirement isn't met.",
-    "Barlow, J., Boveng, P. (1991). Modeling age-specific mortality for marine mammal populations. Marine Mammal Science, 7(1), 50-65. (Siler competing-risks survivorship model, parameterized here by taxonomic surrogate group.)",
-    "Innes, S., Lavigne, D.M., Earle, W.M., Kovacs, K.M. (1987). Feeding rates of seals and whales. Journal of Animal Ecology, 56(1), 115-130; coefficients as commonly re-applied in Ecopath marine-mammal QB estimation (via Trites, A.W. and co-authors through the late 1990s). Verify the exact coefficient source against your own protocol document - not independently re-derived from the primary paper this session.",
-    "Nilsson, S.G., Nilsson, I.N. (1976), as conventionally cited for the seabird daily-ration/body-mass regression used in Ecopath QB estimation (Eq.30). Verify the exact citation against your own protocol document - not independently re-derived from the primary paper this session.",
-    "Tumbiolo, M.L., Downing, J.A. (1994). An empirical model for the prediction of secondary production in marine benthic invertebrate populations. Marine Ecology Progress Series, 114, 165-174.",
-    "Brey, T. (1999/2001). A collection of empirical relations for use in ecological modelling (temperature/longevity-based invertebrate P/B, protocol Eq.19). Newsletter of the Fisheries Research Report Series / later formalized in Brey, T. (2012), Population dynamics in marine benthic invertebrates - a virtual handbook."
-  ),
-  Confidence = c(
-    "Verified this session", "Verified this session (package/database, not a single paper)", "Verified this session (relationship confirmed; exact 2005 vs 2008 paper not disambiguated)",
-    "Verified this session", "Verified this session", "Verified this session",
-    "Verified this session (year corrected from an earlier '2003' typo in this script's own comments)",
-    "Verified this session", "Verified this session", "Verified this session", "Conventional EwE citation - not independently re-verified",
-    "Verified this session", "Conventional EwE citation - not independently re-verified",
-    "Conventional EwE citation - not independently re-verified",
-    "Verified this session", "Verified this session (exact year/venue for the Eq.19 coefficients not fully disambiguated)"
-  )
-)
+METHOD_REFERENCES <- read_pbqb_reference("pbqb_method_references.csv",
+                                         required_cols = c("Method", "Category", "Citation", "Confidence"))
 
 fwrite(METHOD_REFERENCES, file.path(csv_out_dir, "pbqb_method_references.csv"))
 message("\nSaved: pbqb_method_references.csv (", nrow(METHOD_REFERENCES),
@@ -3209,7 +3160,7 @@ message("\nSaved: pbqb_method_references.csv (", nrow(METHOD_REFERENCES),
 ## (that sheet's own species-level FishBase provenance) so the two
 ## don't get confused - this one answers "which formula", not "which
 ## study backs this species' trait value".
-## 2026-09-17 update: native/intermediate reference table, not a final
+## Native/intermediate reference table, not a final
 ## target sheet - written as CSV only.
 write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_out_dir)
 
@@ -3230,7 +3181,7 @@ write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_ou
 FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 
 fg_ref_unique <- NULL
-## fg_species_all (2026-09-23 addition): the FULL species-level table -
+## fg_species_all: the FULL species-level table -
 ## every (Species, FG, FG_name) row FG_WMed_2026.csv defines, not just
 ## the deduplicated FG-number/FG-name pairs in fg_ref_unique above.
 ## Used below so the traits_ewe/Ecopath_traits output can include EVERY
@@ -3284,11 +3235,11 @@ if (file.exists(FG_REFERENCE_PATH)) {
 ## IUCN status, Exploitation status, Vulnerability index, Mean/Max
 ## length, Mean weight, Mean life span).
 ##
-## MOVED HERE from 01_biomass.R (2026-09-22): this script is the one
+## Built here, not in 01_biomass.R: this script is the one
 ## place FG_WMed_2026.csv (fg_ref_unique, loaded above) and species_df's
 ## own trait fetches are both in scope.
 ##
-## 2026-09-23 rewrite: no longer reads the old FG_WMed.xlsx workbook at
+## No longer reads the old FG_WMed.xlsx workbook at
 ## all - this pipeline's only file dependencies are FG_WMed_2026.csv
 ## (FG numbering/grouping AND, now, the full species list per FG) plus
 ## the actual data sources/databases (surveys, FishBase/SeaLifeBase,
@@ -3326,8 +3277,8 @@ if (file.exists(FG_REFERENCE_PATH)) {
 ##                            Yield (fisheries-derived, species_df$Yield -
 ##                            NA whenever YIELD_SOURCE has no data, same
 ##                            as species_df$Yield itself)
-## 2026-09-24 update, per Andrea (correctly identified these as real
-## FishBase/SeaLifeBase fields, not something that needs hand-curation):
+## These are real FishBase/SeaLifeBase fields, not something that needs
+## hand-curation:
 ##   - Organism  <- classify_organism(Class, Phylum[, Kingdom]) (Step 1,
 ##                  lib taxonomy fetch) - Fishes/Mammals/Birds/Reptiles/
 ##                  Algae/Plants/Bacteria/Fungi/Invertebrates/Other -
@@ -3416,7 +3367,7 @@ message("traits_ewe built directly from FG_WMed_2026.csv + species_df: ", nrow(t
         " source in this pipeline and are left blank (previously hand-curated in the retired",
         " FG_WMed.xlsx sheet) - fill these manually if you need them.")
 
-## 2026-09-17 update, revised 2026-09-23: Ecopath_traits is the FG_name/
+## Ecopath_traits is the FG_name/
 ## species-level traits table "as it was saved" - i.e. this species-level
 ## traits_reconciled table, not the FG-level biomass-weighted rollup this
 ## script computes from it elsewhere. traits_reconciled (tidy, one row
@@ -3434,9 +3385,9 @@ write_native_sheets_csv(
 ## Mirrors the OLD FG_WMed.xlsx traits_ewe sheet's own visual convention
 ## (confirmed against a user-supplied example export of that sheet): a
 ## "<FG_num>: <FG_name>" header row, one blank row, then that FG's
-## species rows - repeated per FG, in FG order. 2026-09-23: Andrea
-## confirmed she wants the WORKBOOK sheet itself in this layout (not just
-## an audit-only CSV alongside a flat workbook sheet) - nothing downstream
+## species rows - repeated per FG, in FG order. The WORKBOOK sheet
+## itself uses this layout (not just an audit-only CSV alongside a flat
+## workbook sheet) - nothing downstream
 ## in this pipeline reads the Ecopath_traits sheet back programmatically
 ## (grep confirmed: only trim_workbook_to_final_sheets()'s target_order
 ## and comments reference the sheet name), so it's safe to make this the
@@ -3466,10 +3417,10 @@ build_grouped_traits_sheet <- function(dt) {
   rbindlist(rows, use.names = TRUE, fill = TRUE)
 }
 traits_grouped <- build_grouped_traits_sheet(traits_reconciled)
-## 2026-09-26: traits_ewe_grouped.csv (a standalone CSV mirror of this
-## exact same traits_grouped object) removed - it was a pure duplicate of
-## the Ecopath_traits workbook sheet written right below (same object,
-## same content), with the comment above already confirming nothing
+## No standalone traits_ewe_grouped.csv mirror of this exact same
+## traits_grouped object - it would be a pure duplicate of the
+## Ecopath_traits workbook sheet written right below (same object,
+## same content), and the comment above already confirms nothing
 ## reads it back programmatically. traits_ewe.csv (flat, written above)
 ## remains the one machine-readable CSV source of truth for this data;
 ## the grouped layout now lives ONLY in the workbook sheet, its one
@@ -3499,13 +3450,12 @@ message("Saved: workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
 ## group can't out-produce what it eats for long). These reference
 ## lines are a REVIEW PROMPT, not a hard rule - some groups (e.g.
 ## detritivores, some invertebrates) legitimately sit outside it.
-## 2026-09-29, per Andrea's validation request (cross-referencing
-## pipeline_code_review_and_validation_findings.md finding 4: "no
-## plausibility bounds exist anywhere on the final PB, QB, or GE values
-## before they reach the Ecopath input sheet... an FG could reach
-## ecopath_ready_PB_QB.csv with an impossible GE >= 1 or a nonsensical
-## negative value with nothing in the pipeline raising a flag"). The
-## PQ_ratio_by_fg_REVIEW.csv/plot below already existed but only ever
+## No plausibility bounds otherwise exist anywhere on the final PB, QB,
+## or GE values before they reach the Ecopath input sheet, so an FG
+## could reach ecopath_ready_PB_QB.csv with an impossible GE >= 1 or a
+## nonsensical negative value with nothing in the pipeline raising a
+## flag (see pipeline_code_review_and_validation_findings.md finding
+## 4). The PQ_ratio_by_fg_REVIEW.csv/plot below already existed but only ever
 ## covered FGs with PB_FG/QB_FG both non-NA AND QB_FG > 0 - anything
 ## negative, zero, or NA on either side (the genuinely IMPOSSIBLE cases,
 ## not just "unusual") was silently excluded from the check entirely
@@ -3620,9 +3570,7 @@ setorder(ecopath_ready, FG_num)
 ## real file's own convention for its seagrass/algae/phytoplankton rows
 is_primary_producer <- ecopath_ready$FG_num %in% species_df[dispatch_group == "phytoplankton", FG]
 
-## 2026-09-29, per Andrea's validation request (cross-referencing
-## ewe_user_guide_compliance_review_2026-09-28.md finding 4, "real gap,
-## not fixed"): the EwE User Guide's own guidance is that unassimilated
+## The EwE User Guide's own guidance is that unassimilated
 ## consumption should VARY by trophic guild - roughly 0.2 for carnivorous
 ## fish, up to 0.4 for herbivores/zooplankton (undigested plant material
 ## passes through in greater proportion than animal prey) - not a flat
@@ -3695,3 +3643,8 @@ message("\n", strrep("=", 50))
 message("Total pipeline runtime: ", round(as.numeric(elapsed, units = "mins"), 2), " minutes",
         " (", round(as.numeric(elapsed, units = "secs"), 1), " seconds)")
 message(strrep("=", 50))
+
+## --- Close run log --------------------------------------------------------
+sink(type = "message")
+sink()
+close(.run_log_con)

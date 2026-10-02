@@ -207,14 +207,12 @@ region or time window would need.
   GitHub by the scripts themselves).
 
 Throughout this document, `<pcloud_dir>` means *the WestMed EwE pCloud
-drive* and `<git_dir>` means *the WestMed EwE GitHub repository* — both are
-plain local paths the top of each script resolves (hardcoded for one user,
-or picked interactively via `rstudioapi::selectDirectory()` for anyone
-else), not fixed locations baked into the code. Retargeting the pipeline to
-a different region (see [Adapting this pipeline to a different region])
-does not require moving off pCloud/GitHub — only pointing `pcloud_dir`/
-`git_dir` at that region's own drive/repository, or adding that region's
-data alongside the Western Med data in the same drive/repository.
+drive* and `<git_dir>` means *the WestMed EwE GitHub repository*. Retargeting
+the pipeline to a different region (see [Adapting this pipeline to a
+different region]) does not require moving off pCloud/GitHub — only
+pointing `pcloud_dir`/`git_dir` at that region's own drive/repository, or
+adding that region's data alongside the Western Med data in the same
+drive/repository.
 
 **A note on the plots and column tables in this document:** this
 documentation was written without direct access to the WestMed EwE pCloud
@@ -244,21 +242,17 @@ Four **other** diagrams in this document (the pipeline flow, the
 FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon
 dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**,
 in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams
-(same `flowchart LR` layout, the same gray/purple/teal/coral
-`classDef` palette). They show the code's own logic — which function
-calls which, which sheet gets written by what, which fallback branch runs
-when — built directly from the script and library contents described
-here, not from any survey or model output. Because they're plain text
-(Mermaid syntax rendered in-browser via `mermaid.js`, loaded from a CDN
-in this document's setup), they contain no data values and no image
-files to go missing — unlike the four `safe_include_graphics()`
-placeholders above, they always render, with or without an internet
-connection to the pCloud drive. They do need an internet connection *to
-the Mermaid CDN* at view time (not render time) to draw the SVG in the
-browser; if you'd rather they render standalone with no external
-dependency, `rmarkdown::html_document(self_contained = TRUE)` still
-inlines the two `<script>` tags below the CSS chunk, so this only
-matters if that CDN is unreachable from wherever the HTML is opened.
+(same `flowchart LR` layout, the same gray/purple/teal/coral `classDef`
+palette). They show the code's own logic — which function calls which,
+which sheet gets written by what, which fallback branch runs when — built
+directly from the script and library contents described here, not from
+any survey or model output. Being plain text (Mermaid syntax rendered via
+`mermaid.js` from a CDN), they always render, with or without a connection
+to the pCloud drive — unlike the `safe_include_graphics()` placeholders
+above. They do need a connection *to the Mermaid CDN* at view time to draw
+the SVG in the browser; `rmarkdown::html_document(self_contained = TRUE)`
+inlines the `<script>` tags instead if that CDN is unreachable from
+wherever the HTML is opened.
 
 # Pipeline overview
 
@@ -972,6 +966,174 @@ MEDITS-only — no MEDITS+MEDIAS averaging step.
 Same file set and workbook sheets as `AREA_MODE == "westmed"` (see above),
 written to `out_dir/<AREA_NAME>/`, with the three contract files above
 staying unsuffixed.
+
+---
+
+# Fishing effort: technology creep, NEI catch fallback and effort forward-fill (`02_fisheries.R`)
+
+**This section documents `02_fisheries.R` as it actually exists today** —
+the current fisheries script, covering Catches (C), Landings (L), Discards
+(Di) and Fishing mortality (F) (see the block table in
+[Detailed methodology per output block] above). It supersedes the
+`02_fao_catches.R`/`02a_fisheries_multisource.R` scripts documented in the
+next two sections (`# Script 2` / `# Script 2a` below); those sections are
+kept for historical reference only — neither script drives this pipeline's
+current F/catch chain, which reads `02_fisheries.R`'s own `F_by_fg.csv`
+directly (`02_fao_catches.R` is read only as a legacy fallback when that
+file is missing).
+
+## Technology-creep correction
+
+Raw nominal effort — FDI's own `Effort_days`/`Effort_kWdays_total` for
+Spain/France/Italy, FishMIP's `nom_active` (kW·days) for Morocco/Algeria/
+Tunisia (the only bulk effort source for those 3 countries) — understates
+real fishing power over time: gear, electronics and engine efficiency
+improve ("technology creep") even when the number of days fished stays
+flat. `tech_creep_multiplier()` converts nominal to an *effective* effort
+figure to correct for this.
+
+For a calendar year $y$ and gear class $g \in \{\text{bottom\_trawl},
+\text{other}\}$, the annual creep rate $r(y,g)$ (`TECH_CREEP_PERIOD_RATES`):
+
+$$
+r(y, g) =
+\begin{cases}
+0.79\%/\text{yr} & 1994 \le y \le 2013,\ g = \text{bottom\_trawl} \\
+2.00\%/\text{yr} & 1994 \le y \le 2013,\ g = \text{other} \\
+4.50\%/\text{yr} & 2014 \le y \le 2023,\ \text{any } g
+\end{cases}
+$$
+
+- **0.79%/year, 1994–2013 bottom-trawl (FDI's "DTS" code)** — Damalas, D.,
+  Maravelias, C.D., Osio, G.C., Maynou, F., Sbrana, M., Sartor, P. (2015).
+  "Once upon a Time in the Mediterranean" — long term trends of
+  Mediterranean fisheries resources based on fishers' Traditional
+  Ecological Knowledge. *PLoS ONE*, 10(3), e0119330, as directly quoted by
+  Tsagarakis et al. (2022, *Frontiers in Marine Science* 9:919793).
+- **2.0%/year, 1994–2013 every other gear** — Tsagarakis et al. (2022)'s
+  own summary of the wider Mediterranean creep literature (best-fitting of
+  0%/1%/2%/year tested for a Mediterranean Ecopath hindcast, 1993–2020).
+- **4.5%/year, 2014–2023, flat across gears** — Palomares & Pauly (2019)'s
+  $C\% = 13.8 \times Y^{-0.511}$, evaluated **once** at $Y=9$ (the window's
+  full length) = 4.49%/year — not re-evaluated at each year's own elapsed
+  distance, which would spike to 13.8%/year at the window's start (correct
+  algebraically, not a realistic annual rate, since $Y$ is meant as a
+  whole-window average).
+
+A year outside every listed period uses whichever listed period's midpoint
+is closest. The rate is further scaled by a country multiplier
+$c(\text{Country})$ (`TECH_CREEP_COUNTRY_MULTIPLIER`: EU-3 = 1.0;
+Morocco/Algeria/Tunisia = 0.7) and a sector multiplier $s(\text{Sector})$
+(`TECH_CREEP_SECTOR_MULTIPLIER`: Industrial = 1.0; Artisanal/Recreational =
+0.6) — both flagged in the code as judgment calls, not literature-derived.
+Combining $cm = c \times s$, the cumulative multiplier compounds year by
+year from `TECH_CREEP_BASE_YEAR`:
+
+$$
+M(\text{Country}, Y, \text{Sector}, g) =
+\begin{cases}
+1 & Y = \text{base\_year} \\[4pt]
+\displaystyle\prod_{y=\text{base\_year}+1}^{Y} \left(1 + \frac{r(y,g)\cdot cm}{100}\right) & Y > \text{base\_year} \\[10pt]
+\displaystyle\prod_{y=Y+1}^{\text{base\_year}} \left(1 + \frac{r(y,g)\cdot cm}{100}\right)^{-1} & Y < \text{base\_year}
+\end{cases}
+$$
+
+$$
+\text{Effort}_{\text{effective}}(\text{Country}, Y, \text{Sector}, g) = \text{Effort}_{\text{raw}}(\text{Country}, Y, \text{Sector}, g) \times M(\text{Country}, Y, \text{Sector}, g)
+$$
+
+Implemented as `tech_creep_rate_for_year()` / `tech_creep_multiplier()`,
+applied identically to FDI's `Effort_kWdays_total` and FishMIP's
+`nom_active_kWdays`, just with a different Country/Sector/gear_class set
+per source.
+
+## Non-EU effort: forward-filling a truncated FishMIP series
+
+FishMIP's `nom_active` series can end before `END_YEAR` for a given Fleet
+(Country × gear × Sector) — most often for Morocco/Algeria/Tunisia, which
+have no other bulk effort source (previously left truncated with only a
+"max FishMIP year: hard ceiling, not extrapolated" message). Any such
+Fleet is now forward-filled to `END_YEAR`: every year after its last real
+one repeats that Fleet's own last real **raw** `nom_active_kWdays` value
+unchanged — the nominal level held flat, not re-estimated. The
+technology-creep correction above still applies to every row, real and
+filled alike, so `nom_active_kWdays_effective` keeps compounding through
+the filled tail exactly as a real year would ("keep the same value...
+except the creep"). Each row is tagged `effort_data_status` ("real" or
+`forward_filled_from_<year>`) in `Fishing_Effort_by_Fleet`, and the fix is
+generic per-Fleet, not hardcoded to any specific 3 countries.
+
+## NEI catch fallback with an F≤1 cap
+
+Raw catch records reported under a broad FAO "NEI" (not elsewhere
+included) common name — "Marine fishes NEI", "Cuttlefish, bobtail squids
+NEI", "Marine crustaceans NEI", "Various squids NEI", etc. — previously
+fell through every matching step unresolved (~97% of unresolved catch
+tonnage in a real review). `nei_keyword_to_rank.csv` maps each such
+keyword to a target taxonomic Class/Phylum; the matched catch is then
+biomass-weight-split across the commercial FGs under that rank (reusing
+`match_bare_rank_to_fg()`, the same tiered Genus→Family→Order→Class→Phylum
+splitter the bare-rank taxonomic fallback uses elsewhere), explicitly
+excluding non-commercial FGs from the split (see the next section).
+
+Before this split is applied to `catches_discards_fg`, each candidate FG's
+resulting fishing mortality — the same $F = (\text{Catch}_{t,\text{avg}} /
+\text{Total\_Area\_km}^2) / \text{Biomass\_density\_avg}$ used for the F
+block, averaged over `YEAR_ECOPATH` — is checked. Any FG that would exceed
+$F=1$ because of its NEI-attributed catch has that catch trimmed back down
+to exactly its $F=1$ cap; the removed tonnage is redistributed (a single
+proportional pass across the other candidate FGs under the same rank that
+still have headroom — not a fully iterative water-filling algorithm) to
+FGs with room; whatever can't be placed anywhere without pushing another
+FG over $F=1$ is left capped out and reported via a console message, never
+silently dropped or forced through. Writes `nei_keyword_fcap_adjustments.csv`
+(Species × FG × delta, `YEAR_ECOPATH` only).
+
+## Non-commercial-FG exclusion rule
+
+A raw catch record can never resolve onto a non-commercial FG — nobody
+reports landed catch of a group nobody is allowed/able to land. This rule
+is enforced in two places with different scopes; the second one is the
+real backstop, applying to **every** catch-to-FG match the cascade
+produces, not only the taxonomic-rank fallback.
+
+**`match_bare_rank_to_fg()`** (the shared taxonomic-rank splitter used by
+both the ordinary bare-rank fallback and the NEI keyword fallback above)
+drops any FG whose name matches `non-commercial|noncommercial`
+(case-insensitive) from a rank's candidate set *before* computing biomass
+weights — and if a rank's candidates are now empty because they were ALL
+non-commercial, falls through to try the next broader rank instead of
+returning an empty/non-commercial result.
+
+**`resolve_matches_safely()`** — the one function nearly every merge step in
+the cascade funnels its result through (direct name match, FAO
+`Scientific_Name` bridge, genus fallback, word-containment fallback, manual
+overrides, the rerun cascade for late-arriving species, and both SAU match
+tiers) — originally only checked for non-commercial candidates in its
+*ambiguous* branch (`n_distinct_fg > 1`): when an ambiguous species' FGs
+span a commercial-vs-non-commercial split of the same taxon, dropping the
+non-commercial candidate(s) could leave exactly one FG, rescuing the match
+onto the commercial one. That left a real gap Andrea flagged directly: a
+species that already resolved to exactly **one** FG via any of those
+merge steps — a direct scientific-name hit, a common-name match, the FAO
+bridge, a genus match, SAU, and so on — had no non-commercial check at
+all, because the check only ever ran on the `n_distinct_fg > 1` branch. If
+that one matching FG happened to be non-commercial, it was accepted as a
+valid match with nothing to catch it.
+
+The fix broadens the check to run before the safe/ambiguous split, not
+just inside it: for every query, if **all** of its candidate FG(s) — one
+candidate or several — are non-commercial, that query is moved out of
+`safe_queries` into `ambiguous_queries`, regardless of how many candidates
+it had. This isn't a "drop the species" change: every caller of
+`resolve_matches_safely()` only removes `$safe`'s species from its own
+`remaining` table before moving to the next cascade step, so a query that
+lands in `$ambiguous` instead simply stays in `remaining` and gets another
+attempt at a later, broader step (taxonomy fallback, SAU, STAR/RAM, ICCAT,
+...) exactly as an ambiguous match always has — it is never force-matched
+to a non-commercial FG, and never silently lost. A species with no
+remaining commercial candidate anywhere in the cascade ends up correctly
+unresolved (flagged for manual review), rather than wrongly assigned.
 
 ---
 

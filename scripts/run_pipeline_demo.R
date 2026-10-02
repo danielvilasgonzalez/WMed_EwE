@@ -44,14 +44,14 @@ RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
 ## -----------------------------------------------------------------
 ## Shared paths - set ONCE here, reused by all three scripts.
 ##
-## 2026-09-27: packaging this as a repo other
-## people can clone and run - rather than every person editing these
-## three lines directly (and constantly re-diffing/re-committing over
-## each other's local paths), this now looks for a config.R file
-## living alongside this script FIRST. Copy config.R.example to
-## config.R, edit YOUR OWN three paths in there, and this block picks
-## them up automatically - config.R is in .gitignore, so your local
-## paths never end up in a commit or collide with anyone else's.
+## Packaged as a repo other people can clone and run - rather than
+## every person editing these three lines directly (and constantly
+## re-diffing/re-committing over each other's local paths), this looks
+## for a config.R file living alongside this script FIRST. Copy
+## config.R.example to config.R, edit YOUR OWN three paths in there,
+## and this block picks them up automatically - config.R is in
+## .gitignore, so your local paths never end up in a commit or collide
+## with anyone else's.
 ##
 ## Nobody's workflow breaks: if config.R doesn't exist yet, this falls
 ## back to Daniel's own hardcoded defaults below, exactly as before -
@@ -69,21 +69,18 @@ if (file.exists("config.R")) {
   source("config.R")
 } else if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
   
-  ## 2026-09-29, per Andrea: "a window should pop up to ask you for the
-  ## folder location, like in the 01 biomass code" - the first version
-  ## of this fix used readline() console prompts, which broke under
-  ## RStudio's "Source" (it echoes the WHOLE file's text into the
-  ## console as if typed, so readline() ended up reading later LINES OF
-  ## THIS SCRIPT as if they were folder paths - see the garbled
-  ## transcript this produced). Switched to the same
-  ## rstudioapi::selectDirectory() native folder-picker dialog
+  ## A native folder-picker dialog is used here rather than readline()
+  ## console prompts, which break under RStudio's "Source" (it echoes
+  ## the WHOLE file's text into the console as if typed, so readline()
+  ## ends up reading later LINES OF THIS SCRIPT as if they were folder
+  ## paths). This uses the same rstudioapi::selectDirectory() dialog
   ## 01_biomass.R/02_fisheries.R/03_pbqb-traits.R/04_diets.R already use
   ## for their own out_dir/pcloud_dir/git_dir fallback - a real OS
   ## window, immune to console-echo issues, and consistent with the
   ## rest of the pipeline. Falls through to the old warn-and-use-
   ## Daniel's-defaults behavior when RStudio isn't available at all
   ## (e.g. a plain `Rscript` call with no RStudio session behind it) -
-  ## see the final `else` branch below, unchanged from before this fix.
+  ## see the final `else` branch below.
   pick_dir <- function(title, message_text) {
     repeat {
       rstudioapi::showQuestion(title = title, message = message_text)
@@ -146,8 +143,8 @@ if (file.exists("config.R")) {
   git_dir    <- "/Users/daniel/Documents/GitHub/WMed_EwE/"
 }
 
-## 2026-09-27: pbqb-traits/diet/validation plots weren't being
-## created - root cause was traced to THIS block. Every one of 01/02/03/
+## This check guards against a failure mode where pbqb-traits/diet/
+## validation plots silently weren't created. Every one of 01/02/03/
 ## 04's own "SOURCE-ABLE SCRIPT" guards (see their Configuration sections)
 ## trusts out_dir/pcloud_dir/git_dir blindly the moment they're already set
 ## in the calling environment - it never checks they actually exist on
@@ -203,8 +200,8 @@ if (RUN_MODE == "westmed_default") {
   ## Spain/France/Italy/Tunisia/Algeria/Morocco) - specifically:
   ##   YEAR_ECOPATH = 1994:1996 (Ecopath baseline - 3-year average snapshot)
   ##   TS_YEARS/START_YEAR/END_YEAR = 1995:2023 (Ecosim time series)
-  ## THIS is the one enforced default for the West Med model (confirmed
-  ## 2026-09-26) - every numbered script's own `if (!exists(...))` guard
+  ## THIS is the one enforced default for the West Med model - every
+  ## numbered script's own `if (!exists(...))` guard
   ## resolves to these exact values whenever nothing overrides them, so
   ## there is no separate place these need to be kept in sync. Nothing
   ## below is new behavior, it's just being triggered by source() from
@@ -276,7 +273,7 @@ source(file.path(git_dir, "scripts/03_pbqb-traits.R"))
 message("--- Step 4/4: source(04_diets.R) [optional - diet composition] ---")
 source(file.path(git_dir, "scripts/04_diets.R"))
 
-## 2026-09-29, new: validation step - compares the just-written
+## Validation step - compares the just-written
 ## Ecopath_B/L/Di/PBQB against the OLD West Med workbook's "estimates"
 ## sheet and consolidates every plausibility/REVIEW csv the four steps
 ## above already wrote into one summary. Optional and best-effort: a
@@ -300,3 +297,63 @@ if (RUN_VALIDATION) {
 
 message("\n=== Pipeline run complete (RUN_MODE = '", RUN_MODE, "'). ",
         "Outputs written under: ", out_dir, " ===\n")
+
+## =================================================================
+## Auto-launch the Shiny/Quarto doc after the pipeline finishes, instead
+## of leaving that as a separate manual step.
+##
+## The one Shiny/Quarto artifact referenced elsewhere in this pipeline
+## is pipeline_documentation_shiny.qmd (see 01_biomass.R's
+## SAVE_SHINY_CACHE_PATH/STOP_AFTER_SHINY_CACHE comments) - a Quarto doc
+## with a Shiny runtime that reads the just-saved Shiny data cache
+## (SAVE_SHINY_CACHE_PATH, if you set it before this run) for its
+## reactive "Try it" figures. No fixed path for that file was given
+## anywhere in the scripts this driver sources, so AUTO_LAUNCH_SHINY_DOC_
+## PATH below is a best guess at the repo layout (alongside this
+## script's own git_dir) - update it once to your real path if it lives
+## somewhere else (e.g. under a docs/ subfolder), and this will keep
+## working on every future run without touching this block again.
+##
+## Best-effort and opt-in-by-default: set AUTO_LAUNCH_SHINY_DOC <- FALSE
+## before sourcing this script to skip it entirely (e.g. running
+## headless/non-interactively, or SAVE_SHINY_CACHE_PATH wasn't set this
+## run so the doc would open with stale/no cached data). Never fails the
+## pipeline run itself - every launch attempt is wrapped in tryCatch, and
+## this whole block runs only AFTER every pipeline step above has
+## already completed.
+if (!exists("AUTO_LAUNCH_SHINY_DOC", envir = .GlobalEnv, inherits = FALSE)) AUTO_LAUNCH_SHINY_DOC <- TRUE
+if (!exists("AUTO_LAUNCH_SHINY_DOC_PATH", envir = .GlobalEnv, inherits = FALSE)) {
+  AUTO_LAUNCH_SHINY_DOC_PATH <- file.path(git_dir, "scripts", "pipeline_documentation_shiny.qmd")
+}
+
+if (AUTO_LAUNCH_SHINY_DOC) {
+  tryCatch({
+    if (!file.exists(AUTO_LAUNCH_SHINY_DOC_PATH)) {
+      message("[Auto-launch] AUTO_LAUNCH_SHINY_DOC_PATH ('", AUTO_LAUNCH_SHINY_DOC_PATH, "') not found -",
+              " skipping. Set AUTO_LAUNCH_SHINY_DOC_PATH to this file's real location before sourcing",
+              " this script (or set AUTO_LAUNCH_SHINY_DOC <- FALSE to silence this message).")
+    } else if (requireNamespace("quarto", quietly = TRUE)) {
+      ## quarto_preview() renders + opens in the system browser (or the
+      ## RStudio Viewer, if running inside RStudio) and returns
+      ## immediately without blocking the rest of the session, unlike
+      ## quarto_render() followed by a separate open step.
+      message("[Auto-launch] Opening ", AUTO_LAUNCH_SHINY_DOC_PATH, " via quarto::quarto_preview()...")
+      quarto::quarto_preview(AUTO_LAUNCH_SHINY_DOC_PATH)
+    } else if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+      ## No 'quarto' R package installed - fall back to just opening the
+      ## .qmd file in the RStudio editor (one click away from its own
+      ## "Render" button) rather than doing nothing silently.
+      message("[Auto-launch] 'quarto' R package not installed - opening ", AUTO_LAUNCH_SHINY_DOC_PATH,
+              " in the RStudio editor instead (click Render to view it). Install the quarto package",
+              " (install.packages(\"quarto\")) for this to render/preview automatically next time.")
+      rstudioapi::navigateToFile(AUTO_LAUNCH_SHINY_DOC_PATH)
+    } else {
+      message("[Auto-launch] Neither the 'quarto' R package nor RStudio is available in this session -",
+              " can't auto-open ", AUTO_LAUNCH_SHINY_DOC_PATH, ". Open/render it manually, or install",
+              " the quarto package / run this from RStudio for automatic launch next time.")
+    }
+  }, error = function(e) {
+    message("[Auto-launch] Failed to open the Shiny/Quarto doc - ", conditionMessage(e),
+            ". The pipeline run above already completed successfully regardless.")
+  })
+}

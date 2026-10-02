@@ -4,14 +4,13 @@
 ## Library file - sourced from 01_biomass.R, called directly
 ## (fetch_cmems_phytoplankton_biomass()) - not meant to run standalone.
 ##
-## 2026-09-24, per Andrea: phytoplankton (Large/SmallPhytoplankton FGs)
-## should come from a Mediterranean BIOGEOCHEMICAL MODEL, not a
-## chlorophyll-a-to-carbon conversion off satellite ocean colour (the
-## previous approach, still kept in lib_satellite_phytoplankton_biomass.R
-## as a fallback - see below). The Copernicus Marine Service's
-## Mediterranean Sea Biogeochemistry Reanalysis (MEDSEA_MULTIYEAR_BGC_
-## 006_008, built on the MedBFM/OGSTM-BFM model) is exactly this - and
-## it reports phytoplankton biomass DIRECTLY as carbon (variable "phyc",
+## Phytoplankton (Large/SmallPhytoplankton FGs) comes from a
+## Mediterranean BIOGEOCHEMICAL MODEL rather than a chlorophyll-a-to-
+## carbon conversion off satellite ocean colour (the previous approach,
+## kept as a fallback in lib_satellite_phytoplankton_biomass.R). The
+## Copernicus Marine Service's Mediterranean Sea Biogeochemistry
+## Reanalysis (MEDSEA_MULTIYEAR_BGC_006_008, MedBFM/OGSTM-BFM model)
+## reports phytoplankton biomass DIRECTLY as carbon (variable "phyc",
 ## "mole concentration of phytoplankton expressed as carbon in sea
 ## water"), so this is a real model estimate, not another conversion
 ## chain on top of a proxy measurement.
@@ -39,16 +38,12 @@
 ## runs MedBFM) directly if you want their model's own internal
 ## zooplankton output, since it isn't in the public CMEMS catalogue.
 ##
-## 2026-09-30, per Andrea: Ecopath_B still showed Large/SmallPhytoplankton
-## blank on a real run, and this function's own tryCatch swallows the
-## failure into a single one-line message, so it wasn't obvious WHICH
-## step failed (missing account? missing CLI? stale dataset_id/variable?
-## something else?). Every meaningful step below now prints its own
-## "[CMEMS diag] ..." line with an explicit ok/fail verdict and, on
-## failure, the specific reason - so the next real run's console shows
-## exactly where this stopped without needing to read this file's code.
-## grep for "[CMEMS diag]" in the console output to see the whole trail
-## in one place.
+## Every meaningful step below prints its own "[CMEMS diag] ..." line
+## with an explicit ok/fail verdict and, on failure, the specific reason
+## - so a blank Ecopath_B phytoplankton row can be traced to an exact
+## step (missing account? missing CLI? stale dataset_id/variable?) from
+## the console output alone. grep for "[CMEMS diag]" to see the whole
+## trail in one place.
 ##
 ## ACCESS: unlike ERDDAP/EcoBase (anonymous HTTP), Copernicus Marine
 ## data requires a FREE account (register at data.marine.copernicus.eu)
@@ -74,11 +69,10 @@
 ## the default below 404s or the variable isn't found in the output.
 ## ensure_copernicusmarine_cli(auto_install = TRUE)
 ##
-## 2026-09-24, per Andrea ("how can i automate that?"): the ONLY genuinely
-## manual step left is creating a free Copernicus Marine account (a
-## real-world signup this code can't do for you - register at
-## data.marine.copernicus.eu). Everything downstream of having an
-## account is now automated:
+## The only genuinely manual step left is creating a free Copernicus
+## Marine account (a real-world signup this code can't do for you -
+## register at data.marine.copernicus.eu). Everything downstream of
+## having an account is automated:
 ##   - Installing the CLI: if 'copernicusmarine' isn't on PATH, this
 ##     shells out to 'pip install copernicusmarine' itself (set
 ##     auto_install = FALSE to disable and just get the message instead).
@@ -112,16 +106,15 @@ ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
     return(FALSE)
   }
   install_out <- system2(pip_bin, c("install", "copernicusmarine"), stdout = TRUE, stderr = TRUE)
-  
+
   if (Sys.which("copernicusmarine") == "") {
-    ## 2026-09-24, per Andrea's real run: pip frequently installs to a
-    ## per-user "user site" bin directory (e.g. macOS:
-    ## ~/Library/Python/3.X/bin, Linux: ~/.local/bin) that isn't on PATH
-    ## by default - pip even warns about this in its own output ("WARNING:
-    ## The script copernicusmarine is installed in '...' which is not on
-    ## PATH"). Rather than give up, ask Python itself where its user-site
-    ## bin directory is and add it to PATH for the rest of THIS R session
-    ## if the binary is actually there.
+    ## pip frequently installs to a per-user "user site" bin directory
+    ## (e.g. macOS: ~/Library/Python/3.X/bin, Linux: ~/.local/bin) that
+    ## isn't on PATH by default - pip even warns about this in its own
+    ## output ("WARNING: The script copernicusmarine is installed in
+    ## '...' which is not on PATH"). Rather than give up, ask Python
+    ## itself where its user-site bin directory is and add it to PATH
+    ## for the rest of THIS R session if the binary is actually there.
     py_bin <- if (Sys.which("python3") != "") "python3" else if (Sys.which("python") != "") "python" else NA
     if (!is.na(py_bin)) {
       user_base <- tryCatch(system2(py_bin, c("-m", "site", "--user-base"), stdout = TRUE),
@@ -139,7 +132,7 @@ ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
       }
     }
   }
-  
+
   if (Sys.which("copernicusmarine") == "") {
     message("[CMEMS diag] CLI check: FAILED - auto-install did not put 'copernicusmarine' on PATH",
             " (and it wasn't found in the pip user-install bin directory either). pip output:\n",
@@ -167,12 +160,12 @@ ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron") {
     message("[CMEMS diag] Credentials check: ok (COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD already set).")
     return(list(username = cm_user, password = cm_pass))
   }
-  
+
   message("[CMEMS diag] Credentials check: not set (COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD absent).")
-  
+
   have_rstudio_popup <- requireNamespace("rstudioapi", quietly = TRUE) &&
     tryCatch(isTRUE(rstudioapi::isAvailable()), error = function(e) FALSE)
-  
+
   if (have_rstudio_popup) {
     cm_user <- rstudioapi::showPrompt("Copernicus Marine login",
                                       "Copernicus Marine username (free account at data.marine.copernicus.eu):",
@@ -210,11 +203,11 @@ ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron") {
       return(NULL)
     }
   }
-  
+
   ## Make the credentials usable for the rest of THIS session immediately...
   Sys.setenv(COPERNICUSMARINE_SERVICE_USERNAME = cm_user,
              COPERNICUSMARINE_SERVICE_PASSWORD = cm_pass)
-  
+
   ## ...and persist them to ~/.Renviron so future R sessions have them too,
   ## without ever asking again. Replaces any previous lines for these two
   ## variables rather than duplicating them.
@@ -227,7 +220,7 @@ ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron") {
   writeLines(new_lines, renviron_full_path)
   message("[CMEMS diag] Credentials check: ok (entered just now, saved to ", renviron_full_path,
           " - you won't be asked again on future runs).")
-  
+
   list(username = cm_user, password = cm_pass)
 }
 
@@ -245,14 +238,14 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
   message("[CMEMS diag] === fetch_cmems_phytoplankton_biomass() starting ===",
           " dataset_id='", dataset_id, "', variable='", variable, "', proxy_years=",
           min(proxy_years), "-", max(proxy_years), ".")
-  
+
   ## This CSV cache is itself the "just one download" Andrea asked about:
   ## proxy_years is a fixed historical window (1999-2001), so there is
   ## nothing new to fetch on a later pipeline run once this file exists -
   ## every subsequent 01_biomass.R run just reads it back, no network
   ## call at all, until you delete it or pass force_refresh = TRUE.
   out_csv_path <- file.path(out_dir, "cmems_phytoplankton_biomass_by_fg.csv")
-  
+
   if (!force_refresh && file.exists(out_csv_path)) {
     message("[CMEMS diag] Cache check: using cached ", out_csv_path,
             " (pass force_refresh = TRUE to re-query instead) - this is the one-time download;",
@@ -260,7 +253,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
     return(invisible(as.data.table(fread(out_csv_path))))
   }
   message("[CMEMS diag] Cache check: no cached file at ", out_csv_path, " (or force_refresh = TRUE) - proceeding to fetch.")
-  
+
   if (!ensure_copernicusmarine_cli(auto_install = auto_install)) {
     message("[CMEMS diag] === RESULT: FAILED at CLI check === 'copernicusmarine' CLI unavailable",
             " (see [CMEMS diag] CLI check message above). Falling back to the satellite",
@@ -274,12 +267,12 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
     return(invisible(NULL))
   }
   message("[CMEMS diag] Package check: ok ('ncdf4' available).")
-  
+
   result <- tryCatch({
     nc_path <- tempfile(fileext = ".nc")
     t0 <- paste0(min(proxy_years), "-01-01")
     t1 <- paste0(max(proxy_years), "-12-31")
-    
+
     ## Credentials: env vars if already set, else an RStudio pop-up (or
     ## console prompt outside RStudio) asking once and saving the answer
     ## to ~/.Renviron for next time - see ensure_copernicusmarine_credentials().
@@ -295,7 +288,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
               " credentials already stored by a prior 'copernicusmarine login', if any. If none were",
               " ever stored, the subset call below will fail with an authentication error.")
     }
-    
+
     args <- c("subset",
               "--dataset-id", dataset_id,
               "--variable", variable,
@@ -311,7 +304,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
             "\n(", min(proxy_years), "-", max(proxy_years), " - the earliest years the Med BGC reanalysis",
             " covers at all, used as the closest hindcast proxy to 1994-1996, which this reanalysis does",
             " not reach back to. This is a ONE-TIME download - see the cache note above.)")
-    
+
     exit_status <- system2("copernicusmarine", args, stdout = TRUE, stderr = TRUE, timeout = timeout_sec)
     status_code <- attr(exit_status, "status")
     if (!is.null(status_code) && status_code != 0) {
@@ -327,7 +320,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
            " credentials are stored ('copernicusmarine login').")
     }
     message("[CMEMS diag] Download attempt: ok (NetCDF file written to ", nc_path, ").")
-    
+
     nc <- ncdf4::nc_open(nc_path)
     nc_var_names <- names(nc$var)
     message("[CMEMS diag] Variable check: variables present in the downloaded NetCDF: ",
@@ -343,18 +336,18 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
     ncdf4::nc_close(nc)
     phyc_vals <- phyc_vals[is.finite(phyc_vals) & phyc_vals > 0]
     if (length(phyc_vals) == 0) stop("No finite, positive '", col_var, "' values in the downloaded subset.")
-    
+
     phyc_mean_mol_m3 <- mean(phyc_vals)
     message("[CMEMS diag] Mean ", col_var, " over ", length(phyc_vals), " grid cell x depth x time observation(s), ",
             min(proxy_years), "-", max(proxy_years), ": ", signif(phyc_mean_mol_m3, 4), " mol C/m3",
             " (range ", signif(min(phyc_vals), 4), "-", signif(max(phyc_vals), 4), ").")
-    
+
     ## mol C/m3 -> g C/m3 -> areal g C/m2 (integrated over integration_depth_m)
     ## -> g wet weight/m2 == t/km2 numerically (1 t/km2 = 1 g/m2).
     c_g_m3 <- phyc_mean_mol_m3 * c_molar_mass
     c_g_m2 <- c_g_m3 * integration_depth_m
     total_biomass_t_km2 <- c_g_m2 * wet_weight_per_c
-    
+
     citation <- paste0("Copernicus Marine Mediterranean Sea Biogeochemistry Reanalysis (",
                        "MEDSEA_MULTIYEAR_BGC_006_008, MedBFM/OGSTM-BFM model, dataset '", dataset_id,
                        "', variable '", col_var, "'), ", min(proxy_years), "-", max(proxy_years),
@@ -364,7 +357,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
                        "m, wet weight=", wet_weight_per_c, "xC. Large/Small split is a fixed ",
                        large_phyto_fraction, "/", round(1 - large_phyto_fraction, 2),
                        " fraction (a simplification, same as the satellite fallback's own caveat).")
-    
+
     cmems_result <- data.table(
       TargetGroup = c("LargePhytoplankton", "SmallPhytoplankton"),
       Biomass_t_km2 = c(total_biomass_t_km2 * large_phyto_fraction,
@@ -376,12 +369,12 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
             round(total_biomass_t_km2, 4), " t/km2 total, split ", large_phyto_fraction, "/",
             round(1 - large_phyto_fraction, 2), " Large/Small).")
     cmems_result
-    
+
   }, error = function(e) {
     message("[CMEMS diag] === RESULT: FAILED === ", conditionMessage(e),
             "\nFalling back to the satellite chlorophyll-a proxy instead for this run.")
     NULL
   })
-  
+
   invisible(result)
 }

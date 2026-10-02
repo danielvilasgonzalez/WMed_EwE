@@ -1,5 +1,5 @@
 ## =================================================================
-## PIPELINE STEP 5 (new, 2026-09-29) - run AFTER 01_biomass.R /
+## PIPELINE STEP 5 - run AFTER 01_biomass.R /
 ## 02_fisheries.R / 03_pbqb-traits.R / 04_diets.R have written (or
 ## re-written) ecopath_ecosim_inputs.xlsx.
 ##
@@ -95,6 +95,13 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
   if (is.null(git_dir) || git_dir == "" || !dir.exists(git_dir)) stop("No valid Github directory selected.")
 }
 
+## --- Run log (plain text, for sharing/debugging) ------------------------
+.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_05_validation_log.txt"))
+.run_log_con  <- file(.run_log_path, open = "wt")
+sink(.run_log_con, split = TRUE)
+sink(.run_log_con, split = TRUE, type = "message")
+message("[Log] This run's console output is also being written to: ", .run_log_path)
+
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "validation")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
@@ -106,18 +113,14 @@ if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## The OLD West Med model workbook, sheet "estimates" - the comparison
-## baseline. 2026-09-29, per project decision ("it should come from the pclouddir
-## to allow other to run it (not daniel my personal computer)"): this is
-## now derived from pcloud_dir - the same shared pCloud folder every
-## other script in this pipeline already resolves per-machine (via the
-## pre-set-by-driver-script / Daniel's-hardcoded-default / RStudio-picker
-## chain at the top of this file) - rather than a second, separate list
-## of one person's hardcoded absolute machine path. Whoever's pcloud_dir
-## resolved correctly gets the right old-workbook path too, with no new
-## per-user hardcoding to maintain. Falls back to an RStudio file picker,
-## same "ask rather than crash" convention used everywhere else here, if
-## it isn't at the expected place within pcloud_dir (e.g. a differently
-## named subfolder on someone's machine).
+## baseline. Per project decision ("it should come from the pclouddir
+## to allow other to run it (not daniel my personal computer)"), this
+## is derived from pcloud_dir - the same shared pCloud folder every
+## other script in this pipeline already resolves per-machine - rather
+## than a second, separate hardcoded absolute machine path. Falls back
+## to an RStudio file picker, same "ask rather than crash" convention
+## used everywhere else here, if it isn't at the expected place within
+## pcloud_dir.
 if (!exists("OLD_WMED_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) {
   pcloud_default <- file.path(pcloud_dir, "data", "WMed_EwE.xlsx")
   if (file.exists(pcloud_default)) {
@@ -155,20 +158,14 @@ if (!exists("VALIDATION_FUZZY_MAX_DIST", envir = .GlobalEnv, inherits = FALSE)) 
 ## (01_biomass.R/02_fisheries.R each carry their own copy under the
 ## same name) - kept local here too rather than sourcing another
 ## script just for this one helper.
-## 2026-09-29: broadened a THIRD time. The "Group.name" fix (folding "."
-## to a space) only covers make.names()-mangled SPACES. R's make.names()
-## actually mangles EVERY character it doesn't allow in a name - not just
-## spaces - into a dot: confirmed directly, make.names("Biomass (t/km^2)")
-## -> "Biomass..t.km.2.", make.names("Production / biomass (/year)") ->
-## "Production...biomass...year.". The biomass/PB/QB/landings/discards
-## aliases all contain "(", ")", "/", "^" - none of which the previous
-## norm_colname() touched - so those would have kept failing to match
-## even with the Group.name case fixed. Now strips down to alphanumeric
-## characters only (letters + digits, lowercased) on BOTH sides before
-## comparing, which matches regardless of whether the sheet was read with
-## its original punctuated headers or make.names()-mangled ones. Verified
-## directly in R against real make.names() output for every alias used
-## below.
+## Handles R's make.names() mangling, not just spaces: make.names()
+## mangles EVERY character it doesn't allow in a name into a dot -
+## e.g. make.names("Biomass (t/km^2)") -> "Biomass..t.km.2.". The
+## biomass/PB/QB/landings/discards aliases all contain "(", ")", "/",
+## "^", so this strips down to alphanumeric characters only (letters +
+## digits, lowercased) on BOTH sides before comparing, matching
+## regardless of whether the sheet was read with its original
+## punctuated headers or make.names()-mangled ones.
 norm_colname <- function(x) tolower(gsub("[^[:alnum:]]+", "", x))
 resolve_col <- function(dt_names, aliases) {
   hit <- aliases[norm_colname(aliases) %in% norm_colname(dt_names)]
@@ -177,6 +174,26 @@ resolve_col <- function(dt_names, aliases) {
 }
 
 normalize_name <- function(x) tolower(trimws(gsub("[[:space:]]+", " ", gsub("[._-]+", " ", x))))
+
+## VALIDATION_REFERENCE_DIR: hand-typed reference/lookup tables for
+## this script, externalized to CSV so they're editable without
+## touching code - same convention as read_medits_reference()/
+## MEDITS_REFERENCE_DIR in 01_biomass.R, read_fisheries_reference()/
+## FISHERIES_REFERENCE_DIR in 02_fisheries.R, and read_pbqb_reference()/
+## PBQB_REFERENCE_DIR in 03_pbqb-traits.R.
+VALIDATION_REFERENCE_DIR <- file.path(pcloud_dir, "data/Complementary data/validation_reference_tables")
+read_validation_reference <- function(filename, required_cols = NULL) {
+  path <- file.path(VALIDATION_REFERENCE_DIR, filename)
+  if (!file.exists(path)) {
+    stop("[read_validation_reference] Reference table not found: \"", path, "\".")
+  }
+  dt <- fread(path, encoding = "UTF-8")
+  if (!is.null(required_cols) && !all(required_cols %in% names(dt))) {
+    stop("[read_validation_reference] \"", filename, "\" is missing required column(s): ",
+         paste(setdiff(required_cols, names(dt)), collapse = ", "))
+  }
+  dt
+}
 
 message("\n[05_validation.R] STEP A - comparing new pipeline output against the old West Med workbook's '",
         OLD_WMED_ESTIMATES_SHEET, "' sheet (", OLD_WMED_WORKBOOK_PATH, ").")
@@ -253,15 +270,12 @@ message("[05_validation.R] Old workbook '", OLD_WMED_ESTIMATES_SHEET, "' sheet c
 old_col_aliases <- list(
   group_num = c("Group_num", "FG_num", "Group", "No", "#", "Group number"),
   group_name = c("Group name", "Group", "FG_name", "Name", "Functional group", "Functional Group"),
-  ## 2026-09-29: "Biomass (t/km^2)" (the whole-model-domain density, what
-  ## Ecopath_B is) now listed BEFORE "Biomass in habitat area (t/km^2)"
-  ## (biomass density only within the FG's own habitat patch - a
-  ## DIFFERENT, larger number whenever Hab area proportion < 1). Actual
-  ## WMed_EwE.xlsx "estimates" sheet has BOTH columns; the old alias
-  ## order picked "...in habitat area..." first purely because it was
-  ## listed first, which would have silently compared Ecopath_B against
-  ## the wrong old-sheet column for any FG with a habitat-area
-  ## restriction below 1. Domain-wide is the correct comparator.
+  ## "Biomass (t/km^2)" (the whole-model-domain density, what Ecopath_B
+  ## is) is listed BEFORE "Biomass in habitat area (t/km^2)" (biomass
+  ## density only within the FG's own habitat patch - a DIFFERENT,
+  ## larger number whenever Hab area proportion < 1), since the WMed_
+  ## EwE.xlsx "estimates" sheet has BOTH columns and domain-wide is the
+  ## correct comparator against Ecopath_B.
   biomass   = c("Biomass (t/km^2)", "Biomass (t/km2)", "Biomass", "B", "Biomass in habitat area (t/km^2)"),
   pb        = c("Production / biomass (/year)", "P/B (/year)", "PB", "P/B", "Production/biomass"),
   qb        = c("Consumption / biomass (/year)", "Q/B (/year)", "QB", "Q/B", "Consumption/biomass"),
@@ -271,13 +285,10 @@ old_col_aliases <- list(
 col_num  <- resolve_col(names(old_raw), old_col_aliases$group_num)
 col_name <- resolve_col(names(old_raw), old_col_aliases$group_name)
 if (is.na(col_name)) {
-  ## 2026-09-29: include the actual column names read from the file
-  ## directly in the error itself (not just what was tried) - self-
-  ## contained diagnosis without needing to scroll up to the earlier
-  ## message(). Also print each column name's raw character codes, since
-  ## the earlier real failure here turned out to be an invisible
-  ## character (e.g. a non-breaking space) in the header that looked
-  ## identical to "Group name" printed to the console.
+  ## Include the actual column names read from the file directly in
+  ## the error itself (not just what was tried), since a real failure
+  ## here can be an invisible character (e.g. a non-breaking space) in
+  ## the header that looks identical to "Group name" on the console.
   stop("[05_validation.R] Could not find a group-name column in the old '", OLD_WMED_ESTIMATES_SHEET,
        "' sheet (tried: ", paste(old_col_aliases$group_name, collapse = ", "), "). Columns actually found in",
        " the file: ", paste(names(old_raw), collapse = " | "), ". If one of those looks like it should have",
@@ -286,18 +297,16 @@ if (is.na(col_name)) {
        " old_col_aliases$group_name above. Cannot match FGs without a name column.")
 }
 
-## 2026-09-29: the real WMed_EwE.xlsx "estimates" sheet mixes true numeric
-## cells with text cells typed using a European comma decimal (e.g. QB
-## "23,2"). Plain as.numeric() on a comma-decimal string returns NA, which
-## would have silently dropped every such cell from the comparison. This
-## converts "," to "." before parsing - a safe, unambiguous fix for text
-## cells. It does NOT and cannot fix a separate, more serious problem in
-## the same sheet (see the sanity check right after old_dt below): many
-## already-numeric cells in that file appear to have LOST their decimal
-## point entirely (e.g. a biomass of 322207 where the true value is very
-## likely 0.322207 - it prints as a plain integer in the file itself, so
-## there is no "," left to convert, and no safe way to know how many
-## places to shift it back without guessing).
+## The real WMed_EwE.xlsx "estimates" sheet mixes true numeric cells
+## with text cells typed using a European comma decimal (e.g. QB
+## "23,2"); plain as.numeric() returns NA for those. This converts ","
+## to "." before parsing - a safe, unambiguous fix for text cells. It
+## does NOT fix a separate, more serious problem in the same sheet
+## (see the sanity check right after old_dt below): many already-
+## numeric cells appear to have LOST their decimal point entirely
+## (e.g. a biomass of 322207 where the true value is likely
+## 0.322207) - there's no "," left to convert and no safe way to know
+## how many places to shift it back without guessing.
 parse_num_eu <- function(x) suppressWarnings(as.numeric(gsub(",", ".", trimws(as.character(x)), fixed = TRUE)))
 
 old_dt <- data.table(
@@ -313,7 +322,7 @@ for (metric in c("biomass", "pb", "qb", "landings", "discards")) {
 old_dt <- old_dt[!is.na(Old_FG_name) & trimws(Old_FG_name) != ""]
 old_dt[, norm_name := normalize_name(Old_FG_name)]
 
-## 2026-09-29: sanity check for the "lost decimal point" problem described
+## Sanity check for the "lost decimal point" problem described
 ## above - flag it loudly rather than let it silently blow up every ratio
 ## in STEP A4. Heuristic: a metric column where most of the NUMERIC
 ## (non-comma-text) values look implausibly large for that metric is very
@@ -453,10 +462,7 @@ if (!is.null(p_comparison)) {
 ## STEP B: consolidate every plausibility/validation REVIEW csv this
 ## pipeline's other scripts already write, into one summary table -
 ## purely a convenience index (reads existing files, writes nothing
-## new to any of them). File names/locations below reflect this
-## session's own additions (03/04_diets.R plausibility + diet-sum
-## checks; 01_biomass.R's EcoBase-fallback rejection and temporal-
-## mismatch flags) plus the pre-existing ones documented in
+## new to any of them). File names/locations below are documented in
 ## pipeline_code_review_and_validation_findings.md /
 ## ewe_user_guide_compliance_review_2026-09-28.md. Any file not found
 ## yet (script hasn't run, or an older pipeline version) is listed as
@@ -464,24 +470,10 @@ if (!is.null(p_comparison)) {
 ## gracefully the same way every other cross-script read in this
 ## pipeline does.
 ## =================================================================
-known_review_files <- list(
-  list(name = "PB/QB/GE plausibility (impossible or out-of-range)", dir = "pbqb-traits", file = "plausibility_flag_REVIEW.csv"),
-  list(name = "P/Q ratio outside typical 0.05-0.3 range",           dir = "pbqb-traits", file = "PQ_ratio_by_fg_REVIEW.csv"),
-  list(name = "Diet matrix predator column doesn't sum to 1",       dir = "diet",        file = "diet_matrix_column_sum_REVIEW.csv"),
-  list(name = "Diet matrix cannibalism fraction > 0.1",             dir = "diet",        file = "diet_cannibalism_REVIEW.csv"),
-  list(name = "Diet composition still missing after all fallbacks", dir = "diet",        file = "diet_still_missing_REVIEW.csv"),
-  list(name = "EcoBase biomass evaluation (reference only, NOT incorporated into Ecopath_B)", dir = "biomass", file = "ecobase_biomass_evaluation_NOT_INCORPORATED.csv"),
-  list(name = "EcoBase biomass evaluation for primary producers/plankton (reference only, NOT incorporated)", dir = "biomass", file = "ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv"),
-  list(name = "FG(s) with no Ecopath_B biomass at all",             dir = "biomass",     file = "fg_missing_ecopath_B_REVIEW.csv"),
-  list(name = "FG species-level split still on an even-split guess", dir = "biomass",    file = "fg_species_biomass_needs_review.csv"),
-  list(name = "ICCAT stock-assessment temporal-baseline mismatch",  dir = "biomass",     file = "stock_assessment_temporal_mismatch_REVIEW.csv"),
-  list(name = "Manual-cited biomass temporal-trend note (Posidonia/gorgonians)", dir = "biomass", file = "manual_cited_biomass_temporal_trend_REVIEW.csv"),
-  list(name = "Generic Collection_year temporal mismatch (any manual-cited CSV)", dir = "biomass", file = "temporal_mismatch_REVIEW_Marine megafauna biomass.csv"),
-  list(name = "Fleet-level landings coverage (named-country share of total)", dir = "fisheries", file = "ecopath_L_fg_coverage_check.csv"),
-  list(name = "Zero-catch FG diagnostic",                          dir = "fisheries",   file = "fg_zero_catch_diagnostic.csv"),
-  list(name = "Old-workbook FG names that couldn't be matched",     dir = "validation",  file = "old_workbook_unmatched_fg_names_REVIEW.csv")
-)
-summary_rows <- lapply(known_review_files, function(spec) {
+known_review_files <- read_validation_reference("validation_known_review_files.csv",
+                                                required_cols = c("name", "dir", "file"))
+summary_rows <- lapply(seq_len(nrow(known_review_files)), function(i) {
+  spec <- known_review_files[i]
   path <- file.path(out_dir, spec$dir, spec$file)
   if (!file.exists(path)) {
     return(data.table(check = spec$name, file = path, status = "not found (script hasn't run, or nothing to flag)", n_rows = NA_integer_))
@@ -499,7 +491,7 @@ print(validation_summary[, .(check, status)])
 
 ## =================================================================
 ## STEP C: a compilation of plots, one per validation check - per
-## the project owner, 2026-09-29: "the validation code should be a compilation of
+## the project owner: "the validation code should be a compilation of
 ## plots to check these validations." STEP B above already indexes every
 ## REVIEW csv as a row count, which is fast to scan but doesn't show
 ## WHERE the problem is or how bad it is - a plot does that at a glance.
@@ -581,13 +573,13 @@ validation_plots[["04_diet_cannibalism"]] <- tryCatch({
     theme_minimal(base_size = 9)
 }, error = function(e) { message("[05_validation.R plot] diet cannibalism skipped - ", conditionMessage(e)); NULL })
 
-## 4) EcoBase biomass EVALUATION (reference only, since 2026-09-30 per
-## the project owner - "ecobase biomass should be evaluated but it shouldnt be
-## incorporated in the Ecopath_B" - so this is no longer an accepted-vs-
-## rejected fallback plot, just every candidate EcoBase found, plausible
-## or not, clearly labeled as reference material rather than applied
-## values). Combines both the general missing-biomass evaluation and the
-## primary-producer/plankton one into one page.
+## 4) EcoBase biomass EVALUATION (reference only, per the project
+## owner - "ecobase biomass should be evaluated but it shouldnt be
+## incorporated in the Ecopath_B" - so this is not an accepted-vs-
+## rejected fallback plot, just every candidate EcoBase found,
+## plausible or not, clearly labeled as reference material rather
+## than applied values). Combines both the general missing-biomass
+## evaluation and the primary-producer/plankton one into one page.
 validation_plots[["05_ecobase_fallback_plausibility"]] <- tryCatch({
   gen_path <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_NOT_INCORPORATED.csv")
   pp_path  <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv")
@@ -699,7 +691,7 @@ validation_plots[["10_old_workbook_unmatched_names"]] <- tryCatch({
                  "Neither an exact nor a fuzzy name match - check for a renamed or split/merged group")
 }, error = function(e) { message("[05_validation.R plot] old-workbook unmatched names skipped - ", conditionMessage(e)); NULL })
 
-## 2026-09-29, per project decision ("i am missing a plot with other validation like
+## Per project decision ("i am missing a plot with other validation like
 ## the biomass of FG relative to old model"): p_comparison (now
 ## "01_old_vs_new_comparison") plots every metric together as an old-vs-
 ## new scatter, faceted by metric - useful for spotting outliers overall,
@@ -861,9 +853,8 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
     fish_pb_long[, method := gsub("^PB_", "", method)]
     fish_pb_long <- fish_pb_long[!is.na(PB)]
     fish_pb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
-    method_label_map <- c(Pauly_1980 = "Pauly 1980", FishLife_2023 = "FishLife",
-                          Gascuel_2008 = "Gascuel 2008", Hoenig_1983 = "Hoenig 1983",
-                          Then_2015 = "Then et al. 2015", AlversonCarney_1975 = "Alverson & Carney 1975")
+    method_label_map_dt <- read_validation_reference("pb_method_label_map.csv", required_cols = c("method", "label"))
+    method_label_map <- setNames(method_label_map_dt$label, method_label_map_dt$method)
     fish_pb_long[, is_chosen := mapply(function(m, chosen) grepl(method_label_map[[m]], chosen, ignore.case = TRUE),
                                        method, PB_method)]
     p_pb_methods <- ggplot(fish_pb_long, aes(x = method, y = PB)) +
@@ -885,8 +876,8 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
     fish_qb_long[, method := gsub("^QB_", "", method)]
     fish_qb_long <- fish_qb_long[!is.na(QB)]
     fish_qb_long[, FG_label := factor(FG_label, levels = fish_fg_label_order)]
-    qb_label_map <- c(PalomaresPauly_1998Z = "Z-based", PalomaresPauly_1998noZ = "non-Z",
-                      ChristensenPauly_1992 = "Christensen & Pauly", ChristensenEtAl_2008 = "Q/P=3")
+    qb_label_map_dt <- read_validation_reference("qb_method_label_map.csv", required_cols = c("method", "label"))
+    qb_label_map <- setNames(qb_label_map_dt$label, qb_label_map_dt$method)
     fish_qb_long[, is_chosen := mapply(function(m, chosen) grepl(qb_label_map[[m]], chosen, fixed = TRUE),
                                        method, QB_method)]
     p_qb_methods <- ggplot(fish_qb_long, aes(x = method, y = QB)) +
@@ -1053,7 +1044,7 @@ if (length(validation_plots) == 0) {
   pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)   # same open-loop-close PDF pattern 02_fisheries.R's own validation_plots list uses
   for (p in validation_plots) print(p)
   dev.off()
-  ## 2026-09-29: the per-FG biomass-vs-old-model plot has ~one row per FG
+  ## The per-FG biomass-vs-old-model plot has ~one row per FG
   ## (potentially 90+) - the shared 10x7in PNG size every other check uses
   ## would cram all those labels unreadably. Its OWN standalone PNG (not
   ## the PDF page, which stays a fixed page size like every other page)
@@ -1078,3 +1069,8 @@ message("\n[05_validation.R] Done. Three files to look at first: ",
         "validation_plots_ALL.pdf (a compiled page per check - start here), ",
         "comparison_with_old_westmed_estimates_REVIEW.csv (old vs. new, by FG), and ",
         "validation_summary_ALL.csv (a plain-text index of every check, in one place).")
+
+## --- Close run log --------------------------------------------------------
+sink(type = "message")
+sink()
+close(.run_log_con)

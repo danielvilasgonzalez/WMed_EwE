@@ -6,8 +6,6 @@
 # catch from gfcm, discards (%)... bycatch (%).... black market (%)..... illegal and proportions - to discuss unreported/black market
 
 
-
-
 #unsurveyed
 #biomass shouldnt be calculated per strata? for meagafauna? what about seabrids? is there for all max and min depth?
 # why PRIMARY_PRODUCER_BIOMASS_PATH <- file.path(pcloud_dir, "data/primary_producer_plankton_biomass.csv")
