@@ -179,8 +179,25 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 ## --- Run log (plain text, for sharing/debugging) ------------------------
 .run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_03_pbqb-traits_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
-sink(.run_log_con, split = TRUE)
-sink(.run_log_con, split = TRUE, type = "message")
+sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
+## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
+## has previously been seen to silently swallow ALL console output, including
+## real errors, if anything goes wrong with the redirect - exactly the
+## "script just stops, no warning" failure mode. Mirror message() into the
+## log file by wrapping the function itself instead, leaving real
+## message()/stop() error visibility completely untouched.
+.orig_message <- base::message
+assign("message", function(..., domain = NULL, appendLF = TRUE) {
+  ## Pop the output sink before writing directly to its own connection,
+  ## then restore it - writing to a connection that's an ACTIVE split
+  ## sink target echoes that write back to the real console too, which
+  ## would double-print every message() call there (confirmed by testing).
+  sink()
+  try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
+          sep = "", file = .run_log_con), silent = TRUE)
+  sink(.run_log_con, split = TRUE)
+  .orig_message(..., domain = domain, appendLF = appendLF)
+}, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
 
 ## plot_dir nested inside out_dir, same convention as
@@ -3645,6 +3662,9 @@ message("Total pipeline runtime: ", round(as.numeric(elapsed, units = "mins"), 2
 message(strrep("=", 50))
 
 ## --- Close run log --------------------------------------------------------
-sink(type = "message")
+if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
+  assign("message", .orig_message, envir = .GlobalEnv)  # undo the message() mirror
+  rm(.orig_message, envir = .GlobalEnv)
+}
 sink()
 close(.run_log_con)

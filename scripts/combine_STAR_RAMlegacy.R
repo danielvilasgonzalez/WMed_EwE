@@ -145,8 +145,25 @@ if (!dir.exists(STAR_RAMLEGACY_DIR)) dir.create(STAR_RAMLEGACY_DIR, recursive = 
 ## --- Run log (plain text, for sharing/debugging) ------------------------
 .run_log_path <- file.path(STAR_RAMLEGACY_DIR, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_combine_STAR_RAMlegacy_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
-sink(.run_log_con, split = TRUE)
-sink(.run_log_con, split = TRUE, type = "message")
+sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
+## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
+## has previously been seen to silently swallow ALL console output, including
+## real errors, if anything goes wrong with the redirect - exactly the
+## "script just stops, no warning" failure mode. Mirror message() into the
+## log file by wrapping the function itself instead, leaving real
+## message()/stop() error visibility completely untouched.
+.orig_message <- base::message
+assign("message", function(..., domain = NULL, appendLF = TRUE) {
+  ## Pop the output sink before writing directly to its own connection,
+  ## then restore it - writing to a connection that's an ACTIVE split
+  ## sink target echoes that write back to the real console too, which
+  ## would double-print every message() call there (confirmed by testing).
+  sink()
+  try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
+          sep = "", file = .run_log_con), silent = TRUE)
+  sink(.run_log_con, split = TRUE)
+  .orig_message(..., domain = domain, appendLF = appendLF)
+}, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
 
 COMBINED_OUTPUT_PATH   <- file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
@@ -163,10 +180,19 @@ message("[combine_STAR_RAMlegacy] Output will be written to: ", COMBINED_OUTPUT_
 
 options(timeout = max(600, getOption("timeout")))
 
-ram_download_fn <- Find(function(f) exists(f, where = asNamespace("ramlegacy"), inherits = FALSE),
-                        c("download_ramlegacy"))
-ram_read_fn <- Find(function(f) exists(f, where = asNamespace("ramlegacy"), inherits = FALSE),
-                    c("read_ramlegacy", "load_ramlegacy"))
+## Resolve the actual FUNCTION OBJECT from the package's namespace, not
+## just its name - "download_ramlegacy" etc. aren't necessarily exported,
+## so a plain name string can't later be resolved by formals()/do.call()
+## via the normal search path (both do their own get(..., mode="function")
+## lookup, which doesn't see inside an unattached package namespace).
+.resolve_ramlegacy_fn <- function(candidate_names) {
+  found_name <- Find(function(f) exists(f, where = asNamespace("ramlegacy"), inherits = FALSE),
+                     candidate_names)
+  if (is.null(found_name)) return(NULL)
+  get(found_name, envir = asNamespace("ramlegacy"), mode = "function")
+}
+ram_download_fn <- .resolve_ramlegacy_fn(c("download_ramlegacy"))
+ram_read_fn <- .resolve_ramlegacy_fn(c("read_ramlegacy", "load_ramlegacy"))
 if (is.null(ram_download_fn) || is.null(ram_read_fn)) {
   stop("[combine_STAR_RAMlegacy] Could not find the expected 'ramlegacy' package functions",
        " (tried download_ramlegacy() + read_ramlegacy()/load_ramlegacy()). The installed ramlegacy",
@@ -505,6 +531,9 @@ message("[combine_STAR_RAMlegacy] Wrote ", nrow(combined), " row(s) (", uniqueN(
 message("[combine_STAR_RAMlegacy] Done. Re-run 01_biomass.R / 02_fisheries.R to pick up this output.")
 
 ## --- Close run log --------------------------------------------------------
-sink(type = "message")
+if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
+  assign("message", .orig_message, envir = .GlobalEnv)  # undo the message() mirror
+  rm(.orig_message, envir = .GlobalEnv)
+}
 sink()
 close(.run_log_con)
