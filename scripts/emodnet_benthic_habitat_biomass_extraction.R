@@ -46,18 +46,47 @@
 #    one number.
 #
 # 5. Density confidence: Posidonia and Cymodocea use a real citation
-#    (Guidetti et al. 2002). Macroalgae, Coralligenous, and Gorgonians/
-#    octocorals use round-number placeholder densities, marked
-#    Confidence = "Provisional - not a literature citation". Ballesteros
-#    2006 (Oceanography and Marine Biology: An Annual Review 44:123-195)
-#    is the standard Mediterranean synthesis reference for macroalgae/
-#    coralligenous biomass, worth extracting a real figure from before
-#    treating those two as final. For gorgonians, this pipeline
-#    separately has a real per-species citation (Ambroso et al. 2019,
-#    Cap de Creus AFDM densities: Paramuricea clavata 19.16, Eunicella
-#    singularis 2.95, Leptogorgia sarmentosa 0.19 g AFDM/m2) worth
-#    comparing against the placeholder here (AFDM and DW are different
-#    units, so don't average the two without resolving that first).
+#    (Guidetti et al. 2002). Macroalgae and Coralligenous were switched
+#    2026-10-04 from round-number placeholders to real figures from
+#    Ballesteros 2006 (Oceanography and Marine Biology: An Annual
+#    Review 44:123-195), the standard Mediterranean coralligenous/
+#    photophilic-algae synthesis:
+#      - Macroalgae: 1650 g dw/m2, the midpoint of the paper's
+#        Lithophyllo-Halimedetum tunae association range (1200-2100 g
+#        dw/m2, shallow coralligenous algal rim, Gulf of Lions,
+#        12-50m). Cross-checked against the same paper's deeper
+#        Rodriguezelletum strafforellii association (~1600 g dw/m2
+#        average, 38 species/1600cm2) - close enough to the midpoint
+#        to support using it rather than either single site alone.
+#      - Coralligenous: 1563 g dw/m2, the LOWER of three real
+#        total-invertebrate biomass figures the same paper gives for
+#        vertical-wall/overhang assemblages near Marseilles, which
+#        range from 1563 (Eunicella cavolinii-dominated, 146 species)
+#        to 3175 (Paramuricea clavata-dominated) to 3817 g dw/m2
+#        (Corallium rubrum cave assemblage, 63 species). The
+#        Eunicella figure was chosen as the most general/least
+#        extreme of the three - the other two are dominated by a
+#        single high-biomass gorgonian or red-coral population and
+#        likely overstate a basin-wide "typical coralligenous"
+#        average. Still a single-site figure applied basin-wide, and
+#        all three source figures are themselves from
+#        vertical-wall/overhang microhabitats specifically (likely
+#        higher-biomass than horizontal coralligenous platforms), so
+#        treat 1563 as an upper-ish bound on a true WMed average, not
+#        a precise basin-wide mean.
+#    GorgoniansCorals was switched 2026-10-04 from its own round-number
+#    placeholder to the real Ambroso et al. 2019 Cap de Creus AFDM
+#    citation (Paramuricea clavata 19.16 + Eunicella singularis 2.95 +
+#    Leptogorgia sarmentosa 0.19 = 22.3 g AFDM/m2, 0-35m), via the new
+#    "g_afdm_m2_cnidaria" density_unit (density_unit_to_wet_g_m2.csv) -
+#    the AFDM and DW unit mismatch flagged here previously is now
+#    resolved with its own dedicated conversion factor rather than
+#    averaging the two. That factor is itself a substitute (no
+#    gorgonian/octocoral-specific AFDM->wet-weight factor exists in the
+#    literature - see 01b_biomass_unsurveyed.R's comment for the full
+#    caveat) and converts soft tissue only, not the calcified axis -
+#    still worth a second look, just no longer a placeholder round
+#    number.
 #
 # 6. Gorgonians/octocorals habitat area: EMODnet's seabed-habitats
 #    catalog has no dedicated gorgonian/octocoral extent product - the
@@ -313,7 +342,16 @@ out <- habitat_area |>
     Group = FG,
     Year = YEAR_ECOPATH_TARGET,
     Density_value = biomass_g_m2_dw,
-    Density_unit = "g_m2_dw",
+    ## Changed 2026-10-04 - was hardcoded "g_m2_dw" for every FG, which
+    ## silently applied the generic macrobenthos DW->WW factor (4.5) to
+    ## everything, including GorgoniansCorals once its placeholder
+    ## biomass_g_m2_dw value is replaced with a real AFDM figure (see
+    ## benthic_habitat_density_reference.csv's new density_unit column
+    ## and 01b_biomass_unsurveyed.R's density_unit_to_wet_g_m2.csv
+    ## comment for the dedicated g_afdm_m2_cnidaria factor). Reading
+    ## density_unit per-row now, defaulting to "g_m2_dw" only if that
+    ## column is missing (keeps this working against an older CSV).
+    Density_unit = if ("density_unit" %in% names(habitat_area)) density_unit else "g_m2_dw",
     Habitat_area_km2 = effective_area_km2,
     Collection_year = biomass_data_year,
     Source_citation = biomass_reference,

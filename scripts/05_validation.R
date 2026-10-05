@@ -339,6 +339,40 @@ for (metric in c("biomass", "pb", "qb", "landings", "discards")) {
 old_dt <- old_dt[!is.na(Old_FG_name) & trimws(Old_FG_name) != ""]
 old_dt[, norm_name := normalize_name(Old_FG_name)]
 
+## Manual correction (Andrea, 2026-10-03): the "lost decimal point"
+## corruption described below hit these 7 marine-mammal/seabird rows
+## particularly badly (e.g. Bottlenose dolphins' biomass read as the
+## whole number 322207 instead of 0.003222). Andrea supplied the TRUE
+## values directly from her own records - not reverse-engineered from
+## the corrupted cells - so they override whatever old_dt picked up
+## from the raw sheet for just these 7 rows. QB is NA for "Endangered
+## and pelagic seabirds" because Andrea didn't supply one for it.
+old_estimates_manual_overrides <- data.table(
+  Old_FG_name = c("Bottlenose dolphins", "Striped dolphins", "Short-beaked common dolphin",
+                  "Fin whale", "Deep sea-cetacean feeders", "Monk seals",
+                  "Endangered and pelagic seabirds"),
+  biomass_override = c(0.003222, 0.007, 0.001174, 0.008638, 0.007105, 0.000021, 0.000054),
+  pb_override       = c(0.067, 0.04, 0.086, 0.034, 0.069, 0.082, 0.395),
+  qb_override       = c(23.2, 32.5, 31.2, 7.2, 16.9, 27.3, NA_real_)
+)
+old_estimates_manual_overrides[, norm_name := normalize_name(Old_FG_name)]
+n_overridden <- sum(old_dt$norm_name %in% old_estimates_manual_overrides$norm_name)
+if (n_overridden > 0) {
+  old_dt <- merge(old_dt, old_estimates_manual_overrides[, .(norm_name, biomass_override, pb_override, qb_override)],
+                  by = "norm_name", all.x = TRUE)
+  old_dt[!is.na(biomass_override), biomass := biomass_override]
+  old_dt[!is.na(pb_override), pb := pb_override]
+  old_dt[!is.na(qb_override), qb := qb_override]
+  old_dt[, c("biomass_override", "pb_override", "qb_override") := NULL]
+  message("[05_validation.R] Applied Andrea's manually-corrected biomass/PB/QB for ", n_overridden,
+          " marine-mammal/seabird row(s) in the old estimates sheet (overriding the sheet's own, likely",
+          " decimal-corrupted, values) - see old_estimates_manual_overrides above for the exact figures used.")
+} else {
+  message("[05_validation.R] Note: none of Andrea's 7 manually-corrected marine-mammal/seabird group names",
+          " matched a row in this run's old estimates sheet - check old_estimates_manual_overrides' names",
+          " against Old_FG_name above if that's unexpected.")
+}
+
 ## Sanity check for the "lost decimal point" problem described
 ## above - flag it loudly rather than let it silently blow up every ratio
 ## in STEP A4. Heuristic: a metric column where most of the NUMERIC
@@ -1071,6 +1105,13 @@ if (length(validation_plots) == 0) {
     comparison_dt[metric == "Biomass" & !is.na(ratio) & is.finite(ratio) & ratio > 0, uniqueN(FG_name)],
     error = function(e) 0)
   for (nm in names(validation_plots)) {
+    ## embedded_png_pages' names are basename(png_path) - already-existing
+    ## PNGs produced by an earlier pipeline script, keyed WITH their ".png"
+    ## extension (so they can be embedded as PDF pages above). Re-saving
+    ## one of those here via paste0(nm, ".png") was producing a duplicate
+    ## file named "<name>.png.png" for no reason - the real PNG already
+    ## exists at its own original path, so just skip it.
+    if (nm %in% names(embedded_png_pages)) next
     ht <- if (nm == "01b_biomass_vs_old_model_by_fg" && n_fg_biomass_plot > 0) max(7, 0.16 * n_fg_biomass_plot) else 7
     tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = 150, bg = "white", limitsize = FALSE),
              error = function(e) NULL)

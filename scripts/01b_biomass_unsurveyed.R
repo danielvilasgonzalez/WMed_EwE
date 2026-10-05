@@ -618,6 +618,49 @@ if (nrow(iccat_biomass_fg_year) > 0) {
 ## row's Density_unit is explicitly a dry-weight unit, and always
 ## flagged as an assumption in that row's audit trail (see
 ## extrapolate_density_row() below), never silently applied.
+##
+## Added 2026-10-04 - two more specific factors, for the benthic
+## habitat FGs (Posidonia/Cymodocea/macroalgae, gorgonians/
+## coralligenous fauna) this generic 4.5 macrobenthos default was
+## never meant for:
+##  - "g_afdm_m2_cnidaria" = 6.99 - converts AFDM (ash-free dry mass)
+##    of CNIDARIAN SOFT TISSUE to wet weight, for gorgonians/
+##    coralligenous fauna densities like Ambroso et al. 2019's Cap de
+##    Creus figures (benthic_habitat_megafauna_biomass_sourcing_guide.md).
+##    No gorgonian/octocoral-specific AFDM:WW factor exists in the
+##    literature (checked directly against Ricciardi & Bourget 1998,
+##    Mar Ecol Prog Ser 163:245-251 - the same paper this script's
+##    generic 4.5 already comes from, which gives per-taxon factors,
+##    not one macrobenthos-wide number). Their closest cnidarian
+##    analog, Actiniaria (sea anemones), gives AFDW = 14.3% of WW
+##    (range 6.0-22.6%), i.e. WW = AFDM / 0.143 = AFDM x 6.99 - used
+##    here as the best available substitute, NOT a gorgonian-specific
+##    measurement. IMPORTANT CAVEAT: this converts SOFT TISSUE ONLY -
+##    it does NOT add the gorgonian's calcified/proteinaceous axis
+##    (the bulk of a colony's real physical mass), since AFDM
+##    methodology burns off organics and excludes it entirely. Whether
+##    this FG's Ecopath biomass should mean "living tissue only" (the
+##    trophically-active fraction, consistent with how many coral-reef
+##    Ecopath models treat calcified groups) or "whole colony including
+##    skeleton" is a modeling-convention decision, not something this
+##    factor resolves on its own - confirm against your protocol's
+##    treatment of other calcified/shelled FGs before trusting the
+##    resulting absolute biomass number.
+##  - "g_dw_m2_macrophyte" = 7 - converts seagrass/macroalgae DRY
+##    WEIGHT to wet weight (Posidonia, Cymodocea, macroalgae). NOT a
+##    single pinned citation - no Mediterranean-specific seagrass
+##    DW:WW study was found with the actual ratio disclosed (several
+##    papers were checked directly: Bernardeau-Esteller et al. 2023,
+##    the MDPI Water 2025 P. oceanica leaf-biomass paper, and a
+##    ScienceDirect NE-Pacific seagrass/macroalgae wet-dry calibration
+##    study - none publish the actual ratio in an openly accessible
+##    form). This is a general-marine-macrophyte-physiology estimate
+##    (leaf/thallus tissue is commonly ~85-90% water by fresh weight,
+##    consistent with Posidonia %C/%N-by-dry-weight literature), kept
+##    as the midpoint of the 1:5-1:10 range this guide previously
+##    carried as an unconfirmed placeholder - narrower, but still not
+##    a specific-study citation. Replace with a real one if you find
+##    it.
 ## Externalized to reference_tables/density_unit_to_wet_g_m2.csv.
 .density_unit_tbl <- read_medits_reference("density_unit_to_wet_g_m2.csv", required_cols = c("unit", "factor"))
 DENSITY_UNIT_TO_WET_G_M2 <- setNames(.density_unit_tbl$factor, .density_unit_tbl$unit)
