@@ -1,3 +1,14 @@
+## --- Reset any logging left over from a previous run in this R session -
+## Each script replaces message() with a version that also writes to its
+## log file. If R restores an old workspace (.RData) or a previous run
+## stopped early, that replacement survives pointing at a CLOSED log
+## connection, and the very first message() fails with
+## "sink(.run_log_con, split = TRUE): invalid connection". Remove it and
+## close any open sinks before anything else runs.
+if (exists("message", envir = .GlobalEnv, inherits = FALSE)) rm("message", envir = .GlobalEnv)
+while (sink.number() > 0) sink()
+## -----------------------------------------------------------------------
+
 ## =================================================================
 ## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 (optional) - run AFTER 01_biomass.R
@@ -108,7 +119,7 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
   sink()
   try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
           sep = "", file = .run_log_con), silent = TRUE)
-  sink(.run_log_con, split = TRUE)
+  try(sink(.run_log_con, split = TRUE), silent = TRUE)  # never let a closed log connection break message()
   .orig_message(..., domain = domain, appendLF = appendLF)
 }, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
@@ -122,7 +133,10 @@ if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOP
 ## "diet" subfolder, matching the other three blocks. BIOMASS_CSV_DIR
 ## points at 01_biomass.R's subfolder for this script's cross-block
 ## read of biomass_proportion_by_species_fg.csv.
-if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "diet")
+## Always reassigned (never inherited): 01-03 set their own csv_out_dir in
+## the same R session, and inheriting it sent this script's CSVs into
+## output/pbqb-traits. Each script owns its own output subfolder.
+csv_out_dir <- file.path(out_dir, "diet")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 if (!exists("BIOMASS_CSV_DIR", envir = .GlobalEnv, inherits = FALSE)) BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
 if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) METAWEB_XLSX_PATH        <- file.path(pcloud_dir, "data/Complementary data/data_entry_metaweb_empty.xlsx")   # Mediterranean trophic metaweb database - currently empty (template only, no DATA_ENTRY rows yet), but this is the file to read once it's populated
@@ -1170,7 +1184,7 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   ## per producing script. out_dir/plots/validation is reserved for
   ## 05_validation.R's own output, not for this script's
   ## diet-matrix figure.
-  if (!exists("diets_plot_dir", envir = .GlobalEnv, inherits = FALSE)) diets_plot_dir <- file.path(out_dir, "plots", "diets")
+  diets_plot_dir <- file.path(out_dir, "plots", "diets")
   if (!dir.exists(diets_plot_dir)) dir.create(diets_plot_dir, recursive = TRUE, showWarnings = FALSE)
   p_diet_matrix <- tryCatch({
     if (nrow(fg_diet) == 0) stop("fg_diet is empty")
@@ -1272,7 +1286,7 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   append_reference_columns_to_final_sheets(workbook_path)
   
   trim_workbook_to_final_sheets(workbook_path)
-  message("[04_diets.R] Final workbook trimmed to the 9 final target sheets (whichever exist so far).")
+  message("[04_diets.R] Final workbook trimmed to the 11 final target sheets (whichever exist so far).")
   
   fg_diet[]
 }

@@ -1,3 +1,14 @@
+## --- Reset any logging left over from a previous run in this R session -
+## Each script replaces message() with a version that also writes to its
+## log file. If R restores an old workspace (.RData) or a previous run
+## stopped early, that replacement survives pointing at a CLOSED log
+## connection, and the very first message() fails with
+## "sink(.run_log_con, split = TRUE): invalid connection". Remove it and
+## close any open sinks before anything else runs.
+if (exists("message", envir = .GlobalEnv, inherits = FALSE)) rm("message", envir = .GlobalEnv)
+while (sink.number() > 0) sink()
+## -----------------------------------------------------------------------
+
 ## =================================================================
 ## combine_STAR_RAMlegacy.R
 ##
@@ -161,7 +172,7 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
   sink()
   try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
           sep = "", file = .run_log_con), silent = TRUE)
-  sink(.run_log_con, split = TRUE)
+  try(sink(.run_log_con, split = TRUE), silent = TRUE)  # never let a closed log connection break message()
   .orig_message(..., domain = domain, appendLF = appendLF)
 }, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)

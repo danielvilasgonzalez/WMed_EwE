@@ -14,7 +14,7 @@ Run in order - each later step depends on files the earlier ones write:
 | 4 | `04_diets.R` (optional) | Diet composition matrix (predator x prey), from EcoBase's diet-matrix fallback plus manual metaweb entries. |
 | 5 | `05_validation.R` (optional) | Cross-cutting validation plots across all of the above. |
 
-`run_pipeline_demo.R` sources all four (1-4) in order, with example config for both the West Med default region and a custom region.
+`scripts/run_pipeline_demo.R` sources all four (1-4) in order, with example config for both the West Med default region and a custom region.
 
 ## Setup
 
@@ -27,7 +27,7 @@ You need read access to the shared external data folder (pCloud: "EwE Western Me
 ### 2. Install R packages
 
 ```r
-source("install_packages.R")
+source("scripts/install_packages.R")
 ```
 
 This installs every plain CRAN package the scripts use, plus three packages that **must** come from GitHub rather than CRAN (`rfishbase`, `duckdbfs`, `FishLife`) - the CRAN releases of the first two are missing exports `03_pbqb-traits.R` requires and it will `stop()` with an install command if it detects the wrong build. Restart R after this script runs.
@@ -47,10 +47,10 @@ Edit `config.R` to point at your own:
 
 ### 4. Run
 
-Open `run_pipeline_demo.R` in RStudio and hit Source, or:
+Open `scripts/run_pipeline_demo.R` in RStudio (with the `WMed_EwE.Rproj` project open, so the working directory is the repo root where `config.R` lives) and hit Source, or:
 
 ```r
-source("run_pipeline_demo.R")
+source("scripts/run_pipeline_demo.R")
 ```
 
 It automatically picks up `config.R` if present (warns and falls back to Daniel's own hardcoded paths if not - create your `config.R` first). `RUN_MODE` at the top switches between the West Med default region/years and a custom-region example (edit that block for e.g. a different set of GSAs).
@@ -70,12 +70,13 @@ scripts/
   lib_survey_fg_density_functions.R      # shared workbook-writing helpers
   lib_worms_taxonomy_lookup.R            # sourced by 01 - WoRMS taxonomy lookup
   lib_aquamaps_depth_extension.R         # optional - only if APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE
-  lib_cmems_phytoplankton_biomass.R      # optional - phytoplankton biomass fallback
+  lib_cmems_phytoplankton_biomass.R      # copernicusmarine CLI/credential helpers + MedBFM phytoplankton fallback
   lib_satellite_phytoplankton_biomass.R  # optional - phytoplankton biomass fallback
-run_pipeline_demo.R
+  run_pipeline_demo.R
+  install_packages.R
+  additional/                            # one-off helper scripts, not part of the pipeline run
 config.R.example
 config.R          # your own, gitignored - not in the repo
-install_packages.R
 .gitignore
 ```
 

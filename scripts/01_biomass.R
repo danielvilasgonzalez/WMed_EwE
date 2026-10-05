@@ -1,3 +1,14 @@
+## --- Reset any logging left over from a previous run in this R session -
+## Each script replaces message() with a version that also writes to its
+## log file. If R restores an old workspace (.RData) or a previous run
+## stopped early, that replacement survives pointing at a CLOSED log
+## connection, and the very first message() fails with
+## "sink(.run_log_con, split = TRUE): invalid connection". Remove it and
+## close any open sinks before anything else runs.
+if (exists("message", envir = .GlobalEnv, inherits = FALSE)) rm("message", envir = .GlobalEnv)
+while (sink.number() > 0) sink()
+## -----------------------------------------------------------------------
+
 ## =================================================================
 ## Created by: Daniel Vilas
 ## PIPELINE STEP 1 of 4 - single script for EVERY region.
@@ -227,7 +238,7 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
   sink()
   try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
           sep = "", file = .run_log_con), silent = TRUE)
-  sink(.run_log_con, split = TRUE)
+  try(sink(.run_log_con, split = TRUE), silent = TRUE)  # never let a closed log connection break message()
   .orig_message(..., domain = domain, appendLF = appendLF)
 }, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
@@ -392,7 +403,16 @@ message("[01_survey_density] Region/year config in effect: AREA_MODE = ", AREA_M
 ##  "multi" - runs more than one method at once and combines them via
 ##      OUTLIER_CONSENSUS ("all"/"any"/"majority"); set
 ##      OUTLIER_MULTI_METHODS below to whichever combination you want.
-if (!exists("OUTLIER_METHOD",        envir = .GlobalEnv, inherits = FALSE)) OUTLIER_METHOD        <- "medits"            # "medits" (=boxplot/Tukey), "mad", "percentile", or "multi"
+##  "haul" (DEFAULT since 2026-10-05) - species x haul judged against the
+##      same species in the same GSA x depth stratum x year; high values
+##      only; Q3 + 3 x IQR on log1p density; repeated highs in a GSA x year
+##      kept as real aggregations; never drops a whole year. See
+##      remove_sample_outliers_haul() in lib_survey_fg_density_functions.R.
+## A stale OUTLIER_METHOD restored from .RData silently kept the old
+## boxplot rule (13:01 run). The project default is now forced to "haul";
+## to try another rule set OUTLIER_METHOD_OVERRIDE before sourcing.
+OUTLIER_METHOD <- if (exists("OUTLIER_METHOD_OVERRIDE", envir = .GlobalEnv, inherits = FALSE)) OUTLIER_METHOD_OVERRIDE else "haul"  # "haul" (default), "medits" (=boxplot/Tukey), "mad", "percentile", or "multi"
+message("[Outliers] OUTLIER_METHOD = '", OUTLIER_METHOD, "'")
 if (!exists("OUTLIER_CONSENSUS",     envir = .GlobalEnv, inherits = FALSE)) OUTLIER_CONSENSUS     <- "all"               # only used when OUTLIER_METHOD == "multi": "all"/"any"/"majority"
 if (!exists("OUTLIER_MULTI_METHODS", envir = .GlobalEnv, inherits = FALSE)) OUTLIER_MULTI_METHODS <- c("mad", "percentile", "boxplot")  # only used when OUTLIER_METHOD == "multi"
 
@@ -1048,7 +1068,10 @@ if (file.exists(CATCHABILITY_CSV_PATH)) {
 ## NA'd out of dt itself once removed).
 dt_before_outliers <- copy(dt)
 
-dt <- if (identical(OUTLIER_METHOD, "medits")) {
+dt <- if (identical(OUTLIER_METHOD, "haul")) {
+  remove_sample_outliers_haul(dt, strata_def = MEDITS_STRATA, k = 3, min_samples = 10,  # >= 10 positive hauls to judge against - quartiles of fewer are too unstable
+                              min_repeated_high = 2, drop_outliers = DROP_OUTLIERS)
+} else if (identical(OUTLIER_METHOD, "medits")) {
   ## boxplot/Tukey IQR only - see OUTLIER_METHOD's own comment above for
   ## why this (not "mad") is the default: it's the method RoME's own
   ## check_abundance() convention uses for density/abundance screening.
@@ -1541,6 +1564,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
     
     acoustic_fg_by_country_gsa <- merge(acoustic_fg_by_country_gsa, fallback_area_km2,
                                         by = "AreaID", all.x = TRUE)
+    acoustic_fg_by_country_gsa[, area_nm2 := as.numeric(area_nm2)]  # crosswalk areas read as integer; the bathymetry fallback is fractional and was being truncated
     acoustic_fg_by_country_gsa[is.na(area_nm2), area_nm2 := area_nm2_fallback]
     acoustic_fg_by_country_gsa[, area_nm2_fallback := NULL]
   }
@@ -1580,6 +1604,26 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   message("MEDIAS region-wide FG annual DENSITY index built: ", nrow(medias_fg_index_regional),
           " rows. Density in t/nm^2 (handbook convention) and t/km^2 (MEDITS comparison).",
           " NO catchability correction applied.")
+  
+  ## --- 9d(ii). Shelf density -> model-area density ----------------------
+  ## MEDIAS density is t per km2 of the 10-200 m SHELF it surveys, but
+  ## Ecopath_B (and every MEDITS density here) is t per km2 of the whole
+  ## model area (all MEDITS strata, 10 m to the deepest stratum). Small
+  ## pelagics are ~absent below the shelf, so the model-area density is
+  ## shelf density x (shelf area / model area). Without this, MEDIAS
+  ## densities were ~1.9x too high relative to everything else.
+  .sa <- as.data.table(strata_area_by_area)
+  .gcol <- intersect(c("AreaID", "GSA"), names(.sa))[1]
+  if (!is.na(.gcol) && exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa <- .sa[get(.gcol) %in% FILTER_AREAS]
+  MEDIAS_SHELF_TO_MODEL_AREA <- .sa[Depth_max_m <= 200, sum(area_km2, na.rm = TRUE)] / .sa[, sum(area_km2, na.rm = TRUE)]
+  if (!is.finite(MEDIAS_SHELF_TO_MODEL_AREA) || MEDIAS_SHELF_TO_MODEL_AREA <= 0 || MEDIAS_SHELF_TO_MODEL_AREA > 1)
+    stop("[MEDIAS] Could not compute the shelf (10-200 m) / model-area ratio from strata_area_by_area.")
+  medias_fg_index_regional[, mean_density_shelf_t_km2 := mean_density_biomass_t_km2]
+  medias_fg_index_regional[, mean_density_biomass_t_km2 := mean_density_shelf_t_km2 * MEDIAS_SHELF_TO_MODEL_AREA]
+  message("[MEDIAS] Shelf density rescaled to model-area density: x ", signif(MEDIAS_SHELF_TO_MODEL_AREA, 3),
+          " (10-200 m shelf ", round(.sa[Depth_max_m <= 200, sum(area_km2)]), " km2 / model area ",
+          round(.sa[, sum(area_km2)]), " km2). mean_density_biomass_t_km2 is now model-area based;",
+          " the original shelf value is kept in mean_density_shelf_t_km2.")
   
   ## Label the area column as GSA (MEDIAS only ever runs under AREA_MODE
   ## == "westmed", where AreaID IS the real GSA number) - a renamed COPY
@@ -1661,6 +1705,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
           sum(area_nm2 * KM2_PER_NM2, na.rm = TRUE)),
     by = .(Year, FG_num, FG_name, ScientificName)
   ]
+  species_density_regional_medias[, mean_density := mean_density * MEDIAS_SHELF_TO_MODEL_AREA]  # model-area basis, same as the FG index above
   message("MEDIAS region-wide species-level density built: ", nrow(species_density_regional_medias), " rows.")
   
   ## =================================================================
@@ -1716,8 +1761,15 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## it must never be used, not even as a last-resort fallback. See the
   ## fcase() priority rule and the avg_density backfill guard just below
   ## for where this classification actually changes behavior.
+  ## "literature_first" (project decision 2026-10-05): benthic molluscs and
+  ## other macrobenthos ARE caught by MEDITS, but a bottom trawl badly
+  ## undersamples small/burrowing benthos - a cited literature density
+  ## (literature_density_biomass.csv) wins whenever one exists; the MEDITS
+  ## value is only the fallback.
+  if (!exists("LITERATURE_FIRST_FG_NAMES")) LITERATURE_FIRST_FG_NAMES <- c("Benthic mollusc", "Other macro-benthos")
   fg_ecology_lookup[, FG_ECOLOGY_TYPE := fcase(
     FG_name %in% EXEMPT_FG_NAMES, "survey_exempt",
+    FG_name %in% LITERATURE_FIRST_FG_NAMES, "literature_first",
     n_species_in_fg == 1 & FG_num %in% fg_stock_assessed_nums, "single_species_assessed",
     default = "mixed"
   )]
@@ -1829,9 +1881,13 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
       ## fg_missing_ecopath_B_REVIEW.csv for review).
       FG_ECOLOGY_TYPE == "survey_exempt" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
       FG_ECOLOGY_TYPE == "survey_exempt", NA_real_,
-      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
+      FG_ECOLOGY_TYPE == "literature_first" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
+      ## Project rule (2026-10-05): surveys first - MEDIAS, then MEDITS.
+      ## A stock assessment is used for a single-species FG only when
+      ## neither survey has a value (bluefin tuna, swordfish...).
       !is.na(medias_density), medias_density,
       !is.na(medits_density), medits_density,
+      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
       ## Fallback for a "mixed" (multi-species) stock-assessment/megafauna
       ## FG - e.g. a cetacean or seabird FG that lumps several species.
       ## FG_ECOLOGY_TYPE only equals "single_species_assessed" for an
@@ -1847,10 +1903,12 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
       FG_ECOLOGY_TYPE == "survey_exempt" & !is.na(stock_assessment_density_t_km2),
       paste0(stock_assessment_source, " - survey-exempt FG (MEDITS/MEDIAS don't sample this representatively)"),
       FG_ECOLOGY_TYPE == "survey_exempt", NA_character_,  # left genuinely missing on purpose - see mean_density comment above
-      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2),
-      paste0(stock_assessment_source, " - single species/stanza FG"),  # stock_assessment_source is now a per-row label ("stock assessment (ICCAT)" or "stock assessment (STAR/RAM)") rather than a hardcoded string - see the ICCAT biomass block above
+      FG_ECOLOGY_TYPE == "literature_first" & !is.na(stock_assessment_density_t_km2),
+      paste0(stock_assessment_source, " - literature density preferred over MEDITS (trawl undersamples this FG)"),
       !is.na(medias_density), "MEDIAS (preferred over MEDITS)",
       !is.na(medits_density), "MEDITS (MEDIAS unavailable this Year)",
+      FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2),
+      paste0(stock_assessment_source, " - single-species FG with no survey biomass"),
       !is.na(stock_assessment_density_t_km2),
       paste0(stock_assessment_source, " - mixed/multi-species FG, survey has no catch of it at all")
     )
@@ -1867,6 +1925,58 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   fg_index_regional_combined[FG_ECOLOGY_TYPE == "survey_exempt" & is.na(biomass_source),
                              biomass_source := "MISSING - survey-exempt FG with no stock-assessment/EcoBase/literature source either (see EXEMPT_FG_NAMES) - genuinely no usable biomass yet, not filled with survey noise"]
   fg_index_regional_combined <- fg_index_regional_combined[, .(Year, FG_num, FG_name, mean_density, biomass_source, FG_ECOLOGY_TYPE)]
+  
+  ## --- MEDIAS back-cast to the Ecopath baseline (small pelagics) --------
+  ## MEDIAS starts ~2003, so for 1994-1996 sardine/anchovy fall back to
+  ## MEDITS (a bottom trawl that undersamples them). Option: anchor on
+  ## MEDIAS' first MEDIAS_BACKCAST_ANCHOR_N years and scale back by the
+  ## stock assessments' own biomass ratio (baseline years / anchor years),
+  ## using only stocks assessed in BOTH periods so the ratio is a trend,
+  ## not a coverage change. Always computed and logged for comparison;
+  ## only replaces the baseline when MEDIAS_BACKCAST_APPLY = TRUE.
+  ## Project decision: sardine/anchovy come from MEDIAS, so the back-cast
+  ## is ON by default (forced, so a stale value from .RData can't switch
+  ## it off). Set MEDIAS_BACKCAST_APPLY_OVERRIDE <- FALSE to compare.
+  MEDIAS_BACKCAST_APPLY <- if (exists("MEDIAS_BACKCAST_APPLY_OVERRIDE")) MEDIAS_BACKCAST_APPLY_OVERRIDE else TRUE
+  if (!exists("MEDIAS_BACKCAST_ANCHOR_N")) MEDIAS_BACKCAST_ANCHOR_N <- 3
+  if (exists("small_pelagic_assessments") && nrow(small_pelagic_assessments) > 0 &&
+      exists("medias_fg_index_regional") && nrow(medias_fg_index_regional) > 0) {
+    backcast <- rbindlist(lapply(unique(small_pelagic_assessments$FG_num), function(fg) {
+      med <- medias_fg_index_regional[FG_num == fg & !is.na(mean_density_biomass_t_km2)][order(Year)]
+      if (nrow(med) == 0) return(NULL)
+      anchor_years <- head(med$Year, MEDIAS_BACKCAST_ANCHOR_N)
+      anchor_dens <- mean(med[Year %in% anchor_years, mean_density_biomass_t_km2])
+      sa <- small_pelagic_assessments[FG_num == fg & !is.na(biomass)]
+      stocks_both <- intersect(sa[year %in% YEAR_ECOPATH, unique(stock_key)], sa[year %in% anchor_years, unique(stock_key)])
+      if (length(stocks_both) == 0) return(data.table(FG_num = fg, anchor_years = paste(range(anchor_years), collapse = "-"),
+                                                      anchor_density = anchor_dens, ratio = NA_real_, backcast_density = NA_real_,
+                                                      stocks = "none assessed in both periods"))
+      b_base   <- sa[stock_key %in% stocks_both & year %in% YEAR_ECOPATH, sum(biomass) / uniqueN(year)]
+      b_anchor <- sa[stock_key %in% stocks_both & year %in% anchor_years, sum(biomass) / uniqueN(year)]
+      data.table(FG_num = fg, anchor_years = paste(range(anchor_years), collapse = "-"), anchor_density = anchor_dens,
+                 ratio = b_base / b_anchor, backcast_density = anchor_dens * b_base / b_anchor,
+                 stocks = paste(stocks_both, collapse = ","))
+    }), fill = TRUE)
+    if (nrow(backcast) > 0) {
+      current <- fg_index_regional_combined[Year %in% YEAR_ECOPATH, .(current_baseline = mean(mean_density, na.rm = TRUE),
+                                                                        current_source = first(biomass_source)), by = .(FG_num, FG_name)]
+      backcast <- merge(backcast, current, by = "FG_num", all.x = TRUE)
+      fwrite(backcast, file.path(csv_out_dir, "medias_backcast_small_pelagics_REVIEW.csv"))
+      message("\n[MEDIAS back-cast] Small pelagics, 1994-1996 baseline - MEDIAS anchor x stock-assessment trend vs",
+              " the value currently used (t/km2). Applied: ", MEDIAS_BACKCAST_APPLY, " (MEDIAS_BACKCAST_APPLY).")
+      print(backcast[, .(FG_name, anchor_years, anchor_density = signif(anchor_density, 3), ratio = signif(ratio, 3),
+                         backcast_density = signif(backcast_density, 3), current_baseline = signif(current_baseline, 3), stocks)])
+      if (isTRUE(MEDIAS_BACKCAST_APPLY)) {
+        for (i in which(!is.na(backcast$backcast_density))) {
+          fg_index_regional_combined[FG_num == backcast$FG_num[i] & Year %in% YEAR_ECOPATH,
+                                     `:=`(mean_density = backcast$backcast_density[i],
+                                          biomass_source = paste0("MEDIAS ", backcast$anchor_years[i], " back-cast to the baseline with",
+                                                                  " stock-assessment biomass trend (", backcast$stocks[i], ", ratio ",
+                                                                  signif(backcast$ratio[i], 3), ")"))]
+        }
+      }
+    }
+  }
   
   n_by_source <- fg_index_regional_combined[, .N, by = biomass_source]
   message("[Biomass source priority] fg_index_regional_combined built with the stock-assessment/MEDIAS/MEDITS priority rule - ",
@@ -1924,7 +2034,11 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
     ## the standard 4+3-letter truncation.
     TC_SURVEY_FILE <- resolve_pcloud_file(paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/TC.csv"), pcloud_dir)
     multistanza_age_proportion <- if (file.exists(TC_SURVEY_FILE)) {
-      compute_multistanza_age_proportion_from_medits_tc(multistanza_fg_pairs, TC_SURVEY_FILE)
+      ## Restricted to the Ecopath baseline years and the study GSAs - the
+      ## raw TC.csv covers every MEDITS country/GSA/year (Black Sea, Aegean...).
+      compute_multistanza_age_proportion_from_medits_tc(multistanza_fg_pairs, TC_SURVEY_FILE,
+                                                        year_range = YEAR_ECOPATH,
+                                                        area_filter = FILTER_AREAS)
     } else {
       message("[Multistanza biomass split] TC.csv not found at '", TC_SURVEY_FILE, "' - falling back to the",
               " STECF FDI catch-at-age proxy.")
@@ -1937,7 +2051,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
     stecf_bio_dir_biomass <- file.path(stecf_fdi_dir_biomass, "Biological")
     
     multistanza_biomass_split_applied <- data.table()
-    multistanza_source_label <- "MEDITS TC.csv maturity staging (matsub)"
+    multistanza_source_label <- "MEDITS TC.csv maturity staging (maturity stage, biomass-weighted)"
     if (nrow(multistanza_age_proportion) == 0) {
       multistanza_source_label <- "STECF FDI Biological Age data's juvenile:adult catch proportion"
       fao_species_biomass <- tryCatch(resolve_fao_species_reference(pcloud_dir, csv_out_dir), error = function(e) {

@@ -118,8 +118,13 @@ fetch_ecobase_raw_inputs <- function(out_dir, force_refresh = FALSE,
     
     xml_content <- xml2::read_xml(httr::content(resp, as = "text", encoding = "UTF-8"))
     
-    message("\nTop-level XML structure (inspect this if parsing below fails):")
-    xml2::xml_structure(xml_content, indent = 2)
+    ## The full XML tree used to be printed here on every run (hundreds of
+    ## <model_descr> lines). Off by default; set ECOBASE_DEBUG_XML <- TRUE
+    ## before running to print it when the parsing below needs debugging.
+    if (isTRUE(get0("ECOBASE_DEBUG_XML", ifnotfound = FALSE))) {
+      message("\nTop-level XML structure (inspect this if parsing below fails):")
+      xml2::xml_structure(xml_content, indent = 2)
+    }
     
     ## Convert one XML node's children into a single-row data.table -
     ## DEFENSIVELY, because a single <model> (or, in fetch_model_inputs()
@@ -767,6 +772,19 @@ fetch_ecobase_diet_by_keyword <- function(out_dir, target_predator_keywords, for
     return(invisible(NULL))
   }
   models_status <- as.data.table(fread(status_path))
+  ## A models CSV written by an older version of fetch_ecobase_raw_inputs()
+  ## has no `status` column - rebuild it once rather than crash on it.
+  if (!"status" %in% names(models_status)) {
+    message("fetch_ecobase_diet_by_keyword(): ", status_path, " has no 'status' column (stale cache from an",
+            " older version) - rebuilding it once with force_refresh = TRUE.")
+    invisible(fetch_ecobase_raw_inputs(out_dir, force_refresh = TRUE, med_bbox = med_bbox, timeout_sec = timeout_sec))
+    models_status <- if (file.exists(status_path)) as.data.table(fread(status_path)) else data.table()
+    if (!"status" %in% names(models_status)) {
+      message("fetch_ecobase_diet_by_keyword(): still no 'status' column after the rebuild - skipping the",
+              " EcoBase diet fallback this run.")
+      return(invisible(NULL))
+    }
+  }
   candidate_model_ids <- unique(models_status[status == "success", model_number])
   if (length(candidate_model_ids) == 0) {
     message("fetch_ecobase_diet_by_keyword(): no model in ", status_path, " has status == 'success' - nothing to query.")

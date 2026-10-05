@@ -59,3 +59,7 @@ rsconnect/
 shiny_cache/
 *.rds
 .RDataTmp1
+
+# macOS
+.DS_Store
+.RDataTmp1

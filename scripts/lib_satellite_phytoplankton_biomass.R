@@ -88,9 +88,9 @@
 ##   timeout_sec           - per-request HTTP timeout, default 60.
 fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
                                                    bbox = c(lon_min = -2, lon_max = 12, lat_min = 36, lat_max = 44),
-                                                   proxy_years = 1997:1999,
+                                                   proxy_years = 1998:2000,  # first full years of the SeaWiFS record (it starts Sep 1997)
                                                    erddap_base = "https://coastwatch.pfeg.noaa.gov/erddap/griddap/",
-                                                   dataset_id = "erdSWchlamday",
+                                                   dataset_id = "erdSW2018chlamday",  # SeaWiFS R2018.0 monthly 0.1 deg, 1997-09 to 2010-12 (erdSWchlamday was retired - HTTP 404)
                                                    chl_var = "chlorophyll",
                                                    c_chl_ratio = 50,
                                                    integration_depth_m = 50,
@@ -124,7 +124,8 @@ fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE
     t1 <- paste0(max(proxy_years), "-12-31")
     url <- paste0(erddap_base, dataset_id, ".csv?", chl_var,
                  "[(", t0, "):1:(", t1, ")]",
-                 "[(", bbox["lat_min"], "):1:(", bbox["lat_max"], ")]",
+                 ## latitude is stored DESCENDING in this dataset - request north to south
+                 "[(", bbox["lat_max"], "):1:(", bbox["lat_min"], ")]",
                  "[(", bbox["lon_min"], "):1:(", bbox["lon_max"], ")]")
     message("[Satellite diag] Fetch attempt: GET ", url,
             "\n(", min(proxy_years), "-", max(proxy_years), " - the earliest ocean-colour years available at",

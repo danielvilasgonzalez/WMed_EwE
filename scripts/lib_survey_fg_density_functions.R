@@ -1998,6 +1998,88 @@ remove_sample_outliers_multi <- function(dt, methods = c("mad", "percentile", "b
   dt
 }
 
+## =================================================================
+## remove_sample_outliers_haul() - MEDITS-style haul-level screening
+## (project decision 2026-10-05; default OUTLIER_METHOD = "haul").
+##
+##  - The observation judged is ONE species in ONE haul.
+##  - It is compared with hauls of the SAME species in the SAME GSA, depth
+##    stratum and year (MEDITS catches are strongly spatially structured,
+##    so a deep-stratum haul is never judged against shallow ones, and a
+##    good year is never judged against a poor one). If that cell has
+##    fewer than min_samples (10) positive hauls, the comparison falls back to the same
+##    species x GSA x year (all strata pooled); still too few -> not judged.
+##  - Only unusually HIGH values are flagged. Low or zero catches are the
+##    normal shape of trawl data, not errors (the previous boxplot rule
+##    also removed low values, which is most of what was being dropped).
+##  - Fence: log1p(density) > Q3 + k x IQR of the comparison group's
+##    POSITIVE catches (zeros excluded), k = 3 (Tukey's "far out" fence).
+##  - Repeated highs are kept: if 2 or more hauls of the same species in
+##    the same GSA x year cross the fence, that is evidence of a real
+##    aggregation/good year, not a recording error - none of them is
+##    flagged.
+##  - Never removes a whole year.
+## =================================================================
+remove_sample_outliers_haul <- function(dt, strata_def = NULL, k = 3, min_samples = 10,
+                                        min_repeated_high = 2, drop_outliers = TRUE) {
+  dt <- copy(dt)
+  dt[, eval_value := log1p(Density)]
+  has_depth <- "Depth" %in% names(dt) && !is.null(strata_def)
+  if (has_depth) {
+    sd <- as.data.table(strata_def)[order(depth_min)]
+    ## findInterval on the lower bounds: the CSV's integer bounds (10-50,
+    ## 51-100, ...) leave gaps like 50.5 m that a min/max test would miss.
+    idx <- findInterval(dt$Depth, sd$depth_min)
+    idx[is.na(dt$Depth) | idx == 0 | dt$Depth > max(sd$depth_max)] <- NA
+    dt[, Stratum_qc := as.integer(sd$stratum_num[idx])]
+  } else {
+    dt[, Stratum_qc := NA_integer_]
+    message("[Outliers] No Depth column / strata definition - comparing within species x GSA x year only.")
+  }
+  ## Fence built from POSITIVE catches only: with many zero hauls the
+  ## quartiles collapse to 0 and every presence would look "high".
+  ok <- !is.na(dt$eval_value) & !is.na(dt$ScientificName) & dt$Density > 0
+  fence_stats <- function(by_cols) dt[ok, .(n_grp = .N,
+                                            q3 = quantile(eval_value, 0.75, names = FALSE),
+                                            iqr = IQR(eval_value)), by = by_cols]
+  fine   <- fence_stats(c("ScientificName", "AreaID", "Stratum_qc", "Year"))
+  coarse <- fence_stats(c("ScientificName", "AreaID", "Year"))
+  setnames(coarse, c("n_grp", "q3", "iqr"), c("n_grp_c", "q3_c", "iqr_c"))
+  dt <- merge(dt, fine, by = c("ScientificName", "AreaID", "Stratum_qc", "Year"), all.x = TRUE)
+  dt <- merge(dt, coarse, by = c("ScientificName", "AreaID", "Year"), all.x = TRUE)
+  dt[, use_fine := !is.na(n_grp) & n_grp >= min_samples & !is.na(Stratum_qc)]
+  dt[, fence := fifelse(use_fine, q3 + k * iqr,
+                        fifelse(!is.na(n_grp_c) & n_grp_c >= min_samples, q3_c + k * iqr_c, NA_real_))]
+  dt[, comparison := fifelse(use_fine, "species x GSA x stratum x year",
+                             fifelse(!is.na(fence), "species x GSA x year (stratum cell too small)", NA_character_))]
+  dt[, above := !is.na(eval_value) & !is.na(fence) & eval_value > fence & Density > 0]
+  dt[, n_above_gsa_year := sum(above), by = .(ScientificName, AreaID, Year)]
+  dt[, is_outlier := above & n_above_gsa_year < min_repeated_high]
+  n_kept_repeated <- dt[above & !is_outlier, .N]
+
+  flagged <- dt[is_outlier == TRUE, .(ScientificName, AreaID, Year, Stratum = Stratum_qc, SampleID,
+                                      flagged_density = Density, fence_density = expm1(fence), comparison)]
+  setorder(flagged, ScientificName, AreaID, Year)
+  flagged[, was_dropped := drop_outliers]
+  n_obs <- sum(!is.na(dt$Density) & dt$Density > 0)
+  message("\n[Outliers] Haul-level screening (species x haul vs same species x GSA x stratum x year; high values",
+          " only; fence Q3 + ", k, " x IQR on log1p density): ", nrow(flagged), " of ", n_obs, " observation(s) flagged (",
+          round(100 * nrow(flagged) / max(n_obs, 1), 2), "%). ", n_kept_repeated, " high observation(s) kept because ",
+          min_repeated_high, "+ hauls of that species were high in the same GSA x year (real aggregation, not an error).",
+          if (drop_outliers) " Flagged rows REMOVED." else " Report only (drop_outliers = FALSE).")
+  if (nrow(flagged) > 0) {
+    message("[Outliers] Flagged by species (top 15):")
+    print(head(flagged[, .N, by = ScientificName][order(-N)], 15))
+    message("[Outliers] Flagged by year:")
+    print(flagged[, .N, by = Year][order(Year)])
+    if (drop_outliers) dt[is_outlier == TRUE, `:=`(Density = NA_real_, Biomass = NA_real_)]
+  }
+  dt[, c("eval_value", "Stratum_qc", "n_grp", "q3", "iqr", "n_grp_c", "q3_c", "iqr_c", "use_fine",
+         "fence", "comparison", "above", "n_above_gsa_year", "is_outlier") := NULL]
+  attr(dt, "flagged_outliers") <- flagged
+  dt
+}
+
 compute_fg_densities_by_stratum <- function(dt, strata = TRUE) {
   dt <- copy(dt)  # avoid data.table shallow-copy warning on := after this dt passed through merge()/subsetting upstream
   group_cols <- c("AreaID", "Year", if (strata) "Stratum", "FG_num", "FG_name")
@@ -2114,7 +2196,14 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     "area_km2" %in% names(fread(cache_path, nrows = 1))
   if (cache_valid) {
     message("Loading cached strata areas from ", cache_path)
-    return(fread(cache_path))
+    cached <- fread(cache_path)
+    ## The CSV is written with the id column renamed to area_id_label
+    ## (e.g. "GSA"), but every caller merges on "AreaID" - rename it back,
+    ## same as the freshly-computed object returned below.
+    if (!"AreaID" %in% names(cached) && area_id_label %in% names(cached)) setnames(cached, area_id_label, "AreaID")
+    if (!"AreaID" %in% names(cached)) stop("Cached strata-area file '", cache_path, "' has neither 'AreaID' nor '",
+                                           area_id_label, "' - delete it so it is recomputed.")
+    return(cached)
   }
   
   message("Computing strata areas via bathymetry for ", length(area_ids), " area(s)",
@@ -2424,6 +2513,15 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
     display_bbox <- area_bbox
   }
   
+  ## When a study area is selected, zoom the map to it (as in
+  ## westmed_gsa_map.png) instead of every GSA + every MEDITS haul across
+  ## the whole Mediterranean and Black Sea.
+  if (!is.null(selected_areas) && any(area_shp[[area_id_col]] %in% selected_areas)) {
+    sel_bbox <- st_bbox(area_shp[area_shp[[area_id_col]] %in% selected_areas, ])
+    display_bbox <- c(xmin = unname(sel_bbox["xmin"]) - 1, xmax = unname(sel_bbox["xmax"]) + 1,
+                      ymin = unname(sel_bbox["ymin"]) - 0.5, ymax = unname(sel_bbox["ymax"]) + 0.5)
+  }
+  
   group_cols <- if (by_year) c("AreaID", "Year") else "AreaID"
   intensity <- dt[, .(n_samples = uniqueN(SampleID)), by = group_cols]
   
@@ -2608,20 +2706,34 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
               " check selected_areas uses the same type/values as ", area_id_col, ".")
       selected_shp <- NULL
     } else {
-      unioned <- st_union(selected_shp)
+      ## Same method as scripts/additional/fig_WMed_basemap.R (whose
+      ## westmed_gsa_map.png has no seam line): the stray line is a real
+      ## hairline GAP between neighbouring GFCM GSA polygons, not a
+      ## rasterisation artifact (the old rasterize approach left it in).
+      ## Measure the widest gap under 0.05 deg between selected GSAs,
+      ## buffer out and back in by just over half of it (closes the gap
+      ## without coarsening the coastline), repair, keep the largest piece.
+      s2_was_on <- sf::sf_use_s2()
       selected_outline <- tryCatch({
-        v <- terra::vect(unioned)
-        r <- terra::rast(terra::ext(v), resolution = 0.01, crs = terra::crs(v))
-        r <- terra::rasterize(v, r, field = 1)
-        v_poly <- terra::as.polygons(r, dissolve = TRUE)
-        clean_shp <- sf::st_as_sf(v_poly)
-        clean_shp <- clean_shp[which.max(sf::st_area(clean_shp)), ]  # keep only the largest piece, drop tiny slivers
-        sf::st_boundary(clean_shp)
+        sf::sf_use_s2(FALSE)
+        planar <- sf::st_set_crs(sf::st_geometry(selected_shp), NA)
+        gaps <- numeric(0)
+        if (length(planar) > 1) for (i in seq_len(length(planar) - 1)) {
+          d <- suppressWarnings(as.numeric(sf::st_distance(planar[i], planar[(i + 1):length(planar)])))
+          gaps <- c(gaps, d[d > 0 & d < 0.05])
+        }
+        gap_close <- if (length(gaps) > 0) max(gaps) / 2 * 1.2 else 0.001
+        u <- sf::st_union(sf::st_geometry(selected_shp))
+        u <- sf::st_buffer(sf::st_buffer(u, gap_close), -gap_close)
+        u <- sf::st_make_valid(u)
+        parts <- suppressWarnings(sf::st_cast(sf::st_cast(u, "MULTIPOLYGON"), "POLYGON"))
+        parts <- parts[which.max(as.numeric(sf::st_area(sf::st_set_crs(parts, NA))))]
+        sf::st_boundary(parts)
       }, error = function(e) {
-        message("Rasterize-based contour cleanup failed (", conditionMessage(e), ") - falling back",
-                " to plain st_union(), which may still show minor seam artifacts.")
-        unioned
-      })
+        message("Gap-closing contour cleanup failed (", conditionMessage(e), ") - falling back",
+                " to plain st_union(), which may still show a seam line.")
+        st_union(selected_shp)
+      }, finally = sf::sf_use_s2(s2_was_on))
       p <- p + geom_sf(data = selected_outline, fill = NA, color = "black", linewidth = 0.8)
     }
   }
@@ -2889,7 +3001,7 @@ plot_outlier_diagnostic <- function(dt_before, flagged_outliers, top_n_species =
     geom_point(data = flagged_pts, color = "firebrick", size = 2.2, shape = 17) +
     coord_flip() +
     labs(title = "Sample-level outlier diagnostic",
-         subtitle = "Grey box-plots: within-species distribution (log1p density). Red triangles: flagged outliers.",
+         subtitle = "Grey box-plots: all hauls of the species (log1p density). Red triangles: flagged hauls - judged against the same species x GSA x stratum x year, so a red point can sit inside the all-years box.",
          x = NULL, y = "log1p(Density)") +
     theme_minimal(base_size = 11)
 }
@@ -3276,8 +3388,11 @@ finalize_workbook_sheet_order <- function(out_path, rename_map = character(0), t
   openxlsx::worksheetOrder(wb) <- new_position_of_current_index
   
   openxlsx::saveWorkbook(wb, out_path, overwrite = TRUE)
+  ## names(wb) keeps openxlsx's internal creation order even after
+  ## worksheetOrder<- (the saved file IS reordered) - report the order
+  ## actually written, not names(wb).
   message("finalize_workbook_sheet_order(): saved '", out_path, "' - final sheet order: ",
-          paste(names(wb), collapse = ", "))
+          paste(final_order_names, collapse = ", "))
   invisible(wb)
 }
 
@@ -3351,6 +3466,21 @@ finalize_ecopath_ecosim_summary_sheets <- function(out_path, year_ecopath,
   ecosim_l <- read_sheet("Catches_Ecosim", fisheries_csv_dir)
   effort   <- read_sheet("Fishing_Effort_by_Fleet", fisheries_csv_dir)
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
+  ## Native Ecosim-format CSVs carry a column-id row (" ,fg_1,fg_2,...")
+  ## ABOVE the "Name" meta row. When fread reads that row as data rather
+  ## than as a header, every position-based "drop the 8 meta rows" step
+  ## below is off by one, and the "Interval" label lands in the Year
+  ## vector as NA - which made every effort fleet fall back to absolute
+  ## kW-days. Drop anything above the "Name" row so positions line up.
+  .strip_pre_meta <- function(dt) {
+    if (is.null(dt) || nrow(dt) == 0) return(dt)
+    idx <- match("Name", trimws(as.character(dt[[1]])))
+    if (is.na(idx)) stop("Ecosim-format sheet has no 'Name' meta row in its first column - unexpected layout.")
+    if (idx > 1) dt <- dt[-seq_len(idx - 1)]
+    dt
+  }
+  ecosim_b <- .strip_pre_meta(ecosim_b)
+  ecosim_l <- .strip_pre_meta(ecosim_l)
   
   if (!is.null(ecosim_b)) {
     years <- suppressWarnings(as.numeric(ecosim_b[[1]][-seq_along(meta_labels)]))
@@ -5159,13 +5289,12 @@ compute_multistanza_age_proportion <- function(multistanza_fg_pairs, stecf_bio_d
 ## (a named character vector, "ScientificName" = "GENU_SPE") for any species
 ## where the standard truncation doesn't match the real MEDITS code.
 ##
-## matsub carries the actual MEDITS maturity stage (Annex VIII: "0"
-## undetermined, "1" immature/virgin, "2A"/"2B"/"2C" virgin-developing/
-## recovering/maturing, "3" mature/spawner, "4A"/"4B" spent/resting - letter
-## suffix is a sub-stage, not used on its own). `maturity` is NOT a stage -
-## per the JRC spec it's NUMBER_OF_INDIVIDUALS_IN_THE_LENGTH_CLASS_AND_
-## MATURITY_STAGE, i.e. the individual COUNT for that length-class/sex/
-## matsub combination - that's the column this function sums over.
+## Column meanings, checked against the real 2024_MEDBSsurvey TC.csv:
+## `maturity` = MEDITS maturity STAGE ("0" undetermined, "1" immature/
+## virgin, "2" developing, "3" mature/spawner, "4" spent/resting, "ND");
+## `matsub` = sub-stage LETTER only (A/B/C); `nblon` = individual COUNT for
+## that length-class/sex/stage cell. The proportion returned is
+## biomass-weighted (count x length^lw_b), since it splits Ecopath_B.
 ##
 ## juvenile_stage_cutoff (default 2): an individual counts as "Adult" once
 ## its matsub's LEADING DIGIT is >= this cutoff (so default: stage 1 =
@@ -5178,7 +5307,8 @@ compute_multistanza_age_proportion <- function(multistanza_fg_pairs, stecf_bio_d
 compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pairs, tc_path,
                                                               code_overrides = NULL,
                                                               juvenile_stage_cutoff = 2,
-                                                              year_range = NULL, area_filter = NULL) {
+                                                              year_range = NULL, area_filter = NULL,
+                                                              stage0_as_juvenile = TRUE, lw_b = 3) {
   empty_result <- data.table()
   if (nrow(multistanza_fg_pairs) == 0) {
     message("\n[Multistanza age split - MEDITS TC] No multistanza FG pair to compute a proportion for - skipped.")
@@ -5215,7 +5345,7 @@ compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pai
   
   tc <- fread(tc_path, encoding = "UTF-8")
   setnames(tc, tolower(gsub("\\s+", "", names(tc))))
-  required_cols <- c("genus", "species", "matsub", "maturity")
+  required_cols <- c("genus", "species", "maturity", "nblon", "length_class")
   missing_cols <- setdiff(required_cols, names(tc))
   if (length(missing_cols) > 0) {
     message("\n[Multistanza age split - MEDITS TC] TC.csv is missing expected column(s): ",
@@ -5234,28 +5364,56 @@ compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pai
   if (!is.null(year_range) && "year" %in% names(tc)) tc <- tc[year %in% year_range]
   if (!is.null(area_filter) && "area" %in% names(tc)) tc <- tc[area %in% area_filter]
   
-  tc[, matsub_clean := toupper(trimws(matsub))]
-  tc[, stage_num := suppressWarnings(as.numeric(gsub("[^0-9]", "", matsub_clean)))]
-  tc <- tc[!is.na(stage_num) & !(matsub_clean %in% c("ND", ""))]
+  ## COLUMN MEANINGS, CHECKED AGAINST THE REAL 2024_MEDBSsurvey TC.csv
+## (hake rows): `maturity` holds the MEDITS maturity STAGE (values 0, 1,
+  ## 2, 3, 4, ND); `matsub` holds only the sub-stage LETTER (A, B, C, ND);
+  ## `nblon` is the number of individuals in that length class x sex x
+  ## stage cell. The earlier version read the stage from `matsub` (no
+  ## digits -> every row dropped) and the count from `maturity`.
+  tc[, stage_clean := toupper(trimws(as.character(maturity)))]
+  tc[, stage_num := suppressWarnings(as.numeric(gsub("[^0-9]", "", stage_clean)))]
+  tc[, n_individuals := suppressWarnings(as.numeric(nblon))]
+  tc[, length_mm := suppressWarnings(as.numeric(length_class))]
+  n_stage0 <- tc[stage_num == 0, sum(n_individuals, na.rm = TRUE)]
+  ## FLAGGED ASSUMPTION: stage 0 = "undetermined" (sex not determinable).
+  ## In MEDITS these are overwhelmingly small, unsexed fish, so they are
+  ## counted as Juvenile here. Excluding them instead would bias the split
+  ## strongly toward adults. Set stage0_as_juvenile = FALSE to exclude.
+  if (stage0_as_juvenile) {
+    tc[stage_num == 0, stage_num := 1]
+    message("[Multistanza age split - MEDITS TC] ", round(n_stage0), " individual(s) at maturity stage 0",
+            " (undetermined, unsexed) counted as Juvenile (stage0_as_juvenile = TRUE).")
+  } else {
+    tc <- tc[stage_num != 0]
+  }
+  tc <- tc[!is.na(stage_num) & !is.na(n_individuals) & n_individuals > 0]
   if (nrow(tc) == 0) {
-    message("\n[Multistanza age split - MEDITS TC] No rows with a usable (non-ND/non-blank) matsub stage -",
+    message("\n[Multistanza age split - MEDITS TC] No rows with a usable maturity stage and nblon count -",
             " skipped.")
     return(empty_result)
   }
   tc[, stanza := fifelse(stage_num < juvenile_stage_cutoff, "Juvenile", "Adult")]
-  tc[, n_individuals := suppressWarnings(as.numeric(maturity))]
-  
-  agg <- tc[, .(value = sum(n_individuals, na.rm = TRUE)), by = .(ScientificName, stanza)]
-  wide <- dcast(agg, ScientificName ~ stanza, value.var = "value", fill = 0)
-  if (!"Juvenile" %in% names(wide)) wide[, Juvenile := 0]
-  if (!"Adult" %in% names(wide)) wide[, Adult := 0]
-  wide[, prop_juvenile := fifelse((Juvenile + Adult) > 0, Juvenile / (Juvenile + Adult), NA_real_)]
-  wide[, source_file := "MEDITS TC.csv (matsub maturity staging)"]
+  ## Ecopath_B is split by BIOMASS, not by numbers. Each individual is
+  ## weighted by length^lw_b (W = a*L^b; the `a` cancels in a proportion).
+  ## FLAGGED ASSUMPTION: lw_b = 3 (isometric growth) unless a species-
+  ## specific exponent is supplied - hake's published b is close to 3.
+  if (anyNA(tc$length_mm)) stop("[Multistanza age split - MEDITS TC] length_class is missing/non-numeric for ",
+                                sum(is.na(tc$length_mm)), " row(s) - cannot weight by biomass.")
+  tc[, w_rel := n_individuals * length_mm^lw_b]
+
+  agg <- tc[, .(n = sum(n_individuals), w = sum(w_rel)), by = .(ScientificName, stanza)]
+  wide <- dcast(agg, ScientificName ~ stanza, value.var = c("n", "w"), fill = 0)
+  for (cc in c("n_Juvenile", "n_Adult", "w_Juvenile", "w_Adult")) if (!cc %in% names(wide)) wide[, (cc) := 0]
+  wide[, `:=`(Juvenile = n_Juvenile, Adult = n_Adult)]
+  wide[, prop_juvenile_numbers := fifelse((n_Juvenile + n_Adult) > 0, n_Juvenile / (n_Juvenile + n_Adult), NA_real_)]
+  wide[, prop_juvenile := fifelse((w_Juvenile + w_Adult) > 0, w_Juvenile / (w_Juvenile + w_Adult), NA_real_)]
+  wide[, source_file := paste0("MEDITS TC.csv (maturity stage < ", juvenile_stage_cutoff,
+                               " = juvenile; biomass-weighted by length^", lw_b, ")")]
   result <- wide[!is.na(prop_juvenile)]
   if (nrow(result) > 0) {
-    message("[Multistanza age split - MEDITS TC] Juvenile proportion by species (matsub stage < ",
-            juvenile_stage_cutoff, " = Juvenile):")
-    print(result[, .(ScientificName, Juvenile, Adult, prop_juvenile)])
+    message("[Multistanza age split - MEDITS TC] Juvenile proportion by species (maturity stage < ",
+            juvenile_stage_cutoff, " = Juvenile; prop_juvenile is BIOMASS-weighted, prop_juvenile_numbers by count):")
+    print(result[, .(ScientificName, Juvenile, Adult, prop_juvenile_numbers, prop_juvenile)])
   } else {
     message("[Multistanza age split - MEDITS TC] TC.csv matched but produced no usable juvenile proportion.")
   }

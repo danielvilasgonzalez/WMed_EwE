@@ -88,10 +88,48 @@
 ##     for this run. If R isn't running inside RStudio (no pop-up
 ##     available - e.g. Rscript from a terminal), it falls back to
 ##     console prompts (masked via the 'getPass' package if installed).
+## Dedicated virtualenv for the CLI. Homebrew's Python refuses a plain
+## 'pip install' ("externally-managed-environment", PEP 668), so the CLI
+## lives in its own venv instead. Override with the COPERNICUSMARINE_VENV
+## environment variable if it lives elsewhere.
+CMEMS_VENV_DIR <- Sys.getenv("COPERNICUSMARINE_VENV", unset = path.expand("~/.copernicusmarine-venv"))
+
+.cmems_use_venv_if_present <- function() {
+  venv_bin <- file.path(CMEMS_VENV_DIR, "bin")
+  if (file.exists(file.path(venv_bin, "copernicusmarine"))) {
+    Sys.setenv(PATH = paste(venv_bin, Sys.getenv("PATH"), sep = .Platform$path.sep))
+    message("[CMEMS diag] CLI check: using the copernicusmarine virtualenv at '", CMEMS_VENV_DIR,
+            "' (added its bin/ to PATH for this R session).")
+    return(TRUE)
+  }
+  FALSE
+}
+
 ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
+  if (Sys.which("copernicusmarine") == "") .cmems_use_venv_if_present()
   if (Sys.which("copernicusmarine") != "") {
     message("[CMEMS diag] CLI check: ok (found on PATH at '", Sys.which("copernicusmarine"), "').")
     return(TRUE)
+  }
+  if (auto_install) {
+    ## Preferred install route: a dedicated venv (works under Homebrew/PEP 668).
+    py_venv <- if (Sys.which("python3") != "") "python3" else NA
+    if (!is.na(py_venv)) {
+      message("[CMEMS diag] CLI check: not found - creating a virtualenv at '", CMEMS_VENV_DIR,
+              "' and installing copernicusmarine into it...")
+      venv_out <- system2(py_venv, c("-m", "venv", shQuote(CMEMS_VENV_DIR)), stdout = TRUE, stderr = TRUE)
+      venv_pip <- file.path(CMEMS_VENV_DIR, "bin", "pip")
+      if (file.exists(venv_pip)) {
+        pip_out <- system2(venv_pip, c("install", "copernicusmarine"), stdout = TRUE, stderr = TRUE)
+        if (.cmems_use_venv_if_present()) {
+          message("[CMEMS diag] CLI check: ok (installed into the virtualenv).")
+          return(TRUE)
+        }
+        message("[CMEMS diag] venv pip install did not produce the CLI:\n", paste(tail(pip_out, 15), collapse = "\n"))
+      } else {
+        message("[CMEMS diag] venv creation failed:\n", paste(venv_out, collapse = "\n"))
+      }
+    }
   }
   if (!auto_install) {
     message("[CMEMS diag] CLI check: FAILED - 'copernicusmarine' not on PATH and auto_install = FALSE.")
@@ -153,9 +191,19 @@ ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
 ## Returns list(username=, password=), or NULL if the user cancels/leaves
 ## a field blank (in which case the caller proceeds with no credentials -
 ## which still works if 'copernicusmarine login' was run by hand before).
-ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron") {
+## force_prompt = TRUE skips the stored values and always asks - used when
+## Copernicus rejects the stored login ("Invalid username or password"),
+## so whoever runs the pipeline types their OWN account. Credentials are
+## stored per user in that user's own ~/.Renviron and handed to the CLI
+## through environment variables, never on the command line (a command
+## line ends up in R warnings and logs).
+ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron", force_prompt = FALSE) {
   cm_user <- Sys.getenv("COPERNICUSMARINE_SERVICE_USERNAME", unset = NA)
   cm_pass <- Sys.getenv("COPERNICUSMARINE_SERVICE_PASSWORD", unset = NA)
+  if (force_prompt) {
+    message("[CMEMS diag] Copernicus Marine rejected the stored login - asking for your own username and password.")
+    cm_user <- NA; cm_pass <- NA
+  }
   if (!is.na(cm_user) && !is.na(cm_pass) && nzchar(cm_user) && nzchar(cm_pass)) {
     message("[CMEMS diag] Credentials check: ok (COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD already set).")
     return(list(username = cm_user, password = cm_pass))
@@ -227,7 +275,7 @@ ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron") {
 fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
                                               bbox = c(lon_min = -6, lon_max = 12, lat_min = 30, lat_max = 46),
                                               proxy_years = 1999:2001,
-                                              dataset_id = "med-ogs-plankton-rean-monthly",
+                                              dataset_id = "cmems_mod_med_bgc-plankton_my_4.2km_P1M-m",  # verified in the CMEMS STAC catalogue (MEDSEA_MULTIYEAR_BGC_006_008): monthly, 1999-01 onward, variables chl + phyc (mmol m-3)
                                               variable = "phyc",
                                               integration_depth_m = 50,
                                               c_molar_mass = 12.011,       # g C per mol C - to convert mol/m3 -> gC/m3
@@ -282,7 +330,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
     ## (if any) as normal.
     cm_creds <- ensure_copernicusmarine_credentials()
     cm_pass <- if (!is.null(cm_creds)) cm_creds$password else NA
-    cred_args <- if (!is.null(cm_creds)) c("--username", cm_creds$username, "--password", cm_creds$password) else character(0)
+    cred_args <- character(0)  # credentials reach the CLI via COPERNICUSMARINE_SERVICE_* env vars (set by ensure_copernicusmarine_credentials), never on the command line
     if (length(cred_args) == 0) {
       message("[CMEMS diag] Note: proceeding with NO explicit --username/--password args - relying on",
               " credentials already stored by a prior 'copernicusmarine login', if any. If none were",
@@ -297,7 +345,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
               "--minimum-latitude", bbox["lat_min"], "--maximum-latitude", bbox["lat_max"],
               "--minimum-depth", "0", "--maximum-depth", as.character(integration_depth_m),
               "--output-filename", basename(nc_path), "--output-directory", dirname(nc_path),
-              "--force-download", cred_args)
+              cred_args)  # '--force-download' removed: the option no longer exists in copernicusmarine toolbox v2
     printable_args <- if (!is.na(cm_pass)) gsub(cm_pass, "***", args, fixed = TRUE) else args
     message("[CMEMS diag] Download attempt: copernicusmarine ",
             paste(printable_args, collapse = " "),
@@ -333,7 +381,15 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
     }
     message("[CMEMS diag] Variable check: ok (using '", col_var, "').")
     phyc_vals <- ncdf4::ncvar_get(nc, col_var)
+    phyc_units <- tryCatch(ncdf4::ncatt_get(nc, col_var, "units")$value, error = function(e) NA_character_)
     ncdf4::nc_close(nc)
+    ## The reanalysis reports phyc in mmol C m-3 (per the CMEMS catalogue).
+    ## The conversion below works in mol C m-3, so rescale by the units the
+    ## file itself declares - never assume.
+    unit_to_mol <- if (isTRUE(grepl("^mmol", phyc_units))) 1e-3 else if (isTRUE(grepl("^mol", phyc_units))) 1 else
+      stop("Unrecognised units for '", col_var, "': '", phyc_units, "' (expected mmol m-3 or mol m-3).")
+    message("[CMEMS diag] Units check: '", col_var, "' is in '", phyc_units, "' - multiplying by ", unit_to_mol, " to get mol C/m3.")
+    phyc_vals <- phyc_vals * unit_to_mol
     phyc_vals <- phyc_vals[is.finite(phyc_vals) & phyc_vals > 0]
     if (length(phyc_vals) == 0) stop("No finite, positive '", col_var, "' values in the downloaded subset.")
 

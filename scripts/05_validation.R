@@ -1,3 +1,14 @@
+## --- Reset any logging left over from a previous run in this R session -
+## Each script replaces message() with a version that also writes to its
+## log file. If R restores an old workspace (.RData) or a previous run
+## stopped early, that replacement survives pointing at a CLOSED log
+## connection, and the very first message() fails with
+## "sink(.run_log_con, split = TRUE): invalid connection". Remove it and
+## close any open sinks before anything else runs.
+if (exists("message", envir = .GlobalEnv, inherits = FALSE)) rm("message", envir = .GlobalEnv)
+while (sink.number() > 0) sink()
+## -----------------------------------------------------------------------
+
 ## =================================================================
 ## PIPELINE STEP 5 - run AFTER 01_biomass.R /
 ## 02_fisheries.R / 03_pbqb-traits.R / 04_diets.R have written (or
@@ -114,19 +125,21 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
   sink()
   try(cat(paste0(..., collapse = ""), if (appendLF) "\n" else "",
           sep = "", file = .run_log_con), silent = TRUE)
-  sink(.run_log_con, split = TRUE)
+  try(sink(.run_log_con, split = TRUE), silent = TRUE)  # never let a closed log connection break message()
   .orig_message(..., domain = domain, appendLF = appendLF)
 }, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
-if (!exists("csv_out_dir", envir = .GlobalEnv, inherits = FALSE)) csv_out_dir <- file.path(out_dir, "validation")
+## Always reassigned (never inherited from 01-04 in the same R session -
+## inheriting sent validation output into output/pbqb-traits).
+csv_out_dir <- file.path(out_dir, "validation")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 ## Matches the folder convention in output_subfolder_refactor_notes.md -
 ## every validation-type plot for reviewing Ecopath inputs, including
 ## the PB/QB/F/method-comparison plots this script itself builds
 ## further below, lands in one place: out_dir/plots/validation.
-if (!exists("plot_dir", envir = .GlobalEnv, inherits = FALSE)) plot_dir <- file.path(out_dir, "plots", "validation")
+plot_dir <- file.path(out_dir, "plots", "validation")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## The OLD West Med model workbook, sheet "estimates" - the comparison
@@ -245,8 +258,24 @@ read_sheet_safe <- function(sheet_name, needed_cols) {
 }
 
 new_B    <- read_sheet_safe("Ecopath_B",    c("FG_num", "FG_name", "Biomass"))
-new_L    <- read_sheet_safe("Ecopath_L",    c("FG_num", "FG_name", "Landings_t_km2_broad"))
-new_Di   <- read_sheet_safe("Ecopath_Di",   c("FG_num", "FG_name", "Discard_t_km2_broad"))
+## Ecopath_L/Ecopath_Di are wide: one column per fleet (t/km2/year) plus a
+## trailing text 'Reference' column. The FG total is the row sum across
+## every fleet column.
+read_fleet_wide_total <- function(sheet_name, total_col) {
+  dt <- read_sheet_safe(sheet_name, c("FG_num", "FG_name"))
+  if (is.null(dt)) return(NULL)
+  fleet_cols <- setdiff(names(dt), c("FG_num", "FG_name", "Reference"))
+  if (length(fleet_cols) == 0) {
+    message("[05_validation.R] '", sheet_name, "' has no fleet columns - skipping that metric.")
+    return(NULL)
+  }
+  dt[, (fleet_cols) := lapply(.SD, function(v) suppressWarnings(as.numeric(v))), .SDcols = fleet_cols]
+  dt[, (total_col) := rowSums(.SD, na.rm = TRUE), .SDcols = fleet_cols]
+  message("[05_validation.R] '", sheet_name, "': FG total = sum across ", length(fleet_cols), " fleet column(s).")
+  dt[, c("FG_num", "FG_name", total_col), with = FALSE]
+}
+new_L    <- read_fleet_wide_total("Ecopath_L",  "Landings_t_km2_broad")
+new_Di   <- read_fleet_wide_total("Ecopath_Di", "Discard_t_km2_broad")
 new_PBQB <- read_sheet_safe("Ecopath_PBQB", c("FG_num", "FG_name", "PB_FG", "QB_FG"))
 
 new_metrics <- list()
