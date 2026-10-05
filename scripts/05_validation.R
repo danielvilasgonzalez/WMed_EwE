@@ -402,6 +402,37 @@ if (n_overridden > 0) {
           " against Old_FG_name above if that's unexpected.")
 }
 
+## Old -> new FG crosswalk (2026-10-05): groups the 2026 FG list merged
+## or renamed (sardine/anchovy juv+adult, seagrasses, algae, corals,
+## bivalves+gastropods, dolphins, seabirds...). Listed in
+## validation_reference_tables/old_to_new_fg_crosswalk.csv; the old
+## rows are combined before matching - biomass/landings/discards summed
+## (all t/km2 over the same old model area), PB/QB biomass-weighted.
+## The correspondence is an ASSUMPTION (FG definitions changed) - edit
+## the CSV to change it.
+crosswalk_path <- file.path(VALIDATION_REFERENCE_DIR, "old_to_new_fg_crosswalk.csv")
+if (file.exists(crosswalk_path)) {
+  xw <- fread(crosswalk_path)[, .(norm_name = normalize_name(Old_FG_name), New_FG_name)]
+  hit <- old_dt$norm_name %in% xw$norm_name
+  if (any(hit)) {
+    old_x <- merge(old_dt[hit], xw, by = "norm_name")
+    old_x <- old_x[, .(Old_FG_num = NA_integer_,
+                       Old_FG_name = paste(Old_FG_name, collapse = " + "),
+                       biomass = if (all(is.na(biomass))) NA_real_ else sum(biomass, na.rm = TRUE),
+                       pb = if (all(is.na(pb) | is.na(biomass))) NA_real_ else weighted.mean(pb, biomass, na.rm = TRUE),
+                       qb = if (all(is.na(qb) | is.na(biomass))) NA_real_ else weighted.mean(qb, biomass, na.rm = TRUE),
+                       landings = if (all(is.na(landings))) NA_real_ else sum(landings, na.rm = TRUE),
+                       discards = if (all(is.na(discards))) NA_real_ else sum(discards, na.rm = TRUE)),
+                   by = New_FG_name]
+    old_x[, norm_name := normalize_name(New_FG_name)][, New_FG_name := NULL]
+    old_dt <- rbindlist(list(old_dt[!hit], old_x), use.names = TRUE, fill = TRUE)
+    message("[05_validation.R] Old->new FG crosswalk applied to ", sum(hit), " old group(s) -> ", nrow(old_x),
+            " new FG(s) (", basename(crosswalk_path), "): ", paste(old_x$Old_FG_name, collapse = "; "), ".")
+  }
+} else {
+  message("[05_validation.R] No ", crosswalk_path, " - old groups split/merged differently from the 2026 FGs stay unmatched.")
+}
+
 ## Sanity check for the "lost decimal point" problem described
 ## above - flag it loudly rather than let it silently blow up every ratio
 ## in STEP A4. Heuristic: a metric column where most of the NUMERIC
@@ -507,7 +538,54 @@ for (metric_name in names(new_metrics)) {
 comparison_dt <- rbindlist(comparison_rows, fill = TRUE)
 setcolorder(comparison_dt, c("FG_num", "FG_name", "Old_FG_name", "metric", "old_value", "new_value", "ratio", "flag"))
 setorder(comparison_dt, metric, -ratio, na.last = TRUE)
+## Area normalisation (2026-10-05). Ecopath B, landings and discards are
+## t per km2 of EACH model's own area: the old 1995 model covers
+## 846,002 km2 (EcopathModel.Area in WestMed_Ges4Seas.ewemdb, i.e. the
+## whole West Med incl. the deep basin and N Africa), the new one only
+## the MEDITS 10-800 m strata of the model GSAs (strata_area_by_area.csv).
+## Comparing densities directly makes every old value ~5x too small, so
+## the old density is also expressed on the NEW area (same total tonnes):
+## old_value_on_new_area = old_value x OLD_MODEL_AREA_KM2 / NEW_MODEL_AREA_KM2.
+if (!exists("OLD_MODEL_AREA_KM2")) OLD_MODEL_AREA_KM2 <- 846002
+if (!exists("NEW_MODEL_AREA_KM2")) {
+  sa_path <- file.path(out_dir, "biomass", "strata_area_by_area.csv")
+  NEW_MODEL_AREA_KM2 <- if (file.exists(sa_path)) sum(fread(sa_path)$area_km2, na.rm = TRUE) else NA_real_
+}
+comparison_dt[metric %in% c("Biomass", "Landings", "Discards"),
+              `:=`(old_value_on_new_area = old_value * OLD_MODEL_AREA_KM2 / NEW_MODEL_AREA_KM2,
+                   old_total_t = old_value * OLD_MODEL_AREA_KM2, new_total_t = new_value * NEW_MODEL_AREA_KM2)]
+comparison_dt[, ratio_same_total := new_value / old_value_on_new_area]
+message("[05_validation.R] Model areas: old ", format(OLD_MODEL_AREA_KM2, big.mark = ","), " km2, new ",
+        format(round(NEW_MODEL_AREA_KM2), big.mark = ","), " km2 - old densities also shown on the new area",
+        " (old_value_on_new_area, ratio_same_total = new / old in total tonnes).")
 fwrite(comparison_dt, file.path(csv_out_dir, "comparison_with_old_westmed_estimates_REVIEW.csv"))
+
+## Biomass-only view, FG by FG (what to look at first after 01_biomass.R)
+bio_cmp <- comparison_dt[metric == "Biomass", .(FG_num, FG_name, Old_FG_name, new_B_t_km2 = new_value,
+                                                 old_B_t_km2_old_area = old_value, old_B_t_km2_on_new_area = old_value_on_new_area,
+                                                 new_total_t, old_total_t, ratio_same_total)]
+setorder(bio_cmp, FG_num)
+fwrite(bio_cmp, file.path(csv_out_dir, "biomass_vs_old_model_REVIEW.csv"))
+p_bio <- tryCatch({
+  d <- melt(bio_cmp[!is.na(FG_num)], id.vars = c("FG_num", "FG_name"),
+            measure.vars = c("new_B_t_km2", "old_B_t_km2_on_new_area", "old_B_t_km2_old_area"),
+            variable.name = "series", value.name = "B")[is.finite(B) & B > 0]
+  d[, series := factor(series, levels = c("new_B_t_km2", "old_B_t_km2_on_new_area", "old_B_t_km2_old_area"),
+                       labels = c("New pipeline", "Old model, same total tonnes on new area", "Old model, as published (846,002 km2)"))]
+  d[, label := factor(paste0(FG_num, " ", FG_name), levels = rev(unique(paste0(bio_cmp$FG_num, " ", bio_cmp$FG_name))))]
+  ggplot(d, aes(x = B, y = label, colour = series, shape = series)) +
+    geom_point(size = 2) + scale_x_log10() +
+    scale_colour_manual(values = c("firebrick", "grey20", "grey65")) +
+    labs(title = "Ecopath B: new pipeline vs old WMed 1995 model",
+         subtitle = paste0("t/km2, log scale. New area ", format(round(NEW_MODEL_AREA_KM2), big.mark = ","),
+                           " km2; old area 846,002 km2. Compare red with black (same total tonnes)."),
+         x = "Biomass (t/km2)", y = NULL, colour = NULL, shape = NULL) +
+    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R] biomass comparison plot skipped - ", conditionMessage(e)); NULL })
+if (!is.null(p_bio)) {
+  ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg.png"), p_bio, width = 9, height = 13, dpi = 150, bg = "white")
+  message("[05_validation.R] Saved: biomass_vs_old_model_by_fg.png and biomass_vs_old_model_REVIEW.csv")
+}
 
 n_flagged <- comparison_dt[flag != "Within review range", .N]
 message("\n[05_validation.R] comparison_with_old_westmed_estimates_REVIEW.csv written: ", nrow(comparison_dt),

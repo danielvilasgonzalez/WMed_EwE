@@ -1939,40 +1939,110 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## it off). Set MEDIAS_BACKCAST_APPLY_OVERRIDE <- FALSE to compare.
   MEDIAS_BACKCAST_APPLY <- if (exists("MEDIAS_BACKCAST_APPLY_OVERRIDE")) MEDIAS_BACKCAST_APPLY_OVERRIDE else TRUE
   if (!exists("MEDIAS_BACKCAST_ANCHOR_N")) MEDIAS_BACKCAST_ANCHOR_N <- 3
+  ## GSAs MEDIAS never surveyed (e.g. 2, 5, 8, 11) get the "median" (or
+  ## "min") back-cast shelf density of the surveyed GSAs.
+  if (!exists("MEDIAS_BACKCAST_UNSURVEYED_FILL")) MEDIAS_BACKCAST_UNSURVEYED_FILL <- "median"
+  ## Hybrid (project decision 2026-10-05): a GSA whose OWN stock
+  ## assessment has biomass in the baseline years takes that assessed
+  ## biomass directly (mean over YEAR_ECOPATH / the stock's shelf area) -
+  ## a direct 1994-96 estimate beats a MEDIAS anchor scaled back by the
+  ## same assessment. Sources: GFCM STAR / RAM Legacy Stock Assessment
+  ## Database (Ricard et al. 2012, Fish and Fisheries), file
+  ## data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv.
+  ## FLAGGED: RAM "biomass" may be total or spawning-stock biomass
+  ## depending on the stock - check each stock's metadata.
+  if (!exists("MEDIAS_BACKCAST_SA_LEVEL")) MEDIAS_BACKCAST_SA_LEVEL <- TRUE
+  ## Per-GSA back-cast (2026-10-05). The earlier version pooled all
+  ## surveyed GSAs into one regional density over MEDIAS' first 3 years -
+  ## those years only cover GSAs 1, 6 and 7, so the Gulf of Lions sardine
+  ## peak (2003-05) was extrapolated to the whole basin. Now, per GSA:
+  ##   1. anchor = MEDIAN shelf density of that GSA's first N MEDIAS years
+  ##      (median, so a single extreme year - GSA 1 sardine 2005 - can't
+  ##      drive it);
+  ##   2. trend ratio = stock-assessment biomass (baseline years / that
+  ##      GSA's anchor years) from the stock covering the GSA, else pooled
+  ##      over the other in-domain stocks of the species (per-stock means,
+  ##      so a stock missing one baseline year doesn't bias the sum);
+  ##   3. 1995 shelf density = anchor x ratio; unsurveyed GSAs filled;
+  ##   4. model-area density = sum(density x GSA shelf area) / model area.
   if (exists("small_pelagic_assessments") && nrow(small_pelagic_assessments) > 0 &&
-      exists("medias_fg_index_regional") && nrow(medias_fg_index_regional) > 0) {
-    backcast <- rbindlist(lapply(unique(small_pelagic_assessments$FG_num), function(fg) {
-      med <- medias_fg_index_regional[FG_num == fg & !is.na(mean_density_biomass_t_km2)][order(Year)]
-      if (nrow(med) == 0) return(NULL)
-      anchor_years <- head(med$Year, MEDIAS_BACKCAST_ANCHOR_N)
-      anchor_dens <- mean(med[Year %in% anchor_years, mean_density_biomass_t_km2])
+      exists("acoustic_fg_by_gsa") && nrow(acoustic_fg_by_gsa) > 0) {
+    .sa_bc <- as.data.table(strata_area_by_area)
+    .gc <- intersect(c("AreaID", "GSA"), names(.sa_bc))[1]
+    if (exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa_bc <- .sa_bc[get(.gc) %in% FILTER_AREAS]
+    shelf_by_gsa <- .sa_bc[Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(get(.gc)))]
+    model_area_km2 <- .sa_bc[, sum(area_km2, na.rm = TRUE)]
+    med_gsa <- acoustic_fg_by_gsa[, .(GSA = as.character(AreaID), Year, FG_num,
+                                      dens = total_biomass_t / (area_nm2 * KM2_PER_NM2))]
+    .sa_trend <- function(stk, anchor_years) {
+      if (nrow(stk) == 0) return(list(ratio = NA_real_, stocks = character(0)))
+      per <- stk[, .(b = mean(biomass[year %in% YEAR_ECOPATH]), a = mean(biomass[year %in% anchor_years])), by = stock_key]
+      per <- per[is.finite(b) & is.finite(a) & a > 0]
+      if (nrow(per) == 0) return(list(ratio = NA_real_, stocks = character(0)))
+      list(ratio = sum(per$b) / sum(per$a), stocks = per$stock_key)
+    }
+    backcast_gsa <- rbindlist(lapply(unique(small_pelagic_assessments$FG_num), function(fg) {
       sa <- small_pelagic_assessments[FG_num == fg & !is.na(biomass)]
-      stocks_both <- intersect(sa[year %in% YEAR_ECOPATH, unique(stock_key)], sa[year %in% anchor_years, unique(stock_key)])
-      if (length(stocks_both) == 0) return(data.table(FG_num = fg, anchor_years = paste(range(anchor_years), collapse = "-"),
-                                                      anchor_density = anchor_dens, ratio = NA_real_, backcast_density = NA_real_,
-                                                      stocks = "none assessed in both periods"))
-      b_base   <- sa[stock_key %in% stocks_both & year %in% YEAR_ECOPATH, sum(biomass) / uniqueN(year)]
-      b_anchor <- sa[stock_key %in% stocks_both & year %in% anchor_years, sum(biomass) / uniqueN(year)]
-      data.table(FG_num = fg, anchor_years = paste(range(anchor_years), collapse = "-"), anchor_density = anchor_dens,
-                 ratio = b_base / b_anchor, backcast_density = anchor_dens * b_base / b_anchor,
-                 stocks = paste(stocks_both, collapse = ","))
+      rows <- rbindlist(lapply(shelf_by_gsa$GSA, function(g) {
+        own <- sa[vapply(gsa, function(x) g %in% trimws(unlist(strsplit(x, "[,;]"))), logical(1))]
+        if (isTRUE(MEDIAS_BACKCAST_SA_LEVEL) && nrow(own[year %in% YEAR_ECOPATH]) > 0) {
+          lv <- own[year %in% YEAR_ECOPATH, .(b = mean(biomass)), by = .(stock_key, gsa)]
+          lv[, shelf := vapply(gsa, function(x) shelf_by_gsa[GSA %in% trimws(unlist(strsplit(x, "[,;]"))), sum(shelf_km2)], numeric(1))]
+          return(data.table(GSA = g, surveyed = TRUE, anchor_years = paste(intersect(YEAR_ECOPATH, own$year), collapse = ","),
+                            anchor_shelf_density = NA_real_, ratio = NA_real_,
+                            ratio_source = "stock-assessment biomass level, mean of baseline years (STAR/RAM Legacy)",
+                            stocks = paste(lv$stock_key, collapse = ","), backcast_shelf_density = mean(lv$b / lv$shelf)))
+        }
+        s <- med_gsa[FG_num == fg & GSA == g & is.finite(dens)][order(Year)]
+        if (nrow(s) == 0) return(data.table(GSA = g, surveyed = FALSE))
+        ay <- head(s$Year, MEDIAS_BACKCAST_ANCHOR_N)
+        anchor <- median(s[Year %in% ay, dens])
+        tr <- .sa_trend(own, ay); how <- "own-GSA stock"
+        if (!is.finite(tr$ratio)) { tr <- .sa_trend(sa, ay); how <- "pooled in-domain stocks" }
+        if (!is.finite(tr$ratio)) { tr <- list(ratio = 1, stocks = character(0)); how <- "no assessment covers both periods - ratio 1" }
+        data.table(GSA = g, surveyed = TRUE, anchor_years = paste(ay, collapse = ","), anchor_shelf_density = anchor,
+                   ratio = tr$ratio, ratio_source = how, stocks = paste(tr$stocks, collapse = ","),
+                   backcast_shelf_density = anchor * tr$ratio)
+      }), fill = TRUE)
+      if (!"backcast_shelf_density" %in% names(rows)) return(NULL)
+      fill_fun <- if (identical(MEDIAS_BACKCAST_UNSURVEYED_FILL, "min")) min else median
+      rows[surveyed == FALSE, `:=`(backcast_shelf_density = fill_fun(rows[surveyed == TRUE, backcast_shelf_density]),
+                                   ratio_source = paste0("not surveyed by MEDIAS - ", MEDIAS_BACKCAST_UNSURVEYED_FILL, " of surveyed GSAs"))]
+      rows[, FG_num := fg]
+      rows
     }), fill = TRUE)
-    if (nrow(backcast) > 0) {
+    if (nrow(backcast_gsa) > 0) {
+      backcast_gsa <- merge(backcast_gsa, shelf_by_gsa, by = "GSA")
+      backcast_gsa[, backcast_biomass_t := backcast_shelf_density * shelf_km2]
+      backcast <- backcast_gsa[, .(backcast_density = sum(backcast_biomass_t, na.rm = TRUE) / model_area_km2,
+                                   total_biomass_kt = sum(backcast_biomass_t, na.rm = TRUE) / 1000,
+                                   gsa_surveyed = paste(GSA[surveyed], collapse = ","),
+                                   stocks = paste(setdiff(unique(unlist(strsplit(na.omit(stocks), ","))), ""), collapse = ",")),
+                               by = FG_num]
       current <- fg_index_regional_combined[Year %in% YEAR_ECOPATH, .(current_baseline = mean(mean_density, na.rm = TRUE),
                                                                         current_source = first(biomass_source)), by = .(FG_num, FG_name)]
       backcast <- merge(backcast, current, by = "FG_num", all.x = TRUE)
+      backcast_gsa <- merge(backcast_gsa, unique(current[, .(FG_num, FG_name)]), by = "FG_num", all.x = TRUE)
+      fwrite(backcast_gsa, file.path(csv_out_dir, "medias_backcast_small_pelagics_by_gsa_REVIEW.csv"))
       fwrite(backcast, file.path(csv_out_dir, "medias_backcast_small_pelagics_REVIEW.csv"))
-      message("\n[MEDIAS back-cast] Small pelagics, 1994-1996 baseline - MEDIAS anchor x stock-assessment trend vs",
-              " the value currently used (t/km2). Applied: ", MEDIAS_BACKCAST_APPLY, " (MEDIAS_BACKCAST_APPLY).")
-      print(backcast[, .(FG_name, anchor_years, anchor_density = signif(anchor_density, 3), ratio = signif(ratio, 3),
-                         backcast_density = signif(backcast_density, 3), current_baseline = signif(current_baseline, 3), stocks)])
+      message("\n[MEDIAS back-cast] Small pelagics, 1994-1996 baseline, per GSA (t/km2 of shelf), then model-area total.",
+              " Applied: ", MEDIAS_BACKCAST_APPLY, " (MEDIAS_BACKCAST_APPLY).")
+      print(backcast_gsa[, .(FG_name, GSA, anchor_years, anchor = signif(anchor_shelf_density, 3), ratio = signif(ratio, 3),
+                             ratio_source, shelf_density_1995 = signif(backcast_shelf_density, 3),
+                             kt = round(backcast_biomass_t / 1000, 1))])
+      print(backcast[, .(FG_name, backcast_density = signif(backcast_density, 3), total_biomass_kt = round(total_biomass_kt),
+                         current_baseline = signif(current_baseline, 3), gsa_surveyed, stocks)])
       if (isTRUE(MEDIAS_BACKCAST_APPLY)) {
-        for (i in which(!is.na(backcast$backcast_density))) {
+        for (i in which(is.finite(backcast$backcast_density) & backcast$backcast_density > 0)) {
           fg_index_regional_combined[FG_num == backcast$FG_num[i] & Year %in% YEAR_ECOPATH,
                                      `:=`(mean_density = backcast$backcast_density[i],
-                                          biomass_source = paste0("MEDIAS ", backcast$anchor_years[i], " back-cast to the baseline with",
-                                                                  " stock-assessment biomass trend (", backcast$stocks[i], ", ratio ",
-                                                                  signif(backcast$ratio[i], 3), ")"))]
+                                          biomass_source = paste0("Hybrid 1994-96 baseline: stock-assessment biomass where the GSA has its own assessment",
+                                                                  " (GFCM STAR / RAM Legacy, Ricard et al. 2012), else MEDIAS acoustic survey",
+                                                                  " (Leonori et al. 2021, Mediterranean Marine Science) median of first ",
+                                                                  MEDIAS_BACKCAST_ANCHOR_N, " survey years x stock-assessment trend: ",
+                                                                  backcast$stocks[i], "; GSAs surveyed ", backcast$gsa_surveyed[i],
+                                                                  ", unsurveyed GSAs filled with the ", MEDIAS_BACKCAST_UNSURVEYED_FILL,
+                                                                  " of the others - model assumption, no direct estimate) - see medias_backcast_small_pelagics_by_gsa_REVIEW.csv"))]
         }
       }
     }
