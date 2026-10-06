@@ -223,7 +223,15 @@ resolve_aquamaps_species_ids <- function(scientific_names) {
       ## internally (it's a plain sprintf() into a SQL query - see
       ## aquamapsdata's own source), so it isn't subject to the same
       ## bug and a normal call is fine here.
-      hit <- tryCatch(aquamapsdata::am_search_fuzzy(search_term = nm), error = show_first_error_once)
+      ## The fuzzy search is an SQLite FTS5 MATCH query: punctuation in the
+      ## name ("Salpa spp.", "Sepia (Rhombosepion)") is FTS5 syntax and
+      ## raised 'fts5: syntax error near "."'. Strip qualifiers and
+      ## punctuation, keep letters/spaces only, before querying.
+      fuzzy_term <- gsub("\\b(spp|sp|cf|aff|var|subsp)\\b\\.?", " ", nm, ignore.case = TRUE)
+      fuzzy_term <- gsub("\\([^)]*\\)", " ", fuzzy_term)
+      fuzzy_term <- trimws(gsub("\\s+", " ", gsub("[^A-Za-z ]", " ", fuzzy_term)))
+      hit <- if (nzchar(fuzzy_term)) tryCatch(aquamapsdata::am_search_fuzzy(search_term = fuzzy_term),
+                                              error = show_first_error_once) else NULL
       if (!is.null(hit) && nrow(hit) > 0) {
         sp_id <- as.character(hit$SpeciesID[1])
         method <- "fuzzy"

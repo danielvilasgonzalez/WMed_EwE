@@ -60,3 +60,7 @@ shiny_cache/
 *.rds
 .RDataTmp1
 tmp.tif
+
+# macOS
+.DS_Store
+.RDataTmp1

@@ -11,8 +11,8 @@
 ## Compiles PB/QB/Biomass values from EXISTING PUBLISHED ECOPATH MODELS
 ## (via EcoBase), as a literature-derived alternative/supplement to the
 ## empirical-formula PB/QB estimates computed in 03_pbqb-traits.R, and
-## - per Andrea's 2026-09-24 request - as the PREFERRED source (over
-## hand-copying numbers out of a paper's supplementary tables) for
+## - the PREFERRED source (over hand-copying numbers out of a paper's
+## supplementary tables) for
 ## biomass on functional groups no survey here samples at all:
 ## macro-/meso-/microzooplankton, large/small phytoplankton, Posidonia/
 ## seagrass, other macroalgae, gorgonians and corals.
@@ -32,21 +32,28 @@
 ## the diagnostics below print every column name actually found so a
 ## wrong guess is visible immediately rather than silently wrong.
 ##
-## 2026-09-24, per Andrea: two more changes -
-##   1. Default bounding box narrowed to the WESTERN Mediterranean
-##      specifically (WESTMED_BBOX below), not the whole Mediterranean
-##      basin (Gibraltar to the Levant) - this pipeline is a Western Med
-##      model, so an Aegean/Levantine EcoBase model isn't a meaningfully
-##      comparable "other model of this same sea" the way a Gulf of
-##      Lion/Catalan/Balearic/Alboran/Tyrrhenian one is.
-##   2. EcoBase queries now consider the REFERENCE YEAR of each candidate
-##      model, not just whether it's geographically in the West Med -
-##      both fetch_ecobase_literature_pb_qb() and fetch_ecobase_literature_
-##      biomass() take a target_year argument and, when supplied, reduce
-##      multiple candidate models down to whichever one's own model year
-##      is CLOSEST to target_year (per FG/group), rather than reporting
-##      every match with equal weight regardless of how old/recent it is
-##      relative to this model's own 1994-1996 base period.
+## Default bounding box (WESTMED_BBOX below) is the WESTERN
+## Mediterranean specifically, not the whole basin (Gibraltar to the
+## Levant) - this is a Western Med model, so an Aegean/Levantine EcoBase
+## model isn't a meaningfully comparable "other model of this same sea"
+## the way a Gulf of Lion/Catalan/Balearic/Alboran/Tyrrhenian one is.
+##
+## EcoBase queries also consider the REFERENCE YEAR of each candidate
+## model, not just whether it's geographically in the West Med:
+## fetch_ecobase_literature_pb_qb() and fetch_ecobase_literature_biomass()
+## take a target_year argument and, when supplied, reduce multiple
+## candidate models down to whichever one's own model year is CLOSEST to
+## target_year (per FG/group), rather than reporting every match with
+## equal weight regardless of how old/recent it is relative to this
+## model's own 1994-1996 base period.
+##
+## fetch_ecobase_literature_biomass()'s closest-year-per-group pick is
+## computed and returned in-memory (01_biomass.R's caller needs it to
+## auto-draft primary_producer_plankton_biomass.csv/
+## marine_megafauna_biomass.csv) but not written to disk.
+## ecobase_mediterranean_models.csv carries the bbox_models match plus a
+## status column (success / dissemination_not_allowed / a specific
+## fetch-failure reason) merged into one file.
 ## =================================================================
 
 ## The Western Mediterranean sub-basin - Gibraltar/Alboran Sea through
@@ -111,8 +118,13 @@ fetch_ecobase_raw_inputs <- function(out_dir, force_refresh = FALSE,
     
     xml_content <- xml2::read_xml(httr::content(resp, as = "text", encoding = "UTF-8"))
     
-    message("\nTop-level XML structure (inspect this if parsing below fails):")
-    xml2::xml_structure(xml_content, indent = 2)
+    ## The full XML tree used to be printed here on every run (hundreds of
+    ## <model_descr> lines). Off by default; set ECOBASE_DEBUG_XML <- TRUE
+    ## before running to print it when the parsing below needs debugging.
+    if (isTRUE(get0("ECOBASE_DEBUG_XML", ifnotfound = FALSE))) {
+      message("\nTop-level XML structure (inspect this if parsing below fails):")
+      xml2::xml_structure(xml_content, indent = 2)
+    }
     
     ## Convert one XML node's children into a single-row data.table -
     ## DEFENSIVELY, because a single <model> (or, in fetch_model_inputs()
@@ -191,11 +203,6 @@ fetch_ecobase_raw_inputs <- function(out_dir, force_refresh = FALSE,
     print(bbox_models[, .SD, .SDcols = intersect(
       c("model_number", "model_name", "ecosystem_name", "country", "lon_min", "lat_min", "lon_max", "lat_max"),
       names(bbox_models))])
-    
-    fwrite(bbox_models, file.path(out_dir, "ecobase_mediterranean_models.csv"))
-    message("\nSaved to ecobase_mediterranean_models.csv - review this list directly",
-            " (a bounding-box overlap can still catch models that only brush the edge",
-            " of the region, or miss ones with an unusually large/imprecise extent).")
     
     ## dissemination_allow: EcoBase's OWN flag for which models actually
     ## have downloadable input data (per their site, only ~233 of ~500
@@ -291,10 +298,17 @@ fetch_ecobase_raw_inputs <- function(out_dir, force_refresh = FALSE,
     )
     all_status <- rbindlist(list(fetched_status, skipped_status), use.names = TRUE)
     
+    ## bbox_models_status (bbox_models + its own status column merged on)
+    ## is a strict superset of bbox_models alone, so only this ONE file is
+    ## written (ecobase_mediterranean_models.csv); the pre-merge
+    ## bbox_models object itself is left as-is in memory.
     bbox_models_status <- merge(bbox_models, all_status, by = "model_number", all.x = TRUE)
-    fwrite(bbox_models_status, file.path(out_dir, "ecobase_mediterranean_models_status.csv"))
-    message("\nSaved ecobase_mediterranean_models_status.csv - every matching model with its",
-            " outcome (success / dissemination_not_allowed / a specific fetch-failure reason).")
+    fwrite(bbox_models_status, file.path(out_dir, "ecobase_mediterranean_models.csv"))
+    message("\nSaved ecobase_mediterranean_models.csv (", nrow(bbox_models_status), " model(s), bounding-box",
+            " match + outcome status in one file: success / dissemination_not_allowed / a specific",
+            " fetch-failure reason) - review this list directly (a bounding-box overlap can still catch",
+            " models that only brush the edge of the region, or miss ones with an unusually large/",
+            " imprecise extent).")
     
     models_without_data <- bbox_models_status[status != "success"]
     fwrite(models_without_data, file.path(out_dir, "ecobase_models_without_data.csv"))
@@ -366,27 +380,21 @@ fetch_ecobase_raw_inputs <- function(out_dir, force_refresh = FALSE,
 
 ## fetch_ecobase_literature_pb_qb(out_dir, force_refresh = FALSE, target_year = NULL, ...)
 ##
-## Public contract extended 2026-09-24 (still backward compatible when
-## target_year is left NULL - see below): still writes
+## Backward compatible when target_year is left NULL - see below. Writes
 ## ecobase_literature_pb_qb_simple.csv (FG_name, PB, QB, EwE_model, year,
 ## authors), called from 03_pbqb-traits.R. Internally a thin derivation
 ## off fetch_ecobase_raw_inputs()'s shared cache.
 ##
-##   target_year - NULL (old behavior): every matching model's PB/QB for
-##                 every FG_name is kept, one row each, no year
-##                 preference at all (multiple rows per FG_name are
-##                 possible, exactly as before this change).
+##   target_year - NULL: every matching model's PB/QB for every FG_name
+##                 is kept, one row each, no year preference.
 ##                 A number (e.g. round(mean(YEAR_ECOPATH))): for each
-##                 FG_name, ONLY the single candidate whose model year is
-##                 CLOSEST to target_year is kept in the "simple" summary
-##                 - per Andrea's request that EcoBase "consider the year
-##                 of the ecopath model" rather than treating every
-##                 matching model as equally relevant regardless of how
-##                 old/recent it is relative to this model's own base
-##                 period. The FULL multi-model detail (every FG_name x
-##                 model, with year_distance) is still written in full to
-##                 ecobase_literature_pb_qb_full.csv either way, so
-##                 nothing is lost - just not all blended into the
+##                 FG_name, ONLY the candidate whose model year is
+##                 CLOSEST to target_year is kept in the "simple" summary,
+##                 rather than treating every matching model as equally
+##                 relevant regardless of age. The FULL multi-model detail
+##                 (every FG_name x model, with year_distance) is still
+##                 written to ecobase_literature_pb_qb_full.csv either
+##                 way - nothing is lost, just not blended into the
 ##                 "simple" file 03_pbqb-traits.R actually reads.
 fetch_ecobase_literature_pb_qb <- function(out_dir, force_refresh = FALSE, target_year = NULL,
                                            med_bbox = WESTMED_BBOX,
@@ -456,13 +464,10 @@ fetch_ecobase_literature_pb_qb <- function(out_dir, force_refresh = FALSE, targe
 ## fetch_ecobase_literature_biomass(out_dir, force_refresh = FALSE,
 ##                                  target_fg_keywords = NULL, target_year = NULL, ...)
 ##
-## NEW (2026-09-24, per Andrea: "it is more straightforward to pull that
-## from the ecobase" than hand-copying figures out of a paper's
-## supplementary tables). Same EcoBase source as the PB/QB fetch above,
-## but for Biomass - meant specifically for FGs no survey here samples
-## at all (macro-/meso-/microzooplankton, large/small phytoplankton,
-## Posidonia/seagrass, other macroalgae, gorgonians and corals), called
-## from 01_biomass.R.
+## Same EcoBase source as the PB/QB fetch above, but for Biomass - meant
+## specifically for FGs no survey here samples at all (macro-/meso-/
+## microzooplankton, large/small phytoplankton, Posidonia/seagrass,
+## other macroalgae, gorgonians and corals), called from 01_biomass.R.
 ##
 ## Behavior:
 ##   - Every Mediterranean-matching, dissemination-allowed EcoBase model's
@@ -475,17 +480,14 @@ fetch_ecobase_literature_pb_qb <- function(out_dir, force_refresh = FALSE, targe
 ##     in 01_biomass.R), group_name is keyword-matched (case-insensitive,
 ##     substring) against each target group, and for EACH target group the
 ##     single candidate row whose model 'year' is CLOSEST to target_year
-##     (default 1995, the midpoint of a 1994-1996 base period) is picked -
-##     written to ecobase_literature_biomass_best_by_group.csv, tagged with
-##     which model/year/authors it came from and how far that year is from
-##     target_year, so the "closest available, not a real measurement for
-##     this exact year" caveat is explicit and traceable, never silent.
-##     A target group with zero keyword matches across every fetched model
-##     is reported (not silently dropped).
-##   - Returns the "best by group" table invisibly (or NULL on failure) -
-##     the caller decides what to do with it (01_biomass.R uses it to
+##     (default 1995, the midpoint of a 1994-1996 base period) is picked.
+##     This pick is computed (01_biomass.R's caller needs it in-memory to
 ##     auto-draft primary_producer_plankton_biomass.csv/
-##     marine_megafauna_biomass.csv when that manual CSV doesn't exist yet).
+##     marine_megafauna_biomass.csv) but not written to disk. A target
+##     group with zero keyword matches across every fetched model is
+##     still reported in a message (not silently dropped).
+##   - Returns the "best by group" table invisibly (or NULL on failure) -
+##     the caller decides what to do with it.
 ##
 ## Biomass column name is a GUESS (see file header) - resolved
 ## defensively against BIOMASS_COL_CANDIDATES, with the columns actually
@@ -495,7 +497,6 @@ fetch_ecobase_literature_biomass <- function(out_dir, force_refresh = FALSE,
                                              med_bbox = WESTMED_BBOX,
                                              timeout_sec = 60) {
   full_csv_path <- file.path(out_dir, "ecobase_literature_biomass_full.csv")
-  best_csv_path <- file.path(out_dir, "ecobase_literature_biomass_best_by_group.csv")
   
   if (!force_refresh && file.exists(full_csv_path)) {
     message("fetch_ecobase_literature_biomass(): using cached ", full_csv_path,
@@ -584,10 +585,12 @@ fetch_ecobase_literature_biomass <- function(out_dir, force_refresh = FALSE,
                                             "), year ", year, " [", year_distance, " yr from target ", target_year,
                                             "] - ", authors, " (via EcoBase, model_id ", model_id, ")")]
   
-  fwrite(best_by_group, best_csv_path)
+  ## Not written to ecobase_literature_biomass_best_by_group.csv - it
+  ## wasn't being used. Still computed and returned in-memory below for
+  ## the caller.
   message("\n[EcoBase biomass] Closest-to-", target_year, " candidate picked for ", nrow(best_by_group),
-          " of ", length(target_fg_keywords), " target group(s) - written to",
-          " ecobase_literature_biomass_best_by_group.csv:")
+          " of ", length(target_fg_keywords), " target group(s) (not written to disk - used in-memory",
+          " only, see 01_biomass.R's caller):")
   print(best_by_group[, .(TargetGroup, FG_name, Biomass_t_km2, EwE_model, year, year_distance)])
   
   invisible(best_by_group)
@@ -595,10 +598,8 @@ fetch_ecobase_literature_biomass <- function(out_dir, force_refresh = FALSE,
 
 ## build_ecobase_sheet_dt(out_dir, target_year = NULL)
 ##
-## NEW (2026-09-24, per Andrea: "add a section where it adds a Ecobase
-## sheet on the excel input file produced with data from the model
-## biomass pbqb reference year etc"). Builds the data.table for a new
-## "Ecobase" sheet in ecopath_ecosim_inputs.xlsx - a side-by-side
+## Builds the data.table for a new "Ecobase" sheet in
+## ecopath_ecosim_inputs.xlsx - a side-by-side
 ## comparison table of what OTHER published Western Med (or wider, if
 ## med_bbox was widened) Ecopath models report for Biomass/PB/QB per
 ## group, next to their own model name, ecosystem, country, reference
@@ -660,11 +661,11 @@ build_ecobase_sheet_dt <- function(out_dir, target_year = NULL) {
 ## =================================================================
 ## fetch_ecobase_diet_matrix(out_dir, target_predator_keywords, ...)
 ##
-## NEW (2026-09-24, added for 04_diets.R's diet-composition fallback -
-## same three-source idea as fetch_ecobase_literature_biomass()/pb_qb(),
+## Added for 04_diets.R's diet-composition fallback - same three-source
+## idea as fetch_ecobase_literature_biomass()/pb_qb(),
 ## but for a predator's DIET COMPOSITION rather than a single scalar
 ## trait). Reuses fetch_ecobase_raw_inputs()'s own model list/status
-## CSVs (ecobase_mediterranean_models_status.csv) to know which models
+## CSV (ecobase_mediterranean_models.csv) to know which models
 ## actually returned data, then re-fetches EACH such model's raw input
 ## XML directly (fetch_ecobase_raw_inputs()'s own per-group parsing,
 ## xml_node_to_dt_row(), FLATTENS every group node's children to plain
@@ -758,8 +759,10 @@ fetch_ecobase_diet_by_keyword <- function(out_dir, target_predator_keywords, for
                                           target_year = NULL, med_bbox = WESTMED_BBOX, timeout_sec = 60) {
   ## Ensure the model list/status cache exists (reuses fetch_ecobase_
   ## raw_inputs()'s own geographic + dissemination_allow filtering -
-  ## does NOT re-query the model list itself).
-  status_path <- file.path(out_dir, "ecobase_mediterranean_models_status.csv")
+  ## does NOT re-query the model list itself). Reads the consolidated
+  ## ecobase_mediterranean_models.csv, which already carries the status
+  ## column (see file header).
+  status_path <- file.path(out_dir, "ecobase_mediterranean_models.csv")
   if (!file.exists(status_path) || force_refresh) {
     invisible(fetch_ecobase_raw_inputs(out_dir, force_refresh = force_refresh, med_bbox = med_bbox, timeout_sec = timeout_sec))
   }
@@ -769,6 +772,19 @@ fetch_ecobase_diet_by_keyword <- function(out_dir, target_predator_keywords, for
     return(invisible(NULL))
   }
   models_status <- as.data.table(fread(status_path))
+  ## A models CSV written by an older version of fetch_ecobase_raw_inputs()
+  ## has no `status` column - rebuild it once rather than crash on it.
+  if (!"status" %in% names(models_status)) {
+    message("fetch_ecobase_diet_by_keyword(): ", status_path, " has no 'status' column (stale cache from an",
+            " older version) - rebuilding it once with force_refresh = TRUE.")
+    invisible(fetch_ecobase_raw_inputs(out_dir, force_refresh = TRUE, med_bbox = med_bbox, timeout_sec = timeout_sec))
+    models_status <- if (file.exists(status_path)) as.data.table(fread(status_path)) else data.table()
+    if (!"status" %in% names(models_status)) {
+      message("fetch_ecobase_diet_by_keyword(): still no 'status' column after the rebuild - skipping the",
+              " EcoBase diet fallback this run.")
+      return(invisible(NULL))
+    }
+  }
   candidate_model_ids <- unique(models_status[status == "success", model_number])
   if (length(candidate_model_ids) == 0) {
     message("fetch_ecobase_diet_by_keyword(): no model in ", status_path, " has status == 'success' - nothing to query.")
