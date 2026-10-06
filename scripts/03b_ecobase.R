@@ -1,5 +1,4 @@
 ## =================================================================
-## Created by: Daniel Vilas
 ## 03b_ecobase.R
 ##
 ## Library file - no top-level driver code, same convention as
@@ -23,12 +22,12 @@
 ## with EcoBase"). This adapts their official example from RCurl/XML
 ## to httr/xml2 (more modern, better maintained).
 ##
-## NOT TESTED against the live service from this session - there is no
+## NOT TESTED against the live service - there is no
 ## network access to sirs.agrocampus-ouest.fr or ecobase.ecopath.org
 ## from this sandbox, so this needs to be verified by actually running
 ## it, ESPECIALLY the biomass column name guessed at below (see
 ## BIOMASS_COL_CANDIDATES) - EcoBase's own group-input XML fields
-## aren't independently documented anywhere this session could reach;
+## aren't independently documented anywhere reachable when written;
 ## the diagnostics below print every column name actually found so a
 ## wrong guess is visible immediately rather than silently wrong.
 ##
@@ -676,7 +675,7 @@ build_ecobase_sheet_dt <- function(out_dir, target_year = NULL) {
 ## instead re-parses each group node's own XML children directly,
 ## looking for anything diet-related.
 ##
-## HONESTLY UNVERIFIED (no network access from this session, exactly
+## HONESTLY UNVERIFIED (no network access when written, exactly
 ## like the rest of this file - see the file header): it is NOT
 ## confirmed that EcoBase's public webservice exposes a per-model diet
 ## matrix at all through this endpoint (ECOBASE_INPUT_URL). The official

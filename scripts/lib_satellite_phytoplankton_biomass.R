@@ -40,7 +40,7 @@
 ## informed DEFAULT and a comment on where it comes from - override any
 ## of them once you have a Med-specific number instead of a generic one.
 ##
-## THE DATASET ID AND VARIABLE NAME BELOW ARE UNVERIFIED - this session
+## THE DATASET ID AND VARIABLE NAME BELOW ARE UNVERIFIED - this code
 ## has no network access to any ERDDAP server, so DATASET_ID/CHL_VAR
 ## are best guesses at a real, long-running, no-login ERDDAP mirror of
 ## SeaWiFS monthly chlorophyll. The function prints the actual columns
@@ -196,7 +196,7 @@ fetch_satellite_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE
       Source_citation = citation
     )
 
-    fwrite(satellite_result, out_csv_path)
+    (if (exists("safe_fwrite")) safe_fwrite else fwrite)(satellite_result, out_csv_path)
     message("[Satellite diag] === RESULT: SUCCESS === Saved satellite_phytoplankton_biomass_by_fg.csv (",
             round(total_biomass_t_km2, 4), " t/km2 total, split ", large_phyto_fraction, "/",
             round(1 - large_phyto_fraction, 2), " Large/Small).")

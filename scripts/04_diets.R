@@ -10,7 +10,6 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
-## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 (optional) - run AFTER 01_biomass.R
 ## Builds an EwE-format functional-group (FG) diet-composition matrix
 ## from the Mediterranean trophic metaweb database (DATA_ENTRY
@@ -42,6 +41,29 @@ while (sink.number() > 0) sink()
 ## genuinely aren't covered by either source. Everything else
 ## (predator/prey identity, diet proportions) comes straight from the
 ## metaweb file.
+## =================================================================
+
+## =================================================================
+## NOTATION, EQUATIONS AND DATA SOURCES (04_diets.R)
+## -----------------------------------------------------------------
+## Indices: s predator species, f predator FG, j prey FG.
+## DC_f,j = fraction of prey j in the diet of predator f (sum_j = 1;
+## Christensen, Walters & Pauly 2005, EwE User Guide).
+## Tiers, first available wins per predator FG:
+##  1. Mediterranean trophic metaweb (DATA_ENTRY rows): per study,
+##     metric chosen by diet_metric_priority.csv (IRI > %W > %N > %F >
+##     presence; Hyslop 1980, J. Fish Biol. 17:411-429 for the metrics),
+##     normalised to 1, averaged over studies.
+##  2. FishBase/SeaLifeBase diet tables (lib_fishbase_diet_matrix.R):
+##     DIETITEMS % composition (Mediterranean studies first), prey mapped
+##     to FGs by species, genus or food category
+##     (fishbase_food_category_to_fg.csv), category shares split by
+##     Ecopath B of the target FGs; FOODITEMS presence as the last resort.
+##  3. EcoBase published Mediterranean models (Colleter et al. 2015,
+##     Ecol. Model. 302:42-53), FG-name keyword match, closest year.
+## Species -> FG: DC_f,j = sum_s b_s|f DC_s,j / sum_s b_s|f, b_s|f =
+## species share of FG biomass (01_biomass.R prop_sp_fg).
+## Checks: column sums = 1; cannibalism DC_f,f <= 0.1 (EwE User Guide).
 ## =================================================================
 
 pkgs <- c("data.table", "openxlsx", "stringr")
@@ -125,6 +147,7 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
 message("[Log] This run's console output is also being written to: ", .run_log_path)
 
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # for upsert_workbook_sheets() - writes Ecopath_diet into the same shared workbook
+source(file.path(git_dir, "scripts/lib_fishbase_diet_matrix.R"))  # build_fishbase_diet_matrix(): FG diet matrix from FishBase/SeaLifeBase diet tables
 source(file.path(git_dir, "scripts/03b_ecobase.R"))  # for fetch_ecobase_raw_inputs()/WESTMED_BBOX (biomass/PB-QB fallback machinery, reused here - STEP 3c - for the EcoBase diet-matrix fallback) and fetch_ecobase_diet_matrix() added below in that same file
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")   # same shared workbook 01_biomass.R/02_fisheries.R/03_pbqb-traits.R write to
@@ -207,6 +230,15 @@ if (!exists("DIET_METRIC_PRIORITY", envir = .GlobalEnv, inherits = FALSE)) {
 ## the three tiers (or "still missing") it actually came from.
 if (!exists("DIET_FALLBACK_ENABLE_FISHBASE", envir = .GlobalEnv, inherits = FALSE)) DIET_FALLBACK_ENABLE_FISHBASE <- TRUE
 if (!exists("DIET_FALLBACK_ENABLE_ECOBASE",  envir = .GlobalEnv, inherits = FALSE)) DIET_FALLBACK_ENABLE_ECOBASE  <- TRUE
+## FishBase tier method: "fg_matrix" (default) maps every FishBase prey
+## item to a model FG (species, genus, or food category ->
+## fishbase_food_category_to_fg.csv, biomass split) and builds the FG
+## diet matrix directly (lib_fishbase_diet_matrix.R); "species_legacy"
+## keeps the older species-level pull whose unmapped prey labels end up
+## outside the FG list.
+if (!exists("DIET_FISHBASE_METHOD", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_METHOD <- "fg_matrix"
+if (!exists("DIET_FISHBASE_FORCE_REFRESH", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_FORCE_REFRESH <- FALSE
+if (!exists("DIET_FISHBASE_PREFER_MED", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_PREFER_MED <- TRUE
 if (!exists("DIET_STILL_MISSING_CSV_PATH",   envir = .GlobalEnv, inherits = FALSE)) DIET_STILL_MISSING_CSV_PATH   <- file.path(csv_out_dir, "diet_still_missing_REVIEW.csv")
 
 message("[04_diets.R] Config: METAWEB_XLSX_PATH = ", METAWEB_XLSX_PATH,
@@ -718,7 +750,7 @@ build_species_to_fg <- function(needed_species, reference_path, missing_csv_path
     already_assigned <- rbind(from_reference[species %in% needed_species], from_missing_csv, fill = TRUE)
     from_taxonomy <- fallback_species_to_fg_via_taxonomy(still_missing, already_assigned, tax_codes)
     if (nrow(from_taxonomy) > 0) {
-      fwrite(from_taxonomy, file.path(dirname(missing_csv_path), "diet_species_fg_taxonomy_fallback.csv"))
+      safe_fwrite(from_taxonomy, file.path(dirname(missing_csv_path), "diet_species_fg_taxonomy_fallback.csv"))
       still_missing <- setdiff(still_missing, from_taxonomy$species)
     }
     from_taxonomy[, c("match_type", "match_rank") := NULL]
@@ -912,7 +944,7 @@ build_ecopath_diet_sheet <- function(fg_diet, group_table) {
 ## helper this script's own FG_References-sheet step already calls
 ## further down) - no separate file, no duplication of FG_WMed_2026.csv.
 ##
-## is_predator (per Andrea: "all FG should be
+## is_predator (project decision: "all FG should be
 ## predators except detritus discards and primary producers (phyto,
 ## posidonia....)"): TRUE by DEFAULT for every FG, FALSE only for the
 ## two non-living compartments (NON_LIVING_FG_NAMES, defined near the
@@ -1061,7 +1093,40 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
           " for the FishBase/SeaLifeBase and EcoBase fallback tiers.")
   
   fb_predators <- character(0)
-  if (DIET_FALLBACK_ENABLE_FISHBASE && length(missing_after_metaweb) > 0) {
+  fb_fg_rows <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric())
+  fb_fg_tags <- data.table(fg_name = character(), diet_ref = character(), diet_source = character())
+  if (DIET_FALLBACK_ENABLE_FISHBASE && identical(DIET_FISHBASE_METHOD, "fg_matrix") && length(missing_after_metaweb) > 0) {
+    ## --- FishBase/SeaLifeBase FG diet matrix (lib_fishbase_diet_matrix.R) ---
+    if (requireNamespace("duckdbfs", quietly = TRUE)) invisible(try(duckdbfs::duckdb_config(enable_progress_bar = FALSE), silent = TRUE))
+    fg_ref_full <- fread(fg_reference_path, encoding = "UTF-8")
+    setnames(fg_ref_full, intersect(c("FG_name"), names(fg_ref_full)), "fg_name")
+    b_tab <- read_biomass_proportion_from_workbook(workbook_path, biomass_csv_dir = BIOMASS_CSV_DIR)
+    bp_path <- file.path(BIOMASS_CSV_DIR, "biomass_proportion_by_species_fg.csv")
+    fg_B <- if (file.exists(bp_path)) unique(fread(bp_path)[, .(fg_name = FG_name, B = as.numeric(Ecopath_B_Biomass))])[, .(B = max(B, na.rm = TRUE)), by = fg_name][is.finite(B)] else data.table(fg_name = character(), B = numeric())
+    fb_preds <- merge(unique(species_to_fg_reference_only[species %in% missing_after_metaweb & fg_name %in% predator_fg_names_all, .(species, fg_name)]),
+                      b_tab[, .(species, fg_name, b_share = biomass_proportion)], by = c("species", "fg_name"), all.x = TRUE)
+    xw_path <- file.path(DIET_REFERENCE_DIR, "fishbase_food_category_to_fg.csv")
+    if (!file.exists(xw_path)) stop("[04_diets.R] Missing ", xw_path, " (FishBase food category -> FG crosswalk).")
+    fb <- build_fishbase_diet_matrix(fb_preds, fg_ref_full, fg_B, fread(xw_path), cache_dir = csv_out_dir,
+                                     fg_universe = group_table$group_name, force_refresh = DIET_FISHBASE_FORCE_REFRESH,
+                                     prefer_med = DIET_FISHBASE_PREFER_MED)
+    if (nrow(fb$fg_diet) > 0) {
+      fwrite(fb$fg_diet, file.path(csv_out_dir, "fishbase_diet_matrix_fg_long.csv"))
+      fwrite(build_ecopath_diet_sheet(fb$fg_diet, group_table), file.path(csv_out_dir, "fishbase_diet_matrix_fg_wide.csv"))
+      fwrite(fb$species_diet, file.path(csv_out_dir, "fishbase_diet_species_level.csv"))
+      fwrite(fb$item_map, file.path(csv_out_dir, "fishbase_diet_item_mapping_REVIEW.csv"))
+      fwrite(fb$unassigned, file.path(csv_out_dir, "fishbase_diet_unassigned_items_REVIEW.csv"))
+      fwrite(fb$provenance, file.path(csv_out_dir, "fishbase_diet_provenance_by_fg.csv"))
+      fb_fg_rows <- fb$fg_diet
+      fb_predators <- unique(fb$species_diet$predator)
+      fb_fg_tags <- fb$provenance[, .(fg_name = FG_name,
+                                      diet_ref = paste0("FishBase/SeaLifeBase diet tables (", tiers, "; ", n_studies, " study record(s), ",
+                                                        n_species, " species", fifelse(med_only, ", Mediterranean studies", ""), ")"),
+                                      diet_source = "fishbase_sealifebase")]
+      message("[04_diets.R] FishBase FG diet matrix written: fishbase_diet_matrix_fg_long.csv / _wide.csv (+ species level,",
+              " item mapping and unassigned-item REVIEW files).")
+    }
+  } else if (DIET_FALLBACK_ENABLE_FISHBASE && length(missing_after_metaweb) > 0) {
     fb_result <- fetch_fishbase_diet_for_species(missing_after_metaweb)
     if (nrow(fb_result$predator_references) > 0) fb_result$predator_references[, source := "fishbase_sealifebase"]
     species_diet         <- rbind(species_diet, fb_result$species_diet, fill = TRUE)
@@ -1085,6 +1150,10 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   biomass_in_fg <- build_biomass_in_fg(unique(species_to_fg[, .(species, fg_name)]), workbook_path, biomass_fallback_path,
                                        biomass_csv_dir = BIOMASS_CSV_DIR)
   fg_diet       <- if (nrow(species_diet) > 0) build_fg_diet(species_diet, species_to_fg, biomass_in_fg) else data.table(predator_fg = character(), prey_fg = character(), weight = numeric())
+  if (nrow(fb_fg_rows) > 0) {
+    fb_add <- fb_fg_rows[!predator_fg %in% unique(fg_diet$predator_fg)]   # metaweb rows win where an FG has them
+    fg_diet <- rbind(fg_diet, fb_add, fill = TRUE)
+  }
   
   ## --- Fallback tier 2: EcoBase diet matrix (STEP 3c) ----------------
   ## Operates at the FG level directly (see that function's own header)
@@ -1119,6 +1188,7 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     species_source_by_fg[, .(diet_ref = paste(sort(unique(unlist(strsplit(references, "; ")))), collapse = "; "),
                              diet_source = paste(sort(unique(source)), collapse = "+")), by = fg_name]
   } else data.table(fg_name = character(), diet_ref = character(), diet_source = character())
+  if (nrow(fb_fg_tags) > 0) fg_source_tags <- rbind(fg_source_tags, fb_fg_tags[!fg_name %in% fg_source_tags$fg_name], fill = TRUE)
   if (nrow(ecobase_diet_rows) > 0) {
     ecobase_tags <- unique(ecobase_diet_rows[, .(fg_name = predator_fg, diet_ref = diet_ref, diet_source = "ecobase_model")])
     fg_source_tags <- rbind(fg_source_tags, ecobase_tags, fill = TRUE)

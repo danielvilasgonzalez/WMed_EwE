@@ -10,7 +10,6 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
-## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 - run LAST
 ## REQUIRES Step 1's species_density_regional_combined.csv. OPTIONALLY
 ## uses Step 2's fg_catch_timeseries CSV (FG_YIELD_SOURCE toggle, near
@@ -89,6 +88,60 @@ while (sink.number() > 0) sink()
 ## species' raw FishBase trait data came from, Locality/Year, not
 ## WHICH equation was used to turn those traits into M/PB/QB).
 ## =================================================================
+## =================================================================
+## NOTATION, EQUATIONS AND DATA SOURCES (03_pbqb-traits.R)
+## -----------------------------------------------------------------
+## Indices: s species, f FG. M natural mortality, F fishing mortality,
+## Z = M + F (= P/B at steady state; Allen 1971, J. Fish. Res. Board
+## Can. 28:1573-1581). Linf (cm), K (/yr), Winf (g), T (deg C),
+## T' = 1000 / (T + 273.15), A aspect ratio of the caudal fin, TL
+## trophic level. Life-history data: FishBase / SeaLifeBase via
+## rfishbase (Boettiger, Lang & Wainwright 2012, J. Fish Biol. 81:
+## 2030-2039), FishLife (Thorson et al. 2017, Fish Fish. 18:1073-1084).
+##
+## Protocol: "Quick guide on how to calculate P/B and Q/B for EwE
+## models" (project protocol, equation numbers cited below).
+## Fish P/B = M + F:
+##  M Pauly 1980 (J. Cons. int. Explor. Mer 39:175-192):
+##    log10 M = -0.0066 - 0.279 log10 Linf + 0.6543 log10 K + 0.4634 log10 T
+##  M Then et al. 2015 (ICES J. Mar. Sci. 72:82-92), Hoenig 1983 (Fish.
+##    Bull. 82:898-903), Alverson & Carney 1975 (J. Cons. 36:133-143) via
+##    TropFishR::M_empirical (Mildenberger et al. 2017, Methods Ecol.
+##    Evol. 8:1520-1527)
+##  M Gascuel et al. 2008 (Eq.15 of the project P/B-Q/B protocol):
+##    M = 2.31 TL^-1.72 e^(0.053 T)
+##  F = Y_s / B_s, else the FG rate from 02_fisheries.R
+##  Priority: Then 2015 > Pauly 1980 > Hoenig > Alverson & Carney >
+##  FishLife > Gascuel.
+## Fish Q/B:
+##  Palomares & Pauly 1998 (Mar. Freshw. Res. 49:447-453):
+##    log10 Q/B = 5.847 + 0.280 log10 Z - 0.152 log10 Winf - 1.360 T'
+##                + 0.062 A + 0.510 h + 0.390 d
+##    log10 Q/B = 7.964 - 0.204 log10 Winf - 1.965 T' + 0.083 A
+##                + 0.532 h + 0.398 d          (no Z)
+##  Christensen & Pauly 1992 (Ecol. Model. 61:169-185):
+##    log10 Q/B = 6.37 - 1.5045 T' - 0.168 log10 Winf + 0.1399 Pf + 0.2765 h
+##  Q/P = 3 fallback (Christensen, Walters & Pauly 2008, EwE User Guide)
+##  (h, d, Pf = herbivore, detritivore, predator dummies)
+## Marine mammals: P/B from Siler survivorship (Barlow & Boveng 1991,
+##  Mar. Mammal Sci. 7:50-65), else P/B = 20.19 TL^-3.26 e^(0.041 T)
+##  (Gascuel et al. 2008, protocol Eq.23); Q/B = 365 x 0.1 W^0.8 / W (Innes et al. 1987,
+##  J. Anim. Ecol. 56:115-130; Trites et al. 1997, J. Northw. Atl.
+##  Fish. Sci. 22:173-187), W in kg.
+## Seabirds: P/B Gascuel et al. 2008; Q/B = 365 x 10^(-0.293 + 0.85
+##  log10 W) / W (Nilsson & Nilsson 1976, Ornis Scand. 7:53-63).
+## Invertebrates: P/B Tumbiolo & Downing 1994 (Mar. Ecol. Prog. Ser.
+##  114:165-174): log10 P = 0.24 + 0.96 log10 B - 0.21 log10 Wmax
+##  + 0.03 T - 0.16 log10(z + 1); Brey 1999 (NAGA ICLARM Q. 22(3):24-28):
+##  log10 P/B =
+##  1.672 + 0.993 log10(1/Amax) - 0.035 log10 Mmax - 300.447/(T + 273),
+##  Mmax in kJ (4.5 kJ/g wet, ASSUMPTION); Q/B = 3 P/B.
+## Missing values: borrowed from the closest relative (genus > family >
+##  order > class), tagged in *_source columns.
+## FG level: X_f = sum_s B_s X_s / sum_s B_s (biomass-weighted).
+## Primary producers: Q/B = 0 by definition.
+## =================================================================
+
 pkgs <- c("data.table", "stringr", "ggplot2", "progress", "patchwork",
           "readxl", "openxlsx", "purrr")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
@@ -318,6 +371,10 @@ if (!duckdbfs_ok) {
 
 message("Version check passed - rfishbase ", as.character(rfishbase_version),
         ", duckdbfs ", as.character(packageVersion("duckdbfs")), " (duckdb_config available).")
+## Silence DuckDB's console progress bar: rfishbase queries run through
+## duckdbfs, and the bar otherwise writes megabytes of "DuckDB progress: 0%"
+## into the run log.
+invisible(try(duckdbfs::duckdb_config(enable_progress_bar = FALSE), silent = TRUE))
 
 ## --- Load species_df (built and saved by test_species_df.R, or your
 ## own real data saved the same way) --------------------------------
@@ -546,7 +603,7 @@ if (SPECIES_DF_SOURCE == "survey") {
   ## the FG-level split when Biomass_survey was NA. A density of 0 is
   ## NOT NA, so `!is.na(Biomass_survey)` was TRUE for those species and
   ## they got Biomass = 0 here regardless of what FG_spp/Ecopath_B said
-  ## - silently discarding this session's megafauna-weighting fixes
+  ## - silently discarding the megafauna-weighting fixes
   ## before they ever reached PB/QB. Reading Biomass_t_km2 straight from
   ## biomass_proportion_by_species_fg.csv sidesteps that entirely: it is
   ## already the reconciled species-level number (prop_sp_fg x that FG's
@@ -593,7 +650,7 @@ if (SPECIES_DF_SOURCE == "survey") {
           " single species in FG, ", n_override, " documented literature/relative-abundance override, ",
           n_even_split, " still on the even-split fallback - see fg_species_biomass_needs_review.csv from",
           " 01_biomass.R for that list). This is what lets bluefin tuna/swordfish/megafauna species reach",
-          " calc_fish()/calc_mammal()/calc_seabird() at all, and now also lets this session's cetacean/",
+          " calc_fish()/calc_mammal()/calc_seabird() at all, and now also lets the cetacean/",
           " seabird weighting fixes actually reach PB/QB instead of stopping at FG_spp. Yield is NA for all",
           " rows (no catch/landings data in this survey pipeline - F = Yield/Biomass will not be computable",
           " downstream unless you fill this in separately from landings data, in matching t/km^2/year units).")
@@ -1203,8 +1260,8 @@ if (length(unresolved) > 0) {
   taxonomy[Species %in% still_unresolved, dispatch_group := "invertebrate"]
   ## Organism gets its OWN default, separately from dispatch_group's
   ## "invertebrate" default above - whatever never resolved a Class/
-  ## Phylum/Kingdom at all genuinely isn't known to be any of Andrea's
-  ## categories, so "Other" is the honest default here, not a borrowed
+  ## Phylum/Kingdom at all genuinely isn't known to be any of the
+  ## project's categories, so "Other" is the honest default here, not a borrowed
   ## "invertebrate" guess. A species left NA for dispatch_group but with
   ## a real Class/Phylum (rare - only species with a Class outside every
   ## classify_dispatch bucket AND every classify_organism bucket) still
@@ -1715,7 +1772,7 @@ common_length_col <- intersect(c("CommonLength", "CommonLengthF", "CommonLengthM
 ## FishBase/SeaLifeBase species() fields, not something that needs
 ## hand-curation (see the traits_ewe header comment near where
 ## traits_reconciled is built). Resolved defensively (same pattern
-## as vuln_col/common_length_col above) since this session has no
+## as vuln_col/common_length_col above) since there is no
 ## network access to verify the exact column names against a live
 ## rfishbase pull - the coverage message below prints whichever field
 ## name was actually found (or "NONE FOUND") so a wrong guess is visible
@@ -1724,7 +1781,7 @@ common_length_col <- intersect(c("CommonLength", "CommonLengthF", "CommonLengthM
 ##                             ecology category - bathydemersal/
 ##                             bathypelagic/benthic/benthopelagic/
 ##                             demersal/pelagic/pelagic-neritic/pelagic-
-##                             oceanic/reef-associated - exactly Andrea's
+##                             oceanic/reef-associated - exactly the project's
 ##                             list except "land-based", which FishBase/
 ##                             SeaLifeBase has no reason to carry since
 ##                             it's a fish/aquatic-organism database -
@@ -3109,7 +3166,7 @@ append_reference_columns_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 ## Ecopath_traits, Ecopath_diet, Ecosim_ts) exist at this point in the
 ## pipeline - drops every native/intermediate sheet (all CSV-only now).
 ## Safe/idempotent to call again here even if 01_biomass.R/
-## 02_fisheries.R already trimmed it earlier this session.
+## 02_fisheries.R already trimmed it earlier in the same R session.
 trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 
 ## Fish PB/QB method-comparison plots (one point per method per species,
@@ -3160,7 +3217,7 @@ write_native_sheets_csv(list(References = reference_table), csv_out_dir)
 ## in this script), not derived from species_df, so it's the same
 ## regardless of which species happen to be in this run.
 ##
-## Confidence column flags citations verified this session against
+## Confidence column flags citations verified against
 ## the primary source (via literature search) vs. ones cited the way
 ## they're conventionally referenced within the Ecopath/EwE community
 ## (commonly through Christensen & Walters' EwE user guide or
@@ -3493,7 +3550,14 @@ message("Saved: workbook sheet Ecopath_traits (", uniqueN(traits_reconciled$FG),
 ## from "outside typical range" (the existing 0.05-0.3 review band) from
 ## "plausible".
 plausibility_dt <- fg_weighted[!is.na(PB_FG) | !is.na(QB_FG), .(FG, FG_name, PB_FG, QB_FG)]
+## Primary producers have no consumption in Ecopath (Q/B = 0 by
+## definition; Christensen, Walters & Pauly 2005, EwE User Guide), so they
+## are checked on P/B > 0 only, never flagged for Q/B = 0.
+.producer_pat <- "phytoplankton|posidonia|cymodocea|macroalgae|seagrass|algae"
+plausibility_dt[, is_producer := grepl(.producer_pat, FG_name, ignore.case = TRUE)]
 plausibility_dt[, plausibility_flag := fcase(
+  is_producer & is.finite(PB_FG) & PB_FG > 0, "Plausible (primary producer: Q/B = 0 by definition)",
+  is_producer, "IMPOSSIBLE (PB_FG <= 0 or missing for a primary producer)",
   is.na(PB_FG) | is.na(QB_FG), "INCOMPLETE (missing PB_FG or QB_FG)",
   PB_FG <= 0, "IMPOSSIBLE (PB_FG <= 0)",
   QB_FG <= 0, "IMPOSSIBLE (QB_FG <= 0)",
@@ -3610,7 +3674,7 @@ is_primary_producer <- ecopath_ready$FG_num %in% species_df[dispatch_group == "p
 ## Threshold (TrophicLevel_FG < 2.5 -> herbivore/zooplankton-like,
 ## Unassim. = 0.4; otherwise carnivore-like, Unassim. = 0.2) is a
 ## judgment call, not a value from the User Guide itself - flagged here
-## rather than hidden, and easy to adjust if Andrea has a better cutoff.
+## rather than hidden, and easy to adjust if a better cutoff is available.
 ## An FG with no TrophicLevel_FG at all (e.g. no species matched
 ## FishBase/SeaLifeBase ecology data) falls back to the previous flat
 ## 0.2 default, unchanged from before this fix.

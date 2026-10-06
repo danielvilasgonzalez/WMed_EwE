@@ -61,7 +61,7 @@
 ## dataset for the "plankton" variable group is typically named
 ## something like "med-ogs-plankton-rean-monthly", but the exact string
 ## depends on Copernicus Marine's current catalogue and could not be
-## confirmed from this session - no network access here to either the
+## confirmed when written - no network access to either the
 ## Copernicus Marine catalogue API or to run copernicusmarine itself).
 ## Run `copernicusmarine describe --contains phyc` (or browse
 ## https://data.marine.copernicus.eu/product/MEDSEA_MULTIYEAR_BGC_006_008)
@@ -287,7 +287,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
           " dataset_id='", dataset_id, "', variable='", variable, "', proxy_years=",
           min(proxy_years), "-", max(proxy_years), ".")
 
-  ## This CSV cache is itself the "just one download" Andrea asked about:
+  ## This CSV cache is itself the "just one download" design:
   ## proxy_years is a fixed historical window (1999-2001), so there is
   ## nothing new to fetch on a later pipeline run once this file exists -
   ## every subsequent 01_biomass.R run just reads it back, no network
@@ -420,7 +420,7 @@ fetch_cmems_phytoplankton_biomass <- function(out_dir, force_refresh = FALSE,
                         total_biomass_t_km2 * (1 - large_phyto_fraction)),
       Source_citation = citation
     )
-    fwrite(cmems_result, out_csv_path)
+    (if (exists("safe_fwrite")) safe_fwrite else fwrite)(cmems_result, out_csv_path)
     message("[CMEMS diag] === RESULT: SUCCESS === Saved cmems_phytoplankton_biomass_by_fg.csv (",
             round(total_biomass_t_km2, 4), " t/km2 total, split ", large_phyto_fraction, "/",
             round(1 - large_phyto_fraction, 2), " Large/Small).")

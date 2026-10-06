@@ -24,8 +24,8 @@ while (sink.number() > 0) sink()
 ##            Ecopath_Di/Ecopath_PBQB values against the OLD West Med
 ##            model's own "estimates" sheet, FG by FG, and flag large
 ##            deviations - NOT a pass/fail gate, a REVIEW prompt (a
-##            real difference can be a real improvement, e.g. this
-##            session's literature-sourced biomass fixes; the point is
+##            real difference can be a real improvement, e.g. the
+##            literature-sourced biomass fixes; the point is
 ##            to surface every large difference so a human decides
 ##            which number is right).
 ##   STEP B - consolidate every plausibility/validation REVIEW csv this
@@ -33,7 +33,7 @@ while (sink.number() > 0) sink()
 ##            column-sum/cannibalism, EcoBase-fallback rejections, the
 ##            fleet-coverage check, temporal-mismatch flags, etc. - see
 ##            pipeline_code_review_and_validation_findings.md and
-##            ewe_user_guide_compliance_review_2026-09-28.md for the
+##            the EwE User Guide compliance review (project documentation) for the
 ##            full list these come from) into ONE summary table, since
 ##            today they only exist as separate files scattered across
 ##            each script's own output subfolder with nothing tying
@@ -44,9 +44,9 @@ while (sink.number() > 0) sink()
 ## plausibility, diet-sum, EcoBase-fallback plausibility, group
 ## ordering, cannibalism) - it only READS what they already wrote.
 ## Still-open EwE User Guide gaps NOT covered anywhere in this pipeline
-## yet (see ewe_user_guide_compliance_review_2026-09-28.md): discard
+## yet (see the EwE User Guide compliance review (project documentation)): discard
 ## mortality rate (no column for it anywhere in the 9-sheet workbook
-## contract - a scope decision, not a bug, left for the project owner to decide
+## contract - a scope decision, not a bug, left as a project decision
 ## whether it belongs in this pipeline's output at all) and formal
 ## multi-stanza input blocks (only a juvenile/adult biomass-split
 ## heuristic exists, not a real EwE stanza parameter table).
@@ -64,6 +64,25 @@ while (sink.number() > 0) sink()
 ## is kept alongside it as a plain-text index of the same checks, for
 ## grepping/filtering rather than paging through.
 
+## =================================================================
+## NOTATION, EQUATIONS AND DATA SOURCES (05_validation.R)
+## -----------------------------------------------------------------
+## Reference model: Western Mediterranean 1995 Ecopath model
+## (Coll & Steenbeek; WMed_EwE.xlsx "estimates" sheet, model area
+## A_old = 846,002 km2). New model area A_new = sum of strata_area_by_
+## area.csv (MEDITS 10-800 m strata of the model GSAs).
+##  ratio = X_new / X_old (same units, t/km2 of each model's own area)
+##  X_old on new area = X_old x A_old / A_new (same total tonnes)
+##  ratio_same_total = X_new / (X_old x A_old / A_new)
+## Flags: ratio outside [VALIDATION_RATIO_LOW, VALIDATION_RATIO_HIGH],
+## values appearing/disappearing, P/Q outside 0.05-0.3 (Christensen,
+## Walters & Pauly 2005, EwE User Guide), diet columns not summing to 1,
+## cannibalism > 0.1 (same guide).
+## Old -> new FG crosswalk (old_to_new_fg_crosswalk.csv): many old -> one
+## new summed (P/B, Q/B biomass-weighted); one old -> several new
+## compared against the sum of the new FGs.
+## =================================================================
+
 pkgs <- c("data.table", "openxlsx", "ggplot2", "png", "patchwork")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
@@ -72,7 +91,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 ## =================================================================
 ## STEP 1: Configuration - same out_dir/pcloud_dir/git_dir convention
 ## as every other script in this pipeline (pre-set by a driver script,
-## Daniel's hardcoded defaults, or an interactive RStudio picker).
+## hardcoded per-machine defaults, or an interactive RStudio picker).
 ## =================================================================
 if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
     exists("pcloud_dir", envir = .GlobalEnv, inherits = FALSE) &&
@@ -144,7 +163,7 @@ if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ## The OLD West Med model workbook, sheet "estimates" - the comparison
 ## baseline. Per project decision ("it should come from the pclouddir
-## to allow other to run it (not daniel my personal computer)"), this
+## to allow other to run it"), this
 ## is derived from pcloud_dir - the same shared pCloud folder every
 ## other script in this pipeline already resolves per-machine - rather
 ## than a second, separate hardcoded absolute machine path. Falls back
@@ -169,9 +188,9 @@ if (!exists("OLD_WMED_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) {
 if (!exists("OLD_WMED_ESTIMATES_SHEET", envir = .GlobalEnv, inherits = FALSE)) OLD_WMED_ESTIMATES_SHEET <- "estimates"
 
 ## Review thresholds - adjustable constants, not tuned against a real
-## distribution this session. A ratio this far from 1 (new/old) gets
+## distribution. A ratio this far from 1 (new/old) gets
 ## flagged for a human look; it is NOT evidence the new value is wrong
-## - many of this session's fixes (real literature citations replacing
+## - many of the pipeline's fixes (real literature citations replacing
 ## a generic EcoBase-fallback guess, the FG_spp architecture switch,
 ## the temporal-baseline corrections) are EXPECTED to move some FGs
 ## a long way from the old workbook's own figure.
@@ -294,7 +313,7 @@ if (length(new_metrics) == 0) {
 
 ## =================================================================
 ## STEP A2: read the OLD workbook's 'estimates' sheet, with flexible
-## column-name resolution - this session has never seen this file's
+## column-name resolution - this file's
 ## actual columns, so every alias list below is a best guess at common
 ## Ecopath-estimates-sheet naming, not a confirmed match. Anything not
 ## resolved is reported (not guessed).
@@ -368,14 +387,14 @@ for (metric in c("biomass", "pb", "qb", "landings", "discards")) {
 old_dt <- old_dt[!is.na(Old_FG_name) & trimws(Old_FG_name) != ""]
 old_dt[, norm_name := normalize_name(Old_FG_name)]
 
-## Manual correction (Andrea, 2026-10-03): the "lost decimal point"
+## Manual correction: the "lost decimal point"
 ## corruption described below hit these 7 marine-mammal/seabird rows
 ## particularly badly (e.g. Bottlenose dolphins' biomass read as the
-## whole number 322207 instead of 0.003222). Andrea supplied the TRUE
-## values directly from her own records - not reverse-engineered from
+## whole number 322207 instead of 0.003222). The TRUE values were
+## supplied directly from the original model records - not reverse-engineered from
 ## the corrupted cells - so they override whatever old_dt picked up
 ## from the raw sheet for just these 7 rows. QB is NA for "Endangered
-## and pelagic seabirds" because Andrea didn't supply one for it.
+## and pelagic seabirds" because no value was supplied for it.
 old_estimates_manual_overrides <- data.table(
   Old_FG_name = c("Bottlenose dolphins", "Striped dolphins", "Short-beaked common dolphin",
                   "Fin whale", "Deep sea-cetacean feeders", "Monk seals",
@@ -393,16 +412,16 @@ if (n_overridden > 0) {
   old_dt[!is.na(pb_override), pb := pb_override]
   old_dt[!is.na(qb_override), qb := qb_override]
   old_dt[, c("biomass_override", "pb_override", "qb_override") := NULL]
-  message("[05_validation.R] Applied Andrea's manually-corrected biomass/PB/QB for ", n_overridden,
+  message("[05_validation.R] Applied manually-corrected biomass/PB/QB for ", n_overridden,
           " marine-mammal/seabird row(s) in the old estimates sheet (overriding the sheet's own, likely",
           " decimal-corrupted, values) - see old_estimates_manual_overrides above for the exact figures used.")
 } else {
-  message("[05_validation.R] Note: none of Andrea's 7 manually-corrected marine-mammal/seabird group names",
+  message("[05_validation.R] Note: none of the 7 manually-corrected marine-mammal/seabird group names",
           " matched a row in this run's old estimates sheet - check old_estimates_manual_overrides' names",
           " against Old_FG_name above if that's unexpected.")
 }
 
-## Old -> new FG crosswalk (2026-10-05): groups the 2026 FG list merged
+## Old -> new FG crosswalk: groups the 2026 FG list merged
 ## or renamed (sardine/anchovy juv+adult, seagrasses, algae, corals,
 ## bivalves+gastropods, dolphins, seabirds...). Listed in
 ## validation_reference_tables/old_to_new_fg_crosswalk.csv; the old
@@ -411,23 +430,45 @@ if (n_overridden > 0) {
 ## The correspondence is an ASSUMPTION (FG definitions changed) - edit
 ## the CSV to change it.
 crosswalk_path <- file.path(VALIDATION_REFERENCE_DIR, "old_to_new_fg_crosswalk.csv")
+## Two directions, both from the crosswalk CSV:
+##  - many old -> one new: old rows sharing a target are combined
+##    (B, landings, discards summed; P/B, Q/B B-weighted means), also
+##    when an old group already carries the new FG's exact name;
+##  - one old -> several new (New_FG_name "A + B", e.g. European hake ->
+##    juv. + adult): a combined NEW row is built per metric (B, L, Di
+##    summed; P/B, Q/B weighted by new B), FG_num = -k (synthetic).
+.combine_old <- function(d) d[, .(Old_FG_num = if (.N == 1) Old_FG_num[1] else NA_integer_,
+                                  Old_FG_name = paste(Old_FG_name, collapse = " + "),
+                                  biomass = if (all(is.na(biomass))) NA_real_ else sum(biomass, na.rm = TRUE),
+                                  pb = if (all(is.na(pb) | is.na(biomass))) NA_real_ else weighted.mean(pb, biomass, na.rm = TRUE),
+                                  qb = if (all(is.na(qb) | is.na(biomass))) NA_real_ else weighted.mean(qb, biomass, na.rm = TRUE),
+                                  landings = if (all(is.na(landings))) NA_real_ else sum(landings, na.rm = TRUE),
+                                  discards = if (all(is.na(discards))) NA_real_ else sum(discards, na.rm = TRUE)),
+                              by = norm_name]
 if (file.exists(crosswalk_path)) {
-  xw <- fread(crosswalk_path)[, .(norm_name = normalize_name(Old_FG_name), New_FG_name)]
+  xw <- unique(fread(crosswalk_path)[, .(norm_name = normalize_name(Old_FG_name), New_FG_name = trimws(New_FG_name))])
+  ## one -> several: synthetic combined new FGs
+  split_targets <- unique(xw[grepl("+", New_FG_name, fixed = TRUE), New_FG_name])
+  for (k in seq_along(split_targets)) {
+    parts <- normalize_name(trimws(strsplit(split_targets[k], "+", fixed = TRUE)[[1]]))
+    bw <- if (!is.null(new_metrics$Biomass)) new_metrics$Biomass[normalize_name(FG_name) %in% parts, .(FG_name, w = new_value)] else NULL
+    for (m in names(new_metrics)) {
+      d <- new_metrics[[m]][normalize_name(FG_name) %in% parts]
+      if (nrow(d) == 0) next
+      v <- if (m %in% c("PB", "QB") && !is.null(bw)) {
+        dw <- merge(d, bw, by = "FG_name"); if (nrow(dw) && sum(dw$w, na.rm = TRUE) > 0) weighted.mean(dw$new_value, dw$w, na.rm = TRUE) else mean(d$new_value, na.rm = TRUE)
+      } else if (all(is.na(d$new_value))) NA_real_ else sum(d$new_value, na.rm = TRUE)
+      new_metrics[[m]] <- rbindlist(list(new_metrics[[m]], data.table(FG_num = -k, FG_name = split_targets[k], new_value = v)), use.names = TRUE)
+    }
+  }
   hit <- old_dt$norm_name %in% xw$norm_name
   if (any(hit)) {
-    old_x <- merge(old_dt[hit], xw, by = "norm_name")
-    old_x <- old_x[, .(Old_FG_num = NA_integer_,
-                       Old_FG_name = paste(Old_FG_name, collapse = " + "),
-                       biomass = if (all(is.na(biomass))) NA_real_ else sum(biomass, na.rm = TRUE),
-                       pb = if (all(is.na(pb) | is.na(biomass))) NA_real_ else weighted.mean(pb, biomass, na.rm = TRUE),
-                       qb = if (all(is.na(qb) | is.na(biomass))) NA_real_ else weighted.mean(qb, biomass, na.rm = TRUE),
-                       landings = if (all(is.na(landings))) NA_real_ else sum(landings, na.rm = TRUE),
-                       discards = if (all(is.na(discards))) NA_real_ else sum(discards, na.rm = TRUE)),
-                   by = New_FG_name]
-    old_x[, norm_name := normalize_name(New_FG_name)][, New_FG_name := NULL]
-    old_dt <- rbindlist(list(old_dt[!hit], old_x), use.names = TRUE, fill = TRUE)
-    message("[05_validation.R] Old->new FG crosswalk applied to ", sum(hit), " old group(s) -> ", nrow(old_x),
-            " new FG(s) (", basename(crosswalk_path), "): ", paste(old_x$Old_FG_name, collapse = "; "), ".")
+    old_dt[hit, norm_name := normalize_name(xw$New_FG_name[match(norm_name, xw$norm_name)])]
+    dup <- old_dt[, .N, by = norm_name][N > 1, norm_name]
+    old_dt <- rbindlist(list(old_dt[!norm_name %in% dup], .combine_old(old_dt[norm_name %in% dup])), use.names = TRUE, fill = TRUE)
+    message("[05_validation.R] Old->new FG crosswalk applied to ", sum(hit), " old group(s) (", basename(crosswalk_path),
+            "); combined old rows: ", paste(old_dt[grepl(" + ", Old_FG_name, fixed = TRUE), Old_FG_name], collapse = "; "),
+            if (length(split_targets)) paste0("; split new FGs compared as sums: ", paste(split_targets, collapse = "; ")) else "", ".")
   }
 } else {
   message("[05_validation.R] No ", crosswalk_path, " - old groups split/merged differently from the 2026 FGs stay unmatched.")
@@ -538,7 +579,7 @@ for (metric_name in names(new_metrics)) {
 comparison_dt <- rbindlist(comparison_rows, fill = TRUE)
 setcolorder(comparison_dt, c("FG_num", "FG_name", "Old_FG_name", "metric", "old_value", "new_value", "ratio", "flag"))
 setorder(comparison_dt, metric, -ratio, na.last = TRUE)
-## Area normalisation (2026-10-05). Ecopath B, landings and discards are
+## Area normalisation. Ecopath B, landings and discards are
 ## t per km2 of EACH model's own area: the old 1995 model covers
 ## 846,002 km2 (EcopathModel.Area in WestMed_Ges4Seas.ewemdb, i.e. the
 ## whole West Med incl. the deep basin and N Africa), the new one only
@@ -591,7 +632,7 @@ n_flagged <- comparison_dt[flag != "Within review range", .N]
 message("\n[05_validation.R] comparison_with_old_westmed_estimates_REVIEW.csv written: ", nrow(comparison_dt),
         " FG x metric row(s), ", n_flagged, " flagged (ratio outside ", VALIDATION_RATIO_LOW, "-",
         VALIDATION_RATIO_HIGH, "x, a value that appeared/disappeared, or a zero that became nonzero).",
-        " A flag here is a REVIEW PROMPT, not proof the new value is wrong - many of this session's own fixes",
+        " A flag here is a REVIEW PROMPT, not proof the new value is wrong - many of the pipeline's own fixes",
         " (real literature citations, the FG_spp architecture switch, temporal-baseline corrections) are",
         " expected to move some FGs a long way from the old workbook's figure.")
 
@@ -622,7 +663,7 @@ if (!is.null(p_comparison)) {
 ## purely a convenience index (reads existing files, writes nothing
 ## new to any of them). File names/locations below are documented in
 ## pipeline_code_review_and_validation_findings.md /
-## ewe_user_guide_compliance_review_2026-09-28.md. Any file not found
+## the EwE User Guide compliance review (project documentation). Any file not found
 ## yet (script hasn't run, or an older pipeline version) is listed as
 ## "not found" rather than causing an error - this index degrades
 ## gracefully the same way every other cross-script read in this
@@ -649,7 +690,7 @@ print(validation_summary[, .(check, status)])
 
 ## =================================================================
 ## STEP C: a compilation of plots, one per validation check - per
-## the project owner: "the validation code should be a compilation of
+## project requirement: "the validation code should be a compilation of
 ## plots to check these validations." STEP B above already indexes every
 ## REVIEW csv as a row count, which is fast to scan but doesn't show
 ## WHERE the problem is or how bad it is - a plot does that at a glance.
@@ -800,8 +841,11 @@ validation_plots[["07_temporal_mismatch"]] <- tryCatch({
   if (length(files) == 0) stop("no temporal_mismatch_REVIEW_*.csv files found")
   d <- rbindlist(lapply(files, function(f) { x <- fread(f); x[, source_file := basename(f)]; x }), fill = TRUE)
   if (nrow(d) == 0) stop("all temporal_mismatch_REVIEW_*.csv files were empty")
+  ## One bar per Group x file: several Years of the same Group gave
+  ## duplicated labels ("factor level [3] is duplicated") - keep the
+  ## largest gap per label.
   d[, label := paste0(Group, " (", source_file, ")")]
-  d <- d[order(-abs(gap_years))][seq_len(min(.N, 25))]
+  d <- d[order(-abs(gap_years))][!duplicated(label)][seq_len(min(.N, 25))]
   d[, label := factor(label, levels = rev(label))]
   ggplot(d, aes(x = gap_years, y = label, fill = source_file)) +
     geom_col() +

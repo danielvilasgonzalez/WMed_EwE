@@ -1,5 +1,4 @@
 ## =================================================================
-## Created by: Daniel Vilas
 ## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
 ## sourced automatically by the numbered pipeline scripts (01-04) -
 ## do not run this directly, it has no top-level driver code of its own.
@@ -22,6 +21,34 @@
 ## function here takes a standardized input format (documented below)
 ## that any survey's raw data can be mapped into.
 ##
+## =================================================================
+## safe_fwrite() / csv_has_nul() - cloud-synced folder guard
+## Files in the shared pCloud folder have repeatedly been found with
+## runs of NUL (0x00) bytes where rows should be (FG_WMed_2026.csv tail;
+## the EUSeaMap area cache lost its coral rows this way): the FUSE mount
+## kept the file length but not the last block(s) written. safe_fwrite()
+## removes the old file first (a fresh file, never an in-place
+## overwrite), writes it single-threaded, then reads the bytes back and
+## rewrites once if any NUL is found. csv_has_nul() lets readers treat
+## a corrupted cache as missing (so it is recomputed, not half-read).
+## =================================================================
+csv_has_nul <- function(path) {
+  if (!file.exists(path)) return(FALSE)
+  sz <- file.info(path)$size
+  if (is.na(sz) || sz == 0) return(FALSE)
+  any(readBin(path, "raw", sz) == as.raw(0))
+}
+safe_fwrite <- function(x, file, ...) {
+  for (attempt in 1:2) {
+    if (file.exists(file)) unlink(file)
+    data.table::fwrite(x, file, nThread = 1L, ...)
+    if (!csv_has_nul(file)) return(invisible(file))
+    message("[safe_fwrite] NUL bytes found in '", file, "' after writing (cloud-sync folder) - ",
+            if (attempt == 1) "rewriting once." else "still corrupted; check the sync client / write it to a local folder.")
+  }
+  invisible(file)
+}
+
 ## =================================================================
 ## FUNCTION ATTRIBUTES (as specified)
 ## =================================================================
@@ -598,7 +625,7 @@ fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
   ## to something (at least one rank filled in). An all-NA "not found"
   ## row in the cache is indistinguishable from one that failed because
   ## the FETCH ITSELF was broken (e.g. the load_taxa() bug fixed earlier
-  ## this session - every one of the 939 species affected by it would
+  ## this pipeline - every one of the 939 species affected by it would
   ## have been written to the cache as an all-NA "not found" row, and the
   ## OLD logic here trusted that forever, even after the code fix, since
   ## the cache is checked before load_taxa() is ever called again). So
@@ -2000,7 +2027,7 @@ remove_sample_outliers_multi <- function(dt, methods = c("mad", "percentile", "b
 
 ## =================================================================
 ## remove_sample_outliers_haul() - MEDITS-style haul-level screening
-## (project decision 2026-10-05; default OUTLIER_METHOD = "haul").
+## (project decision; default OUTLIER_METHOD = "haul").
 ##
 ##  - The observation judged is ONE species in ONE haul.
 ##  - It is compared with hauls of the SAME species in the SAME GSA, depth
@@ -2231,7 +2258,7 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
   if (!is.null(cache_path)) {
     on_disk <- copy(strata_area_by_area)
     if (!identical(area_id_label, "AreaID")) setnames(on_disk, "AreaID", area_id_label)
-    fwrite(on_disk, cache_path)
+    safe_fwrite(on_disk, cache_path)
     message("Saved to ", cache_path, " - delete this file to force recomputation.")
   }
   strata_area_by_area
@@ -3677,8 +3704,8 @@ read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
 ## Ecopath baseline years purely from survey catchability/rarity
 ## (patchy schools, low encounter probability at the shallow/deep
 ## edges of the sampled band) - NOT because the group was genuinely
-## absent from the West Med at that time. Andrea confirmed this is
-## the case she wants handled, distinct from a genuinely
+## absent from the West Med at that time. This is the case
+## handled here, distinct from a genuinely
 ## range-expanding/colonizing group (FG_name containing "Expanding"),
 ## where a real baseline zero/near-zero IS the correct signal (the
 ## group hadn't established yet) and must NOT be papered over with a
@@ -3781,6 +3808,8 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                                         extra_sheets = NULL,
                                         fg_cv_log = NULL,        ## data.table(FG_num, cv_log) for the Weight row
                                         normalize_ts = TRUE,     ## TRUE = rescale to reference index (first value = 1); FALSE = raw density
+                                        no_zero_fill_fg = integer(0),  ## FGs whose Ecosim gaps stay BLANK (not 0) in survey years - non-survey sources (model, literature, stock assessment) and recording-era FGs
+
                                         csv_out_dir = NULL) {    ## directory for this function's own native CSV outputs - defaults to dirname(out_path) for back-compat, but 01_biomass.R passes its own "biomass" subfolder here so this block's CSVs land there instead of at the shared workbook's top level
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
   
@@ -3988,7 +4017,10 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     }), by = Year]
     full_years <- data.table(Year = ts_years)
     vals <- merge(full_years, vals, by = "Year", all.x = TRUE)
-    vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
+    ## A survey year without a catch is a real zero only for survey-sourced
+    ## FGs; for model/literature/stock-assessment FGs a missing year is
+    ## simply missing (blank in Ecosim_ts), never 0.
+    if (!fg_num %in% no_zero_fill_fg) vals[Year %in% years_with_effort & is.na(mean_density), mean_density := 0]
     vals <- vals[order(Year)]
     
     if (!normalize_ts) return(vals$mean_density)
@@ -4569,7 +4601,7 @@ build_fg_references_sheet <- function(out_path,
   
   ## --- PBQB_ref + PBQB_method_ref: from 03_pbqb-traits.R's own
   ## PB_QB.csv (FG-level: PB_source/QB_source if EcoBase gap-filling
-  ## ran this session, otherwise every FG is the same "empirical"
+  ## ran in this R session, otherwise every FG is the same "empirical"
   ## default), PB_QB_spp.csv (species-level: which SPECIFIC published
   ## equation - PB_method/QB_method, e.g. "Then et al. 2015", "Palomares
   ## & Pauly 1998 (Z-based)" - actually ran for each species feeding that
@@ -4604,7 +4636,7 @@ build_fg_references_sheet <- function(out_path,
   ## weight/maturity DATA"), rolled up per FG and appended onto PBQB_ref -
   ## this is a different, finer-grained thing than PBQB_method_ref below
   ## (which equation was used), but equally a "literature reference" in
-  ## Andrea's sense, so it belongs here rather than nowhere.
+  ## the project's sense, so it belongs here rather than nowhere.
   species_param_refs <- read_native_sheet_csv("References", pbqb_csv_dir)
   if (!is.null(species_param_refs) && all(c("Species", "Reference") %in% names(species_param_refs))) {
     spp_fg_lookup <- read_native_sheet_csv("PB_QB_spp", pbqb_csv_dir)
@@ -5039,7 +5071,7 @@ add_pbqb_to_ecopath_workbook <- function(fg_weighted, out_path, species_pb_qb = 
 ## "Multistanza age split" section) - kept as its own separate inline
 ## block there rather than switched onto these shared functions in this
 ## pass, to avoid touching already-validated production catch logic
-## without being able to re-run it against real data from this session.
+## without being able to re-run it against real data when written.
 ##
 ## detect_multistanza_fg_pairs()/compute_multistanza_age_proportion()
 ## below generalize that same approach so 01_biomass.R can compute and

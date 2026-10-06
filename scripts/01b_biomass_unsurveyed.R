@@ -48,7 +48,7 @@
 ## whichever literature rows supplied a Species column - feeds
 ## FG_spp_Ecopath's prop_sp_fg further down in 01_biomass.R).
 ##
-## REFERENCES for every number this file produces (2026-10-05). Each
+## REFERENCES for every number this file produces. Each
 ## Ecopath_B row also carries its own Source_citation string. Values
 ## marked ASSUMPTION have no direct citation - sensitivity analysis.
 ##  Data products
@@ -116,7 +116,7 @@
 ##  al. 2021, Mediterranean Marine Science); shelf/model-area rescaling
 ##  from the MEDITS strata areas; unsurveyed-GSA fill = ASSUMPTION.
 ## =================================================================
-## SOURCE ROADMAP (project decision 2026-10-05) - which FG gets its
+## SOURCE ROADMAP (project decision) - which FG gets its
 ## biomass from which kind of source (search "SOURCE A" ... "SOURCE D"):
 ##
 ##  A. STOCK ASSESSMENT (ICCAT + GFCM STAR/RAM Legacy): single-species FGs
@@ -795,7 +795,7 @@ if (nrow(iccat_biomass_fg_year) > 0) {
 ## flagged as an assumption in that row's audit trail (see
 ## extrapolate_density_row() below), never silently applied.
 ##
-## Added 2026-10-04 - two more specific factors, for the benthic
+## two more specific factors, for the benthic
 ## habitat FGs (Posidonia/Cymodocea/macroalgae, gorgonians/
 ## coralligenous fauna) this generic 4.5 macrobenthos default was
 ## never meant for:
@@ -1261,7 +1261,7 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
       message("[", label, "] ", nrow(out), " FG x Year row(s) (", uniqueN(out$FG_num), " FG(s)) - written to ", output_csv_name, ".")
     } else {
       message("[", label, "] ", nrow(out), " FG x Year row(s) (", uniqueN(out$FG_num), " FG(s)) computed - not written",
-              " to disk (", output_csv_name, " suppressed per Andrea's review; still used in-memory downstream).")
+              " to disk (", output_csv_name, " suppressed; still used in-memory downstream).")
     }
   }
   attr(out, "species_detail") <- species_detail
@@ -1382,7 +1382,7 @@ MEGAFAUNA_TAXON_KEYWORDS <- list(
 )
 
 ## =================================================================
-## UNCERTAIN FGs - DENSITY-DERIVED REFERENCE VALUES (2026-10-06)
+## UNCERTAIN FGs - DENSITY-DERIVED REFERENCE VALUES
 ## Same convention as the megafauna rows: a field density from the
 ## literature x cited conversion factors x a habitat scaler -> Biomass_t
 ## over the model area, with the whole equation written into
@@ -1435,7 +1435,7 @@ uncertain_fg_status <- data.table(
   FG_num = c(67L, 68L, 69L, 70L, 71L, 73L),
   FG_name = c("Other macro-benthos", "Jellyfish", "Salps and other gelatinous zooplankton", "Corals and gorgonians",
               "Macro zooplankton", "Suprabenthos"),
-  status = c("literature compilation in progress (Andrea) - MEDITS bycatch only until then",
+  status = c("literature compilation in progress - MEDITS bycatch only until then",
              "MEDITS bycatch only - gelatinous plankton is not sampled quantitatively by a bottom trawl",
              "NO field reference value found - no Ecopath_B (estimate from EE in Ecopath)",
              "whole-habitat colony density x colony AFDM (Coppari et al. 2019) / AFDM:DW x 2.5 (ASSUMPTION) x EUSeaMap coralligenous area - excludes red coral and deep gardens",
@@ -1446,7 +1446,7 @@ MEGAFAUNA_PLUS_UNCERTAIN_PATH <- MEGAFAUNA_BIOMASS_PATH
 if (nrow(uncertain_reference_rows) > 0 && file.exists(MEGAFAUNA_BIOMASS_PATH)) {
   mf <- fread(MEGAFAUNA_BIOMASS_PATH, encoding = "UTF-8")
   MEGAFAUNA_PLUS_UNCERTAIN_PATH <- file.path(csv_out_dir, "marine_megafauna_plus_uncertain_fg_reference_biomass.csv")
-  fwrite(rbindlist(list(mf, uncertain_reference_rows), use.names = TRUE, fill = TRUE), MEGAFAUNA_PLUS_UNCERTAIN_PATH)
+  safe_fwrite(rbindlist(list(mf, uncertain_reference_rows), use.names = TRUE, fill = TRUE), MEGAFAUNA_PLUS_UNCERTAIN_PATH)
 }
 
 megafauna_biomass_fg_year <- load_manual_cited_biomass_group(
@@ -1561,7 +1561,7 @@ BENTHIC_HABITAT_BIOMASS_PATH <- HABITAT_SHAPEFILE_BIOMASS_PATH  # kept: still re
 ## full-text) - genuinely still open, not filled with a guess.
 ## "Jellyfish" (FG68) and "Other macro-benthos" (FG67) are NOT added
 ## here - both already receive a small non-NA MEDITS-survey-derived
-## value in the current real output (confirmed against Daniel's
+## value in the current real output (confirmed against the
 ## actual ecopath_ecosim_inputs.xlsx, Ecopath_B sheet: Jellyfish =
 ## 0.000196 t/km2, Other macro-benthos = 0.003135 t/km2) - genuinely
 ## missing is Suprabenthos/Cymodocea/"Salps and other gelatinous
@@ -1610,7 +1610,7 @@ BENTHIC_HABITAT_TAXON_KEYWORDS <- list(
   ## cited_biomass_group()'s existing sum-by-FG_num/Year aggregation adds
   ## them back up into one FG total - e.g. "Benthic mollusc" = Bivalvia +
   ## Gastropoda + Scaphopoda + Polyplacophora. Composition confirmed
-  ## against Daniel's real FG_WMed_2026.csv: Benthic
+  ## against FG_WMed_2026.csv: Benthic
   ## mollusc = 96 Bivalvia spp, 129 Gastropoda spp, 4 Scaphopoda spp, 2
   ## Polyplacophora spp; Other macro-benthos = 18 classes (Echinoidea,
   ## Holothuroidea, Hexacorallia, Demospongiae, Gymnolaemata, Thecostraca,
@@ -1742,9 +1742,9 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
 ## Method from scripts/additional/zoo_phyto.R, downloading its own inputs
 ## with the copernicusmarine CLI (CLI/credential helpers come from
 ## lib_cmems_phytoplankton_biomass.R). Dataset ids verified in the CMEMS
-## STAC catalogue (2026-10-05).
+## STAC catalogue.
 ##
-## Step 1 - Phytoplankton carbon (MAIN, Andrea's phyto.R method):
+## Step 1 - Phytoplankton carbon (MAIN, phyto.R method):
 ##   GLOBAL_MULTIYEAR_BGC_001_029 (PISCES global hindcast, 0.25 deg,
 ##   monthly, 1993 onward, no assimilation; DOI 10.48670/moi-00019),
 ##   cmems_mod_glo_bgc_my_0.25deg_P1M-m, phyc (mmol C m-3) + surface chl
@@ -1958,7 +1958,7 @@ fetch_cmems_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                                          bbox = c(lon_min = -6, lon_max = 16, lat_min = 35, lat_max = 45),
                                          phyto_years = 1995,
                                          zoo_proxy_years = 1998:2000,
-                                         phyto_dataset_id = "cmems_mod_glo_bgc_my_0.25deg_P1M-m",  # PISCES global, monthly, covers 1995 itself (Andrea's phyto.R)
+                                         phyto_dataset_id = "cmems_mod_glo_bgc_my_0.25deg_P1M-m",  # PISCES global, monthly, covers 1995 itself (phyto.R)
                                          phyto_crosscheck = TRUE,
                                          crosscheck_years = 1999:2001,
                                          crosscheck_dataset_id = "cmems_mod_med_bgc-plankton_my_4.2km_P1Y-m",  # MedBFM annual means (reanalysis starts 1999)
@@ -2057,7 +2057,7 @@ fetch_cmems_plankton_biomass <- function(out_dir, force_refresh = FALSE,
              paste(range(zoo_proxy_years), collapse = "-"), " mean as proxy for the 1994-1996 baseline; PROVISIONAL ",
              a$macro_zoo_fraction, " of total zooplankton; C:WW ", a$macrozoo_C_per_WW, " (Kiorboe 2013)")
     )]
-    fwrite(out, out_csv_path)
+    (if (exists("safe_fwrite")) safe_fwrite else fwrite)(out, out_csv_path)
     message("[CMEMS plankton] === SUCCESS === saved ", out_csv_path, ":")
     print(out[, .(TargetGroup, Biomass_tC_km2 = signif(Biomass_tC_km2, 4), Biomass_t_km2 = signif(Biomass_t_km2, 4))])
     out
@@ -2129,7 +2129,7 @@ fetch_cmems_detritus_biomass <- function(out_dir, force_refresh = FALSE,
                                                pp_dataset_id, " nppv, ", paste(range(pp_years), collapse = "-"), ", 0-200 m) and E = ",
                                                signif(E, 3), " m (SEAPODYM LMTL zeu, ", paste(range(zeu_years), collapse = "-"),
                                                "); C -> WW x ", c_to_ww, " (Pauly & Christensen 1995) - FLAGGED conventional factor"))
-    fwrite(out, out_csv_path)
+    (if (exists("safe_fwrite")) safe_fwrite else fwrite)(out, out_csv_path)
     message("[CMEMS detritus] === SUCCESS === PP ", signif(PP, 3), " g C/m2/yr, euphotic depth ", signif(E, 3),
             " m -> detritus ", signif(D_gC, 3), " t C/km2 = ", signif(D_gC * c_to_ww, 3), " t WW/km2.")
     out
@@ -2139,7 +2139,7 @@ fetch_cmems_detritus_biomass <- function(out_dir, force_refresh = FALSE,
 
 ## =================================================================
 ## PLANKTON + DETRITUS FROM ISIMIP3a GFDL-MOM6-COBALT2 "obsclim" (MAIN,
-## project decision 2026-10-05) - the only model source found with
+## project decision) - the only model source found with
 ## zooplankton AND size-resolved phytoplankton for 1995 itself.
 ##   Data: ISIMIP3a ocean physical and biogeochemical input data,
 ##   GFDL-MOM6-COBALT2, observation-forced hindcast 1961-2010, global,
@@ -2191,9 +2191,10 @@ ISIMIP_BASE_URL <- "https://files.isimip.org/ISIMIP3a/InputData/climate/ocean/ob
        " (DOI 10.48364/ISIMIP.920945) into ", ISIMIP_CACHE_DIR)
 }
 
-## 1995 mean of one 2-D (lon x lat x time) ISIMIP variable over the model
-## domain; reads only the bbox and the 1995 time steps.
-.isimip_domain_mean_1995 <- function(path, var, bbox, year = 1995) {
+## Annual means of one 2-D (lon x lat x time) ISIMIP variable over the
+## model domain, one value per year in `years` (reads only the bbox and
+## the needed time steps). Returns data.table(Year, value) + units attr.
+.isimip_domain_mean_years <- function(path, var, bbox, years) {
   nc <- ncdf4::nc_open(path); on.exit(ncdf4::nc_close(nc))
   vname <- intersect(c(var, gsub("-", "_", var), sub("-vint$", "", var)), names(nc$var))[1]
   if (is.na(vname)) vname <- names(nc$var)[1]
@@ -2212,7 +2213,7 @@ ISIMIP_BASE_URL <- "https://files.isimip.org/ISIMIP3a/InputData/climate/ocean/ob
     yrs <- 1961 + (seq_along(tim) - 1) %/% step
     message("[ISIMIP] time units '", tu, "' not decoded - using position (series starts 1961).")
   }
-  it <- which(yrs == year); if (length(it) == 0) stop("year ", year, " not in ", basename(path))
+  it <- which(yrs %in% years); if (length(it) == 0) stop("none of the years ", min(years), "-", max(years), " in ", basename(path))
   ix <- which(lon >= bbox[["lon_min"]] & lon <= bbox[["lon_max"]]); iy <- which(lat >= bbox[["lat_min"]] & lat <= bbox[["lat_max"]])
   start <- rep(1, length(dn)); count <- rep(-1, length(dn))
   start[i_lon] <- min(ix); count[i_lon] <- length(min(ix):max(ix))
@@ -2222,71 +2223,90 @@ ISIMIP_BASE_URL <- "https://files.isimip.org/ISIMIP3a/InputData/climate/ocean/ob
   keep <- setdiff(seq_along(dn), c(i_lon, i_lat, i_tim))
   if (length(keep) > 0) arr <- apply(arr, c(i_lon, i_lat, i_tim), function(x) x[1])
   else arr <- aperm(arr, c(i_lon, i_lat, i_tim))
-  m <- apply(arr, c(1, 2), mean, na.rm = TRUE); m[!is.finite(m)] <- NA
+  yrs_s <- yrs[min(it):max(it)]
   lon_s <- lon[min(ix):max(ix)]; lat_s <- lat[min(iy):max(iy)]
-  list(value = .area_weighted_mean(m, lat_s, lon_s), units = v$units)
+  out <- rbindlist(lapply(sort(unique(intersect(yrs_s, years))), function(y) {
+    m <- apply(arr[, , yrs_s == y, drop = FALSE], c(1, 2), mean, na.rm = TRUE); m[!is.finite(m)] <- NA
+    data.table(Year = y, value = .area_weighted_mean(m, lat_s, lon_s))
+  }))
+  attr(out, "units") <- v$units
+  out
 }
 
+## ISIMIP3a obsclim covers 1961-2010. Ecopath uses the YEAR_ECOPATH mean;
+## every other year in ISIMIP_YEARS becomes an Ecosim_B point
+## (project decision: build Ecosim_B even if not continuous).
+if (!exists("ISIMIP_YEARS")) ISIMIP_YEARS <- 1994:2010
 fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                                                  bbox = c(lon_min = -6, lon_max = 16, lat_min = 35, lat_max = 45),
-                                                 year = 1995, alloc = PLANKTON_ALLOCATION, c_to_ww_detritus = 9) {
-  out_csv_path <- file.path(out_dir, "isimip3a_cobalt2_plankton_detritus_1995.csv")
+                                                 years = ISIMIP_YEARS, alloc = PLANKTON_ALLOCATION, c_to_ww_detritus = 9) {
+  out_csv_path <- file.path(out_dir, "isimip3a_cobalt2_plankton_detritus_timeseries.csv")
   if (!force_refresh && file.exists(out_csv_path)) {
     message("[ISIMIP] Using cached ", out_csv_path, " (force_refresh = TRUE to recompute).")
     return(invisible(fread(out_csv_path)))
   }
   if (!requireNamespace("ncdf4", quietly = TRUE)) stop("package 'ncdf4' is required")
   vars <- c("phydiat-vint", "phypico-vint", "phydiaz-vint", "zmicro-vint", "zmeso-vint", "intpp")
-  vals <- setNames(lapply(vars, function(v) {
-    r <- .isimip_domain_mean_1995(.isimip_get_file(v), v, bbox, year)
-    message("[ISIMIP] ", v, " ", year, " model-domain mean: ", signif(r$value, 4), " ", r$units)
-    r
-  }), vars)
-  to_gC <- function(r) { if (!grepl("^mol", r$units)) message("[ISIMIP] NOTE: units '", r$units, "' - expected mol..."); r$value * 12.011 }
-  diat <- to_gC(vals[["phydiat-vint"]]); pico <- to_gC(vals[["phypico-vint"]]); diaz <- to_gC(vals[["phydiaz-vint"]])
-  micro <- to_gC(vals[["zmicro-vint"]]); meso <- to_gC(vals[["zmeso-vint"]])
-  pp <- to_gC(vals[["intpp"]]) * 86400 * 365                       # g C m-2 yr-1
+  vals <- lapply(setNames(vars, vars), function(v) {
+    r <- .isimip_domain_mean_years(.isimip_get_file(v), v, bbox, years)
+    u <- attr(r, "units"); if (!grepl("^mol", u)) message("[ISIMIP] NOTE: ", v, " units '", u, "' - expected mol...")
+    message("[ISIMIP] ", v, ": ", nrow(r), " year(s), ", min(r$Year), "-", max(r$Year), "; YEAR_ECOPATH mean ",
+            signif(mean(r[Year %in% YEAR_ECOPATH, value]), 4), " ", u)
+    setnames(r, "value", v); r
+  })
+  w <- Reduce(function(a, b) merge(a, b, by = "Year"), vals)
+  g <- 12.011
+  w[, `:=`(diat = `phydiat-vint` * g, picodiaz = (`phypico-vint` + `phydiaz-vint`) * g,
+           micro = `zmicro-vint` * g, meso = `zmeso-vint` * g, pp = intpp * g * 86400 * 365)]
   f_macro <- if (is.finite(MACROZOO_FRACTION_OF_ZMESO)) MACROZOO_FRACTION_OF_ZMESO else 0
-  src <- paste0("ISIMIP3a GFDL-MOM6-COBALT2 obsclim hindcast (DOI 10.48364/ISIMIP.920945; COBALTv2, Stock et al. 2020), ",
-                year, " mean, vertically integrated, mean over the model domain (model GSAs x MEDITS strata depth range)")
-  out <- data.table(
-    TargetGroup = c("LargePhytoplankton", "SmallPhytoplankton", "MesoMicroZooplankton"),
-    Biomass_tC_km2 = c(diat, pico + diaz, micro + meso * (1 - f_macro)),
-    Biomass_t_km2 = c(diat / alloc$phyto_C_per_WW, (pico + diaz) / alloc$phyto_C_per_WW,
-                      micro / alloc$microzoo_C_per_WW + meso * (1 - f_macro) / alloc$mesozoo_C_per_WW),
-    Source_citation = c(paste0(src, "; phydiat-vint (diatoms); C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"),
-                        paste0(src, "; phypico-vint + phydiaz-vint (picophytoplankton ", signif(pico, 3), " + diazotrophs ",
-                               signif(diaz, 3), " t C/km2); C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"),
-                        paste0(src, "; zmicro-vint (C:WW ", alloc$microzoo_C_per_WW, ", Fenchel & Finlay 1983) + zmeso-vint",
-                               if (f_macro > 0) paste0(" x ", 1 - f_macro) else "", " (C:WW ", alloc$mesozoo_C_per_WW, ", Kiorboe 2013)"))
-  )
-  if (f_macro > 0) out <- rbind(out, data.table(TargetGroup = "MacroZooplankton", Biomass_tC_km2 = meso * f_macro,
-    Biomass_t_km2 = meso * f_macro / alloc$macrozoo_C_per_WW,
-    Source_citation = paste0(src, "; ", f_macro, " of zmeso-vint (MACROZOO_FRACTION_OF_ZMESO - cite its source); C:WW ",
-                             alloc$macrozoo_C_per_WW, " (Kiorboe 2013)")))
-  ## Detritus: E from PISCES 1995 surface chl (Copernicus; needs the CLI/login)
-  E <- tryCatch({
-    ch <- .read_nc_var(.cmems_subset("cmems_mod_glo_bgc_my_0.25deg_P1M-m", "chl", paste0(year, "-01-01"), paste0(year, "-12-31"),
-                                     bbox, depth_max = 3, character(0), 1800), "chl")
+  src <- paste0("ISIMIP3a GFDL-MOM6-COBALT2 obsclim hindcast (DOI 10.48364/ISIMIP.920945; COBALTv2, Stock et al. 2020),",
+                " annual mean of that year, vertically integrated, mean over the model domain (model GSAs x MEDITS strata depth range)")
+  out <- rbindlist(list(
+    w[, .(Year, TargetGroup = "LargePhytoplankton", Biomass_tC_km2 = diat, Biomass_t_km2 = diat / alloc$phyto_C_per_WW,
+          Source_citation = paste0(src, "; phydiat-vint (diatoms); C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+    w[, .(Year, TargetGroup = "SmallPhytoplankton", Biomass_tC_km2 = picodiaz, Biomass_t_km2 = picodiaz / alloc$phyto_C_per_WW,
+          Source_citation = paste0(src, "; phypico-vint + phydiaz-vint; C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+    w[, .(Year, TargetGroup = "MesoMicroZooplankton", Biomass_tC_km2 = micro + meso * (1 - f_macro),
+          Biomass_t_km2 = micro / alloc$microzoo_C_per_WW + meso * (1 - f_macro) / alloc$mesozoo_C_per_WW,
+          Source_citation = paste0(src, "; zmicro-vint (C:WW ", alloc$microzoo_C_per_WW, ", Fenchel & Finlay 1983) + zmeso-vint",
+                                   if (f_macro > 0) paste0(" x ", 1 - f_macro) else "", " (C:WW ", alloc$mesozoo_C_per_WW, ", Kiorboe 2013)"))],
+    if (f_macro > 0) w[, .(Year, TargetGroup = "MacroZooplankton", Biomass_tC_km2 = meso * f_macro,
+                           Biomass_t_km2 = meso * f_macro / alloc$macrozoo_C_per_WW,
+                           Source_citation = paste0(src, "; ", f_macro, " of zmeso-vint (MACROZOO_FRACTION_OF_ZMESO - cite its source)"))]
+  ), use.names = TRUE)
+  ## Detritus: E per year from PISCES surface chl (Morel & Berthon 1989)
+  E_by_year <- tryCatch({
+    ch <- .read_nc_var(.cmems_subset("cmems_mod_glo_bgc_my_0.25deg_P1M-m", "chl", paste0(max(min(years), 1993), "-01-01"),
+                                     paste0(max(years), "-12-31"), bbox, depth_max = 3, character(0), 1800), "chl")
     cn <- names(ch$dims); c_dep <- grep("depth", cn, ignore.case = TRUE)
     carr <- ch$values
     if (length(c_dep) == 1) carr <- apply(carr, setdiff(seq_along(dim(carr)), c_dep), function(x) x[1])
     cdn <- setdiff(cn, cn[c_dep])
-    carr <- aperm(carr, match(c(grep("^lon", cdn, value = TRUE)[1], grep("^lat", cdn, value = TRUE)[1], grep("time", cdn, value = TRUE)[1]), cdn))
-    zeu <- apply(.zeu_morel_berthon(carr), c(1, 2), mean, na.rm = TRUE); zeu[!is.finite(zeu)] <- NA
-    .area_weighted_mean(zeu, ch$dims[[grep("^lat", cn)[1]]], ch$dims[[grep("^lon", cn)[1]]])
-  }, error = function(e) { message("[ISIMIP] Euphotic depth (PISCES 1995 chl) failed: ", conditionMessage(e)); NA_real_ })
-  if (is.finite(E) && is.finite(pp) && pp > 0) {
-    D_gC <- 10^(0.954 * log10(pp) + 0.863 * log10(E) - 2.41)
-    out <- rbind(out, data.table(TargetGroup = "Detritus", Biomass_tC_km2 = D_gC, Biomass_t_km2 = D_gC * c_to_ww_detritus,
+    c_lon <- grep("^lon", cdn, value = TRUE)[1]; c_lat <- grep("^lat", cdn, value = TRUE)[1]; c_tim <- grep("time", cdn, value = TRUE)[1]
+    carr <- aperm(carr, match(c(c_lon, c_lat, c_tim), cdn))
+    tvals <- ch$dims[[c_tim]]
+    tyears <- max(min(years), 1993) + (seq_along(tvals) - 1) %/% 12   # monthly product requested from Jan of the first year
+    zeu <- .zeu_morel_berthon(carr)
+    rbindlist(lapply(sort(unique(tyears)), function(y) {
+      m <- apply(zeu[, , tyears == y, drop = FALSE], c(1, 2), mean, na.rm = TRUE); m[!is.finite(m)] <- NA
+      data.table(Year = y, E = .area_weighted_mean(m, ch$dims[[c_lat]], ch$dims[[c_lon]]))
+    }))
+  }, error = function(e) { message("[ISIMIP] Euphotic depth (PISCES chl) failed: ", conditionMessage(e)); NULL })
+  if (!is.null(E_by_year) && nrow(E_by_year) > 0) {
+    d <- merge(w[, .(Year, pp)], E_by_year, by = "Year")[is.finite(E) & is.finite(pp) & pp > 0]
+    d[, D_gC := 10^(0.954 * log10(pp) + 0.863 * log10(E) - 2.41)]
+    out <- rbind(out, d[, .(Year, TargetGroup = "Detritus", Biomass_tC_km2 = D_gC, Biomass_t_km2 = D_gC * c_to_ww_detritus,
       Source_citation = paste0("Pauly, Soriano-Bartz & Palomares 1993 detritus equation with PP = ", signif(pp, 3),
-                               " g C m-2 yr-1 (ISIMIP3a GFDL-MOM6-COBALT2 obsclim intpp ", year, ", DOI 10.48364/ISIMIP.920945)",
-                               " and E = ", signif(E, 3), " m (PISCES ", year, " surface chl, Morel & Berthon 1989); C:WW x",
-                               c_to_ww_detritus, " (Pauly & Christensen 1995)")))
+                               " g C m-2 yr-1 (ISIMIP3a GFDL-MOM6-COBALT2 obsclim intpp, that year; DOI 10.48364/ISIMIP.920945)",
+                               " and E = ", signif(E, 3), " m (PISCES surface chl that year, Morel & Berthon 1989); C:WW x",
+                               c_to_ww_detritus, " (Pauly & Christensen 1995)"))], use.names = TRUE)
   }
-  message("[ISIMIP] === RESULT ", year, " === ", paste(sprintf("%s %.2f t WW/km2", out$TargetGroup, out$Biomass_t_km2), collapse = "; "),
-          if (f_macro == 0) " | MacroZooplankton: no Ecopath_B (inside zmeso; estimate from EE)" else "")
-  fwrite(out, out_csv_path)
+  base <- out[Year %in% YEAR_ECOPATH, .(B = mean(Biomass_t_km2)), by = TargetGroup]
+  message("[ISIMIP] === RESULT (", paste(range(YEAR_ECOPATH), collapse = "-"), " mean; ", uniqueN(out$Year), " year(s) ",
+          min(out$Year), "-", max(out$Year), " kept for Ecosim) === ",
+          paste(sprintf("%s %.2f t WW/km2", base$TargetGroup, base$B), collapse = "; "),
+          if (f_macro == 0) " | MacroZooplankton: no plankton-model Ecopath_B (field minimum / EE instead)" else "")
+  (if (exists("safe_fwrite")) safe_fwrite else fwrite)(out, out_csv_path)
   out
 }
 
@@ -2315,6 +2335,11 @@ plankton_missing <- setdiff(plankton_targets, pp_hand_groups)
 study_area_km2 <- sum(strata_area_by_area$area_km2, na.rm = TRUE)
 .to_model_rows <- function(draft, label) {
   if (is.null(draft) || nrow(draft) == 0) return(NULL)
+  ## A draft WITH a Year column (ISIMIP annual series) keeps one row per
+  ## year -> Ecopath uses the YEAR_ECOPATH mean, Ecosim gets every year.
+  if ("Year" %in% names(draft)) return(draft[, .(Year = as.integer(Year), Group = TargetGroup,
+            Biomass_t = Biomass_t_km2 * study_area_km2,
+            Source_citation = paste0("AUTO-DRAFT FROM ", label, " - REVIEW BEFORE TRUSTING: ", Source_citation))])
   draft[, .(Year = round(mean(YEAR_ECOPATH)), Group = TargetGroup,
             Biomass_t = Biomass_t_km2 * study_area_km2,
             Source_citation = paste0("AUTO-DRAFT FROM ", label, " - REVIEW BEFORE TRUSTING: ", Source_citation))]
@@ -2333,7 +2358,7 @@ if (ENABLE_CMEMS_PLANKTON && length(plankton_missing) > 0) {
       tryCatch(fetch_isimip_cobalt_plankton_biomass(out_dir = csv_out_dir),
                error = function(e) { message("[ISIMIP] FAILED - falling back to Copernicus: ", conditionMessage(e)); NULL }) else NULL
     if (!is.null(isimip_draft) && nrow(isimip_draft) > 0) {
-      plankton_model_rows <- .to_model_rows(isimip_draft, "ISIMIP3a GFDL-MOM6-COBALT2 OBSCLIM 1995 (01b ISIMIP section)")
+      plankton_model_rows <- .to_model_rows(isimip_draft, "ISIMIP3a GFDL-MOM6-COBALT2 OBSCLIM ANNUAL SERIES (01b ISIMIP section)")
     } else {
       plankton_draft <- tryCatch(fetch_cmems_plankton_biomass(out_dir = csv_out_dir), error = function(e) {
         message("[Plankton biomass] FAILED: ", conditionMessage(e)); NULL })
@@ -2388,17 +2413,21 @@ if (length(intersect(phyto_targets, plankton_missing)) > 0 && !all(phyto_targets
   }
 }
 
-## Macrozooplankton left for Ecopath to estimate (project decision
-## 2026-10-05): SEAPODYM LMTL zooc is "a single functional group in the
-## epipelagic layer" (CMEMS-GLO-PUM-001-033), so it misses the mostly
-## mesopelagic/migrating macrozooplankton (euphausiids etc.). With no
-## direct West Med survey, B is left blank and Ecopath estimates it from
-## an assumed EE (Christensen & Walters 2004, Ecol. Model. 172:109-139).
-if (!exists("ESTIMATE_MACROZOO_IN_ECOPATH")) ESTIMATE_MACROZOO_IN_ECOPATH <- !is.finite(MACROZOO_FRACTION_OF_ZMESO)  # plankton-source macro rows only; the field minimum comes in with the megafauna loader
+## Macrozooplankton is NOT taken from a plankton model (project decision:
+## "no other models"). ISIMIP3a COBALT2 zmeso and SEAPODYM LMTL zooc are
+## epipelagic mesozooplankton (CMEMS-GLO-PUM-001-033), so they miss the
+## mostly mesopelagic/migrating macrozooplankton (euphausiids etc.).
+## Any macrozooplankton row from the plankton model is dropped here; FG 71
+## takes the field-reference minimum instead (section "UNCERTAIN FGs",
+## merged with the megafauna loader). If that value is removed too,
+## B is left blank and Ecopath estimates it from an assumed EE
+## (Christensen & Walters 2004, Ecol. Model. 172:109-139).
+if (!exists("ESTIMATE_MACROZOO_IN_ECOPATH")) ESTIMATE_MACROZOO_IN_ECOPATH <- !is.finite(MACROZOO_FRACTION_OF_ZMESO)
 if (isTRUE(ESTIMATE_MACROZOO_IN_ECOPATH) && !is.null(plankton_model_rows) && nrow(plankton_model_rows) > 0) {
   plankton_model_rows <- plankton_model_rows[tolower(Group) != "macrozooplankton"]
-  message("[Plankton biomass] MacroZooplankton (FG 71) left WITHOUT Ecopath_B on purpose - estimate it in Ecopath",
-          " from an EE (ESTIMATE_MACROZOO_IN_ECOPATH = TRUE). LMTL zooc covers epipelagic zooplankton only.")
+  message("[Plankton biomass] MacroZooplankton (FG 71): no plankton-model value used (epipelagic models only);",
+          " its Ecopath_B comes from the field-reference minimum (MACROZOO_SOURCE = '",
+          if (exists("MACROZOO_SOURCE")) MACROZOO_SOURCE else "field_minimum", "').")
 }
 if (!is.null(plankton_model_rows) && nrow(plankton_model_rows) > 0) {
   plankton_model_rows <- plankton_model_rows[tolower(Group) %in% plankton_missing]
@@ -2410,7 +2439,7 @@ if (!is.null(plankton_model_rows) && nrow(plankton_model_rows) > 0) {
 pp_cols_keep <- intersect(pp_cols, names(pp_hand))
 pp_merged <- rbindlist(list(pp_hand[, ..pp_cols_keep], plankton_model_rows), use.names = TRUE, fill = TRUE)
 PRIMARY_PRODUCER_MERGED_PATH <- file.path(csv_out_dir, "primary_producer_plankton_biomass_MERGED.csv")
-fwrite(pp_merged, PRIMARY_PRODUCER_MERGED_PATH)
+safe_fwrite(pp_merged, PRIMARY_PRODUCER_MERGED_PATH)
 
 primary_producer_biomass_fg_year <- load_manual_cited_biomass_group(
   csv_path = PRIMARY_PRODUCER_MERGED_PATH, taxon_keywords = PRIMARY_PRODUCER_TAXON_KEYWORDS,
@@ -2448,7 +2477,7 @@ primary_producer_species_lit_biomass <- attr(primary_producer_biomass_fg_year, "
 ## #################################################################
 ## ---- SOURCE C: habitat shapefile x literature density x occupancy ------
 ## Seagrass areas from the EUSeaMap 2025 geodatabase (method from
-## Andrea's posidonia.R): living Posidonia = EUNIS2019C MB252 + MB2522
+## posidonia.R): living Posidonia = EUNIS2019C MB252 + MB2522
 ## (dead matte MB2523 excluded); polygons clipped to the FILTER_AREAS GSA
 ## polygons, dissolved per GSA (no double counting of adjacent/overlapping
 ## polygons) and measured in an equal-area Albers projection centred on
@@ -2476,7 +2505,7 @@ EUSEAMAP_AREA_CACHE <- file.path(BENTHIC_REF_DIR, paste0("euseamap2025_seagrass_
 
 ## Share of a habitat geometry (equal-area CRS) whose seafloor is at
 ## least min_depth deep - so mapped meadow above the model's shallowest
-## stratum (10 m) is not counted (2026-10-06, "lower Posidonia as much as
+## stratum (10 m) is not counted (project decision, \"lower Posidonia as much as
 ## defensible"). Regular sample of up to n points inside the geometry,
 ## depth from NOAA ETOPO via marmap (Pante & Simon-Bouhet 2013) at 15
 ## arc-sec (falls back to 1 arc-min). FLAGGED: 15 arc-sec (~460 m) is
@@ -2534,7 +2563,7 @@ compute_euseamap_habitat_area <- function(gdb, codes, area_shp, area_id_col, are
 }
 
 euseamap_area <- NULL
-if (file.exists(EUSEAMAP_AREA_CACHE) &&
+if (file.exists(EUSEAMAP_AREA_CACHE) && !csv_has_nul(EUSEAMAP_AREA_CACHE) &&
     all(names(EUSEAMAP_HABITAT_CODES) %in% unique(fread(EUSEAMAP_AREA_CACHE)$Group))) {
   euseamap_area <- fread(EUSEAMAP_AREA_CACHE)
   message("[EUSeaMap] Using cached seagrass areas: ", EUSEAMAP_AREA_CACHE, " (delete it to recompute from the geodatabase).")
@@ -2544,14 +2573,14 @@ if (file.exists(EUSEAMAP_AREA_CACHE) &&
     message("[EUSeaMap] Computing seagrass areas from ", gdb_hit, " (one-off, can take several minutes)...")
     euseamap_area <- tryCatch(compute_euseamap_habitat_area(gdb_hit, EUSEAMAP_HABITAT_CODES, area_shp, AREA_ID_COL, FILTER_AREAS, min_depth = EUSEAMAP_MIN_DEPTH_M),  # cached per GSA; summed over the model GSAs below
                               error = function(e) { message("[EUSeaMap] FAILED: ", conditionMessage(e)); NULL })
-    if (!is.null(euseamap_area)) fwrite(euseamap_area, EUSEAMAP_AREA_CACHE)
+    if (!is.null(euseamap_area)) safe_fwrite(euseamap_area, EUSEAMAP_AREA_CACHE)
   } else {
     message("[EUSeaMap] Geodatabase not found (looked in: ", paste(EUSEAMAP_2025_GDB, collapse = "; "),
             ") - seagrass rows keep the Habitat_area_km2 written in ", basename(HABITAT_SHAPEFILE_BIOMASS_PATH), ".")
   }
 }
-## ---- FG 70 Corals and gorgonians (2026-10-06) ---------------------------
-## Literature review (Andrea's coral_gorgonian.R reviewed): the patch
+## ---- FG 70 Corals and gorgonians ---------------------------
+## Literature review (coral_gorgonian.R reviewed): the patch
 ## densities in that script (Linares et al. 2008: P. clavata 33, E.
 ## singularis 20 colonies/m2) are WITHIN-POPULATION densities; applied
 ## to all mapped coralligenous habitat they overestimate 3-80x. Here the

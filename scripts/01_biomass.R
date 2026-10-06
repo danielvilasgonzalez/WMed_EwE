@@ -10,7 +10,6 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
-## Created by: Daniel Vilas
 ## PIPELINE STEP 1 of 4 - single script for EVERY region.
 ## Run FIRST - no dependencies on the other numbered scripts.
 ## Produces: species_density_regional_combined.csv, strata_area_by_area.csv,
@@ -59,6 +58,47 @@ while (sink.number() > 0) sink()
 ## calculation.
 ## =================================================================
 
+## =================================================================
+## NOTATION, EQUATIONS AND DATA SOURCES (01_biomass.R)
+## -----------------------------------------------------------------
+## Indices: s species, f functional group (FG), g GSA (GFCM
+## Geographical Sub-Area), h depth stratum, k haul, y year.
+## Units: biomass density D in t/km2 of the MODEL area unless stated.
+##
+## (1) Swept area per MEDITS haul (MEDITS protocol; Bertrand et al.
+##     2002, Sci. Mar. 66(S2):9-17; MEDITS Working Group 2017, MEDITS
+##     Handbook v9):  a_k = distance_k x wing_opening_k  (km2)
+## (2) Haul density:  d_s,k = W_s,k / a_k, W = catch weight (t).
+## (3) Catchability: d*_s,k = d_s,k / q_s, q from the ECOTRANS MEDITS
+##     catchability table (catchability_factors_ecotrans_medits_2021_
+##     spp.csv); q = 1 for pelagic/planktonic/seagrass/algae FGs.
+## (4) Outliers (haul level): log1p(d) above Q3 + 3 x IQR of the same
+##     species x GSA x stratum x year are removed unless 2+ hauls are
+##     high (Tukey 1977, Exploratory Data Analysis; fence width 3 =
+##     "far out").
+## (5) Stratified mean per GSA (Cochran 1977, Sampling Techniques):
+##     D_s,g,y = sum_h A_g,h dbar_s,g,h,y / sum_h A_g,h,
+##     A_g,h = stratum area from bathymetry (GEBCO/NOAA ETOPO via marmap;
+##     Pante & Simon-Bouhet 2013, PLoS ONE 8:e73051).
+## (6) Region (model area): D_s,y = sum_g A_g D_s,g,y / sum_g A_g.
+## (7) FG density: D_f,y = sum_{s in f} D_s,y (FG_WMed_2026.csv).
+## (8) MEDIAS acoustic (Leonori et al. 2021, Medit. Mar. Sci. 22:
+##     751-768): shelf density D^sh_g,y = B_g,y / A^surv_g; model-area
+##     density = sum_g D^sh_g,y A^shelf_g / A_model (10-200 m shelf).
+## (9) Small pelagics per-GSA series (sardine, anchovy): gaps filled as
+##     D_g,y = D_g,y0 x SSB_y / SSB_y0 (own-GSA stock assessment, GFCM
+##     STAR / RAM Legacy, Ricard et al. 2012, Fish Fish. 13:380-398),
+##     else linear interpolation, else carried flat (ASSUMPTION);
+##     pre-MEDIAS acoustic biomass from GFCM stock assessment forms and
+##     Palomera et al. 2007 (Prog. Oceanogr. 74:377-396).
+## (10) Ecopath B_f = mean_{y in YEAR_ECOPATH} D_f,y; Ecosim relative
+##     index I_f,y = D_f,y / D_f,1995 (Christensen, Walters & Pauly
+##     2005, Ecopath with Ecosim: a User's Guide).
+## (11) Source priority per FG: single-species stock assessment (no
+##     survey) > MEDIAS > MEDITS/q; unsurveyed FGs from
+##     01b_biomass_unsurveyed.R (its own REFERENCES block).
+## =================================================================
+
 pkgs <- c("readr", "dplyr", "tidyr", "ggplot2", "stringr", "data.table",
           "marmap", "raster", "terra", "sf", "openxlsx", "readxl", "maps", "scales",
           "rnaturalearth", "rnaturalearthdata")
@@ -98,8 +138,8 @@ if (AREA_MODE == "custom") {
   ## a DEDICATED output subfolder (out_dir/AREA_NAME/ by default, when
   ## out_dir itself isn't pre-set - see out_dir's own resolution below)
   ## so two different custom-region runs never collide or overwrite each
-  ## other's outputs. Typed interactively when unset and running as
-  ## "daniel", hardcoded otherwise - EDIT this to your actual study area
+  ## other's outputs. Typed interactively when unset and running on the
+  ## original developer machine, hardcoded otherwise - EDIT this to your actual study area
   ## name (e.g. "cap_de_creus_mpa") rather than leaving the placeholder.
   if (!exists("AREA_NAME", envir = .GlobalEnv, inherits = FALSE)) {
     if (tolower(Sys.info()[["user"]]) == "daniel") {
@@ -403,7 +443,7 @@ message("[01_survey_density] Region/year config in effect: AREA_MODE = ", AREA_M
 ##  "multi" - runs more than one method at once and combines them via
 ##      OUTLIER_CONSENSUS ("all"/"any"/"majority"); set
 ##      OUTLIER_MULTI_METHODS below to whichever combination you want.
-##  "haul" (DEFAULT since 2026-10-05) - species x haul judged against the
+##  "haul" (DEFAULT) - species x haul judged against the
 ##      same species in the same GSA x depth stratum x year; high values
 ##      only; Q3 + 3 x IQR on log1p density; repeated highs in a GSA x year
 ##      kept as real aggregations; never drops a whole year. See
@@ -1761,7 +1801,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## it must never be used, not even as a last-resort fallback. See the
   ## fcase() priority rule and the avg_density backfill guard just below
   ## for where this classification actually changes behavior.
-  ## "literature_first" (project decision 2026-10-05): benthic molluscs and
+  ## "literature_first" (project decision): benthic molluscs and
   ## other macrobenthos ARE caught by MEDITS, but a bottom trawl badly
   ## undersamples small/burrowing benthos - a cited literature density
   ## (literature_density_biomass.csv) wins whenever one exists; the MEDITS
@@ -1882,7 +1922,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
       FG_ECOLOGY_TYPE == "survey_exempt" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
       FG_ECOLOGY_TYPE == "survey_exempt", NA_real_,
       FG_ECOLOGY_TYPE == "literature_first" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
-      ## Project rule (2026-10-05): surveys first - MEDIAS, then MEDITS.
+      ## Project rule: surveys first - MEDIAS, then MEDITS.
       ## A stock assessment is used for a single-species FG only when
       ## neither survey has a value (bluefin tuna, swordfish...).
       !is.na(medias_density), medias_density,
@@ -1942,7 +1982,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## GSAs MEDIAS never surveyed (e.g. 2, 5, 8, 11) get the "median" (or
   ## "min") back-cast shelf density of the surveyed GSAs.
   if (!exists("MEDIAS_BACKCAST_UNSURVEYED_FILL")) MEDIAS_BACKCAST_UNSURVEYED_FILL <- "median"
-  ## Hybrid (project decision 2026-10-05): a GSA whose OWN stock
+  ## Hybrid (project decision): a GSA whose OWN stock
   ## assessment has biomass in the baseline years takes that assessed
   ## biomass directly (mean over YEAR_ECOPATH / the stock's shelf area) -
   ## a direct 1994-96 estimate beats a MEDIAS anchor scaled back by the
@@ -1952,7 +1992,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## FLAGGED: RAM "biomass" may be total or spawning-stock biomass
   ## depending on the stock - check each stock's metadata.
   if (!exists("MEDIAS_BACKCAST_SA_LEVEL")) MEDIAS_BACKCAST_SA_LEVEL <- TRUE
-  ## Per-GSA back-cast (2026-10-05). The earlier version pooled all
+  ## Per-GSA back-cast. The earlier version pooled all
   ## surveyed GSAs into one regional density over MEDIAS' first 3 years -
   ## those years only cover GSAs 1, 6 and 7, so the Gulf of Lions sardine
   ## peak (2003-05) was extrapolated to the whole basin. Now, per GSA:
@@ -2020,7 +2060,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
                                    stocks = paste(setdiff(unique(unlist(strsplit(na.omit(stocks), ","))), ""), collapse = ",")),
                                by = FG_num]
       current <- fg_index_regional_combined[Year %in% YEAR_ECOPATH, .(current_baseline = mean(mean_density, na.rm = TRUE),
-                                                                        current_source = first(biomass_source)), by = .(FG_num, FG_name)]
+                                                                      current_source = first(biomass_source)), by = .(FG_num, FG_name)]
       backcast <- merge(backcast, current, by = "FG_num", all.x = TRUE)
       backcast_gsa <- merge(backcast_gsa, unique(current[, .(FG_num, FG_name)]), by = "FG_num", all.x = TRUE)
       fwrite(backcast_gsa, file.path(csv_out_dir, "medias_backcast_small_pelagics_by_gsa_REVIEW.csv"))
@@ -2046,6 +2086,139 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
         }
       }
     }
+  }
+  
+  ## --- Small pelagics: one per-GSA acoustic series for Ecopath AND Ecosim
+## Literature check (GFCM SAFs sardine GSA 6/7, anchovy GSA 6/7;
+## Palomera et al. 2007): the old series mixed MEDITS/q (1997-2002, x3
+## sardine / x4 anchovy spikes NOT seen in the acoustic surveys) with a
+## region-wide MEDIAS mean whose GSA coverage changes (GSAs 1,6,7 until
+## 2008, + 9,10 later) -> artificial jumps. Now, per GSA and year:
+##   1. acoustic observation = MEDIAS (2003+) or pre-MEDIAS acoustic
+##      biomass from small_pelagics_acoustic_pre_medias.csv (GSA 6/7,
+##      1993-2002; GFCM SAFs / Palomera et al. 2007), / survey area;
+##      zero MEDIAS cells are treated as "not surveyed";
+##   2. a year without an observation = nearest observed year x the
+##      biomass ratio of the GSA's OWN stock assessment between the two
+##      years; else linear interpolation between the GSA's acoustic years
+##      (interior gaps); else the nearest acoustic year carried flat
+##      (ASSUMPTION). The pooled-stock trend is OFF by default
+##      (SMALL_PELAGIC_POOLED_TREND): in-domain the only long sardine
+##      assessment is GSA 7, whose post-2008 collapse is a Gulf of Lions
+##      condition/size effect (Van Beveren et al. 2014, Mar Biol 161:
+##      1809-1822; Saraux et al. 2019, ICES J Mar Sci 76:1564-1576),
+##      and transferring it to GSAs 1/6/9/10 inflated their 1990s biomass;
+##   3. GSAs never surveyed = median of the surveyed GSAs that year;
+##   4. model-area density = sum(D x shelf area) / model area.
+## Ecopath_B = YEAR_ECOPATH mean of this series; it replaces the hybrid
+## back-cast above. Set SMALL_PELAGIC_SERIES_MODE <- "backcast" to keep it.
+if (!exists("SMALL_PELAGIC_SERIES_MODE")) SMALL_PELAGIC_SERIES_MODE <- "per_gsa_acoustic"
+if (!exists("SMALL_PELAGIC_POOLED_TREND")) SMALL_PELAGIC_POOLED_TREND <- FALSE
+if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic_fg_by_gsa") && nrow(acoustic_fg_by_gsa) > 0) {
+  .sa_sp <- as.data.table(strata_area_by_area); .gsp <- intersect(c("AreaID", "GSA"), names(.sa_sp))[1]
+  if (exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa_sp <- .sa_sp[get(.gsp) %in% FILTER_AREAS]
+  shelf_g <- .sa_sp[Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(get(.gsp)))]
+  model_km2 <- .sa_sp[, sum(area_km2, na.rm = TRUE)]
+  surv_area <- acoustic_fg_by_gsa[, .(survey_km2 = mean(area_nm2 * KM2_PER_NM2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]
+  surv_area <- merge(shelf_g, surv_area, by = "GSA", all.x = TRUE)[, survey_km2 := fcoalesce(survey_km2, shelf_km2)]
+  obs <- acoustic_fg_by_gsa[total_biomass_t > 0, .(GSA = as.character(AreaID), Year, FG_num, biomass_t = total_biomass_t, src = "MEDIAS")]
+  pre_path <- file.path(pcloud_dir, "data/Complementary data/small_pelagics_acoustic_pre_medias.csv")
+  if (file.exists(pre_path)) {
+    pre <- fread(pre_path)
+    pre <- merge(pre, unique(acoustic_fg_by_gsa[, .(FG_num, FG_name)]), by = "FG_name")
+    obs <- rbindlist(list(obs, pre[Biomass_t > 0, .(GSA = as.character(GSA), Year, FG_num, biomass_t = Biomass_t,
+                                                    src = "pre-MEDIAS acoustic (GFCM SAF / Palomera et al. 2007)")]), use.names = TRUE)
+    obs <- obs[order(src != "MEDIAS")][!duplicated(obs[order(src != "MEDIAS"), .(GSA, Year, FG_num)])]  # MEDIAS wins if both
+  }
+  obs <- merge(obs, surv_area[, .(GSA, survey_km2)], by = "GSA")[, dens := biomass_t / survey_km2]
+  yrs_all <- sort(unique(c(YEAR_ECOPATH, if (exists("TS_YEARS")) TS_YEARS)))
+  sa_all <- if (exists("small_pelagic_assessments")) small_pelagic_assessments[!is.na(biomass)] else data.table()
+  .sa_ratio <- function(stk, y, y0) {
+    if (nrow(stk) == 0) return(NA_real_)
+    b <- stk[, .(by = biomass[year == y][1], b0 = biomass[year == y0][1]), by = stock_key][is.finite(by) & is.finite(b0) & b0 > 0]
+    if (nrow(b) == 0) NA_real_ else sum(b$by) / sum(b$b0)
+  }
+  sp_series <- rbindlist(lapply(unique(obs$FG_num), function(fg) {
+    o_fg <- obs[FG_num == fg]; sa <- if (nrow(sa_all)) sa_all[FG_num == fg] else sa_all
+    per_g <- rbindlist(lapply(shelf_g$GSA, function(g) {
+      o <- o_fg[GSA == g]
+      if (nrow(o) == 0) return(data.table(GSA = g, Year = yrs_all, dens = NA_real_, how = "unsurveyed"))
+      own <- if (nrow(sa)) sa[vapply(gsa, function(x) g %in% trimws(unlist(strsplit(x, "[,;]"))), logical(1))] else sa
+      rbindlist(lapply(yrs_all, function(y) {
+        if (y %in% o$Year) return(data.table(GSA = g, Year = y, dens = o[Year == y, dens][1], how = o[Year == y, src][1]))
+        y0 <- o$Year[order(abs(o$Year - y), -o$Year)][1]; d0 <- o[Year == y0, dens][1]
+        r <- .sa_ratio(own, y, y0)
+        if (is.finite(r)) return(data.table(GSA = g, Year = y, dens = d0 * r,
+                                            how = paste0("nearest acoustic year ", y0, " x own-GSA stock-assessment trend")))
+        lo <- o[Year < y][order(-Year)][1]; hi <- o[Year > y][order(Year)][1]
+        if (is.finite(lo$dens) && is.finite(hi$dens)) {
+          w <- (y - lo$Year) / (hi$Year - lo$Year)
+          return(data.table(GSA = g, Year = y, dens = lo$dens * (1 - w) + hi$dens * w,
+                            how = paste0("linear interpolation between acoustic years ", lo$Year, " and ", hi$Year)))
+        }
+        if (isTRUE(SMALL_PELAGIC_POOLED_TREND)) {
+          r <- .sa_ratio(sa, y, y0)
+          if (is.finite(r)) return(data.table(GSA = g, Year = y, dens = d0 * r,
+                                              how = paste0("nearest acoustic year ", y0, " x pooled assessment trend")))
+        }
+        data.table(GSA = g, Year = y, dens = d0,
+                   how = paste0("nearest acoustic year ", y0, " carried flat (ASSUMPTION: no own-GSA assessment covers both years)"))
+      }))
+    }))
+    .fill <- if (identical(MEDIAS_BACKCAST_UNSURVEYED_FILL, "min")) min else median   # same switch as the back-cast
+    per_g[, dens := fifelse(how == "unsurveyed", .fill(dens[how != "unsurveyed"], na.rm = TRUE), dens), by = Year]
+    per_g[how == "unsurveyed", how := paste0("never surveyed acoustically - ", MEDIAS_BACKCAST_UNSURVEYED_FILL, " of the other GSAs that year (ASSUMPTION)")]
+    per_g <- merge(per_g, shelf_g, by = "GSA")
+    per_g[, `:=`(FG_num = fg, biomass_t = dens * shelf_km2)]
+    per_g
+  }))
+  fwrite(sp_series, file.path(csv_out_dir, "small_pelagics_per_gsa_series_REVIEW.csv"))
+  sp_model <- sp_series[, .(mean_density_new = sum(biomass_t, na.rm = TRUE) / model_km2,
+                            n_obs = sum(how %in% c("MEDIAS", "pre-MEDIAS acoustic (GFCM SAF / Palomera et al. 2007)"))), by = .(FG_num, Year)]
+  sp_model <- sp_model[Year %in% yrs_all]
+  sp_model <- merge(sp_model, unique(fg_index_regional_combined[, .(FG_num, FG_name, FG_ECOLOGY_TYPE)]), by = "FG_num")
+  fg_index_regional_combined <- merge(fg_index_regional_combined, sp_model[, .(FG_num, Year, mean_density_new, n_obs)],
+                                      by = c("FG_num", "Year"), all = TRUE)
+  fg_index_regional_combined[is.na(FG_name), FG_name := sp_model$FG_name[match(FG_num, sp_model$FG_num)]]
+  fg_index_regional_combined[!is.na(mean_density_new), `:=`(
+    mean_density = mean_density_new,
+    biomass_source = paste0("Per-GSA acoustic series (MEDIAS + pre-MEDIAS acoustic, GFCM SAFs / Palomera et al. 2007; gaps",
+                            " = nearest acoustic year x stock-assessment trend; unsurveyed GSAs = median; ", n_obs,
+                            " GSA observation(s) this year) - see small_pelagics_per_gsa_series_REVIEW.csv"))]
+  fg_index_regional_combined[, c("mean_density_new", "n_obs") := NULL]
+  setorder(fg_index_regional_combined, FG_num, Year)
+  message("[Small pelagics] Per-GSA acoustic series (", min(yrs_all), "-", max(yrs_all), "): ",
+          paste(sp_model[Year %in% YEAR_ECOPATH, .(B = round(mean(mean_density_new), 3)), by = FG_name][, paste0(FG_name, " ", B, " t/km2 (baseline)")], collapse = "; "),
+          ". Written to small_pelagics_per_gsa_series_REVIEW.csv.")
+}
+
+  ## --- MEDITS invertebrate recording era ---------------------
+  ## Non-commercial benthic invertebrates (Other macro-benthos: polychaetes,
+  ## sponges, hydrozoans, echinoderms) were only recorded systematically in
+  ## MEDITS from 2012: 1-10 taxa per year before 2012 vs 117-164 taxa per
+  ## year 2012-2021 in this run's species_density_regional_combined.csv.
+  ## Pre-2012 densities are recording artefacts (near zero), not biomass.
+  ## For these FGs the 1994-96 baseline = mean of the full-recording years
+  ## (MEDITS_RECORDING_ERA_YEARS), q-corrected with the ECOTRANS MEDITS
+  ## catchability table (catchability_factors_ecotrans_medits_2021_spp.csv:
+  ## Porifera/Anthozoa and Echinodermata q = 1, Polychaeta/Sipuncula q = 0.1,
+  ## Hydrozoa q = 0.0188); non-baseline years before the recording era are
+  ## set to NA so Ecosim never sees the artefact as a trend. FLAGGED: a
+  ## 2012-2021 mean used as a 1995 proxy (no earlier data exist).
+  if (!exists("MEDITS_RECORDING_ERA_FG_NAMES")) MEDITS_RECORDING_ERA_FG_NAMES <- c("Other macro-benthos")
+  if (!exists("MEDITS_RECORDING_ERA_YEARS")) MEDITS_RECORDING_ERA_YEARS <- 2012:2021
+  for (fg_nm in MEDITS_RECORDING_ERA_FG_NAMES) {
+    rec <- fg_index_regional_combined[FG_name == fg_nm & Year %in% MEDITS_RECORDING_ERA_YEARS & !is.na(mean_density)]
+    if (nrow(rec) == 0) next
+    proxy <- mean(rec$mean_density)
+    fg_index_regional_combined[FG_name == fg_nm & Year %in% YEAR_ECOPATH,
+                               `:=`(mean_density = proxy,
+                                    biomass_source = paste0("MEDITS ", min(rec$Year), "-", max(rec$Year), " mean (systematic invertebrate",
+                                                            " recording from 2012) as 1994-96 proxy, q-corrected with the ECOTRANS MEDITS",
+                                                            " catchability table - pre-2012 MEDITS values are recording artefacts"))]
+    fg_index_regional_combined[FG_name == fg_nm & Year < min(MEDITS_RECORDING_ERA_YEARS) & !Year %in% YEAR_ECOPATH, mean_density := NA_real_]
+    message("[MEDITS recording era] ", fg_nm, ": baseline = mean ", min(rec$Year), "-", max(rec$Year), " = ", signif(proxy, 3),
+            " t/km2 (", nrow(rec), " yr); pre-", min(MEDITS_RECORDING_ERA_YEARS), " years set to NA.")
   }
   
   n_by_source <- fg_index_regional_combined[, .N, by = biomass_source]
@@ -2422,7 +2595,25 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
 fwrite(fg_index_for_csv, file.path(csv_out_dir, "survey_fg_annual_index.csv"))
 fwrite(fg_index_regional_combined, file.path(csv_out_dir, "survey_fg_annual_index_regional_combined.csv"))
 
+## --- Ecosim_ts hygiene for non-survey FGs -----------------
+## (1) Survey-exempt and non-living FGs (plankton, seagrass, corals,
+##     detritus...) never use MEDITS/MEDIAS bycatch as a trend point -
+##     e.g. Detritus picked up MEDITS "shell debris" (~1e-7 relative)
+##     after 2010. Those cells are set to NA.
+## (2) FGs whose baseline is NOT a survey value (model series, literature,
+##     stock assessment, back-cast) or that are in the MEDITS recording
+##     era list keep missing years BLANK in Ecosim_ts instead of 0, so a
+##     sparse series (e.g. 4 points between 1995 and 2023) is valid.
+ECOSIM_NO_SURVEY_FG_NAMES <- unique(c(EXEMPT_FG_NAMES, "Detritus", "Discards"))
+fg_index_regional_combined[FG_name %in% ECOSIM_NO_SURVEY_FG_NAMES & !Year %in% YEAR_ECOPATH &
+                             grepl("^MEDITS|^MEDIAS", biomass_source), mean_density := NA_real_]
+ecosim_no_zero_fill <- unique(fg_index_regional_combined[
+  (Year %in% YEAR_ECOPATH & !is.na(mean_density) & !grepl("^MEDITS \\(|^MEDIAS \\(", biomass_source)) |
+    FG_name %in% c(ECOSIM_NO_SURVEY_FG_NAMES, if (exists("MEDITS_RECORDING_ERA_FG_NAMES")) MEDITS_RECORDING_ERA_FG_NAMES), FG_num])
+message("[Ecosim_ts] ", length(ecosim_no_zero_fill), " FG(s) keep missing years blank (non-survey baseline or recording-era FG).")
+
 export_ecopath_ecosim_excel(
+  no_zero_fill_fg = ecosim_no_zero_fill,
   fg_index_regional = fg_index_regional_combined,
   species_density_regional = species_density_regional_combined,
   n_samples_by_area_year = n_samples_by_stratum[, .(n_samples = sum(n_samples)), by = .(AreaID, Year)],
@@ -2594,7 +2785,7 @@ if (nrow(fg_missing) > 0) {
 ##     silently throws away the FG's real (literature/stock-assessment)
 ##     biomass at species level: Biomass_t_km2 below would come out 0
 ##     for every species even though Ecopath_B has a real nonzero total
-##     for that FG. The project owner, from exactly this case ("Other
+##     for that FG. From exactly this case ("Other
 ##     dolphins" showing Density=0/prop_sp_fg=0 for both species): "this
 ##     biomass is resulted from the sum of species and this should be
 ##     noted on the FG_spp".
@@ -2698,7 +2889,7 @@ if (exists("species_lit_biomass") && nrow(species_lit_biomass) > 0) {
 ## convention as every other literature fallback in this pipeline):
 ## these abundance figures are WHOLE-MEDITERRANEAN, not Western-Med-
 ## specific (ACCOBAMS ASI reports its design-based strata results as
-## larger merged sub-areas, and this session's search didn't surface a
+## larger merged sub-areas, and the literature search didn't surface a
 ## Western-Med-only breakdown for these three species), and the body-
 ## mass figures are typical-adult approximations, not this study's own
 ## measurements - REVIEW BEFORE FULLY TRUSTING, but this ratio (pilot
@@ -2723,7 +2914,7 @@ if (exists("species_lit_biomass") && nrow(species_lit_biomass) > 0) {
 ## three species) x typical adult body mass - species-typical mass is
 ## NOT from the project's literature (she didn't supply one) - Calonectris
 ## diomedea ~650g, Puffinus yelkouan ~400g, Hydrobates pelagicus ~28g,
-## standard seabird-biology figures, flagged here as this session's own
+## standard seabird-biology figures, flagged here as the pipeline's own
 ## addition, not independently verified against a citation.
 ## CAVEATS, explicit rather than hidden: (1) Zotier et al. 1992 is
 ## Mediterranean-WIDE, not Western-Med-specific, same limitation as the
@@ -2749,7 +2940,7 @@ if (exists("species_lit_biomass") && nrow(species_lit_biomass) > 0) {
 ## michahellis/ridibundus, 2x Phalacrocorax, Sterna albifrons/hirundo/
 ## nilotica/sandvicensis), all currently on the even 1/11 split
 ## (prop_sp_fg_basis = "even split"). A real per-species weighting for
-## FG8 was researched again this session (WebSearch) specifically
+## FG8 was researched again (web literature search) specifically
 ## looking for a single comparable 1990-96 Mediterranean-wide breeding-
 ## pair count across all 11 species - found nothing usable: the best
 ## candidate (Zotier, Bretagnolle & Thibault 1999, J. Biogeography
@@ -2762,8 +2953,8 @@ if (exists("species_lit_biomass") && nrow(species_lit_biomass) > 0) {
 ## prop_sp_fg_basis - a genuinely real fix needs either that 1999 paper's
 ## actual table or Isenmann & Goutner 1993 (cited elsewhere as a
 ## Mediterranean gull/tern breeding-status source, not yet obtained).
-## HISTORY (kept short - see the project doc
-## `prop_sp_fg_species_weight_code_only_2026-09-29.md` for the full
+## HISTORY (kept short - see the project
+## documentation for the full
 ## back-and-forth): per project decision ("the species weight within fg
 ## should be calculated inside the code, not created manually"), this is
 ## now a plain computed-in-R list rather than a CSV - same raw-components
@@ -2791,20 +2982,20 @@ if (exists("species_lit_biomass") && nrow(species_lit_biomass) > 0) {
 ## REVERSAL, per project decision ("the species weight within fg should be",
 ## " calculated inside the code, not created manually"): the CSV-loading
 ## mechanism above (SPECIES_FG_WEIGHT_PATH/load_species_fg_weights()) is
-## REMOVED. The project's distinction, worked out over this session's
+## REMOVED. The project's distinction, worked out over the project's
 ## back-and-forth: a manually-cited CSV
 ## belongs to a number that IS an actual observation from the literature
 ## (marine_megafauna_biomass.csv's Biomass_t rows, which also set
 ## Ecopath_B - see the "species-level split from the SAME literature
 ## figures..." block above) - that kind of number should live in an
-## editable CSV so the project owner can add/correct it without a code change. A
+## editable CSV so values can be added/corrected it without a code change. A
 ## RELATIVE weight with no FG-total significance of its own (this list)
 ## isn't that - it is a derived quantity computed FROM literature
 ## abundance/body-mass figures that are already fixed citations, so it
 ## belongs in code as a transparent calculation, not in a second file to
 ## maintain. Every entry below is still computed from its own raw
 ## Abundance x Body_mass_kg components (kept as explicit multiplication,
-## not a pre-multiplied opaque number - the same transparency the project owner
+## not a pre-multiplied opaque number - the same transparency the project
 ## asked for when this was still a CSV), just written directly in R.
 ##
 ## In practice, "Other dolphins" and "Pelagic/Offshore seabirds" below
@@ -2912,7 +3103,7 @@ for (fg_nm in names(MEGAFAUNA_FG_SPECIES_WEIGHTS)) {
 ## whenever the survey doesn't sample that FG representatively (see the
 ## biomass_source priority cascade above) - so summing the raw Density
 ## numbers within an FG does NOT actually add up to Ecopath_B's total
-## for those FGs. The project owner: "the proportion of biomass in the
+## for those FGs. Project requirement: "the proportion of biomass in the
 ## FG_spp doesn't correspond to Ecopath_B". Fixed by adding
 ## Biomass_t_km2 = prop_sp_fg * that FG's ACTUAL Ecopath_B Biomass, so
 ## summing Biomass_t_km2 within any FG always reconciles exactly to
@@ -2943,8 +3134,8 @@ if (n_zero_biomass_fg > 0) {
 ## every FG whose real Ecopath_B comes from somewhere other than the
 ## survey (megafauna/primary-producer literature, stock assessment,
 ## EcoBase) - e.g. a cetacean species showing Density = 0 alongside a
-## real nonzero Ecopath_B_Biomass for the same row. Explained once
-## already this session as "expected" (Density is a genuinely different
+## real nonzero Ecopath_B_Biomass for the same row. Explained
+## elsewhere as "expected" (Density is a genuinely different
 ## measurement), but this is right that having two disagreeing
 ## biomass-like numbers side by side in the same sheet, under a column
 ## literally named "Density", reads as broken even when it isn't - and
@@ -2998,7 +3189,7 @@ message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg
 ## documented single-species/literature-weighted override like the
 ## cetacean fixes above) - just an equal split across the FG's own
 ## species, because no per-species density/abundance source exists for
-## it at all. The project owner: "we need to break down the biomass
+## it at all. Project requirement: "we need to break down the biomass
 ## of FG that were not extracted from medits medias or stock
 ## assessments" - this makes that list explicit (FG-level, sorted by
 ## how much total biomass is riding on the assumption) instead of it
@@ -3326,7 +3517,7 @@ if (nrow(fg_missing_biomass_eligible) > 0 &&
               " on each missing FG's own name/scientific name) found a candidate for ", nrow(ecobase_missing_fill),
               " of the ", nrow(fg_missing_biomass_eligible), " non-fish/non-Expanding/non-Detritus-Discards FG(s)",
               " that had no biomass from any other source - see ecobase_biomass_evaluation_NOT_INCORPORATED.csv.",
-              " Per the project owner, these are REFERENCE ONLY and are NOT applied to Ecopath_B - these FG(s)",
+              " By project decision, these are REFERENCE ONLY and are NOT applied to Ecopath_B - these FG(s)",
               " remain in fg_missing_ecopath_B_REVIEW.csv below until a real literature/survey/stock-assessment",
               " value is added by hand.")
     } else {
