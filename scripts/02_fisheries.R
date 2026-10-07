@@ -10,6 +10,7 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
+## Created by: Daniel Vilas
 ## FISHERIES MASTER SCRIPT - ONE SELF-CONTAINED SOURCE FILE.
 ##
 ## Runs the whole fisheries flow end to end. The flow (below) is
@@ -71,10 +72,12 @@ while (sink.number() > 0) sink()
 ##     to GSA. "Catches by species, year and GSA" is therefore reported
 ##     at Division resolution, with the Division kept in its own column
 ##     (never relabeled "GSA") - see STEP 1 below for exactly why.
-##   - Fleet/sector split, unreported %, and bycatch % are all only
-##     available for the 6 named TARGET_COUNTRIES (Morocco, Algeria,
-##     Tunisia, France, Spain, Italy) - FLEET_REGISTER/GEAR_TO_FLEETTYPE
-##     and SAU's raw extract only cover these.
+##   - Model domain = the GSAs in strata_area_by_area.csv (01_biomass.R).
+##     TARGET_COUNTRIES = coastal states of those GSAs (GSA_COASTAL_STATE;
+##     Spain, France, Italy for GSAs 1, 2, 5-11). Catch by other countries
+##     (Morocco GSA 3, Algeria GSA 4, Tunisia GSA 12, distant-water flags)
+##     is outside the domain and excluded; ICCAT catch is scaled to the
+##     model GSAs with STECF FDI shares.
 ##   - Discard ratio is FG-level, Mediterranean-wide (FishMIP cannot
 ##     cross country x FG), applied uniformly to every country.
 ##   - Bycatch has NO identified data source anywhere in this pipeline
@@ -115,12 +118,13 @@ while (sink.number() > 0) sink()
 ##     years, s_l,y = fleet effort share (observed FDI share from 2014;
 ##     before, catch x days-per-tonne share rescaled to the 2014-2016
 ##     FDI mean). After Rousseau's last year: E_y = E_last x E^FDI_y /
-##     E^FDI_last. Other countries: FishMIP nominal effort.
+##     E^FDI_last. FishMIP nominal effort kept as a secondary series.
 ## (7) Technology creep (effective effort): E' = E x prod(1 + c_t),
 ##     c = 0.79 %/yr bottom trawl, 2.0 %/yr other gears 1994-2013
 ##     (Damalas et al. 2015; Tsagarakis et al. 2022), 4.5 %/yr 2014-2023
 ##     (Palomares & Pauly 2019, C% = 13.8 y^-0.511).
-## (8) Ecopath: L_f,l = mean_{y in YEAR_ECOPATH} L / A_model; fishing
+## (8) Ecopath: L_f,l = mean_{y in YEAR_ECOPATH} L / A_model (A_model =
+##     sum of strata_area_by_area.csv, the SAME area as Ecopath_B); fishing
 ##     mortality F_f = C_f / B_f (B from 01_biomass.R).
 ## (9) Ecosim catch series: C_f,y / A_model; effort series E_l,y
 ##     relative to 1995.
@@ -194,8 +198,8 @@ ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")  # pat
 ## each block keeps its native CSVs separate, with only the shared
 ## workbook staying at the top-level out_dir. BIOMASS_CSV_DIR points at
 ## 01_biomass.R's subfolder for this script's cross-block reads of that
-## block's own outputs (species density, Ecosim.csv, FG_lookup.csv) -
-## not strata area, see the Total_Area_km2 computation further down for why.
+## block's own outputs (species density, Ecosim.csv, FG_lookup.csv,
+## strata_area_by_area.csv for the model GSAs and area).
 csv_out_dir <- file.path(out_dir, "fisheries")
 if (!dir.exists(csv_out_dir)) dir.create(csv_out_dir, recursive = TRUE)
 BIOMASS_CSV_DIR <- file.path(out_dir, "biomass")
@@ -212,7 +216,6 @@ if (!exists("END_YEAR",        envir = .GlobalEnv, inherits = FALSE)) END_YEAR  
 # say so explicitly rather than truncating GFCM's longer series.
 if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996         # single-snapshot averaging window for the Ecopath-by-fleet and F steps - the 1994-1996 (or 1995 alone) reference period is intentional, not a stale placeholder: several catch sources (ICCAT, STECF FDI, some STAR/RAM assessments) genuinely have no coverage this early, which is why quite a few commercial FGs show zero in Ecopath_L/Ecopath_Di for exactly this window even though they have real catch in later years - see species_group_fg_crosswalk.csv to check whether a given FG's species matched at all vs. simply has no data yet for 1994-1996
 
-if (!exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) TARGET_COUNTRIES <- c("Spain", "France", "Italy", "Tunisia", "Algeria", "Morocco")
 
 ## Which GSAs' plain geometric area to sum for the Catches<->Biomass
 ## density conversion further down - defaults to the same Western Med
@@ -221,7 +224,28 @@ if (!exists("TARGET_COUNTRIES", envir = .GlobalEnv, inherits = FALSE)) TARGET_CO
 ## own FILTER_AREAS/area_shp) since this script must stay runnable on
 ## its own - see that conversion's own comment below for why it's a
 ## plain area sum now, not a read of 01_biomass.R's strata_area_by_area.csv.
-if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- 1:11   # GSA numbers
+## --- Model domain: the SAME GSAs and area as 01_biomass.R -------------
+## Catches, discards, effort and biomass must cover the same area, so
+## the GSAs are read from 01_biomass.R's strata_area_by_area.csv (MEDITS
+## 10-800 m strata of the model GSAs) and every catch source is kept to
+## those GSAs (project decision: catch taken outside the model GSAs is
+## not included). Without that file: FILTER_AREAS as set, else GSAs 1, 2,
+## 5-11.
+.sa_path_dom <- file.path(out_dir, "biomass", "strata_area_by_area.csv")
+.sa_dom <- if (file.exists(.sa_path_dom)) fread(.sa_path_dom) else NULL
+if (!is.null(.sa_dom)) {
+  .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
+  FILTER_AREAS <- sort(unique(as.numeric(.sa_dom[[.gc_dom]])))
+} else if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- c(1, 2, 5:11)
+## Coastal state(s) of each GSA (GFCM Geographical Sub-Areas, Resolution
+## GFCM/33/2009/2). Countries with no coast in the model GSAs are not
+## model fleets: their catch (e.g. Morocco GSA 3, Algeria GSA 4, Tunisia
+## GSA 12) is outside the domain. TARGET_COUNTRIES_OVERRIDE to change.
+GSA_COASTAL_STATE <- list("1" = "Spain", "2" = "Spain", "3" = "Morocco", "4" = "Algeria", "5" = "Spain", "6" = "Spain",
+                          "7" = "France", "8" = "France", "9" = "Italy", "10" = "Italy", "11" = "Italy",
+                          "12" = "Tunisia", "13" = "Tunisia", "14" = "Tunisia")
+TARGET_COUNTRIES <- if (exists("TARGET_COUNTRIES_OVERRIDE", envir = .GlobalEnv, inherits = FALSE)) TARGET_COUNTRIES_OVERRIDE else
+  unique(unlist(GSA_COASTAL_STATE[as.character(FILTER_AREAS)]))
 
 message("[02_fisheries.R] Region/year config in effect: TARGET_COUNTRIES = ", paste(TARGET_COUNTRIES, collapse=", "),
         " | FILTER_AREAS (GSA) = ", paste(range(FILTER_AREAS), collapse="-"),
@@ -461,12 +485,20 @@ if (nrow(gsa_shp_for_area) == 0) {
        " official GFCM shapefile - check FILTER_AREAS is set to real GSA numbers (gsa_num, 1-30,",
        " with 111/112 already folded into 11).")
 }
-Total_Area_km2 <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6  # m^2 -> km^2
-message("\n[Area] Study area for the Catches<->Biomass density conversion: ", round(Total_Area_km2, 1),
-        " km^2 (plain geometric area of GSA(s) ", paste(sort(FILTER_AREAS), collapse = ", "),
-        " from the official GFCM shapefile, computed directly here - NOT read from",
-        " 01_biomass.R's strata_area_by_area.csv, since catches have no depth-stratum dimension",
-        " for that file's per-stratum breakdown to matter for).")
+## The density area A_model must be the one Ecopath_B uses (01_biomass.R:
+## sum of strata_area_by_area.csv), otherwise L/B and F = C/B mix two
+## areas (the whole-GSA polygons were 804,310 km2 vs 175,660 km2 for B).
+Total_Area_km2_polygons <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6  # m^2 -> km^2
+if (!is.null(.sa_dom)) {
+  Total_Area_km2 <- sum(.sa_dom[as.numeric(get(.gc_dom)) %in% FILTER_AREAS, area_km2], na.rm = TRUE)
+  message("\n[Area] Model area for every t/km2 conversion: ", round(Total_Area_km2, 1), " km^2 = Ecopath_B's area",
+          " (01_biomass.R strata_area_by_area.csv, GSAs ", paste(FILTER_AREAS, collapse = ", "), "). Whole-GSA polygons",
+          " would be ", round(Total_Area_km2_polygons), " km^2 (not used).")
+} else {
+  Total_Area_km2 <- Total_Area_km2_polygons
+  message("\n[Area] WARNING: ", .sa_path_dom, " not found (run 01_biomass.R first) - using whole-GSA polygon area ",
+          round(Total_Area_km2, 1), " km^2, which is NOT Ecopath_B's area.")
+}
 
 ## =================================================================
 ## # get GFCM catches by species and year and GSA
@@ -539,6 +571,18 @@ build_westmed_timeseries <- function(cfg) {
 }
 
 ts_data <- build_westmed_timeseries(cfg)  # build the West Med catch timeseries for the active dataset
+## Keep only catch by the model GSAs' coastal states (TARGET_COUNTRIES):
+## GFCM divisions 37.1.1-37.1.3 also hold Morocco (GSA 3), Algeria
+## (GSA 4) and Tunisia (GSA 12) and distant-water flags with no GSA, all
+## outside the model domain.
+if (nrow(ts_data$country_species_ts) > 0) {
+  .n_all <- ts_data$species_ts[Year >= START_YEAR, sum(Catch, na.rm = TRUE)]
+  ts_data$species_ts <- ts_data$country_species_ts[Country %in% TARGET_COUNTRIES, .(Catch = sum(Catch, na.rm = TRUE)), by = .(Year, Species, Division)]
+  message("[GFCM] Catch kept to the model GSAs' coastal states (", paste(TARGET_COUNTRIES, collapse = ", "), "): ",
+          round(100 * ts_data$species_ts[Year >= START_YEAR, sum(Catch)] / .n_all, 1), "% of divisions 37.1.1-37.1.3 catch since ",
+          START_YEAR, "; excluded by country (t, all years): ",
+          ts_data$country_species_ts[!Country %in% TARGET_COUNTRIES & Year >= START_YEAR, .(t = round(sum(Catch, na.rm = TRUE))), by = Country][order(-t)][1:min(.N, 8), paste0(Country, " ", t, collapse = "; ")], ".")
+}
 message("\n[GFCM] Dataset loaded: ", DATASET_VERSION, " - ", nrow(ts_data$species_ts),
         " Species x Year x Division row(s) (Division, NOT GSA - see note above build_westmed_timeseries()).")
 if (nrow(ts_data$country_species_ts) == 0) {
@@ -1454,6 +1498,7 @@ print(gfcm_catches_by_area_summary)  # print the summary to console
 FLEET_REGISTER <- read_fisheries_reference("fleet_register_taxonomy.csv",
                                            required_cols = c("Country", "GSA", "FleetType", "Comment"))
 FLEET_REGISTER[, Sector := fifelse(FleetType == "Artisanal", "Artisanal", "Industrial")]  # derive Sector from FleetType
+FLEET_REGISTER <- FLEET_REGISTER[Country %in% TARGET_COUNTRIES]   # model-domain fleets only (see GSA_COASTAL_STATE)
 
 recreational_register <- unique(FLEET_REGISTER[, .(Country, GSA)])[, .(GSA = paste(unique(GSA), collapse = "; ")), by = Country]  # one row per country, GSAs collapsed into one string
 recreational_register[, `:=`(FleetType = "Recreational", Sector = "Recreational",
@@ -1502,6 +1547,7 @@ GEAR_TO_FLEETTYPE <- read_fisheries_reference("gear_to_fleettype.csv",
 ## ("bottom trawl", "small scale gillnets") - match on trimmed,
 ## lower-cased Country/gear on both sides so casing never breaks the join.
 GEAR_TO_FLEETTYPE[, `:=`(Country = trimws(Country), sau_gear = trimws(tolower(sau_gear)))]
+GEAR_TO_FLEETTYPE <- GEAR_TO_FLEETTYPE[Country %in% TARGET_COUNTRIES]   # model-domain countries only
 GEAR_TO_FLEETTYPE <- GEAR_TO_FLEETTYPE[, .(weight = sum(weight)), by = .(Country, sau_gear, FleetType)]
 ## FleetType "EXCLUDED": gears with no fleet in the
 ## EwE fleet taxonomy (fleet_register_taxonomy.csv) - e.g. Italian pelagic
@@ -1856,7 +1902,7 @@ message("\n[Fleet split] fleet_prop: ", nrow(fleet_prop), " Country x FG x Fleet
 ## data rows, then a blank row before the next country's block.
 GFCM_FLEET_REGISTER_XLSX <- file.path(pcloud_dir, "data/Complementary data/GFCM-FleetRegister.xlsx")
 GFCM_FLEET_REGISTER_SHEET <- "FleetRegister"
-GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- c("Morocco", "Algeria")  # scope, per project decision - add "Tunisia" here if she wants it included later
+GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- intersect(c("Morocco", "Algeria"), TARGET_COUNTRIES)  # empty when GSAs 3-4 are outside the model domain
 GFCM_FLEET_REGISTER_SOURCE_LABEL <- "GFCM Fleet Register (real registered-vessel count by gear, Complementary data/GFCM-FleetRegister.xlsx) - assumes roughly equal catch-per-vessel across gears, no FG/year variation"
 
 parse_gfcm_fleet_register <- function(path, sheet) {
@@ -2411,6 +2457,7 @@ stecf_catches_dir <- file.path(STECF_FDI_DIR, "Catches")
   dt[keep]
 }
 
+fdi_model_gsa_share <- data.table(Country = character(), species = character(), share_in_model = numeric())
 if (!dir.exists(stecf_catches_dir)) {
   message("\n[STECF FDI] Catches folder not found at '", stecf_catches_dir, "' - fleet_prop_final below",
           " falls back to SAU/default for Spain/France/Italy too (see comment above this block for how",
@@ -2463,6 +2510,15 @@ if (!dir.exists(stecf_catches_dir)) {
                   " above and adjust this block if the Mediterranean/Black Sea code is spelled differently).")
         }
       }
+      ## Share of each country's landings (by species) taken inside the
+      ## model GSAs, 2014+ - used to keep ICCAT's Mediterranean-wide catch
+      ## (no GSA field) to the model domain (Italy's swordfish/tuna are
+      ## largely Ionian/Adriatic/Strait of Sicily).
+      stecf_raw[, .gsa_tmp := suppressWarnings(floor(as.numeric(sub("^GSA\\s*", "", toupper(trimws(as.character(sub_region)))))))]
+      stecf_raw[, .w_tmp := suppressWarnings(as.numeric(total_live_weight_landed))]
+      fdi_model_gsa_share <- stecf_raw[, .(t_all = sum(.w_tmp, na.rm = TRUE), t_in = sum(.w_tmp[.gsa_tmp %in% FILTER_AREAS], na.rm = TRUE)),
+                                       by = .(Country, species)][t_all > 0, .(Country, species, share_in_model = t_in / t_all)]
+      stecf_raw[, c(".gsa_tmp", ".w_tmp") := NULL]
       stecf_raw <- .fdi_keep_model_gsas(stecf_raw, "Catch")
       message("[STECF FDI] ", nrow(stecf_raw), " row(s) after country/year(>=", STECF_FDI_START_YEAR,
               ")/region filter. sub_region (GSA) value(s) found: ", paste(sort(unique(stecf_raw$sub_region)), collapse = ", "))
@@ -2974,6 +3030,18 @@ if (nrow(multistanza_fg_pairs) == 0) {
       }
     }
   }
+}
+
+## --- Stanza catch split without Mediterranean age data ---------------
+## The FDI Biological (age) extract has no GFCM Area 37 rows, so the
+## juvenile/adult catch split comes from MEDITS TC length frequencies in
+## the model GSAs: discards (< MCRS) and landings (>= MCRS) split at the
+## length of the adult-stanza age (see
+## compute_stanza_catch_split_from_length(), lib_survey_fg_density_functions.R).
+if (nrow(multistanza_fg_pairs) > 0 && nrow(multistanza_age_split) == 0) {
+  TC_FILE_02 <- resolve_pcloud_file(paste0(pcloud_dir, "/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/TC.csv"), pcloud_dir, required = FALSE)
+  multistanza_age_split <- compute_stanza_catch_split_from_length(multistanza_fg_pairs, TC_FILE_02, year_range = YEAR_ECOPATH, area_filter = FILTER_AREAS)
+  if (nrow(multistanza_age_split)) fwrite(multistanza_age_split, file.path(csv_out_dir, "multistanza_juv_adult_age_split.csv"))
 }
 
 ## --- Effort (days x capacity) - separate file, one row per Country x
@@ -4069,6 +4137,11 @@ if (nrow(star_ram_combined) > 0) {
     length(v) > 0 && !anyNA(v) && all(v %in% areas)
   }
   star_ram_combined[, gsa := as.character(gsa)]
+  ## RAM Legacy labels the joint STECF hake unit "GSA 1-7"; the assessed
+  ## unit is GSAs 1, 5, 6, 7 (STECF EWG Mediterranean assessments), all
+  ## inside the model - relabelled so it is not dropped as covering GSA 3-4.
+  STAR_STOCK_GSA_OVERRIDE <- c("HAKEMEDGSA1-7" = "1,5,6,7")
+  star_ram_combined[stock_key %in% names(STAR_STOCK_GSA_OVERRIDE), gsa := STAR_STOCK_GSA_OVERRIDE[stock_key]]
   star_wm <- star_ram_combined[!is.na(gsa) & nzchar(gsa)][vapply(gsa, .gsa_in_scope, logical(1),
                                                                    areas = as.numeric(FILTER_AREAS))]
   ## Same species x year x GSA covered by more than one assessment (single-
@@ -4738,6 +4811,16 @@ if (is.null(iccat_raw)) {
     iccat_target_raw <- iccat_raw[0]
   } else {
     iccat_target_raw <- merge(iccat_medonly_raw, ICCAT_COUNTRY_MAP, by = "iccat_flag")  # inner join - Mediterranean-only catch, 6 target countries only
+    iccat_target_raw <- iccat_target_raw[Country %in% TARGET_COUNTRIES]
+    ## ICCAT Task I has no GSA: scale each country's Mediterranean catch to
+    ## the model GSAs by its STECF FDI landings share inside them (same
+    ## species, 2014+; FAO 3-alpha BFT/SWO/ALB). No FDI share -> 1 (flagged).
+    .iccat_3a <- c("Thunnus thynnus" = "BFT", "Xiphias gladius" = "SWO", "Thunnus alalunga" = "ALB")
+    iccat_target_raw[, species := .iccat_3a[ScientificName]]
+    iccat_target_raw <- merge(iccat_target_raw, fdi_model_gsa_share, by = c("Country", "species"), all.x = TRUE)
+    message("[ICCAT] Share of Mediterranean catch inside the model GSAs (STECF FDI 2014+): ",
+            paste(unique(iccat_target_raw[, paste0(Country, " ", species, "=", ifelse(is.na(share_in_model), "n/a (1 used)", round(share_in_model, 2)))]), collapse = "; "), ".")
+    iccat_target_raw[, Catch_t_iccat := Catch_t_iccat * fcoalesce(share_in_model, 1)][, c("species", "share_in_model") := NULL]
   }
   
   ## Split Qty_t into Landings vs Discards via CatchTypeCode where that
@@ -5022,13 +5105,14 @@ catches_discards_fg[, n_species_in_fg := NULL]
 ## breakdown still shows the multistanza species' full combined total on
 ## its Adult fleet-split rows. A known, explicitly flagged follow-up, not
 ## a silent gap.
+multistanza_props_applied <- data.table()
 if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
   message("\n[Multistanza split] Not applied - ", if (nrow(multistanza_fg_pairs) == 0) "no multistanza FG pair"
           else "no usable age-resolved proportion", " (see the messages above). Juvenile FG(s) stay at zero.")
 } else {
-  landings_prop_by_species <- multistanza_age_split[source_file == "FDI Landings Age.csv",
+  landings_prop_by_species <- multistanza_age_split[grepl("Landings", source_file),
                                                     .(landings_prop_juv = mean(prop_juvenile, na.rm = TRUE)), by = ScientificName]
-  discards_prop_by_species <- multistanza_age_split[source_file == "FDI Discards Age.csv",
+  discards_prop_by_species <- multistanza_age_split[grepl("Discards", source_file),
                                                     .(discards_prop_juv = mean(prop_juvenile, na.rm = TRUE)), by = ScientificName]
   n_split_applied <- 0
   for (i in seq_len(nrow(multistanza_fg_pairs))) {
@@ -5050,9 +5134,9 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
       FG_name = multistanza_fg_pairs$FG_name_juv[i],
       Landings_t = Landings_t * l_prop,
       Discard_t = fifelse(!is.na(Discard_t), Discard_t * d_prop, NA_real_),
-      catch_source = paste0("derived: STECF FDI Biological Age data's juvenile proportion (", round(100 * l_prop, 1),
-                            "% of landings, ", round(100 * d_prop, 1), "% of discards - Spain/France/Italy 2014+",
-                            " age data, applied uniformly to the whole series) x the '", sci_name, "' combined total")
+      catch_source = paste0("derived: juvenile share (", round(100 * l_prop, 1), "% of landings, ", round(100 * d_prop, 1),
+                            "% of discards; source: ", paste(unique(multistanza_age_split[ScientificName == sci_name, source_file]), collapse = " / "),
+                            "; applied uniformly to the whole series) x the '", sci_name, "' combined total")
     )]
     juv_new[, Catch_t := Landings_t + fifelse(is.na(Discard_t), 0, Discard_t)]
     ## Null out the stock-assessment cross-check diagnostic columns on
@@ -5081,6 +5165,9 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
       star_overridden_fg_years <- unique(rbindlist(list(star_overridden_fg_years,
                                                         data.table(FG_num = fg_juv, Year = adult_star_years))))
     }
+    multistanza_props_applied <- rbind(if (exists("multistanza_props_applied")) multistanza_props_applied,
+                                       data.table(fg_juv = fg_juv, fg_adult = fg_adult, FG_name_juv = multistanza_fg_pairs$FG_name_juv[i],
+                                                  l_prop = l_prop, d_prop = d_prop))
     n_split_applied <- n_split_applied + 1
     message("[Multistanza split] ", sci_name, ": FG", fg_adult, " (adult) kept ", round(100 * (1 - l_prop), 1),
             "% of landings/", round(100 * (1 - d_prop), 1), "% of discards; FG", fg_juv, " (juvenile) now carries",
@@ -6439,6 +6526,24 @@ if ("Effort_total_fishing_days" %in% names(stecf_fdi_effort_by_gsa)) {
 ecopath_fleet_long <- fleet_split_out[Year %in% YEAR_ECOPATH & (Sector != "Recreational" | !is.na(Catch_t)),
                                       .(Catch_t_avg = mean(Catch_t, na.rm = TRUE), Discard_t_avg = mean(Discard_t, na.rm = TRUE),
                                         Landings_t_avg = mean(Landings_t, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Sector, FleetType)]  # average catch, discards AND landings by country x FG x fleet over the Ecopath snapshot years, Recreational included where an SAU-derived estimate exists
+## Stanza split at fleet level too (same juvenile shares as the FG
+## series above), so Ecopath_L/Ecopath_Di carry the juvenile stanza's
+## landings and discards per fleet instead of putting all on the adult.
+if (nrow(multistanza_props_applied)) {
+  for (k in seq_len(nrow(multistanza_props_applied))) {
+    pp <- multistanza_props_applied[k]
+    juv_rows <- copy(ecopath_fleet_long[FG_num == pp$fg_adult])
+    if (!nrow(juv_rows)) next
+    juv_rows[, `:=`(FG_num = pp$fg_juv, FG_name = pp$FG_name_juv,
+                    Landings_t_avg = Landings_t_avg * pp$l_prop, Discard_t_avg = Discard_t_avg * pp$d_prop)]
+    juv_rows[, Catch_t_avg := rowSums(cbind(Landings_t_avg, Discard_t_avg), na.rm = TRUE)]
+    ecopath_fleet_long[FG_num == pp$fg_adult, `:=`(Landings_t_avg = Landings_t_avg * (1 - pp$l_prop), Discard_t_avg = Discard_t_avg * (1 - pp$d_prop))]
+    ecopath_fleet_long[FG_num == pp$fg_adult, Catch_t_avg := rowSums(cbind(Landings_t_avg, Discard_t_avg), na.rm = TRUE)]
+    ecopath_fleet_long <- rbindlist(list(ecopath_fleet_long[FG_num != pp$fg_juv], juv_rows), use.names = TRUE, fill = TRUE)
+    message("[Multistanza split] Fleet level (Ecopath_L/Di): FG", pp$fg_juv, " gets ", round(100 * pp$l_prop, 1), "% of landings and ",
+            round(100 * pp$d_prop, 1), "% of discards of every fleet's FG", pp$fg_adult, " catch.")
+  }
+}
 ecopath_fleet_long[, `:=`(Fleet = paste(Country, FleetType, sep = " - "),
                           Catch_t_km2_avg = Catch_t_avg / Total_Area_km2,
                           Discard_t_km2_avg = Discard_t_avg / Total_Area_km2,
@@ -6700,7 +6805,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   effort <- as.data.table(arrow::read_parquet(FISHMIP_EFFORT_PARQUET))  # load FishMIP's effort data
   effort[, year := as.integer(year)]  # coerce year to integer
   effort[, country := FISHMIP_SAUP_TO_COUNTRY[as.character(saup)]]  # translate FishMIP's numeric country code to a country name
-  effort <- effort[!is.na(country) & year >= START_YEAR & year <= END_YEAR]  # keep only target countries within the study period
+  effort <- effort[!is.na(country) & country %in% TARGET_COUNTRIES & year >= START_YEAR & year <= END_YEAR]  # model-domain countries only, within the study period
   
   top_effort_gears <- effort[, .(g_tot = sum(nom_active, na.rm = TRUE)), by = gear][order(-g_tot)][seq_len(min(N_TOP_GEARS, .N)), gear]  # the N_TOP_GEARS gears with the most effort
   effort[, gear_grp := ifelse(gear %in% top_effort_gears, gear, "Other gear")]  # fold minor gears into "Other gear"

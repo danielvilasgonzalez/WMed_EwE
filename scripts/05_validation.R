@@ -607,24 +607,42 @@ bio_cmp <- comparison_dt[metric == "Biomass", .(FG_num, FG_name, Old_FG_name, ne
                                                  new_total_t, old_total_t, ratio_same_total)]
 setorder(bio_cmp, FG_num)
 fwrite(bio_cmp, file.path(csv_out_dir, "biomass_vs_old_model_REVIEW.csv"))
-p_bio <- tryCatch({
-  d <- melt(bio_cmp[!is.na(FG_num)], id.vars = c("FG_num", "FG_name"),
-            measure.vars = c("new_B_t_km2", "old_B_t_km2_on_new_area", "old_B_t_km2_old_area"),
-            variable.name = "series", value.name = "B")[is.finite(B) & B > 0]
-  d[, series := factor(series, levels = c("new_B_t_km2", "old_B_t_km2_on_new_area", "old_B_t_km2_old_area"),
-                       labels = c("New pipeline", "Old model, same total tonnes on new area", "Old model, as published (846,002 km2)"))]
-  d[, label := factor(paste0(FG_num, " ", FG_name), levels = rev(unique(paste0(bio_cmp$FG_num, " ", bio_cmp$FG_name))))]
-  ggplot(d, aes(x = B, y = label, colour = series, shape = series)) +
-    geom_point(size = 2) + scale_x_log10() +
-    scale_colour_manual(values = c("firebrick", "grey20", "grey65")) +
-    labs(title = "Ecopath B: new pipeline vs old WMed 1995 model",
-         subtitle = paste0("t/km2, log scale. New area ", format(round(NEW_MODEL_AREA_KM2), big.mark = ","),
-                           " km2; old area 846,002 km2. Compare red with black (same total tonnes)."),
-         x = "Biomass (t/km2)", y = NULL, colour = NULL, shape = NULL) +
-    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
-}, error = function(e) { message("[05_validation.R] biomass comparison plot skipped - ", conditionMessage(e)); NULL })
+## Side-by-side bars per FG: new pipeline B vs old model B, both in
+## t/km2 of the NEW model area (old value x A_old / A_new, i.e. the same
+## total tonnes), each bar labelled with its value; the ratio new/old is
+## printed at the right. A second page shows both as published (each
+## model's own area). Log x-axis.
+.fmt_b <- function(x) ifelse(is.na(x), "", ifelse(x >= 10, sprintf("%.0f", x), ifelse(x >= 0.1, sprintf("%.2f", x), sprintf("%.2g", x))))
+.bio_pair_plot <- function(old_col, title, sub) {
+  d <- unique(bio_cmp[!is.na(FG_num) & FG_num > 0, .(FG_num, FG_name, new = new_B_t_km2, old = get(old_col))], by = "FG_num")[order(FG_num)]
+  d[, label := factor(paste0(FG_num, " ", FG_name), levels = rev(paste0(FG_num, " ", FG_name)))]
+  d[, ratio := fifelse(is.finite(new / old) & old > 0, new / old, NA_real_)]
+  rng <- range(c(d$new, d$old)[is.finite(c(d$new, d$old)) & c(d$new, d$old) > 0])
+  x_old <- rng[2] * 30; x_new <- rng[2] * 300; x_rat <- rng[2] * 3000
+  pts <- melt(d, id.vars = c("label"), measure.vars = c("old", "new"), variable.name = "model", value.name = "B")[is.finite(B) & B > 0]
+  pts[, model := factor(model, levels = c("old", "new"), labels = c("Old WMed 1995 model", "New pipeline"))]
+  ggplot() +
+    geom_segment(data = d[is.finite(new) & is.finite(old) & new > 0 & old > 0], aes(x = old, xend = new, y = label, yend = label), colour = "grey75", linewidth = 0.5) +
+    geom_point(data = pts, aes(x = B, y = label, colour = model), size = 1.8) +
+    geom_text(data = d, aes(x = x_old, y = label, label = .fmt_b(old)), size = 2.1, colour = "grey35", hjust = 1) +
+    geom_text(data = d, aes(x = x_new, y = label, label = .fmt_b(new)), size = 2.1, colour = "firebrick", hjust = 1) +
+    geom_text(data = d, aes(x = x_rat, y = label, label = ifelse(is.na(ratio), "", paste0("x", signif(ratio, 2)))), size = 2.1, hjust = 1) +
+    annotate("text", x = c(x_old, x_new, x_rat), y = Inf, label = c("old", "new", "new/old"), vjust = -0.4, hjust = 1, size = 2.4, fontface = "bold") +
+    scale_x_log10() + coord_cartesian(clip = "off") +
+    scale_colour_manual(values = c("Old WMed 1995 model" = "grey40", "New pipeline" = "firebrick")) +
+    labs(title = title, subtitle = sub, x = "Biomass (t/km2, log scale)", y = NULL, colour = NULL) +
+    theme_minimal(base_size = 8) + theme(legend.position = "top", plot.margin = margin(18, 8, 5, 5))
+}
+p_bio <- tryCatch(.bio_pair_plot("old_B_t_km2_on_new_area", "Ecopath B: new pipeline vs old WMed 1995 model (same total tonnes)",
+                                 paste0("Both in t/km2 of the new model area (", format(round(NEW_MODEL_AREA_KM2), big.mark = ","),
+                                        " km2); old = published value x 846,002 / new area. Right: ratio new/old.")),
+                  error = function(e) { message("[05_validation.R] biomass comparison plot skipped - ", conditionMessage(e)); NULL })
+p_bio_pub <- tryCatch(.bio_pair_plot("old_B_t_km2_old_area", "Ecopath B as published: each model on its own area",
+                                     "Old model t/km2 of 846,002 km2; new pipeline t/km2 of the new model area."),
+                      error = function(e) NULL)
+if (!is.null(p_bio_pub)) ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg_as_published.png"), p_bio_pub, width = 10, height = 14, dpi = 150, bg = "white")
 if (!is.null(p_bio)) {
-  ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg.png"), p_bio, width = 9, height = 13, dpi = 150, bg = "white")
+  ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg.png"), p_bio, width = 10, height = 14, dpi = 150, bg = "white")
   message("[05_validation.R] Saved: biomass_vs_old_model_by_fg.png and biomass_vs_old_model_REVIEW.csv")
 }
 
@@ -904,28 +922,60 @@ validation_plots[["10_old_workbook_unmatched_names"]] <- tryCatch({
 ## a log axis, a reference line at ratio = 1 (no change), colored by the
 ## same flag as comparison_with_old_westmed_estimates_REVIEW.csv, sorted
 ## by ratio so the biggest increases and decreases are at the ends.
-validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- tryCatch({
-  d <- comparison_dt[metric == "Biomass" & !is.na(ratio) & is.finite(ratio) & ratio > 0]
-  if (nrow(d) == 0) stop("no FG has both an old and new Biomass value to plot")
-  d[, fg_label := paste0(FG_num, " - ", FG_name)]
-  d <- d[order(ratio)]
-  d[, fg_label := factor(fg_label, levels = fg_label)]
-  ggplot(d, aes(x = ratio, y = fg_label, color = flag)) +
-    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
-    geom_segment(aes(x = 1, xend = ratio, y = fg_label, yend = fg_label), linewidth = 0.4, alpha = 0.6) +
-    geom_point(size = 1.8) +
-    scale_x_log10() +
-    scale_color_manual(values = c("Within review range" = "grey30", "Large deviation - review" = "firebrick",
-                                  "Old was zero, new is nonzero" = "darkorange",
-                                  "NEW value where old had none" = "steelblue",
-                                  "OLD value now MISSING in the new pipeline" = "grey60")) +
-    labs(title = "New pipeline Biomass vs. old West Med model, by functional group",
-         subtitle = paste0("Dashed line = no change (ratio = 1, log scale). ", nrow(d), " of ", length(unique(comparison_dt$FG_name)),
-                           " FGs had a usable old-model biomass to compare against - see comparison_with_old_westmed_estimates_REVIEW.csv for the rest."),
-         x = "New Ecopath_B / old workbook Biomass (log scale)", y = NULL, color = NULL) +
-    theme_minimal(base_size = 8) +
-    theme(legend.position = "bottom", axis.text.y = element_text(size = 6))
-}, error = function(e) { message("[05_validation.R plot] biomass_vs_old_model_by_fg skipped - ", conditionMessage(e)); NULL })
+## 11) Total zooplankton field check and salp upper bound.
+## Field reference: Fernandez de Puelles, Gaza, Cabanellas-Reboredo &
+## O'Brien 2023, Water 15(24):4267 (doi:10.3390/w15244267) - RADMED,
+## 23 stations Alboran-Balearic Sea, 2007-2017, Bongo 250 um, daytime
+## oblique tows 0-100 m: total zooplankton 2-17 mg DM/m3, mean ~10
+## (Sects. 3.5 and 4). No biomass per taxonomic group is given; salps
+## are 0.3-1.1 % of abundance (Table 2) and the authors warn the nets
+## count salps and small jellyfish poorly. Data are confidential.
+##  z_eff  = sum_k A_k min(zmid_k, 100) / sum_k A_k   (water column sampled,
+##           zmid_k = stratum mid-depth, strata_area_by_area.csv)
+##  B_tot  = DM x z_eff / DW:WW / 1000          (t WW/km2 of model area)
+##  DW:WW  = ZOOP_DW_TO_WW, mixed mesozooplankton - ASSUMPTION (0.1-0.2
+##           sensitivity, no cited value for this data set)
+##  Salp bound: B_salp <= DM x z_eff / 0.0804 / 1000; 0.0804 = salp DW:WW
+##           (Thalia democratica, AmP / Add-my-Pet collection, entry
+##           Thalia_democratica). Salps keep no Ecopath_B (estimated from
+##           EE); this bound is a check on Ecopath's estimate.
+## Compared with: Ecopath_B of FG 68 Jellyfish, 69 Salps, 71 Macro
+## zooplankton, 72 Meso and micro zooplankton (the field net retains
+## > 250 um, so microzooplankton is partly outside it - FLAGGED).
+if (!exists("ZOOP_DW_TO_WW")) ZOOP_DW_TO_WW <- c(low = 0.1, mid = 0.15, high = 0.2)
+ZOOP_FIELD_DM_MG_M3 <- c(min = 2, mean = 10, max = 17)
+validation_plots[["11_zooplankton_total_field_check"]] <- tryCatch({
+  if (is.null(new_B)) stop("no Ecopath_B")
+  sa <- fread(file.path(out_dir, "biomass", "strata_area_by_area.csv"))
+  z_eff <- sum(sa$area_km2 * pmin((sa$Depth_min_m + sa$Depth_max_m) / 2, 100)) / sum(sa$area_km2)
+  b_field <- function(dm, dwww) dm * z_eff / dwww / 1000
+  zoop_fg <- c(68L, 69L, 71L, 72L)
+  mb <- new_B[FG_num %in% zoop_fg, .(FG_num, FG_name, Biomass = suppressWarnings(as.numeric(Biomass)))]
+  model_total <- sum(mb$Biomass, na.rm = TRUE)
+  chk <- data.table(
+    quantity = c("Field total, mean DM (DW:WW 0.15)", "Field total, range low (2 mg, DW:WW 0.2)", "Field total, range high (17 mg, DW:WW 0.1)",
+                 "Model zooplankton FGs 68+69+71+72 (Ecopath_B)", "Salp upper bound (mean DM, salp DW:WW 0.0804)"),
+    t_km2 = c(b_field(ZOOP_FIELD_DM_MG_M3["mean"], ZOOP_DW_TO_WW["mid"]), b_field(ZOOP_FIELD_DM_MG_M3["min"], ZOOP_DW_TO_WW["high"]),
+              b_field(ZOOP_FIELD_DM_MG_M3["max"], ZOOP_DW_TO_WW["low"]), model_total, b_field(ZOOP_FIELD_DM_MG_M3["mean"], 0.0804)),
+    note = c(rep("Fernandez de Puelles et al. 2023, Water 15:4267; DW:WW = ASSUMPTION", 3),
+             paste0("FGs with B: ", paste(paste0(mb$FG_num, "=", signif(mb$Biomass, 3)), collapse = ", "), " (NA = estimated by Ecopath)"),
+             "Check Ecopath's estimated salp B stays below this"))
+  chk[, z_eff_m := z_eff]
+  fwrite(chk, file.path(csv_out_dir, "zooplankton_total_field_check_REVIEW.csv"))
+  message("[05_validation.R] Zooplankton field check (z_eff = ", round(z_eff), " m): field ", signif(chk$t_km2[2], 2), "-",
+          signif(chk$t_km2[3], 2), " t/km2 (mean ", signif(chk$t_km2[1], 2), "); model FGs 68+69+71+72 = ", signif(model_total, 3),
+          " t/km2; salp upper bound ", signif(chk$t_km2[5], 3), " t/km2.")
+  ggplot(chk[c(1, 4, 5)], aes(x = t_km2, y = quantity)) +
+    annotate("rect", xmin = chk$t_km2[2], xmax = chk$t_km2[3], ymin = -Inf, ymax = Inf, alpha = 0.15, fill = "steelblue") +
+    geom_point(size = 3) +
+    labs(title = "Total zooplankton: model vs field (Fernandez de Puelles et al. 2023)",
+         subtitle = paste0("Shaded = field range 2-17 mg DM/m3 over z_eff = ", round(z_eff), " m, DW:WW 0.1-0.2 (ASSUMPTION)"),
+         x = "t WW/km2 of model area", y = NULL) +
+    theme_minimal(base_size = 9)
+}, error = function(e) { message("[05_validation.R plot] zooplankton field check skipped - ", conditionMessage(e)); NULL })
+
+validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- p_bio          # values side by side, same total tonnes (see .bio_pair_plot above)
+validation_plots[["01c_biomass_vs_old_model_as_published"]] <- p_bio_pub
 
 validation_plots <- c(list("01_old_vs_new_comparison" = p_comparison), validation_plots)
 validation_plots <- validation_plots[!sapply(validation_plots, is.null)]
@@ -1263,7 +1313,7 @@ if (length(validation_plots) == 0) {
     ## file named "<name>.png.png" for no reason - the real PNG already
     ## exists at its own original path, so just skip it.
     if (nm %in% names(embedded_png_pages)) next
-    ht <- if (nm == "01b_biomass_vs_old_model_by_fg" && n_fg_biomass_plot > 0) max(7, 0.16 * n_fg_biomass_plot) else 7
+    ht <- if (nm %in% c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published")) 14 else 7
     tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = 150, bg = "white", limitsize = FALSE),
              error = function(e) NULL)
   }

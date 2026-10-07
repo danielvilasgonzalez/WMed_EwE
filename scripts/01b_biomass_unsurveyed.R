@@ -91,9 +91,14 @@
 ##     100:301-308); f_slope = model share deeper than 200 m (ASSUMPTION).
 ##     Alternative "ecopath_EE": no B, Ecopath estimates it from EE
 ##     (Christensen & Walters 2004, Ecol. Model. 172:109-139).
-##   - Posidonia (current): 280 g DW/m2 leaf, Bernardeau-Esteller et al.
-##     2023 (Diversity 15(1):101) - lowest cited value, on purpose;
-##     meadow deeper than 10 m only (NOAA ETOPO via marmap).
+##   - Posidonia (current): 168 g DW/m2 leaf = 280 g DW/m2 at 2-4 m
+##     (Bernardeau-Esteller et al. 2023, Diversity 15(1):101; lowest cited
+##     value, on purpose) x 0.6 depth factor for meadow deeper than 10 m
+##     (15 m / 5 m shoot density x leaf area ratio, Greek WFD reference
+##     conditions, EEA OURCOAST case 349 GR; leaf biomass 5-7x lower from
+##     0.7 to 15.6 m, Olesen et al. 2002, Mar. Ecol. Prog. Ser. 236:89-97).
+##     0.6 = ASSUMPTION applied to all meadow deeper than 10 m (NOAA ETOPO
+##     via marmap). Values in habitat_shapefile_biomass.csv.
 ##   - Detritus: Pauly, Soriano-Bartz & Palomares 1993 (ICLARM Conf.
 ##     Proc. 26) equation; C:WW 1:9 (Pauly & Christensen 1995, Nature
 ##     374:255-257).
@@ -1128,6 +1133,7 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
     ## assumption stay separately visible and separately adjustable.
     ## FLAGGED ASSUMPTION: occupancy is a model assumption, not a
     ## measurement; a blank value means 1 (polygon fully occupied).
+    no_area_occ <- rep(FALSE, nrow(raw))
     col_occ <- resolve_iccat_col(names(raw), c("Occupancy_fraction", "occupancy_fraction", "Occupancy"))
     if (!is.na(col_occ)) {
       setnames(raw, col_occ, "Occupancy_fraction")
@@ -1141,10 +1147,12 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
                 paste(paste0(raw$Group[has_occ], " (", raw$Occupancy_fraction[has_occ], ")"), collapse = ", "))
         raw[has_occ, Habitat_area_km2 := Habitat_area_km2 * Occupancy_fraction]
       }
+      ## Depth-band rows (no mapped area, e.g. Cymodocea): the occupancy is
+      ## applied to the biomass after the depth-band extrapolation below,
+      ## same rule as for mapped areas (a band is never fully covered).
       no_area_occ <- !is.na(raw$Occupancy_fraction) & is.na(raw$Habitat_area_km2)
-      if (any(no_area_occ)) message("[", label, "] Occupancy_fraction given but no Habitat_area_km2 for: ",
-                                    paste(unique(raw$Group[no_area_occ]), collapse = ", "),
-                                    " - occupancy NOT applied (depth-band area is used as-is for these rows).")
+      if (any(no_area_occ)) message("[", label, "] Occupancy_fraction applied to the depth-band area for: ",
+                                    paste(paste0(raw$Group[no_area_occ], " (", raw$Occupancy_fraction[no_area_occ], ")"), collapse = ", "), ".")
     }
     needs_row <- which(!is.na(raw$Density_value) & (is.na(raw$group_biomass_t) | raw$group_biomass_t == 0))
     if (length(needs_row) > 0) {
@@ -1160,7 +1168,7 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
           habitat_species = raw$Habitat_species[i], strata_area_by_area = strata_area_by_area,
           strata_def = MEDITS_STRATA, label = label,
           habitat_area_km2_override = raw$Habitat_area_km2[i])
-        set(raw, i, "group_biomass_t", row_result$biomass_t)
+        set(raw, i, "group_biomass_t", row_result$biomass_t * (if (isTRUE(no_area_occ[i])) raw$Occupancy_fraction[i] else 1))
         set(raw, i, "Source_citation",
             paste0(if (is.na(raw$Source_citation[i])) "" else paste0(raw$Source_citation[i], " | "),
                    row_result$audit_note))

@@ -10,6 +10,7 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
+## Created by: Daniel Vilas
 ## PIPELINE STEP 1 of 4 - single script for EVERY region.
 ## Run FIRST - no dependencies on the other numbered scripts.
 ## Produces: species_density_regional_combined.csv, strata_area_by_area.csv,
@@ -2382,6 +2383,89 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
     }
   }
   
+  ## --- European hake stanzas from stock assessment -------------------
+  ## Ecopath_B (both stanzas) and the adult Ecosim series come from the
+  ## STECF hake assessments (XSA; RAM Legacy v4.44, Ricard et al. 2012,
+  ## Fish Fish. 13:380-398): HAKEMEDGSA1-7 = joint GSA 1-5-6-7 unit
+  ## (2003-2014), HAKEMEDGSA9-11 (2006-2014), HAKEMEDGSA7 (1998-2012).
+  ## The juvenile Ecosim series is the MEDITS hake index (bottom-trawl
+  ## catches are dominated by ages 0-1).
+  ## Notation (t/km2 of model area A_model unless stated):
+  ##   d_k,y = SSB_k,y / A_k, A_k = strata area of stock k's GSAs;
+  ##   joint-unit years before 2003: d_1567,y = d_7,y x mean(d_1567/d_7)
+  ##     over the overlap years; GSA 9-11 years missing: d_911,y =
+  ##     d_1567,y x mean(d_911/d_1567) (ASSUMPTION, flagged in REVIEW);
+  ##   B_adult,y = sum_k d_k,y A_k / sum_k A_k (model GSAs without an
+  ##     assessment, 2 and 8, take that mean density - ASSUMPTION);
+  ##   adult stanza (>24 months) ~ SSB: maturity 0.80-0.99 at age 2,
+  ##     0.25-0.39 at age 1 (GFCM SAFs; hake_multistanza_parameters.csv);
+  ##   Ecopath baseline (no assessment before 1998): B_adult,1995 =
+  ##     mean(B_adult, anchor yrs) x I_MEDITS(YEAR_ECOPATH) / I_MEDITS(anchor yrs),
+  ##     anchor = first 3 assessment years;
+  ##   B_juv = B_adult x (1 - r) / r, r = SSB/TB = 0.42 (GSA 8-11 a4a
+  ##     2005-07; Aldebert & Recasens 1996, Aquat. Living Resour. 9:13-22:
+  ##     0.445) - EwE recomputes the juvenile stanza from K, Z and BA/B
+  ##     anyway; this value is the cross-check;
+  ##   juvenile Ecosim: B_juv,y = I_MEDITS,y x B_juv / I_MEDITS(YEAR_ECOPATH).
+  if (!exists("HAKE_STANZA_FROM_ASSESSMENT")) HAKE_STANZA_FROM_ASSESSMENT <- TRUE
+  HAKE_SA_PATH <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")
+  HAKE_PARAM_PATH <- file.path(pcloud_dir, "data/Complementary data/multistanza_reference_tables/hake_multistanza_parameters.csv")
+  HAKE_STOCK_GSAS <- list("HAKEMEDGSA1-7" = c(1, 5, 6, 7), "HAKEMEDGSA9-11" = c(9, 10, 11), "HAKEMEDGSA7" = 7)
+  hp <- if (exists("multistanza_fg_pairs")) multistanza_fg_pairs[ScientificName == "Merluccius merluccius"] else data.table()
+  if (isTRUE(HAKE_STANZA_FROM_ASSESSMENT) && nrow(hp) == 1 && file.exists(HAKE_SA_PATH)) {
+    fg_j <- hp$FG_num_juv; fg_a <- hp$FG_num_adult
+    r_ssb <- 0.42
+    if (file.exists(HAKE_PARAM_PATH)) { .pp <- fread(HAKE_PARAM_PATH); if ("SSB_over_TB" %in% .pp$parameter) r_ssb <- as.numeric(.pp[parameter == "SSB_over_TB", value][1]) }
+    .sah <- as.data.table(strata_area_by_area); .gch <- intersect(c("AreaID", "GSA"), names(.sah))[1]
+    area_g <- .sah[as.numeric(get(.gch)) %in% FILTER_AREAS, .(A = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.numeric(get(.gch)))]
+    sa_h <- fread(HAKE_SA_PATH)[species == "Merluccius merluccius" & stock_key %in% names(HAKE_STOCK_GSAS) & is.finite(biomass)]
+    sa_h[, A_k := vapply(stock_key, function(k) area_g[GSA %in% HAKE_STOCK_GSAS[[k]], sum(A)], numeric(1))]
+    sa_h[, d := biomass / A_k]
+    A1567 <- area_g[GSA %in% HAKE_STOCK_GSAS[["HAKEMEDGSA1-7"]], sum(A)]; A911 <- area_g[GSA %in% HAKE_STOCK_GSAS[["HAKEMEDGSA9-11"]], sum(A)]
+    s1567 <- sa_h[stock_key == "HAKEMEDGSA1-7", .(Year = year, d1567 = d, how1567 = "STECF XSA GSA 1-5-6-7")]
+    s7    <- sa_h[stock_key == "HAKEMEDGSA7", .(Year = year, d7 = d)]
+    s911  <- sa_h[stock_key == "HAKEMEDGSA9-11", .(Year = year, d911 = d, how911 = "STECF XSA GSA 9-11")]
+    ser <- Reduce(function(a, b) merge(a, b, by = "Year", all = TRUE), list(s1567, s7, s911))
+    k7 <- ser[is.finite(d1567) & is.finite(d7), mean(d1567 / d7)]
+    ser[!is.finite(d1567) & is.finite(d7) & is.finite(k7), `:=`(d1567 = d7 * k7, how1567 = paste0("GSA 7 XSA x ", round(k7, 2), " (joint/GSA 7 overlap ratio)"))]
+    k911 <- ser[is.finite(d1567) & is.finite(d911), mean(d911 / d1567)]
+    ser[!is.finite(d911) & is.finite(d1567) & is.finite(k911), `:=`(d911 = d1567 * k911, how911 = paste0("GSA 1-5-6-7 x ", round(k911, 2), " (overlap ratio, ASSUMPTION)"))]
+    ser <- ser[is.finite(d1567) & is.finite(d911)]
+    ser[, B_adult := (d1567 * A1567 + d911 * A911) / (A1567 + A911)]
+    I_med <- fg_index_regional_combined[FG_num %in% c(fg_j, fg_a), .(I = sum(mean_density, na.rm = TRUE)), by = Year]
+    anchor_y <- head(sort(ser$Year), 3)
+    bc <- I_med[Year %in% YEAR_ECOPATH, mean(I)] / I_med[Year %in% anchor_y, mean(I)]
+    if (nrow(ser) && is.finite(bc) && bc > 0) {
+      B_adult0 <- ser[Year %in% anchor_y, mean(B_adult)] * bc
+      B_juv0 <- B_adult0 * (1 - r_ssb) / r_ssb
+      ser[, `:=`(B_juv_check = B_adult * (1 - r_ssb) / r_ssb)]
+      fwrite(ser, file.path(csv_out_dir, "hake_stanza_stock_assessment_REVIEW.csv"))
+      yrs_all_h <- sort(unique(c(YEAR_ECOPATH, if (exists("TS_YEARS")) TS_YEARS, fg_index_regional_combined[FG_num %in% c(fg_j, fg_a), Year])))
+      tmpl <- unique(fg_index_regional_combined[FG_num == fg_j, .(FG_name, FG_ECOLOGY_TYPE)])[1]
+      adult_rows <- data.table(Year = yrs_all_h, FG_num = fg_a, FG_name = hp$FG_name_adult,
+                               FG_ECOLOGY_TYPE = if ("FG_ECOLOGY_TYPE" %in% names(fg_index_regional_combined)) tmpl$FG_ECOLOGY_TYPE else NA)
+      adult_rows[, mean_density := fifelse(Year %in% YEAR_ECOPATH, B_adult0, ser$B_adult[match(Year, ser$Year)])]
+      adult_rows[, biomass_source := fifelse(Year %in% YEAR_ECOPATH,
+        paste0("Stock assessment (STECF XSA SSB, RAM Legacy v4.44): adult hake = SSB, GSA 1-5-6-7 + 9-11, back-cast to ",
+               paste(range(YEAR_ECOPATH), collapse = "-"), " with the MEDITS hake index (x", round(bc, 2), " vs ", paste(range(anchor_y), collapse = "-"),
+               ") - see hake_stanza_stock_assessment_REVIEW.csv"),
+        "Stock assessment (STECF XSA SSB, RAM Legacy v4.44) - see hake_stanza_stock_assessment_REVIEW.csv")]
+      juv_rows <- I_med[Year %in% yrs_all_h, .(Year, FG_num = fg_j, FG_name = hp$FG_name_juv, mean_density = I * B_juv0 / I_med[Year %in% YEAR_ECOPATH, mean(I)])]
+      juv_rows[Year %in% YEAR_ECOPATH, mean_density := B_juv0]
+      juv_rows[, biomass_source := paste0("Stock assessment: juvenile hake = adult SSB x (1-r)/r, r = SSB/TB = ", r_ssb,
+                                          "; Ecosim trend = MEDITS hake index (q-corrected) - see hake_stanza_stock_assessment_REVIEW.csv")]
+      if ("FG_ECOLOGY_TYPE" %in% names(fg_index_regional_combined)) juv_rows[, FG_ECOLOGY_TYPE := tmpl$FG_ECOLOGY_TYPE]
+      fg_index_regional_combined <- rbindlist(list(fg_index_regional_combined[!FG_num %in% c(fg_j, fg_a)], juv_rows, adult_rows), use.names = TRUE, fill = TRUE)
+      setorder(fg_index_regional_combined, FG_num, Year)
+      message("[Hake stanzas] Ecopath_B ", paste(range(YEAR_ECOPATH), collapse = "-"), ": adult (FG", fg_a, ") ", signif(B_adult0, 3),
+              " t/km2, juvenile (FG", fg_j, ") ", signif(B_juv0, 3), " t/km2 (stock-assessment SSB, back-cast x", round(bc, 2),
+              " with MEDITS; r = SSB/TB = ", r_ssb, "). Adult Ecosim: ", nrow(ser), " assessment years (", paste(range(ser$Year), collapse = "-"),
+              "); juvenile Ecosim: MEDITS index. Written to hake_stanza_stock_assessment_REVIEW.csv.")
+    } else {
+      message("[Hake stanzas] No usable assessment series or MEDITS back-cast ratio - previous stanza split kept.")
+    }
+  }
+
   ## The single most useful "at a glance" biomass validation
   ## plot - every FG's Ecopath-baseline-year density, ordered by
   ## magnitude, colored by WHICH source actually supplied it (survey vs.

@@ -1,4 +1,5 @@
 ## =================================================================
+## Created by: Daniel Vilas
 ## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
 ## sourced automatically by the numbered pipeline scripts (01-04) -
 ## do not run this directly, it has no top-level driver code of its own.
@@ -47,6 +48,63 @@ safe_fwrite <- function(x, file, ...) {
             if (attempt == 1) "rewriting once." else "still corrupted; check the sync client / write it to a local folder.")
   }
   invisible(file)
+}
+
+## =================================================================
+## compute_stanza_catch_split_from_length() - juvenile share of catch
+## (landings, discards) for a multistanza species from MEDITS TC length
+## frequencies, when no age-resolved catch data exist for the model area.
+##  Age at length (inverse VBGF): t(L) = t0 - ln(1 - L/Linf) / K
+##  Juvenile stanza: t < age_adult (hake: 24 months, L < 32.9 cm).
+##  Discards = fish below the Minimum Conservation Reference Size
+##   (MCRS), landings = fish >= MCRS (ASSUMPTION: full retention above
+##   MCRS, survey length structure ~ commercial catch above MCRS).
+##  Share by weight: p_juv = sum_{L in set, t<age_adult} n_L L^b /
+##   sum_{L in set} n_L L^b  (W = a L^b; a cancels).
+## Hake defaults: Linf 110 cm, K 0.178 /yr, t0 0 (Mellon-Duval et al.
+## 2010, ICES J. Mar. Sci. 67:62-70); b 3.035 (GFCM SAF GSA 1/5/6);
+## MCRS 20 cm TL (Council Regulation (EC) No 1967/2006, Annex III;
+## Regulation (EU) 2019/1022, Western Mediterranean MAP).
+## Returns rows shaped like the FDI age split: ScientificName,
+## source_file ("... Landings ..." / "... Discards ..."), prop_juvenile.
+## =================================================================
+STANZA_GROWTH_PARAMS <- list(
+  "Merluccius merluccius" = list(Linf = 110, K = 0.178, t0 = 0, b = 3.035, age_adult = 2, mcrs_cm = 20)
+)
+compute_stanza_catch_split_from_length <- function(multistanza_fg_pairs, tc_path, year_range = NULL, area_filter = NULL,
+                                                   params = STANZA_GROWTH_PARAMS) {
+  out <- data.table()
+  if (!nrow(multistanza_fg_pairs) || !file.exists(tc_path)) {
+    message("[Stanza catch split - length] TC.csv not found or no stanza pair - skipped.")
+    return(out)
+  }
+  tc <- fread(tc_path, encoding = "UTF-8"); setnames(tc, tolower(gsub("\\s+", "", names(tc))))
+  if (!all(c("genus", "species", "nblon", "length_class") %in% names(tc))) {
+    message("[Stanza catch split - length] TC.csv lacks genus/species/nblon/length_class - skipped."); return(out)
+  }
+  for (sci in intersect(multistanza_fg_pairs$ScientificName, names(params))) {
+    pr <- params[[sci]]; parts <- strsplit(sci, " ")[[1]]
+    d <- tc[toupper(genus) == toupper(substr(parts[1], 1, 4)) & toupper(species) == toupper(substr(parts[2], 1, 3))]
+    if (!is.null(area_filter) && "area" %in% names(d)) d <- d[area %in% area_filter]
+    yrs_used <- "all years"
+    if (!is.null(year_range) && "year" %in% names(d) && nrow(d[year %in% year_range])) { d <- d[year %in% year_range]; yrs_used <- paste(range(year_range), collapse = "-") }
+    d[, `:=`(L = suppressWarnings(as.numeric(length_class)) / 10, n = suppressWarnings(as.numeric(nblon)))]   # length_class in mm
+    d <- d[is.finite(L) & L > 0 & is.finite(n) & n > 0]
+    if (!nrow(d)) next
+    d[, age := fifelse(L < pr$Linf, pr$t0 - log(1 - L / pr$Linf) / pr$K, Inf)]
+    d[, `:=`(w = n * L^pr$b, juv = age < pr$age_adult, landed = L >= pr$mcrs_cm)]
+    p_land <- d[landed == TRUE, sum(w[juv]) / sum(w)]
+    p_disc <- d[landed == FALSE, if (.N) sum(w[juv]) / sum(w) else NA_real_]
+    L_adult <- pr$Linf * (1 - exp(-pr$K * (pr$age_adult - pr$t0)))
+    out <- rbind(out, data.table(ScientificName = sci, Country = NA_character_, Year = NA_integer_,
+                                 source_file = c("MEDITS TC length - Landings (>= MCRS)", "MEDITS TC length - Discards (< MCRS)"),
+                                 prop_juvenile = c(p_land, p_disc)), fill = TRUE)
+    message("[Stanza catch split - length] ", sci, " (MEDITS TC ", yrs_used, ", GSAs ", paste(area_filter, collapse = ","),
+            "): juvenile (< ", pr$age_adult, " yr, L < ", round(L_adult, 1), " cm) share by weight = ",
+            round(100 * p_land, 1), "% of landings (L >= MCRS ", pr$mcrs_cm, " cm), ", round(100 * p_disc, 1),
+            "% of discards (L < MCRS).")
+  }
+  out
 }
 
 ## =================================================================

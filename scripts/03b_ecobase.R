@@ -1,4 +1,5 @@
 ## =================================================================
+## Created by: Daniel Vilas
 ## 03b_ecobase.R
 ##
 ## Library file - no top-level driver code, same convention as

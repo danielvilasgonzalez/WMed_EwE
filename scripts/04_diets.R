@@ -10,6 +10,7 @@ while (sink.number() > 0) sink()
 ## -----------------------------------------------------------------------
 
 ## =================================================================
+## Created by: Daniel Vilas
 ## PIPELINE STEP 4 of 4 (optional) - run AFTER 01_biomass.R
 ## Builds an EwE-format functional-group (FG) diet-composition matrix
 ## from the Mediterranean trophic metaweb database (DATA_ENTRY
@@ -54,19 +55,25 @@ while (sink.number() > 0) sink()
 ##     metric chosen by diet_metric_priority.csv (IRI > %W > %N > %F >
 ##     presence; Hyslop 1980, J. Fish Biol. 17:411-429 for the metrics),
 ##     normalised to 1, averaged over studies.
-##  2. FishBase/SeaLifeBase diet tables (lib_fishbase_diet_matrix.R):
-##     DIETITEMS % composition (Mediterranean studies first), prey mapped
-##     to FGs by species, genus or food category
-##     (fishbase_food_category_to_fg.csv), category shares split by
-##     Ecopath B of the target FGs; FOODITEMS presence as the last resort.
-##  3. EcoBase published Mediterranean models (Colleter et al. 2015,
+##  2. MAISHA, Mediterranean Archive of Integrated Stomach and feeding
+##     Habits Analysis (Vascotto et al. 2026, OGS NODC, doi:10.13120/
+##     hwpn1e; 213 Mediterranean studies 1977-2025, WoRMS-standardised),
+##     per predator species that has MAISHA records;
+##  3. FishBase/SeaLifeBase diet tables (DIETITEMS % composition,
+##     Mediterranean studies first; FOODITEMS presence as last resort),
+##     for species without MAISHA records.
+##     Tiers 2-3 (lib_fishbase_diet_matrix.R): prey mapped to FGs by
+##     species > genus > family > order > class > phylum (equal split
+##     over the FGs holding the taxon) > food category
+##     (fishbase_food_category_to_fg.csv, split by Ecopath B).
+##  4. EcoBase published Mediterranean models (Colleter et al. 2015,
 ##     Ecol. Model. 302:42-53), FG-name keyword match, closest year.
 ## Species -> FG: DC_f,j = sum_s b_s|f DC_s,j / sum_s b_s|f, b_s|f =
 ## species share of FG biomass (01_biomass.R prop_sp_fg).
 ## Checks: column sums = 1; cannibalism DC_f,f <= 0.1 (EwE User Guide).
 ## =================================================================
 
-pkgs <- c("data.table", "openxlsx", "stringr")
+pkgs <- c("data.table", "openxlsx", "stringr", "readxl")
 new_pkgs <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
 if (length(new_pkgs) > 0) install.packages(new_pkgs)
 invisible(lapply(pkgs, library, character.only = TRUE))
@@ -147,7 +154,8 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
 message("[Log] This run's console output is also being written to: ", .run_log_path)
 
 source(file.path(git_dir, "scripts/lib_survey_fg_density_functions.R"))  # for upsert_workbook_sheets() - writes Ecopath_diet into the same shared workbook
-source(file.path(git_dir, "scripts/lib_fishbase_diet_matrix.R"))  # build_fishbase_diet_matrix(): FG diet matrix from FishBase/SeaLifeBase diet tables
+source(file.path(git_dir, "scripts/lib_worms_taxonomy_lookup.R"))  # worms_taxonomy_lookup(): classification of prey names nothing else matched
+source(file.path(git_dir, "scripts/lib_fishbase_diet_matrix.R"))  # MAISHA + FishBase/SeaLifeBase diet records -> FG diet matrix
 source(file.path(git_dir, "scripts/03b_ecobase.R"))  # for fetch_ecobase_raw_inputs()/WESTMED_BBOX (biomass/PB-QB fallback machinery, reused here - STEP 3c - for the EcoBase diet-matrix fallback) and fetch_ecobase_diet_matrix() added below in that same file
 
 if (!exists("ECOPATH_WORKBOOK_PATH", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")   # same shared workbook 01_biomass.R/02_fisheries.R/03_pbqb-traits.R write to
@@ -239,6 +247,18 @@ if (!exists("DIET_FALLBACK_ENABLE_ECOBASE",  envir = .GlobalEnv, inherits = FALS
 if (!exists("DIET_FISHBASE_METHOD", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_METHOD <- "fg_matrix"
 if (!exists("DIET_FISHBASE_FORCE_REFRESH", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_FORCE_REFRESH <- FALSE
 if (!exists("DIET_FISHBASE_PREFER_MED", envir = .GlobalEnv, inherits = FALSE)) DIET_FISHBASE_PREFER_MED <- TRUE
+## MAISHA - Mediterranean Archive of Integrated Stomach and feeding Habits
+## Analysis (Vascotto et al. 2026, doi:10.13120/hwpn1e): spreadsheet,
+## csv, or Darwin Core Archive (folder/.zip) in data/diet of the shared
+## pCloud folder. The first file named MAISHA* there is used.
+if (!exists("DIET_FALLBACK_ENABLE_MAISHA", envir = .GlobalEnv, inherits = FALSE)) DIET_FALLBACK_ENABLE_MAISHA <- TRUE
+if (!exists("MAISHA_PATH", envir = .GlobalEnv, inherits = FALSE)) {
+  ## Preference: unzipped Darwin Core Archive folder > .zip > spreadsheet/csv
+  .cand <- c(file.path(pcloud_dir, "data/diet/MAISHA/MAISHA_DwC-A"), file.path(pcloud_dir, "data/diet/MAISHA/MAISHA_DwC-A.zip"),
+             list.files(file.path(pcloud_dir, "data/diet"), pattern = "^maisha.*\\.(xlsx|csv)$", full.names = TRUE, recursive = TRUE, ignore.case = TRUE))
+  .cand <- .cand[file.exists(.cand)]
+  MAISHA_PATH <- if (length(.cand)) .cand[1] else file.path(pcloud_dir, "data/diet/MAISHA/MAISHA_DwC-A")
+}
 if (!exists("DIET_STILL_MISSING_CSV_PATH",   envir = .GlobalEnv, inherits = FALSE)) DIET_STILL_MISSING_CSV_PATH   <- file.path(csv_out_dir, "diet_still_missing_REVIEW.csv")
 
 message("[04_diets.R] Config: METAWEB_XLSX_PATH = ", METAWEB_XLSX_PATH,
@@ -1095,7 +1115,7 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   fb_predators <- character(0)
   fb_fg_rows <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric())
   fb_fg_tags <- data.table(fg_name = character(), diet_ref = character(), diet_source = character())
-  if (DIET_FALLBACK_ENABLE_FISHBASE && identical(DIET_FISHBASE_METHOD, "fg_matrix") && length(missing_after_metaweb) > 0) {
+  if ((DIET_FALLBACK_ENABLE_FISHBASE || DIET_FALLBACK_ENABLE_MAISHA) && identical(DIET_FISHBASE_METHOD, "fg_matrix") && length(missing_after_metaweb) > 0) {
     ## --- FishBase/SeaLifeBase FG diet matrix (lib_fishbase_diet_matrix.R) ---
     if (requireNamespace("duckdbfs", quietly = TRUE)) invisible(try(duckdbfs::duckdb_config(enable_progress_bar = FALSE), silent = TRUE))
     fg_ref_full <- fread(fg_reference_path, encoding = "UTF-8")
@@ -1107,24 +1127,43 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                       b_tab[, .(species, fg_name, b_share = biomass_proportion)], by = c("species", "fg_name"), all.x = TRUE)
     xw_path <- file.path(DIET_REFERENCE_DIR, "fishbase_food_category_to_fg.csv")
     if (!file.exists(xw_path)) stop("[04_diets.R] Missing ", xw_path, " (FishBase food category -> FG crosswalk).")
-    fb <- build_fishbase_diet_matrix(fb_preds, fg_ref_full, fg_B, fread(xw_path), cache_dir = csv_out_dir,
-                                     fg_universe = group_table$group_name, force_refresh = DIET_FISHBASE_FORCE_REFRESH,
-                                     prefer_med = DIET_FISHBASE_PREFER_MED)
+    xw <- fread(xw_path)
+    fgu <- group_table$group_name
+    ## Tier 2a - MAISHA (Mediterranean stomach contents): species with MAISHA records use them;
+    ## Tier 2b - FishBase/SeaLifeBase: only species without MAISHA records.
+    mai_rec <- if (isTRUE(DIET_FALLBACK_ENABLE_MAISHA)) maisha_diet_records(MAISHA_PATH) else data.table()
+    if (nrow(mai_rec)) {
+      mai_rec[, tier := "MAISHA (Vascotto et al. 2026)"]
+      mai_rec <- mai_rec[predator %in% fb_preds$species]
+      message("[04_diets.R] MAISHA: ", nrow(mai_rec), " record(s) for ", uniqueN(mai_rec$predator), " model predator species (", MAISHA_PATH, ").")
+    } else if (isTRUE(DIET_FALLBACK_ENABLE_MAISHA)) {
+      message("[04_diets.R] MAISHA not found or unreadable at '", MAISHA_PATH, "' - MAISHA tier skipped. Put the MAISHA",
+              " spreadsheet (or its Darwin Core Archive, doi:10.13120/hwpn1e) there or set MAISHA_PATH.")
+    }
+    fb_rec <- if (isTRUE(DIET_FALLBACK_ENABLE_FISHBASE)) fishbase_diet_records(setdiff(fb_preds$species, unique(mai_rec$predator)), csv_out_dir,
+                                                                             force_refresh = DIET_FISHBASE_FORCE_REFRESH) else data.table()
+    ## each source on its own (comparison outputs, one subfolder each) ...
+    for (src in c("MAISHA", "FishBase")) {
+      if (src == "FishBase" && !isTRUE(DIET_FALLBACK_ENABLE_FISHBASE)) next
+      rec <- if (src == "MAISHA") mai_rec else fishbase_diet_records(fb_preds$species, csv_out_dir)
+      if (!nrow(rec)) next
+      res_src <- diet_records_to_fg_matrix(rec, fb_preds, fg_ref_full, fg_B, xw, fgu, prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = file.path(csv_out_dir, "worms_diet_prey_cache.rds"), label = src)
+      src_dir <- file.path(csv_out_dir, src); dir.create(src_dir, showWarnings = FALSE, recursive = TRUE)
+      write_diet_source_outputs(res_src, group_table, src_dir, tolower(src))
+    }
+    ## ... and combined (MAISHA first per species), which feeds Ecopath_diet
+    fb <- diet_records_to_fg_matrix(rbindlist(list(mai_rec, fb_rec), use.names = TRUE, fill = TRUE), fb_preds, fg_ref_full, fg_B, xw, fgu,
+                                    prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = file.path(csv_out_dir, "worms_diet_prey_cache.rds"), label = "MAISHA + FishBase/SeaLifeBase")
     if (nrow(fb$fg_diet) > 0) {
-      fwrite(fb$fg_diet, file.path(csv_out_dir, "fishbase_diet_matrix_fg_long.csv"))
-      fwrite(build_ecopath_diet_sheet(fb$fg_diet, group_table), file.path(csv_out_dir, "fishbase_diet_matrix_fg_wide.csv"))
-      fwrite(fb$species_diet, file.path(csv_out_dir, "fishbase_diet_species_level.csv"))
-      fwrite(fb$item_map, file.path(csv_out_dir, "fishbase_diet_item_mapping_REVIEW.csv"))
-      fwrite(fb$unassigned, file.path(csv_out_dir, "fishbase_diet_unassigned_items_REVIEW.csv"))
-      fwrite(fb$provenance, file.path(csv_out_dir, "fishbase_diet_provenance_by_fg.csv"))
+      write_diet_source_outputs(fb, group_table, csv_out_dir, "external")
       fb_fg_rows <- fb$fg_diet
       fb_predators <- unique(fb$species_diet$predator)
       fb_fg_tags <- fb$provenance[, .(fg_name = FG_name,
-                                      diet_ref = paste0("FishBase/SeaLifeBase diet tables (", tiers, "; ", n_studies, " study record(s), ",
-                                                        n_species, " species", fifelse(med_only, ", Mediterranean studies", ""), ")"),
-                                      diet_source = "fishbase_sealifebase")]
-      message("[04_diets.R] FishBase FG diet matrix written: fishbase_diet_matrix_fg_long.csv / _wide.csv (+ species level,",
-              " item mapping and unassigned-item REVIEW files).")
+                                      diet_ref = paste0(tiers, " (", n_studies, " study record(s), ", n_species, " species",
+                                                        fifelse(med_only, ", Mediterranean studies", ""), ")"),
+                                      diet_source = fifelse(grepl("MAISHA", tiers), "maisha+fishbase", "fishbase_sealifebase"))]
+      message("[04_diets.R] External diet matrices written: diet/MAISHA/, diet/FishBase/ (each source alone) and",
+              " diet/external_diet_matrix_fg_long.csv / _wide.csv (combined, used in Ecopath_diet).")
     }
   } else if (DIET_FALLBACK_ENABLE_FISHBASE && length(missing_after_metaweb) > 0) {
     fb_result <- fetch_fishbase_diet_for_species(missing_after_metaweb)
