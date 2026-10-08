@@ -242,9 +242,15 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 }
 
 ## --- Run log (plain text, for sharing/debugging) ------------------------
-.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_03_pbqb-traits_log.txt"))
+## One log per script per day (YYYYMMDD_<script>_log.txt): a rerun on the
+## same day overwrites it; the run start time is the first line.
+.run_log_path <- file.path(out_dir, paste0(format(Sys.Date(), "%Y%m%d"), "_03_pbqb-traits_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
 sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
+cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+## R errors normally only reach the console; also write the error message
+## into this log so a stopped run shows why in the log file.
+options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -2405,7 +2411,7 @@ calc_fish <- function(out) {
   out[, Fmort_species := Yield / Biomass]
   out[, Fmort := fifelse(!is.na(Fmort_species), Fmort_species, Fmort_FG)]
   out[, Fmort_source := fifelse(!is.na(Fmort_species), "species (Y/B)",
-                                fifelse(!is.na(Fmort_FG), "FG rate (02_fao_catches.R)", NA_character_))]
+                                fifelse(!is.na(Fmort_FG), "FG rate (02_fisheries.R)", NA_character_))]
   out[, PB_Pauly_1980    := fifelse(!is.na(Fmort), M_Pauly_1980 + Fmort, M_Pauly_1980)]
   out[, PB_FishLife_2023 := fifelse(!is.na(Fmort), M_FishLife_2023 + Fmort, M_FishLife_2023)]
   out[, PB_Gascuel_2008  := fifelse(!is.na(Fmort), M_Gascuel_2008 + Fmort, M_Gascuel_2008)]
@@ -3065,6 +3071,36 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
   
   fwrite(fg_weighted, file.path(csv_out_dir, "fg_pb_qb_weighted_with_F.csv"))
   message("Saved fg_pb_qb_weighted_with_F.csv.")
+} else if (file.exists(f_by_fg_path)) {
+  ## Current path (02_fisheries.R): F_FG = C_f / B_f from F_by_fg.csv, with
+  ## B_f = the final Ecopath_B. Added to PB_FG only for FGs with no
+  ## species-level F (n_species_with_F == 0) - invertebrates, mammals,
+  ## seabirds - since calc_fish() already used PB = M + F for fish. For a
+  ## fished invertebrate FG the empirical P/B (Tumbiolo & Downing 1994;
+  ## Brey 1999) describes the measured populations' production; adding F
+  ## keeps P/B >= F so Ecopath can balance (P/B = Z = M + F at steady
+  ## state; Allen 1971). ASSUMPTION: the empirical P/B is treated as M.
+  f_fg_02 <- fread(f_by_fg_path)
+  if (all(c("FG_num", "F") %in% names(f_fg_02))) {
+    f_fg_02 <- unique(f_fg_02[!is.na(F), .(FG = as.integer(FG_num), F_FG = as.numeric(F))], by = "FG")
+    fg_weighted <- merge(fg_weighted, f_fg_02, by = "FG", all.x = TRUE)
+    fg_weighted[, PB_FG_before_F := PB_FG]
+    fg_weighted[n_species_with_F == 0 & !is.na(F_FG) & !is.na(PB_FG), PB_FG := PB_FG_before_F + F_FG]
+    added <- fg_weighted[n_species_with_F == 0 & !is.na(F_FG) & !is.na(PB_FG_before_F)]
+    ## Invertebrate Q/B was set as Q/P = 3 on the species P/B (Christensen,
+    ## Walters & Pauly 2008); keep Q/P = 3 on the P/B that now includes F,
+    ## otherwise P/Q can exceed 1 for heavily fished groups.
+    inv_fg <- results[, .(all_invert = all(dispatch_group == "invertebrate")), by = FG][all_invert == TRUE, FG]
+    fg_weighted[, QB_FG_before_F := QB_FG]
+    fg_weighted[FG %in% intersect(added$FG, inv_fg), QB_FG := 3 * PB_FG]
+    message("\n[F] FG-level F from 02_fisheries.R (", f_by_fg_path, ") added to PB_FG for ", nrow(added),
+            " FG(s) with no species-level F (non-fish groups): ",
+            paste0(added$FG_name, " (", signif(added$PB_FG_before_F, 3), " + F ", signif(added$F_FG, 3), ")", collapse = "; "))
+    fwrite(fg_weighted, file.path(csv_out_dir, "fg_pb_qb_weighted_with_F.csv"))
+    message("Saved fg_pb_qb_weighted_with_F.csv.")
+  } else {
+    message("\n[F] F_by_fg.csv has no FG_num/F columns - fg_weighted's PB stays M only for non-fish FGs.")
+  }
 } else {
   message("\nFG_YIELD_SOURCE = 'none' (or catch data wasn't found earlier) - fg_weighted's",
           " PB stays NATURAL MORTALITY (M) ONLY for every FG (M+F not applied anywhere).",

@@ -385,23 +385,6 @@ TS_YEARS_WAS_PRESET <- exists("TS_YEARS", envir = .GlobalEnv, inherits = FALSE)
 if (!exists("TS_YEARS",      envir = .GlobalEnv, inherits = FALSE)) TS_YEARS      <- 1995:2023     # function attribute: ts_years (NULL -> min:max of data); last year corrected below to the real MEDITS data once TA.csv is read, if not pre-set
 if (!exists("DROP_OUTLIERS", envir = .GlobalEnv, inherits = FALSE)) DROP_OUTLIERS <- TRUE         # function attribute: whether remove_sample_outliers() actually
 if (!exists("NORMALIZE_TS",  envir = .GlobalEnv, inherits = FALSE)) NORMALIZE_TS  <- TRUE         # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
-## Ecosim_ts trend hygiene (2026-10-07), applied to the MEDITS FG index
-## used for Ecosim trends; the 1994-1996 mean of each FG (Ecopath_B) is
-## kept unchanged (see STEP 7c):
-##   ECOSIM_HAUL_CAP_Q        - each haul's FG density is capped at this
-##                              quantile of that FG's positive hauls in the
-##                              same GSA x stratum (all years; >= 10 hauls).
-##                              NA = no cap.
-##   ECOSIM_MIN_AREA_COVERAGE - survey years whose sampled strata cover less
-##                              than this share of the model area are left
-##                              blank (2022: GSAs 7-8 only = 14 %; 2023 = 60 %).
-##   ECOSIM_SPIKE_FILTER      - isolated upward spikes (> 3x and > 3 MAD
-##                              above the median of the 2 years each side,
-##                              on log scale) are blanked in every Ecosim B
-##                              series, survey or not.
-if (!exists("ECOSIM_HAUL_CAP_Q",        envir = .GlobalEnv, inherits = FALSE)) ECOSIM_HAUL_CAP_Q        <- 0.95
-if (!exists("ECOSIM_MIN_AREA_COVERAGE", envir = .GlobalEnv, inherits = FALSE)) ECOSIM_MIN_AREA_COVERAGE <- 0.80
-if (!exists("ECOSIM_SPIKE_FILTER",      envir = .GlobalEnv, inherits = FALSE)) ECOSIM_SPIKE_FILTER      <- TRUE
 # removes flagged observations (TRUE) or only reports them (FALSE)
 ## Per project decision, EcoBase (existing published Ecopath models) is
 ## the preferred source for biomass on FGs no survey here samples -
@@ -1363,81 +1346,6 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
 }
 
 ## =================================================================
-## STEP 7c: Ecosim trend hygiene for the MEDITS FG index
-## =================================================================
-## Two sources of false year-to-year jumps in a stratified trawl index:
-## (a) single very large hauls of patchy species (e.g. one 1995 haul of
-## Gymnammodytes cicerelus in GSA 11 raised "Commercial small demersal fish"
-## about 35x) that a log-scale Tukey rule does not flag, and (b) years in
-## which only part of the model area was surveyed (2022: GSAs 7-8 only).
-## (a) Each haul's FG density is capped at ECOSIM_HAUL_CAP_Q of that FG's
-##     positive hauls in the same GSA x stratum over all years (only where
-##     there are >= 10 positive hauls), and the capped index is built with
-##     the same weight_by_strata()/weight_by_area() functions. The capped
-##     shape is transferred to fg_index_regional as the ratio
-##     s_y = I_capped,y / I_raw,y, then each FG is rescaled so that its
-##     YEAR_ECOPATH mean is unchanged:
-##         I_new,y = I_y * s_y * mean_EP(I) / mean_EP(I * s)
-##     So Ecopath_B (1994-1996 mean) does not change; only the year-to-year
-##     shape used by Ecosim does. Capping lowers absolute densities by
-##     construction, which is why it is not used for the Ecopath baseline.
-## (b) Years with sampled area / total area < ECOSIM_MIN_AREA_COVERAGE are
-##     set to NA (blank in Ecosim_ts), except YEAR_ECOPATH years.
-## Comparison with the 1995 model's series (05 block 12, offline test
-## 2026-10-07): FGs with a spike > 10x the series median 8 -> 4; series
-## negatively correlated with the old model 24 -> 20.
-ecosim_haul_cap_effect <- NULL
-if (isTRUE(STRATA) && (!is.na(ECOSIM_HAUL_CAP_Q) || ECOSIM_MIN_AREA_COVERAGE > 0)) {
-  .ts_regional <- function(d) weight_by_area(weight_by_strata(
-    compute_fg_densities_by_stratum(d, strata = TRUE), n_samples_by_stratum, strata_area_by_area))
-  .raw <- .ts_regional(dt)[, .(Year, FG_num, I_raw = mean_density)]
-  if (!is.na(ECOSIM_HAUL_CAP_Q)) {
-    .h <- dt[!is.na(Stratum) & !is.na(FG_num) & !is.na(Density),
-             .(fd = sum(Density, na.rm = TRUE)), by = .(SampleID, AreaID, Stratum, Year, FG_num)]
-    .h[fd > 0, `:=`(n_pos = .N, cap = quantile(fd, ECOSIM_HAUL_CAP_Q, names = FALSE)), by = .(FG_num, AreaID, Stratum)]
-    .h[, f := fifelse(fd > 0 & !is.na(n_pos) & n_pos >= 10 & fd > cap, cap / fd, 1)]
-    .dt_cap <- merge(dt, .h[f < 1, .(SampleID, FG_num, f)], by = c("SampleID", "FG_num"), all.x = TRUE)
-    .dt_cap[!is.na(f), Density := Density * f][, f := NULL]
-    .cap <- .ts_regional(.dt_cap)[, .(Year, FG_num, I_cap = mean_density)]
-    .s <- merge(.raw, .cap, by = c("Year", "FG_num"), all.x = TRUE)
-    .s[, s := fifelse(!is.na(I_raw) & I_raw > 0 & !is.na(I_cap), I_cap / I_raw, 1)]
-    fg_index_regional <- merge(fg_index_regional, .s[, .(Year, FG_num, s)], by = c("Year", "FG_num"), all.x = TRUE)
-    fg_index_regional[is.na(s), s := 1]
-    fg_index_regional[, `:=`(ep_old = mean(mean_density[Year %in% YEAR_ECOPATH], na.rm = TRUE),
-                             ep_new = mean((mean_density * s)[Year %in% YEAR_ECOPATH], na.rm = TRUE)), by = FG_num]
-    fg_index_regional[, mean_density := fifelse(is.finite(ep_old) & is.finite(ep_new) & ep_new > 0,
-                                                mean_density * s * ep_old / ep_new, mean_density * s)]
-    ecosim_haul_cap_effect <- merge(
-      .h[, .(n_hauls_positive = sum(fd > 0), n_hauls_capped = sum(f < 1)), by = FG_num],
-      .s[Year %in% YEAR_ECOPATH, .(baseline_raw = mean(I_raw, na.rm = TRUE), baseline_capped = mean(I_cap, na.rm = TRUE)), by = FG_num],
-      by = "FG_num", all = TRUE)
-    ## baseline_raw / baseline_capped >> 1 means the Ecopath_B baseline of
-    ## that FG rests on a few very large hauls - check it.
-    ecosim_haul_cap_effect[, baseline_raw_over_capped := baseline_raw / baseline_capped]
-    ecosim_haul_cap_effect <- merge(unique(dataframe2[, .(FG_num, FG_name)]), ecosim_haul_cap_effect, by = "FG_num")
-    setorder(ecosim_haul_cap_effect, -baseline_raw_over_capped)
-    fwrite(ecosim_haul_cap_effect, file.path(csv_out_dir, "ecosim_haul_cap_effect_REVIEW.csv"))
-    fg_index_regional[, c("s", "ep_old", "ep_new") := NULL]
-    message("[Ecosim_ts] haul cap at q", ECOSIM_HAUL_CAP_Q, ": ", sum(.h$f < 1), " FG x haul densities capped;",
-            " Ecopath_B (", min(YEAR_ECOPATH), "-", max(YEAR_ECOPATH), " mean) unchanged. FGs whose baseline",
-            " falls > 2x when capped: ", ecosim_haul_cap_effect[baseline_raw_over_capped > 2, .N],
-            " (ecosim_haul_cap_effect_REVIEW.csv).")
-    rm(.h, .dt_cap, .cap, .s)
-  }
-  .cov <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
-  .cov[, coverage := sampled_area_km2 / sum(unique(strata_area_by_area[!is.na(prop), .(AreaID, Stratum, area_km2)])$area_km2)]
-  setorder(.cov, Year)
-  fwrite(.cov, file.path(csv_out_dir, "survey_area_coverage_by_year.csv"))
-  ecosim_low_coverage_years <- .cov[coverage < ECOSIM_MIN_AREA_COVERAGE & !Year %in% YEAR_ECOPATH, Year]
-  if (length(ecosim_low_coverage_years) > 0) {
-    fg_index_regional[Year %in% ecosim_low_coverage_years, mean_density := NA_real_]
-    message("[Ecosim_ts] MEDITS years left blank (sampled area < ", ECOSIM_MIN_AREA_COVERAGE * 100, " % of the model area): ",
-            paste0(ecosim_low_coverage_years, " (", round(100 * .cov[Year %in% ecosim_low_coverage_years, coverage]), " %)", collapse = ", "))
-  }
-  rm(.raw, .cov, .ts_regional)
-}
-
-## =================================================================
 ## STEP 8: plots (MEDITS)
 ## =================================================================
 p_by_area <- plot_fg_timeseries_by_area(
@@ -1733,22 +1641,13 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   
   ## --- 9d. Region-wide FG index - area-weighted, same pattern as MEDITS'
   ## weight_by_area(): D_region = sum(D_gsa * A_gsa) / sum(A_gsa)
-  ## Denominator = area of every GSA surveyed that year (any FG), so a GSA
-  ## where an FG was not recorded counts as zero (changed 2026-10-07; before,
-  ## only the GSAs with a record of that FG were in the denominator).
-  medias_surveyed_area <- acoustic_fg_by_gsa[, .(area_nm2 = max(area_nm2, na.rm = TRUE)), by = .(AreaID, Year)][
-    , .(surveyed_area_nm2 = sum(area_nm2)), by = Year]
   medias_fg_index_regional <- acoustic_fg_by_gsa[
-    , .(sum_biomass_t   = sum(total_biomass_t, na.rm = TRUE),
-        sum_abundance_n = sum(density_abundance_n_nm2 * area_nm2, na.rm = TRUE),
+    , .(mean_density_biomass_t_nm2   = sum(density_biomass_t_nm2 * area_nm2, na.rm = TRUE) / sum(area_nm2, na.rm = TRUE),
+        mean_density_biomass_t_km2   = sum(total_biomass_t, na.rm = TRUE) / sum(area_nm2 * KM2_PER_NM2, na.rm = TRUE),
+        mean_density_abundance_n_nm2 = sum(density_abundance_n_nm2 * area_nm2, na.rm = TRUE) / sum(area_nm2, na.rm = TRUE),
         n_gsa_contributing = uniqueN(AreaID)),
     by = .(Year, FG_num, FG_name)
   ]
-  medias_fg_index_regional <- merge(medias_fg_index_regional, medias_surveyed_area, by = "Year")
-  medias_fg_index_regional[, `:=`(mean_density_biomass_t_nm2   = sum_biomass_t / surveyed_area_nm2,
-                                  mean_density_biomass_t_km2   = sum_biomass_t / (surveyed_area_nm2 * KM2_PER_NM2),
-                                  mean_density_abundance_n_nm2 = sum_abundance_n / surveyed_area_nm2)]
-  medias_fg_index_regional[, c("sum_biomass_t", "sum_abundance_n", "surveyed_area_nm2") := NULL]
   message("MEDIAS region-wide FG annual DENSITY index built: ", nrow(medias_fg_index_regional),
           " rows. Density in t/nm^2 (handbook convention) and t/km^2 (MEDITS comparison).",
           " NO catchability correction applied.")
@@ -1848,15 +1747,11 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ]
   acoustic_sp_by_gsa[, density_t_km2 := species_biomass_t / (area_nm2 * KM2_PER_NM2)]
   
-  ## Same zero-inclusive denominator as the FG index above (surveyed area
-  ## of the year, all GSAs), changed 2026-10-07.
   species_density_regional_medias <- acoustic_sp_by_gsa[
-    , .(sum_biomass_t = sum(species_biomass_t, na.rm = TRUE)),
+    , .(mean_density = sum(density_t_km2 * (area_nm2 * KM2_PER_NM2), na.rm = TRUE) /
+          sum(area_nm2 * KM2_PER_NM2, na.rm = TRUE)),
     by = .(Year, FG_num, FG_name, ScientificName)
   ]
-  species_density_regional_medias <- merge(species_density_regional_medias, medias_surveyed_area, by = "Year")
-  species_density_regional_medias[, mean_density := sum_biomass_t / (surveyed_area_nm2 * KM2_PER_NM2)]
-  species_density_regional_medias[, c("sum_biomass_t", "surveyed_area_nm2") := NULL]
   species_density_regional_medias[, mean_density := mean_density * MEDIAS_SHELF_TO_MODEL_AREA]  # model-area basis, same as the FG index above
   message("MEDIAS region-wide species-level density built: ", nrow(species_density_regional_medias), " rows.")
   
@@ -2818,7 +2713,6 @@ export_ecopath_ecosim_excel(
   no_zero_fill_fg = ecosim_no_zero_fill,
   estimate_b_from_ee = ECOPATH_B_FROM_EE,
   ee_value = ECOPATH_B_EE_VALUE,
-  spike_filter = ECOSIM_SPIKE_FILTER,
   fg_index_regional = fg_index_regional_combined,
   species_density_regional = species_density_regional_combined,
   n_samples_by_area_year = n_samples_by_stratum[, .(n_samples = sum(n_samples)), by = .(AreaID, Year)],

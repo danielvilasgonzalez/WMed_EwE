@@ -163,15 +163,9 @@ out_dir <- resolve_config_dir("out_dir", "/Users/daniel/Work/iMARES/WMed EwE Mod
                               "Select Output Directory", "Please select the directory where output files and intermediate results are saved.")  # resolve the output directory
 
 ## --- Run log (plain text, for sharing/debugging) ------------------------
-## One log per script per day (YYYYMMDD_<script>_log.txt): a rerun on the
-## same day overwrites it; the run start time is the first line.
-.run_log_path <- file.path(out_dir, paste0(format(Sys.Date(), "%Y%m%d"), "_02_fisheries_log.txt"))
+.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_02_fisheries_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
 sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
-cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
-## R errors normally only reach the console; also write the error message
-## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -1427,7 +1421,7 @@ message("\n[GFCM] gfcm_catches_by_species_year_division_", DATASET_VERSION, ".cs
         nrow(gfcm_species_division_fg), " Year x Division x FG x Species row(s). 'Division' here is",
         " GFCM's FAO-division resolution (37.1.1/37.1.2/37.1.3), NOT a GSA number - see this script's header.")
 
-## Country x FG x Year landings for the target countries (backbone for
+## Country x FG x Year landings for the 6 target countries (backbone for
 ## the fleet/sector split, discard, and unreported steps below):
 gfcm_country_fg <- data.table()
 if (nrow(ts_data$country_species_ts) > 0) {
@@ -4024,7 +4018,7 @@ if (nrow(belhabib_catch_by_fg) > 0) {
 ## Full West Med series, all GFCM-reporting countries (not restricted
 ## to the 6 TARGET_COUNTRIES - this is the overall catch/discard series,
 ## and the correct scope to compare against Biomass, which also covers
-## the whole modeled area, not just the target countries' fleets).
+## the whole modeled area, not just the 6 target countries' fleets).
 ## Moved up here (ahead of unreported/bycatch/fleet-split below) because
 ## Catches_Ecopath/Catches_Ecosim and the F step both need it.
 ## =================================================================
@@ -4525,7 +4519,7 @@ if (!is.null(iccat_vessels_raw)) {
   vsl[, LOA_m := suppressWarnings(as.numeric(LOA_m))]
   iccat_flag_to_country <- read_fisheries_reference("iccat_country_map.csv", required_cols = c("iccat_flag", "Country"))
   setnames(iccat_flag_to_country, "iccat_flag", "Flag")
-  vsl <- merge(vsl, iccat_flag_to_country, by = "Flag")  # restrict to this model's target countries (TARGET_COUNTRIES), same crosswalk as ICCAT_COUNTRY_MAP below
+  vsl <- merge(vsl, iccat_flag_to_country, by = "Flag")  # restrict to this model's 6 target countries, same crosswalk as ICCAT_COUNTRY_MAP below
   ICCAT_VESSEL_SIZE_BY_GEAR <- vsl[!is.na(LOA_m), .(
     n_vessels      = .N,
     median_LOA_m   = median(LOA_m)
@@ -4533,7 +4527,7 @@ if (!is.null(iccat_vessels_raw)) {
   ICCAT_VESSEL_SIZE_BY_GEAR[, is_small_scale := median_LOA_m < ICCAT_SMALL_SCALE_LOA_M]
   fwrite(ICCAT_VESSEL_SIZE_BY_GEAR, file.path(csv_out_dir, "iccat_vessel_size_by_country_gear_crosscheck.csv"))
   message("\n[ICCAT ActiveVessels] ", nrow(ICCAT_VESSEL_SIZE_BY_GEAR), " Country x GearCode median-LOA cell(s)",
-          " (2016-2026, this model's target countries (TARGET_COUNTRIES) only) - written to",
+          " (2016-2026, this model's 6 target countries only) - written to",
           " iccat_vessel_size_by_country_gear_crosscheck.csv. Consulted by resolve_iccat_fleet_type() to check",
           " gear-code fleet-type resolution against real vessel size, not just the gear code alone.")
 } else {
@@ -4588,10 +4582,10 @@ if (is.null(iccat_raw)) {
   ## PartyName/Country.
   ##
   ## Per the project's explicit decision: Catches_Ecopath/
-  ## Ecopath_L should reflect only THIS model's own target countries'
+  ## Ecopath_L should reflect only THIS model's own 6 target countries'
   ## real ICCAT-reported catch - NOT the full Mediterranean-wide ICCAT
   ## total for these highly-migratory stocks (checked against the real
-  ## file: the target countries are only ~53% of the full Med bluefin
+  ## file: the 6 target countries are only ~53% of the full Med bluefin
   ## tuna catch and ~81% of swordfish over 1994-2023 - the rest is
   ## Libya/Türkiye/Greece/Malta/Cyprus/Croatia/Albania/Egypt/etc., all
   ## outside this model's domain). This keeps ICCAT-derived catch on the
@@ -4764,11 +4758,11 @@ if (is.null(iccat_raw)) {
   ## as a transparency cross-check (written below), NOT used for
   ## Catches_Ecopath/Ecopath_L (see the FlagName/PartyName comment above
   ## for why: per the project's decision, this model only counts
-  ## catch from its own target countries, same as every other FG).
+  ## catch from its own 6 target countries, same as every other FG).
   iccat_wholemed_by_fg <- iccat_raw[, .(iccat_wholemed_catches_t = sum(Catch_t_iccat, na.rm = TRUE)),
                                     by = .(FG_num, FG_name, Year)]
   
-  ## For the target-country breakdown specifically, bluefin
+  ## For the target-6-country breakdown specifically, bluefin
   ## tuna is NOT exempted from the Mediterranean-only area filter, unlike
   ## iccat_wholemed_by_fg above. That exemption exists because BFT is
   ## assessed as one combined Eastern-Atlantic-+-Mediterranean STOCK (no
@@ -4791,7 +4785,7 @@ if (is.null(iccat_raw)) {
     iccat_medonly_raw <- iccat_raw[grepl("\\bmed", iccat_area, ignore.case = TRUE)]
     n_bft_dropped <- iccat_raw[ScientificName == "Thunnus thynnus" & !grepl("\\bmed", iccat_area, ignore.case = TRUE), .N]
     if (n_bft_dropped > 0) {
-      message("[ICCAT] Mediterranean-only filter for the target-country breakdown (stricter than the whole-",
+      message("[ICCAT] Mediterranean-only filter for the target-6-country breakdown (stricter than the whole-",
               "stock total above): dropped ", n_bft_dropped, " non-Mediterranean bluefin tuna row(s) (Atlantic/",
               "other area) that the whole-stock cross-check above deliberately kept - these represent catch taken",
               " outside West Med waters by an otherwise-target country's Atlantic fleet.")
@@ -4800,7 +4794,7 @@ if (is.null(iccat_raw)) {
     iccat_medonly_raw <- iccat_raw  # no area column at all - nothing stricter to apply than what iccat_raw already is
   }
   
-  ## Restrict to the target countries via FlagName (real per-country
+  ## Restrict to the 6 target countries via FlagName (real per-country
   ## attribution, incl. EU members split back out of "EUROPEAN UNION" -
   ## see the comment above `ICCAT_COUNTRY_MAP`). Countries this model
   ## doesn't cover (Libya, Türkiye, Greece, Malta, Cyprus, Croatia,
@@ -4811,12 +4805,12 @@ if (is.null(iccat_raw)) {
   ## model's own fleet register to attach them to.
   if (is.na(col_flag)) {
     message("\n[ICCAT] WARNING: no flag/country column resolved (ICCAT_COL_ALIASES$flag) - cannot restrict to",
-            " this model's own target countries (TARGET_COUNTRIES), so the ICCAT catch/fleet-split steps below are skipped",
+            " this model's own 6 target countries, so the ICCAT catch/fleet-split steps below are skipped",
             " entirely this run (whole-Mediterranean total still written to iccat_catch_by_fg_wholemed_crosscheck.csv",
             " for reference). Add the real flag column's header to ICCAT_COL_ALIASES$flag once known.")
     iccat_target_raw <- iccat_raw[0]
   } else {
-    iccat_target_raw <- merge(iccat_medonly_raw, ICCAT_COUNTRY_MAP, by = "iccat_flag")  # inner join - Mediterranean-only catch, target countries only
+    iccat_target_raw <- merge(iccat_medonly_raw, ICCAT_COUNTRY_MAP, by = "iccat_flag")  # inner join - Mediterranean-only catch, 6 target countries only
     iccat_target_raw <- iccat_target_raw[Country %in% TARGET_COUNTRIES]
     ## ICCAT Task I has no GSA: scale each country's Mediterranean catch to
     ## the model GSAs by its STECF FDI landings share inside them (same
@@ -4854,7 +4848,7 @@ if (is.null(iccat_raw)) {
     }
   }
   
-  ## FG x Year totals across the target countries - this is what
+  ## FG x Year totals across the 6 target countries - this is what
   ## feeds the Catches_Ecopath override (Tier 1 below).
   iccat_catch_by_fg <- data.table()
   if (nrow(iccat_target_raw) > 0) {
@@ -4864,7 +4858,7 @@ if (is.null(iccat_raw)) {
     if (!"Landings" %in% names(iccat_catch_by_fg)) iccat_catch_by_fg[, Landings := 0]
     if (!"Discards" %in% names(iccat_catch_by_fg)) iccat_catch_by_fg[, Discards := 0]
     setnames(iccat_catch_by_fg, c("Landings", "Discards"), c("iccat_landings_t", "iccat_discard_t"))
-    iccat_catch_by_fg[, iccat_catches_t := iccat_landings_t + iccat_discard_t]  # target-country total (NOT whole-Med)
+    iccat_catch_by_fg[, iccat_catches_t := iccat_landings_t + iccat_discard_t]  # target-6-country total (NOT whole-Med)
     iccat_catch_by_fg[, `Other/unclassified` := NULL]
   }
   
@@ -4901,7 +4895,7 @@ if (is.null(iccat_raw)) {
   fwrite(iccat_wholemed_by_fg, file.path(csv_out_dir, "iccat_catch_by_fg_wholemed_crosscheck.csv"))
   fwrite(iccat_catch_by_fg, file.path(csv_out_dir, "iccat_catch_by_fg_crosscheck.csv"))
   if (nrow(iccat_country_fleet_catch) > 0) fwrite(iccat_country_fleet_catch, file.path(csv_out_dir, "iccat_country_fleet_catch_crosscheck.csv"))
-  message("[ICCAT] iccat_catch_by_fg (target countries): ", nrow(iccat_catch_by_fg), " FG x Year row(s) - written to",
+  message("[ICCAT] iccat_catch_by_fg (6 target countries): ", nrow(iccat_catch_by_fg), " FG x Year row(s) - written to",
           " iccat_catch_by_fg_crosscheck.csv. Whole-Mediterranean total (all reporting flags, for comparison only,",
           " NOT used downstream) written to iccat_catch_by_fg_wholemed_crosscheck.csv.")
 }
@@ -4919,7 +4913,7 @@ if (nrow(iccat_catch_by_fg) > 0) {
                                                         round(100 * (Catch_t - iccat_catches_t) / iccat_catches_t, 1), NA_real_)]  # this pipeline's Catch_t vs ICCAT's, % difference - positive = this pipeline reports MORE
   n_flagged_iccat <- catches_discards_fg[!is.na(iccat_catch_pct_diff) & abs(iccat_catch_pct_diff) > 50, .N]
   message("[ICCAT cross-check] ", catches_discards_fg[!is.na(iccat_catches_t), .N], " FG x Year cell(s) have an",
-          " ICCAT catch figure (this model's own target countries (TARGET_COUNTRIES) only); ", n_flagged_iccat, " of those disagree",
+          " ICCAT catch figure (this model's own 6 target countries only); ", n_flagged_iccat, " of those disagree",
           " with this pipeline's own Catch_t by more than 50% - see iccat_catch_pct_diff. Computed against Catch_t",
           " BEFORE the stock-assessment PRIORITY override below runs - for single-species/stanza assessed FGs,",
           " Catch_t is then replaced with ICCAT's own figure first (ICCAT takes priority over GFCM STAR/RAM below",
@@ -5219,64 +5213,11 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
 ## biomass-proportional split, it never manufactures catch or fixes a
 ## pre-existing non-NEI overage. Any amount that still can't be placed
 ## without pushing some other FG over F=1 is reported, not forced through.
-## Reference biomass for F = C / B and for the F <= 1 cap: the FINAL
-## Ecopath_B written by 01_biomass.R (survey + stock assessment + hake
-## stanzas + literature/unsurveyed groups), so F uses the same B that
-## goes into Ecopath. The survey-only species density is the fallback for
-## FGs with no Ecopath_B value. (Before 2026-10-07 the survey density was
-## used for every FG, so e.g. Suprabenthos and Macro zooplankton were
-## capped against MEDITS bycatch-level biomass.)
-.ecopath_b_fg_density <- function() {
-  ## 1st choice: 01_biomass.R's own CSV copy of Ecopath_B
-  ## (biomass_by_fg_ecopath_detail.csv, column Biomass_1994_1996 = the
-  ## YEAR_ECOPATH mean written to Ecopath_B). Reading a CSV avoids opening
-  ## the workbook with readxl here (the 2026-10-07 11:32 run stopped while
-  ## readxl was reading it).
-  b_csv <- file.path(BIOMASS_CSV_DIR, "biomass_by_fg_ecopath_detail.csv")
-  if (file.exists(b_csv)) {
-    b <- tryCatch(fread(b_csv), error = function(e) NULL)
-    bcol <- if (!is.null(b)) grep("^Biomass_[0-9]{4}_[0-9]{4}$", names(b), value = TRUE)[1] else NA_character_
-    if (!is.null(b) && !is.na(bcol) && all(c("FG_num", "FG_name") %in% names(b))) {
-      ## FGs whose B Ecopath estimates from EE: B unknown here -> F not
-      ## computed (B_ecopath = -1 marks them for .use_ecopath_b()).
-      if ("B_estimated_by_Ecopath" %in% names(b)) b[as.logical(B_estimated_by_Ecopath) %in% TRUE, (bcol) := -1]
-      return(b[, .(FG_num = as.integer(FG_num), FG_name_b = as.character(FG_name),
-                   B_ecopath = suppressWarnings(as.numeric(get(bcol))))][!is.na(B_ecopath) & B_ecopath != 0])
-    }
-  }
-  ## Fallback: the Ecopath_B sheet of the workbook.
-  if (!file.exists(ECOPATH_WORKBOOK_PATH)) return(NULL)
-  sh <- tryCatch(readxl::excel_sheets(ECOPATH_WORKBOOK_PATH), error = function(e) character(0))
-  if (!"Ecopath_B" %in% sh) return(NULL)
-  b <- tryCatch(as.data.table(readxl::read_excel(ECOPATH_WORKBOOK_PATH, sheet = "Ecopath_B")), error = function(e) NULL)
-  if (is.null(b) || !all(c("FG_num", "Biomass") %in% names(b))) return(NULL)
-  b[, .(FG_num = as.integer(FG_num), FG_name_b = as.character(FG_name), B_ecopath = suppressWarnings(as.numeric(Biomass)))][!is.na(B_ecopath) & B_ecopath > 0]
-}
-.use_ecopath_b <- function(fg_avg, label) {
-  eb <- .ecopath_b_fg_density()
-  if (is.null(eb)) {
-    message("[", label, "] Ecopath_B not found (biomass_by_fg_ecopath_detail.csv or the Ecopath_B sheet) - using the survey species density for B.")
-    fg_avg[, B_source := "survey species density"]
-    return(fg_avg)
-  }
-  ## all = TRUE: FGs with an Ecopath_B but no survey density (e.g. adult
-  ## hake FG27 from the stock assessment) also get an F.
-  fg_avg <- merge(fg_avg, eb, by = "FG_num", all = TRUE)
-  fg_avg[is.na(FG_name), FG_name := FG_name_b]
-  fg_avg[, B_source := fifelse(!is.na(B_ecopath), "Ecopath_B (01_biomass.R)", "survey species density")]
-  fg_avg[!is.na(B_ecopath) & B_ecopath < 0, `:=`(B_source = "estimated by Ecopath (EE) - no F", B_ecopath = NA_real_, Biomass_density_avg = NA_real_)]
-  fg_avg[!is.na(B_ecopath), Biomass_density_avg := B_ecopath]
-  fg_avg[, c("B_ecopath", "FG_name_b") := NULL]
-  message("[", label, "] B for F: Ecopath_B for ", fg_avg[B_source != "survey species density", .N], " FG(s); survey density for ",
-          fg_avg[B_source == "survey species density", .N], ".")
-  fg_avg
-}
 if (nrow(nei_keyword_matches) > 0 && file.exists(SPECIES_DENSITY_PATH)) {
   species_density_for_cap <- fread(SPECIES_DENSITY_PATH)
   fg_density_year_for_cap <- species_density_for_cap[Year %in% YEAR_ECOPATH,
                                                      .(Biomass_density = sum(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
   fg_biomass_avg_for_cap <- fg_density_year_for_cap[, .(Biomass_density_avg = mean(Biomass_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
-  fg_biomass_avg_for_cap <- .use_ecopath_b(fg_biomass_avg_for_cap, "NEI keyword fallback - F<=1 cap")
   fg_biomass_avg_for_cap[, Catch_cap_t := Biomass_density_avg * Total_Area_km2]  # F=1 threshold in absolute tonnes - same definition F_by_fg uses below
   
   nei_species_fg_year <- gfcm_species_division_fg[grepl("^nei_keyword_", match_method) & Year %in% YEAR_ECOPATH,
@@ -5300,7 +5241,6 @@ if (nrow(nei_keyword_matches) > 0 && file.exists(SPECIES_DENSITY_PATH)) {
     if (total_removable <= 0) next  # nothing over cap for this species at all
     
     receivers <- cand[removable == 0 & !is.na(Catch_cap_t)]  # candidate FGs not themselves over cap, with a known biomass reference
-    receivers[, give := numeric(0)[seq_len(.N)]]  # always present, even with 0 receivers (used in the message below)
     redistributed <- 0
     if (nrow(receivers) > 0) {
       receivers[, room := pmax(0, Catch_cap_t - Catch_t_avg)]
@@ -6065,7 +6005,7 @@ if (nrow(iccat_country_fleet_catch) > 0) {
     Catch_t_incl_unreported = NA_real_,  # ICCAT's own reported catch - no separate "unreported/IUU" adjustment applied to it (unlike the GFCM-derived pathway)
     discard_source = "ICCAT Task I nominal catches (CatchTypeCode DD/DM)",
     discard_split_source = "ICCAT's own real Country x Gear breakdown (GearGrp) - not estimated",
-    fleet_split_source = "ICCAT Task I nominal catches - real per-country/per-gear attribution, replacing the GFCM-derived value (scoped to this model's own target countries (TARGET_COUNTRIES) only)"
+    fleet_split_source = "ICCAT Task I nominal catches - real per-country/per-gear attribution, replacing the GFCM-derived value (scoped to this model's own 6 target countries only)"
   )]
   
   fleet_split_out <- rbindlist(list(fleet_split_out, iccat_fleet_rows[, .(
@@ -6137,7 +6077,7 @@ if (nrow(star_overridden_fg_years) == 0) {
   ## --- Case 1: GFCM already has SOME country/fleet catch for this ------
   ## FG x Year - rescale it (Catch_t/Discard_t/Landings_t/
   ## Catch_t_incl_unreported all multiplied by the same factor) so the
-  ## target-country total matches the STAR/RAM-corrected figure, preserving
+  ## 6-country total matches the STAR/RAM-corrected figure, preserving
   ## the existing relative country/fleet shares.
   if (nrow(scale_cells) > 0) {
     for (i in seq_len(nrow(scale_cells))) {
@@ -6160,7 +6100,7 @@ if (nrow(star_overridden_fg_years) == 0) {
   
   ## --- Case 2: GFCM has NO country/fleet row at all for this FG x -------
   ## Year (Catch_t_current == 0, nothing to rescale from) - distribute
-  ## the STAR/RAM total equally across the target countries and their
+  ## the STAR/RAM total equally across the 6 target countries and their
   ## own named FleetTypes, as an explicitly flagged last resort.
   if (nrow(zero_base_cells) > 0) {
     fleet_meta <- unique(FLEET_REGISTER[Country %in% TARGET_COUNTRIES, .(Country, FleetType, GSA, Comment)])
@@ -6183,7 +6123,7 @@ if (nrow(star_overridden_fg_years) == 0) {
         fleet_split_source = paste0("PLACEHOLDER - STAR/RAM stock-assessment catch (", round(target_i, 1),
                                     " t) had NO GFCM country-level catch to scale from for this FG x Year (GFCM's",
                                     " own West-Med country-level data doesn't resolve this FG at species level) -",
-                                    " distributed equally across the target countries and their own fleet types.",
+                                    " distributed equally across the 6 target countries and their own fleet types.",
                                     " Review: a real country-distribution key (e.g. SAU's own country totals for",
                                     " this species) would replace this placeholder with something better than a",
                                     " flat equal share.")
@@ -6646,16 +6586,12 @@ setorder(discards_ecopath_by_fleet_wide, FG_num)
 ## taxonomy for every other Mediterranean GFCM reporter (out of scope -
 ## FLEET_REGISTER has no entry for them), add one residual column per
 ## FG: whatever's left of the broader FG-level landings/discards total
-## after subtracting the target-country fleet-split total, floored at 0. This
+## after subtracting the 6-country fleet-split total, floored at 0. This
 ## keeps Ecopath_L/Ecopath_Di's row totals consistent with
 ## Catches_Ecopath's own FG totals (the same invariant already
-## documented for the target-country fleet columns), while being explicit
+## documented for the 6-country fleet columns), while being explicit
 ## that this slice isn't broken out by fleet/gear.
-## UPDATE 2026-10-07: catches_discards_fg now holds only the TARGET_COUNTRIES
-## (coastal states of the model GSAs), so this residual is target-country
-## catch whose fleet split could not be resolved - not catch of other
-## Mediterranean countries. Renamed accordingly.
-OTHER_GFCM_COL <- "Target countries - fleet not resolved"
+OTHER_GFCM_COL <- "Other GFCM countries - Unclassified"
 broad_landings_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_km2_broad = mean(Landings_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
 broad_discards_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Discard_t_km2_broad = mean(Discard_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
 
@@ -6714,7 +6650,7 @@ upsert_workbook_sheets(
 ## etc.) get dropped from the xlsx, by design, staying available as CSV
 ## under output/fisheries/.
 ## This diagnostic now reports the SPLIT (how much of each FG's total
-## landings is broken out by named target-country fleet vs. how much sits in
+## landings is broken out by named 6-country fleet vs. how much sits in
 ## the unclassified residual), for visibility - not a gap to chase.
 fleet_split_fg_totals <- ecopath_fleet_long[, .(Landings_t_fleetsplit = sum(Catch_t_avg - Discard_t_avg, na.rm = TRUE)), by = FG_num]
 broad_fg_totals <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_broad = mean(Landings_t, na.rm = TRUE)), by = FG_num]
@@ -6724,13 +6660,13 @@ ecopath_l_coverage_check[, `:=`(
   Landings_t_broad      = fifelse(is.na(Landings_t_broad), 0, Landings_t_broad),
   Landings_t_fleetsplit = fifelse(is.na(Landings_t_fleetsplit), 0, Landings_t_fleetsplit)
 )]
-ecopath_l_coverage_check[, named_fleet_share := fifelse(Landings_t_broad > 0, Landings_t_fleetsplit / Landings_t_broad, NA_real_)]  # share broken out by named target-country fleet, rest is the residual column
+ecopath_l_coverage_check[, named_fleet_share := fifelse(Landings_t_broad > 0, Landings_t_fleetsplit / Landings_t_broad, NA_real_)]  # share broken out by named 6-country fleet, rest is the residual column
 ecopath_l_coverage_check[, mostly_other_countries := Landings_t_broad > 0 & (is.na(named_fleet_share) | named_fleet_share < 0.5)]
 setorder(ecopath_l_coverage_check, -Landings_t_broad)
 n_mostly_other <- sum(ecopath_l_coverage_check$mostly_other_countries, na.rm = TRUE)
 message("\n[Ecopath_L fleet-split coverage] ", n_mostly_other, " of ", nrow(ecopath_l_coverage_check), " FG(s) get less than",
         " half their total landings (catches_discards_fg, ", paste(range(YEAR_ECOPATH), collapse = "-"), " average) from a",
-        " named target-country fleet - the rest sits in Ecopath_L/Di's 'Target countries - fleet not resolved' column (see",
+        " named 6-country fleet - the rest sits in Ecopath_L/Di's 'Other GFCM countries - Unclassified' column (see",
         " ecopath_L_fg_coverage_check.csv). Totals still reconcile with Catches_Ecopath; only the fleet/gear breakdown",
         " is coarser for these FGs.")
 write_native_sheet_csv(ecopath_l_coverage_check, "ecopath_L_fg_coverage_check", csv_out_dir)
@@ -6753,7 +6689,7 @@ message("\n[Ecopath by fleet] catches_ecopath_by_fleet_wide: completed from ", n
         " (e.g. FG x 'Spain - Bottom trawls', 'France - Drifting longlines', ...).")
 
 ## Fleet_Structure - each fleet's ACTUAL share of its FG's total catch
-## (across all target countries combined, not per-country), from the
+## (across all 6 target countries combined, not per-country), from the
 ## real catch amounts above rather than re-derived from fleet_prop's
 ## per-country gear shares - so this is the genuine "how much of FG X's
 ## catch is Spain's trawlers vs. France's longliners" breakdown.
@@ -6762,7 +6698,7 @@ fleet_structure_out[, prop_catch := ifelse(sum(Catch_t_avg, na.rm = TRUE) > 0,
                                            Catch_t_avg / sum(Catch_t_avg, na.rm = TRUE), NA_real_), by = FG_num]  # convert to each fleet's share of the FG's total catch
 setorder(fleet_structure_out, FG_num, -prop_catch)  # sort by FG, largest fleet share first
 message("[Fleet_Structure] ", nrow(fleet_structure_out), " FG x Fleet row(s), prop_catch sums to 1 within",
-        " each FG_num (across all target countries' fleets combined).")
+        " each FG_num (across all 6 target countries' fleets combined).")
 
 ## =================================================================
 ## # obtain F for species in Ecopath years
@@ -6786,7 +6722,6 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   
   fg_density_year <- species_density[Year %in% YEAR_ECOPATH, .(Biomass_density = sum(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]  # sum species density up to FG level, by year
   fg_biomass_avg <- fg_density_year[, .(Biomass_density_avg = mean(Biomass_density, na.rm = TRUE)), by = .(FG_num, FG_name)]  # average biomass density over the Ecopath years
-  fg_biomass_avg <- .use_ecopath_b(fg_biomass_avg, "F")
   
   fg_catch_avg <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(FG_num, FG_name, Year, Catch_t)]  # catch in the Ecopath years
   fg_catch_avg <- fg_catch_avg[, .(Catch_t_avg = mean(Catch_t, na.rm = TRUE)), by = .(FG_num, FG_name)]  # average catch over the Ecopath years
@@ -7594,7 +7529,7 @@ if (length(validation_plots) == 0) {
   for (nm in names(validation_plots)) {
     ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = 150)  # also save each figure as its own PNG
   }
-  message("\n[Validation plots] ", length(validation_plots), " figure(s) written to '", VALIDATION_PLOTS_PDF,
+  message("\n[Validation plots] ", length(validation_plots), " of 6 figure(s) written to '", VALIDATION_PLOTS_PDF,
           "' (one PDF, all figures) and as individual PNGs under '", fisheries_plot_dir, "'. Any figure not",
           " listed here was skipped because the table it needs came back empty this run - check the",
           " message above naming which one and why.")

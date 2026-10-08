@@ -2325,16 +2325,6 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
 ## the actual strata-weighted estimator - unchanged formula from the
 ## MEDITS pipeline: FG_density(area, year) = sum over strata of
 ## (summed FG density in stratum / n_samples in stratum) * area_proportion
-## Area (km2) of all (AreaID, Stratum) cells with at least one valid haul
-## in each Year. Region-wide mean density = sum_cells(mean haul density x
-## cell area) / this sampled area. Cells without hauls in a year are left
-## out of both numerator and denominator (mean over the sampled area).
-sampled_area_by_year <- function(n_samples_by_stratum, strata_area_by_area) {
-  cells <- unique(n_samples_by_stratum[!is.na(n_samples) & n_samples > 0, .(AreaID, Year, Stratum)])
-  areas <- unique(strata_area_by_area[!is.na(prop) & !is.na(area_km2), .(AreaID, Stratum, area_km2)])
-  merge(cells, areas, by = c("AreaID", "Stratum"))[, .(sampled_area_km2 = sum(area_km2)), by = Year]
-}
-
 weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_area) {
   ## no suffix collision risk here - per_group_fg has only density_sum
   ## (see compute_fg_densities_by_stratum's own comment on why it
@@ -2376,11 +2366,6 @@ weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_
     by = .(AreaID, Year, FG_num, FG_name)
   ]
   attr(fg_index, "per_stratum") <- merged  # kept for weight_by_area() (needs area_km2/prop)
-  ## Area of every (AreaID, Stratum) cell SAMPLED in each year, whether or
-  ## not a given FG was caught there - the denominator of the region-wide
-  ## mean in weight_by_area(). per_stratum above only has the cells where
-  ## the FG was caught, so it cannot be used as the denominator.
-  attr(fg_index, "sampled_area_by_year") <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
   attr(fg_index, "per_stratum_raw") <- per_stratum_raw  # kept for plot_strata_profile() (area-independent)
   message("Strata-weighted FG index built: ", nrow(fg_index), " rows.")
   fg_index
@@ -2429,32 +2414,13 @@ weight_by_area <- function(fg_index_stratified) {
     stop("weight_by_area() needs the per_stratum attribute from weight_by_strata() -",
          " region-wide aggregation for strata=FALSE isn't implemented here (see comment above).")
   }
-  ## Denominator = area of ALL cells sampled that year (attribute set by
-  ## weight_by_strata()), so cells where the FG was not caught count as
-  ## zero density. Changed 2026-10-07: before, the denominator was the area
-  ## of the cells where the FG WAS caught (sum(area_km2) over per_stratum
-  ## rows), which ignored zero catches and inflated the density of patchy
-  ## or depth-restricted FGs (1994-1996 median x1.7, up to x90 for rare
-  ## FGs) and made their series jump with the number of positive strata.
-  sampled_area <- attr(fg_index_stratified, "sampled_area_by_year")
   fg_index_regional <- per_stratum[
     !is.na(area_km2),
-    .(numerator = sum((density_sum / n_samples) * area_km2, na.rm = TRUE),
-      area_positive_cells = sum(area_km2, na.rm = TRUE),
+    .(mean_density = sum((density_sum / n_samples) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE),
       n_areas_contributing = uniqueN(AreaID),
       n_samples_total = sum(n_samples)),
     by = .(Year, FG_num, FG_name)
   ]
-  if (!is.null(sampled_area)) {
-    fg_index_regional <- merge(fg_index_regional, sampled_area, by = "Year", all.x = TRUE)
-    fg_index_regional[, mean_density := numerator / sampled_area_km2]
-  } else {
-    warning("weight_by_area(): no sampled_area_by_year attribute (fg_index built by an older",
-            " weight_by_strata()) - falling back to the area of cells with catch, which ignores zeros.")
-    fg_index_regional[, mean_density := numerator / area_positive_cells]
-  }
-  fg_index_regional[, c("numerator", "area_positive_cells") := NULL]
-  if ("sampled_area_km2" %in% names(fg_index_regional)) fg_index_regional[, sampled_area_km2 := NULL]
   message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows.")
   fg_index_regional
 }
@@ -3226,13 +3192,8 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
   merged <- merge(merged, strata_area_by_area, by = c("AreaID", "Stratum"), all.x = TRUE)
   merged <- merged[!is.na(prop) & !is.na(area_km2) & !is.na(n_samples) & n_samples > 0]
   
-  ## Same zero-inclusive denominator as weight_by_area() (changed
-  ## 2026-10-07): area of all cells sampled that year, not only the cells
-  ## where the species was caught.
-  out <- merged[, .(numerator = sum((density_sum / n_samples) * area_km2, na.rm = TRUE)),
-                by = .(Year, FG_num, FG_name, ScientificName)]
-  out <- merge(out, sampled_area_by_year(n_samples_by_stratum, strata_area_by_area), by = "Year", all.x = TRUE)
-  out[, .(Year, FG_num, FG_name, ScientificName, mean_density = numerator / sampled_area_km2)]
+  merged[, .(mean_density = sum((density_sum / n_samples) * area_km2, na.rm = TRUE) / sum(area_km2, na.rm = TRUE)),
+         by = .(Year, FG_num, FG_name, ScientificName)]
 }
 
 ## =================================================================
@@ -3903,32 +3864,6 @@ resolve_baseline_with_nearest_year_fallback <- function(dt, id_cols, value_col =
 ## no longer requires Step 4 just to appear. If PB_QB_spp already has
 ## real (non-NA) PB values from a prior Step 4 run, this scaffold is
 ## skipped so re-running Step 1 never overwrites Step 4's real numbers.
-## Flags isolated UPWARD spikes in an annual series (one-sided Hampel
-## filter on log values; Hampel 1974, Pearson 2002). For each year with a
-## positive value: neighbours = the 2 x `half` nearest valid years (at
-## least 3); flagged when log(x) - median(log neighbours) > max(k x MAD,
-## log(min_fold)), MAD scaled by 1.4826. The log(min_fold) floor stops
-## the filter firing on smooth series (stock assessments, model output)
-## where the MAD is near zero. ASSUMPTION: half = 2, k = 3 and min_fold = 3
-## are judgment choices, tested against the 1995 model's series
-## (2026-10-07); dips are not flagged (a low value is kept).
-flag_ts_upward_spikes <- function(year, x, half = 2, k = 3, min_fold = 3) {
-  flag <- logical(length(x))
-  ok <- which(!is.na(x) & x > 0)
-  if (length(ok) < 4) return(flag)
-  ok <- ok[order(year[ok])]
-  li <- log(x[ok]); n <- length(li)
-  for (i in seq_len(n)) {
-    ## the 2*half nearest valid years (symmetric inside the series,
-    ## one-sided at its ends so the first and last years are also checked)
-    j <- setdiff(seq_len(n), i); w <- head(j[order(abs(j - i))], 2 * half)
-    if (length(w) < 3) next
-    s <- 1.4826 * stats::mad(li[w], constant = 1)
-    flag[ok[i]] <- (li[i] - stats::median(li[w])) > max(k * s, log(min_fold))
-  }
-  flag
-}
-
 export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regional,
                                         n_samples_by_area_year, dataframe2, year_ecopath = 1994:1996,
                                         ts_years = NULL, out_path, species_taxonomy = NULL,
@@ -3938,8 +3873,6 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
                                         no_zero_fill_fg = integer(0),  ## FGs whose Ecosim gaps stay BLANK (not 0) in survey years - non-survey sources (model, literature, stock assessment) and recording-era FGs
                                         estimate_b_from_ee = character(0),  ## FG names whose Ecopath B is left blank for Ecopath to estimate from EE (poorly sampled groups)
                                         ee_value = 0.95,                    ## EE given to those FGs (EE_input column of Ecopath_B)
-                                        spike_filter = FALSE,               ## TRUE = blank isolated upward spikes in each Ecosim B series (flag_ts_upward_spikes())
-                                        spike_args = list(half = 2, k = 3, min_fold = 3),
 
                                         csv_out_dir = NULL) {    ## directory for this function's own native CSV outputs - defaults to dirname(out_path) for back-compat, but 01_biomass.R passes its own "biomass" subfolder here so this block's CSVs land there instead of at the shared workbook's top level
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("openxlsx package required for Excel export.")
@@ -4174,18 +4107,6 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
     ## filled with 0 for survey-sourced FGs).
     vals[!is.na(mean_density) & mean_density == 0, mean_density := NA_real_]
     vals <- vals[order(Year)]
-    ## Isolated upward spikes -> blank (2026-10-07). Applied to every B
-    ## series (survey, model, literature); removed values are listed in
-    ## ecosim_ts_spikes_removed_REVIEW.csv.
-    if (isTRUE(spike_filter)) {
-      fl <- do.call(flag_ts_upward_spikes, c(list(year = vals$Year, x = vals$mean_density), spike_args))
-      if (any(fl)) {
-        spike_log[[length(spike_log) + 1L]] <<- data.table(FG_num = fg_num, Year = vals$Year[fl],
-                                                          value_removed = vals$mean_density[fl],
-                                                          series_median = stats::median(vals$mean_density, na.rm = TRUE))
-        vals$mean_density[fl] <- NA_real_
-      }
-    }
     
     if (!normalize_ts) return(vals$mean_density)
     
@@ -4241,27 +4162,12 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   
   meta_labels <- c("Name", "Type", "Usage", "Scaling", "Weight", "Target", "2nd target", "Interval")
   ecosim_sheet <- data.table(` ` = c(meta_labels, as.character(ts_years)))
-  spike_log <- list()
   for (i in seq_len(nrow(full_fg_list))) {
     fg_num <- full_fg_list$FG_num[i]; fg_name <- full_fg_list$FG_name[i]
     ts_name <- paste0("B_", gsub("[^A-Za-z0-9]+", "", fg_name))
     col <- c(ts_name, "Biomass (relative)", "reference", "relative", get_weight(fg_num),
              paste0(fg_num, ": ", fg_name), "", "Annual", as.character(build_ts_column(fg_num)))
     ecosim_sheet[, (paste0("fg_", fg_num)) := col]
-  }
-  if (isTRUE(spike_filter)) {
-    spikes <- rbindlist(spike_log)
-    if (nrow(spikes) > 0) {
-      spikes <- merge(full_fg_list, spikes, by = "FG_num")
-      spikes[, fold_over_median := value_removed / series_median]
-      setorder(spikes, FG_num, Year)
-    } else {
-      spikes <- data.table(FG_num = integer(), FG_name = character(), Year = integer(),
-                           value_removed = numeric(), series_median = numeric(), fold_over_median = numeric())
-    }
-    fwrite(spikes, file.path(out_dir, "ecosim_ts_spikes_removed_REVIEW.csv"))
-    message("[Ecosim_ts] spike filter: ", nrow(spikes), " year(s) blanked in ", uniqueN(spikes$FG_num),
-            " B series (ecosim_ts_spikes_removed_REVIEW.csv).")
   }
   
   ## --- FG_spp_Ecosim sheet -----------------------------------------------------

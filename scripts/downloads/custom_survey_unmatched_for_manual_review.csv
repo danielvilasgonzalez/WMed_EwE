@@ -1,0 +1,76 @@
+ScientificName,mean_biomass,n_appearances,Genus,Family,Order,Class,Phylum
+Codium bursa,0.00308279850746269,134,Codium,Codiaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Phyllophora crispa,0.0129935112781955,133,Phyllophora,Phyllophoraceae,Gigartinales,Florideophyceae,Rhodophyta
+Spongites fruticulosa,0.0102013846153846,130,Spongites,Spongitidaceae,Corallinales,Florideophyceae,Rhodophyta
+Lithothamnion valens,0.0083476875,128,Lithothamnion,Hapalidiaceae,Hapalidiales,Florideophyceae,Rhodophyta
+Osmundaria volubilis,0.0169280983606557,122,Osmundaria,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Meganyctiphanes norvegica,4.44587155963303e-05,109,Meganyctiphanes,Euphausiidae,Euphausiacea,Malacostraca,Arthropoda
+Flabellia petiolata,0.00337753409090909,88,Flabellia,Halimedaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Corallinaceae,0.0181199036144578,83,,Corallinaceae,Corallinales,Florideophyceae,Rhodophyta
+Peyssonnelia spp.,0.0342304819277108,83,Peyssonnelia,Peyssonneliaceae,Peyssonneliales,Florideophyceae,Rhodophyta
+Gryphus vitreus,0.00142953947368421,76,Gryphus,Terebratulidae,Terebratulida,Rhynchonellata,Brachiopoda
+Phymatolithon calcareum,0.0039242463768116,69,Phymatolithon,Hapalidiaceae,Hapalidiales,Florideophyceae,Rhodophyta
+Rytiphlaea tinctoria,0.00340212698412698,63,Rytiphlaea,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Lithothamnion corallioides,0.00263614285714286,56,Lithothamnion,Hapalidiaceae,Hapalidiales,Florideophyceae,Rhodophyta
+Isopoda,2.67307692307692e-06,52,,,Isopoda,Malacostraca,Arthropoda
+Cryptonemia tunaeformis,0.000645980392156863,51,Cryptonemia,Halymeniaceae,Halymeniales,Florideophyceae,Rhodophyta
+Nemastoma marginatum,0.001172,51,Nemastoma,Nemastomataceae,Nemastomatales,Florideophyceae,Rhodophyta
+Palmophyllum crassum,0.00118766666666667,48,Palmophyllum,Palmophyllaceae,Palmophyllales,Palmophyllophyceae,Prasinodermatophyta
+Halopithys incurva,0.00705776595744681,47,Halopithys,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Valonia macrophysa,0.000825063829787234,47,Valonia,Valoniaceae,Cladophorales,Ulvophyceae,Chlorophyta
+Gloiocladia microspora,0.000904565217391304,46,Gloiocladia,Faucheaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Gracilaria corallicola,0.00269044444444444,45,Gracilaria,Gracilariaceae,Gracilariales,Florideophyceae,Rhodophyta
+Sphaerococcus coronopifolius,0.000313409090909091,44,Sphaerococcus,Sphaerococcaceae,Gigartinales,Florideophyceae,Rhodophyta
+Lophogaster typicus,1.35e-06,40,Lophogaster,Lophogastridae,Lophogastrida,Malacostraca,Arthropoda
+Pseudaphya ferreri,3.86216216216216e-05,37,Pseudaphya,Gobiidae,Gobiiformes,Teleostei,Chordata
+Scalpellum scalpellum,6.19444444444444e-06,36,Scalpellum,Scalpellidae,Scalpellomorpha,Thecostraca,Arthropoda
+Peyssonnelia rosa-marina,0.0127967714285714,35,Peyssonnelia,Peyssonneliaceae,Peyssonneliales,Florideophyceae,Rhodophyta
+Gloiocladia repens,0.00078,30,Gloiocladia,Faucheaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Phyllophora herediae,0.00180216666666667,30,Phyllophora,Phyllophoraceae,Gigartinales,Florideophyceae,Rhodophyta
+Natatolana borealis,3e-06,28,Natatolana,Cirolanidae,Isopoda,Malacostraca,Arthropoda
+Xenophora crispa,0.00541104166666667,24,,,,,
+Delesseriaceae,7.21304347826087e-05,23,,Delesseriaceae,Ceramiales,Florideophyceae,Rhodophyta
+Umbraulva olivascens,0.000156954545454545,22,Umbraulva,Ulvaceae,Ulvales,Ulvophyceae,Chlorophyta
+Polysiphonia subulifera,0.00760095238095238,21,Polysiphonia,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Chylocladia verticillata,0.000697,16,Chylocladia,Champiaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Gracilaria spp.,0.006184375,16,Gracilaria,Gracilariaceae,Gracilariales,Florideophyceae,Rhodophyta
+Gloiocladia furcata,8.04285714285714e-05,14,Gloiocladia,Faucheaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Polysiphonia elongata,0.00607507692307692,13,Polysiphonia,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Kallymenia spp.,0.000711333333333333,12,Kallymenia,Kallymeniaceae,Gigartinales,Florideophyceae,Rhodophyta
+Rhodymeniaceae,0.000333555555555556,9,,Rhodymeniaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Lithothamnion minervae,0.00337557142857143,7,Lithothamnion,Hapalidiaceae,Hapalidiales,Florideophyceae,Rhodophyta
+Chiton spp.,1.5e-06,6,Chiton,Chitonidae,Chitonida,Polyplacophora,Mollusca
+Codium vermilara,0.0050965,6,Codium,Codiaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Eupogodon planus,0.000111833333333333,6,Eupogodon,Delesseriaceae,Ceramiales,Florideophyceae,Rhodophyta
+Halymenia spp.,0.00108566666666667,6,Halymenia,Halymeniaceae,Halymeniales,Florideophyceae,Rhodophyta
+Laurencia chondrioides,0.000325,6,Laurencia,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Botryocladia madagascariensis,0.0025612,5,Botryocladia,Rhodymeniaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Lithophyllum racemus,0.0011048,5,Lithophyllum,Lithophyllaceae,Corallinales,Florideophyceae,Rhodophyta
+Osmundea pelagosae,0.0024836,5,Osmundea,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Sebdenia spp.,0.0008968,5,Sebdenia,Sebdeniaceae,Sebdeniales,Florideophyceae,Rhodophyta
+Dentaliidae,5.75e-06,4,,Dentaliidae,Dentaliida,Scaphopoda,Mollusca
+Caulerpa prolifera,0.000341666666666667,3,Caulerpa,Caulerpaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Euphausiacea,3e-06,3,,,Euphausiacea,Malacostraca,Arthropoda
+Neurocaulon foliosum,0.000190333333333333,3,Neurocaulon,Furcellariaceae,Gigartinales,Florideophyceae,Rhodophyta
+Peyssonnelia rubra,0.000887666666666667,3,Peyssonnelia,Peyssonneliaceae,Peyssonneliales,Florideophyceae,Rhodophyta
+Polyplacophora,1.06666666666667e-05,3,,,,Polyplacophora,Mollusca
+Sea ball of Posidonia oceanica,0.000173333333333333,3,,,,,
+Valonia utricularis,0.00134733333333333,3,Valonia,Valoniaceae,Cladophorales,Ulvophyceae,Chlorophyta
+Asparagopsis taxiformis,0.000306,2,Asparagopsis,Bonnemaisoniaceae,Bonnemaisoniales,Florideophyceae,Rhodophyta
+Euphausiidae,3e-06,2,,Euphausiidae,Euphausiacea,Malacostraca,Arthropoda
+Leaves of Posidonia oceanica,0.00023,2,,,,,
+Microdictyon tenuius,0.0001075,2,Microdictyon,Anadyomenaceae,Cladophorales,Ulvophyceae,Chlorophyta
+Nitophyllum punctatum,1.6e-05,2,Nitophyllum,Delesseriaceae,Ceramiales,Florideophyceae,Rhodophyta
+Odondebuenia balearica,1e-06,2,Odondebuenia,Gobiidae,Gobiiformes,Teleostei,Chordata
+Rodriguezella strafforelloi,0.0035965,2,Rodriguezella,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Acrothamnion preissii,0.000693,1,Acrothamnion,Ceramiaceae,Ceramiales,Florideophyceae,Rhodophyta
+Aegidae,1e-06,1,,Aegidae,Isopoda,Malacostraca,Arthropoda
+Botryocladia botryoides,0.001948,1,Botryocladia,Rhodymeniaceae,Rhodymeniales,Florideophyceae,Rhodophyta
+Brachiopoda,1e-06,1,,,,,Brachiopoda
+Caulerpa racemosa,2e-06,1,Caulerpa,Caulerpaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Codium adhaerens,0.000934,1,Codium,Codiaceae,Bryopsidales,Ulvophyceae,Chlorophyta
+Euphausia krohni,2e-05,1,,,,,
+Kallymenia patens,0.000344,1,Kallymenia,Kallymeniaceae,Gigartinales,Florideophyceae,Rhodophyta
+Polysiphonia nigra,0.036539,1,Polysiphonia,Rhodomelaceae,Ceramiales,Florideophyceae,Rhodophyta
+Sphaerococcus rhizophylloides,0.000265,1,Sphaerococcus,Sphaerococcaceae,Gigartinales,Florideophyceae,Rhodophyta
+Valonia spp.,0.000992,1,Valonia,Valoniaceae,Cladophorales,Ulvophyceae,Chlorophyta

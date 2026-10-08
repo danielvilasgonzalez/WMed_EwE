@@ -154,9 +154,15 @@ STAR_RAMLEGACY_DIR <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
 if (!dir.exists(STAR_RAMLEGACY_DIR)) dir.create(STAR_RAMLEGACY_DIR, recursive = TRUE)
 
 ## --- Run log (plain text, for sharing/debugging) ------------------------
-.run_log_path <- file.path(STAR_RAMLEGACY_DIR, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_combine_STAR_RAMlegacy_log.txt"))
+## One log per script per day (YYYYMMDD_<script>_log.txt): a rerun on the
+## same day overwrites it; the run start time is the first line.
+.run_log_path <- file.path(STAR_RAMLEGACY_DIR, paste0(format(Sys.Date(), "%Y%m%d"), "_combine_STAR_RAMlegacy_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
 sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
+cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+## R errors normally only reach the console; also write the error message
+## into this log so a stopped run shows why in the log file.
+options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the

@@ -107,9 +107,16 @@
 ##     1999, Aquat. Bot. 65:159-174); DW:FW 0.24 (Apostolaki et al. 2024,
 ##     JGR Biogeosciences, DOI 10.1029/2024JG008163); occupancy 0.7 =
 ##     ASSUMPTION.
-##   - Cymodocea: 410.4 g DW/m2 (Guidetti et al. 2002, Mar. Ecol.
-##     23:51-67) x7 macrophyte DW->WW (ASSUMPTION, generic ~85-90 %
-##     water); area = 0-15 m depth band (ASSUMPTION, no map class).
+##   - Cymodocea: leaf biomass 82.1 g DW/m2 = 410.4 total (Guidetti et
+##     al. 2002, Mar. Ecol. 23:51-67) x 0.20 leaf share (Cancemi, Buia &
+##     Mazzella 2002, Sci. Mar. 66:365-373) x 4.17 (DW:FW 0.24, Apostolaki
+##     et al. 2024 - ASSUMPTION for Cymodocea); area = Balearic
+##     Cymodocea/Posidonia area ratio (16.12 km2, Informe Mar Balear 2020 /
+##     569.8 km2 EUSeaMap GSA 5) x model Posidonia area > 10 m = 88 km2,
+##     cover 0.47 (Menorca mean, same report). ASSUMPTION: Balearic ratio.
+##   - Meso + micro zooplankton: level anchored to field data (Fernandez
+##     de Puelles et al. 2023, Water 15:4267), COBALT trend kept
+##     (ZOO_MESOMICRO_ANCHOR).
 ##   - Corals and gorgonians: whole-habitat densities and colony AFDM
 ##     (Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550, Tables 1, 3),
 ##     AFDM:DW 0.11-0.1513 (Ponti et al. 2014; Palma et al. 2018), DW->WW
@@ -139,9 +146,11 @@
 ##     (habitat_shapefile_biomass.csv): coralligenous gorgonians (Corals
 ##     and gorgonians), Posidonia, Cymodocea, macroalgae.
 ##  D. BIOGEOCHEMICAL MODELS / SATELLITE (PLANKTON BIOMASS section):
-##     large + small phytoplankton (MedBFM reanalysis; PISCES and
-##     satellite chlorophyll as cross-check/fallback), macro and
-##     meso+micro zooplankton (SEAPODYM LMTL).
+##     large + small phytoplankton and meso+micro zooplankton from
+##     ISIMIP3a GFDL-MOM6-COBALT2 obsclim (main source; CMEMS MedBFM,
+##     PISCES and satellite chlorophyll as cross-check/fallback);
+##     macrozooplankton = krill field minimum (MACROZOO_SOURCE), not a
+##     plankton model; detritus from the Pauly et al. 1993 equation.
 ##  B and C are added together per FG x Year; A-D all end up in
 ##  stock_assessment_fg_year for 01_biomass.R's priority rule.
 ##
@@ -2367,6 +2376,38 @@ if (ENABLE_CMEMS_PLANKTON && length(plankton_missing) > 0) {
                error = function(e) { message("[ISIMIP] FAILED - falling back to Copernicus: ", conditionMessage(e)); NULL }) else NULL
     if (!is.null(isimip_draft) && nrow(isimip_draft) > 0) {
       plankton_model_rows <- .to_model_rows(isimip_draft, "ISIMIP3a GFDL-MOM6-COBALT2 OBSCLIM ANNUAL SERIES (01b ISIMIP section)")
+      ## --- Meso + micro zooplankton LEVEL anchored to field data ---------
+      ## COBALT integrates the whole water column and gave ~30 t/km2, about
+      ## 2x the top of the field range. The field level sets the Ecopath
+      ## value; COBALT keeps only the year-to-year trend:
+      ##  z_eff  = sum_k A_k min(zmid_k, 100) / sum_k A_k (strata; tows 0-100 m)
+      ##  B_meso = DM x z_eff / DW:WW / 1000;  B_meso+micro = B_meso / (1 - s_micro)
+      ##  B_y    = COBALT_y x B_meso+micro / mean(COBALT, YEAR_ECOPATH)
+      ## DM = 10 mg dry mass/m3, 0-100 m, 250 um Bongo, Alboran-Balearic
+      ## 2007-2017 (Fernandez de Puelles, Gaza, Cabanellas-Reboredo & O'Brien
+      ## 2023, Water 15:4267, doi:10.3390/w15244267); DW:WW 0.15 = ASSUMPTION
+      ## (0.1-0.2); s_micro = 0.35 micro share of meso+micro (same split as
+      ## elsewhere in this file, ASSUMPTION). ZOO_MESOMICRO_ANCHOR = "model"
+      ## keeps the raw COBALT level.
+      if (!exists("ZOO_MESOMICRO_ANCHOR")) ZOO_MESOMICRO_ANCHOR <- "field"
+      if (!exists("ZOO_FIELD")) ZOO_FIELD <- list(dm_mg_m3 = 10, dw_to_ww = 0.15, micro_share = 0.35)
+      .zidx <- tolower(plankton_model_rows$Group) == "mesomicrozooplankton"
+      if (identical(ZOO_MESOMICRO_ANCHOR, "field") && any(.zidx)) {
+        .sa_z <- as.data.table(strata_area_by_area)
+        .z_eff <- sum(.sa_z$area_km2 * pmin((.sa_z$Depth_min_m + .sa_z$Depth_max_m) / 2, 100)) / sum(.sa_z$area_km2)
+        .target <- ZOO_FIELD$dm_mg_m3 * .z_eff / ZOO_FIELD$dw_to_ww / 1000 / (1 - ZOO_FIELD$micro_share)
+        .base <- mean(plankton_model_rows[.zidx & Year %in% YEAR_ECOPATH, Biomass_t], na.rm = TRUE) / study_area_km2
+        if (is.finite(.base) && .base > 0) {
+          .k <- .target / .base
+          plankton_model_rows[.zidx, Biomass_t := Biomass_t * .k]
+          plankton_model_rows[.zidx, Source_citation := paste0("FIELD-ANCHORED LEVEL: ", signif(.target, 3), " t WW/km2 in ",
+            paste(range(YEAR_ECOPATH), collapse = "-"), " = ", ZOO_FIELD$dm_mg_m3, " mg DM/m3 x ", round(.z_eff, 1), " m / ",
+            ZOO_FIELD$dw_to_ww, " DW:WW / 1000 / (1 - ", ZOO_FIELD$micro_share, " micro share) (Fernandez de Puelles et al. 2023,",
+            " Water 15:4267; DW:WW and micro share = ASSUMPTION); trend = COBALT x ", signif(.k, 3), ". ", Source_citation)]
+          message("[Plankton biomass] Meso+micro zooplankton anchored to field data: ", signif(.target, 3), " t/km2 (",
+                  paste(range(YEAR_ECOPATH), collapse = "-"), "); COBALT level was ", signif(.base, 3), " t/km2 (x ", signif(.k, 3), ").")
+        }
+      }
     } else {
       plankton_draft <- tryCatch(fetch_cmems_plankton_biomass(out_dir = csv_out_dir), error = function(e) {
         message("[Plankton biomass] FAILED: ", conditionMessage(e)); NULL })

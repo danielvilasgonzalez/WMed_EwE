@@ -1,0 +1,11 @@
+ScientificName,mean_biomass,n_appearances,Genus,Family,Order,Class,Phylum,Survey
+Myctophidae,9.70308880308884e-05,518,,Myctophidae,Myctophiformes,Teleostei,Chordata,MEDITS
+Munida intermedia,4.53927125506073e-05,494,Munida,Munididae,Decapoda,Malacostraca,Arthropoda,MEDITS
+Bathynectes maravigna,9.30804597701149e-05,87,Bathynectes,Portunidae,Decapoda,Malacostraca,Arthropoda,MEDITS
+Paralepis coregonoides,1.15068493150685e-05,73,Paralepis,Paralepididae,Aulopiformes,Teleostei,,MEDITS
+Notoscopelus bolini,3.45932203389831e-05,59,Notoscopelus,Myctophidae,Myctophiformes,Teleostei,,MEDITS
+Dorhynchus thomsoni,1.08888888888889e-06,45,Dorhynchus,Inachidae,Decapoda,Malacostraca,Arthropoda,MEDITS
+Callionymus risso,5.6e-06,30,Callionymus,Callionymidae,Callionymiformes,Teleostei,,MEDITS
+Blenniidae,1.81111111111111e-05,9,,Blenniidae,Blenniiformes,Teleostei,Chordata,MEDITS
+Parthenopidae,0.000109555555555556,9,,Parthenopidae,Decapoda,Malacostraca,Arthropoda,MEDITS
+Mugilidae,0.00455,2,,Mugilidae,Mugiliformes,Teleostei,Chordata,MEDITS

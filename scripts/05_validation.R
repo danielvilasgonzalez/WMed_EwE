@@ -48,8 +48,10 @@ while (sink.number() > 0) sink()
 ## mortality rate (no column for it anywhere in the 9-sheet workbook
 ## contract - a scope decision, not a bug, left as a project decision
 ## whether it belongs in this pipeline's output at all) and formal
-## multi-stanza input blocks (only a juvenile/adult biomass-split
-## heuristic exists, not a real EwE stanza parameter table).
+## multi-stanza input blocks (hake juvenile/adult B, catch split and
+## VBGF parameters exist - hake_multistanza_parameters.csv,
+## hake_stanza_stock_assessment_REVIEW.csv - but no EwE stanza block is
+## written to the workbook).
 ## =================================================================
 
 ## STEP C (further below) builds an actual plot for every check this
@@ -126,9 +128,15 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
 }
 
 ## --- Run log (plain text, for sharing/debugging) ------------------------
-.run_log_path <- file.path(out_dir, paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_05_validation_log.txt"))
+## One log per script per day (YYYYMMDD_<script>_log.txt): a rerun on the
+## same day overwrites it; the run start time is the first line.
+.run_log_path <- file.path(out_dir, paste0(format(Sys.Date(), "%Y%m%d"), "_05_validation_log.txt"))
 .run_log_con  <- file(.run_log_path, open = "wt")
 sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
+cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+## R errors normally only reach the console; also write the error message
+## into this log so a stopped run shows why in the log file.
+options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -875,7 +883,7 @@ validation_plots[["07_temporal_mismatch"]] <- tryCatch({
 }, error = function(e) { message("[05_validation.R plot] temporal mismatch skipped - ", conditionMessage(e)); NULL })
 
 ## 7) Fleet-level landings coverage - which FGs get most of their
-## landings from the "Other GFCM countries - Unclassified" residual
+## landings from the "Target countries - fleet not resolved" residual
 ## rather than a named 6-country fleet.
 validation_plots[["08_fleet_coverage"]] <- tryCatch({
   d <- fread(file.path(out_dir, "fisheries", "ecopath_L_fg_coverage_check.csv"))
@@ -888,7 +896,7 @@ validation_plots[["08_fleet_coverage"]] <- tryCatch({
     geom_vline(xintercept = 0.5, linetype = "dashed", colour = "grey50") +
     scale_fill_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey30")) +
     labs(title = "Named 6-country fleet share of total landings (25 lowest-coverage FGs)",
-         subtitle = "The rest sits in Ecopath_L/Di's 'Other GFCM countries - Unclassified' column, not lost - just coarser fleet/gear detail",
+         subtitle = "The rest sits in Ecopath_L/Di's 'Target countries - fleet not resolved' column, not lost - just coarser fleet/gear detail",
          x = "Named-fleet share", y = NULL, fill = "< 50% named") +
     theme_minimal(base_size = 9) + theme(legend.position = "bottom")
 }, error = function(e) { message("[05_validation.R plot] fleet coverage skipped - ", conditionMessage(e)); NULL })
@@ -974,6 +982,80 @@ validation_plots[["11_zooplankton_total_field_check"]] <- tryCatch({
     theme_minimal(base_size = 9)
 }, error = function(e) { message("[05_validation.R plot] zooplankton field check skipped - ", conditionMessage(e)); NULL })
 
+## 12) Ecosim time series: new Ecosim_ts vs the old model's "timeseries"
+## sheet (WMed_EwE.xlsx). Series are matched by target FG (old names
+## through old_to_new_fg_crosswalk.csv, else exact name) and by kind
+## (biomass: old "Biomass", new B_; catch: old "Catch", new L_). Both are
+## compared as relative trends over the overlapping years:
+##   I_t = X_t / mean(X over the overlap years with both values)
+## so units and model areas cancel. r = Pearson correlation of I_new and
+## I_old (n >= 5 common years). Output: ecosim_ts_vs_old_model_REVIEW.csv
+## and one faceted plot per kind.
+.read_ts_sheet <- function(path, sheet) {
+  t <- suppressMessages(as.data.table(readxl::read_excel(path, sheet = sheet, col_names = FALSE, .name_repair = "minimal")))
+  setnames(t, paste0("c", seq_len(ncol(t))))
+  lab <- trimws(as.character(t$c1))
+  r_type <- match("Type", lab); r_tgt <- match("Target", lab)
+  yrs <- suppressWarnings(as.numeric(lab)); r_yr <- which(!is.na(yrs) & yrs > 1900 & yrs < 2100)
+  if (is.na(r_type) || is.na(r_tgt) || !length(r_yr)) stop("unexpected layout in sheet ", sheet)
+  rbindlist(lapply(names(t)[-1], function(cc) {
+    v <- suppressWarnings(as.numeric(gsub(",", ".", as.character(t[[cc]][r_yr]))))
+    data.table(type = as.character(t[[cc]][r_type]), target = as.character(t[[cc]][r_tgt]), Year = yrs[r_yr], value = v)
+  }))
+}
+.ts_kind <- function(type) fcase(grepl("^Biomass", type, ignore.case = TRUE), "Biomass",
+                                 grepl("^Catch|^Landing", type, ignore.case = TRUE), "Catch", default = NA_character_)
+.ts_fg <- function(target) trimws(sub("^\\s*[0-9]+\\s*:\\s*", "", target))
+ecosim_ts_cmp <- tryCatch({
+  if (!exists("OLD_WMED_WORKBOOK_PATH") || !file.exists(OLD_WMED_WORKBOOK_PATH)) stop("old WMed_EwE.xlsx not found")
+  if (!"timeseries" %in% readxl::excel_sheets(OLD_WMED_WORKBOOK_PATH)) stop("old workbook has no 'timeseries' sheet")
+  if (!"Ecosim_ts" %in% wb_sheets) stop("new workbook has no Ecosim_ts sheet")
+  old_ts <- .read_ts_sheet(OLD_WMED_WORKBOOK_PATH, "timeseries")[, `:=`(kind = .ts_kind(type), fg = .ts_fg(target))][!is.na(kind)]
+  new_ts <- .read_ts_sheet(ECOPATH_WORKBOOK_PATH, "Ecosim_ts")[, `:=`(kind = .ts_kind(type), fg = .ts_fg(target))][!is.na(kind)]
+  ## old FG name -> new FG name (crosswalk where available)
+  old_ts[, norm := normalize_name(fg)]
+  if (exists("xw") && nrow(xw)) old_ts <- merge(old_ts, xw, by.x = "norm", by.y = "norm_name", all.x = TRUE) else old_ts[, New_FG_name := NA_character_]
+  old_ts[is.na(New_FG_name), New_FG_name := fg]
+  ## several old series on one new FG (e.g. sardine juv + adult): the old
+  ## series are relative indices, so they are averaged, not summed
+  old_ts <- old_ts[, .(old = if (all(is.na(value))) NA_real_ else mean(value, na.rm = TRUE)), by = .(kind, fg_new = normalize_name(New_FG_name), Year)]
+  new_ts <- new_ts[, .(new = if (all(is.na(value))) NA_real_ else sum(value, na.rm = TRUE)), by = .(kind, fg_new = normalize_name(fg), FG_label = fg, Year)]
+  m <- merge(new_ts, old_ts, by = c("kind", "fg_new", "Year"))
+  m <- m[!is.na(new) & !is.na(old) & new > 0 & old > 0]
+  m[, `:=`(I_new = new / mean(new), I_old = old / mean(old), n_years = .N), by = .(kind, fg_new)]
+  m <- m[n_years >= 5]
+  if (!nrow(m)) stop("no FG has >= 5 overlapping years in both series")
+  summ <- m[, .(FG = FG_label[1], n_years = .N, years = paste(range(Year), collapse = "-"),
+                r = suppressWarnings(cor(I_new, I_old)),
+                trend_new_pct_yr = 100 * coef(lm(log(I_new) ~ Year))[2], trend_old_pct_yr = 100 * coef(lm(log(I_old) ~ Year))[2]),
+            by = .(kind, fg_new)]
+  summ[, flag := fifelse(is.na(r) | r < 0, "opposite or no common trend - review", fifelse(r < 0.5, "weak agreement", "agrees"))]
+  fwrite(summ[order(kind, r)], file.path(csv_out_dir, "ecosim_ts_vs_old_model_REVIEW.csv"))
+  message("[05_validation.R] Ecosim_ts vs old model: ", summ[kind == "Biomass", .N], " biomass and ", summ[kind == "Catch", .N],
+          " catch series compared (>= 5 common years); r < 0 for ", summ[r < 0, .N], " of them - see ecosim_ts_vs_old_model_REVIEW.csv.")
+  list(m = m, summ = summ)
+}, error = function(e) { message("[05_validation.R] Ecosim_ts vs old model skipped - ", conditionMessage(e)); NULL })
+for (.k in c("Biomass", "Catch")) {
+  validation_plots[[paste0("12_ecosim_ts_vs_old_", tolower(.k))]] <- tryCatch({
+    if (is.null(ecosim_ts_cmp)) stop("no comparison")
+    d <- ecosim_ts_cmp$m[kind == .k]
+    if (!nrow(d)) stop("no ", .k, " series in common")
+    s <- ecosim_ts_cmp$summ[kind == .k]
+    d <- merge(d, s[, .(fg_new, r)], by = "fg_new")
+    d[, panel := paste0(FG_label, " (r = ", sprintf("%.2f", r), ")")]
+    d[, panel := factor(panel, levels = unique(panel[order(r)]))]
+    dl <- melt(d, id.vars = c("panel", "Year"), measure.vars = c("I_new", "I_old"), variable.name = "series", value.name = "I")
+    dl[, series := fifelse(series == "I_new", "New pipeline", "Old model (1995)")]
+    ggplot(dl, aes(Year, I, colour = series)) + geom_line() + geom_point(size = 0.6) +
+      facet_wrap(~ panel, scales = "free_y") +
+      scale_colour_manual(values = c("New pipeline" = "firebrick", "Old model (1995)" = "grey30")) +
+      labs(title = paste0("Ecosim ", tolower(.k), " time series: new vs old model"),
+           subtitle = "Each series divided by its mean over the common years; panels sorted by correlation r (lowest first)",
+           x = NULL, y = "Relative value", colour = NULL) +
+      theme_minimal(base_size = 7) + theme(legend.position = "bottom", strip.text = element_text(size = 5.5))
+  }, error = function(e) { message("[05_validation.R plot] Ecosim ", .k, " vs old skipped - ", conditionMessage(e)); NULL })
+}
+
 validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- p_bio          # values side by side, same total tonnes (see .bio_pair_plot above)
 validation_plots[["01c_biomass_vs_old_model_as_published"]] <- p_bio_pub
 
@@ -1037,25 +1119,25 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
   ## --- per-species Fmort has F already folded into PB_FG upstream; -----
   ## --- every other FG relies on fg_weighted's own F_FG (Yield_FG / -----
   ## --- Biomass_FG). Combined into one F_for_plot per FG. ----------------
+  ## F is evaluated at FG level: F_f = (mean C_f / A_model) / B_f, 1994-1996,
+  ## from 02_fisheries.R's F_by_fg.csv (B_f = final Ecopath_B). FGs with no
+  ## catch or F = 0 (e.g. Posidonia, phytoplankton) are not plotted.
   p_f_by_fg <- tryCatch({
-    species_F_by_fg <- results_pb_qb[!is.na(Fmort), .(
-      F_species_weighted = sum(Biomass * Fmort, na.rm = TRUE) / sum(Biomass[!is.na(Fmort)], na.rm = TRUE)
-    ), by = .(FG, FG_name)]
-    f_dt <- merge(fg_weighted_pb_qb[, .(FG, FG_name, Biomass_FG,
-                                        F_FG = if ("F_FG" %in% names(fg_weighted_pb_qb)) F_FG else NA_real_)],
-                  species_F_by_fg, by = c("FG", "FG_name"), all = TRUE)
-    f_dt[, F_for_plot := fifelse(!is.na(F_species_weighted), F_species_weighted, F_FG)]
-    f_dt <- f_dt[!is.na(F_for_plot)]
-    if (nrow(f_dt) == 0) stop("no FG has an F value yet (species-level Fmort AND fg_weighted's F_FG both empty)")
-    f_dt[, F_source := fifelse(!is.na(F_species_weighted), "Species-level (Fmort)", "FG-level (Yield_FG/Biomass_FG)")]
-    f_dt[, FG_label := paste0(as.integer(FG), "_", FG_name)]
-    f_dt <- f_dt[order(-F_for_plot)]
+    f_path <- file.path(out_dir, "fisheries", "F_by_fg.csv")
+    if (!file.exists(f_path)) stop("F_by_fg.csv not found - run 02_fisheries.R first")
+    f_dt <- fread(f_path)[!is.na(F) & F > 0]
+    if (nrow(f_dt) == 0) stop("no FG with F > 0 in F_by_fg.csv")
+    f_dt[, FG_label := paste0(as.integer(FG_num), "_", FG_name)]
+    f_dt <- f_dt[order(F)]
     f_dt[, FG_label := factor(FG_label, levels = FG_label)]
-    ggplot(f_dt, aes(x = F_for_plot, y = reorder(FG_label, F_for_plot), fill = F_source)) +
+    f_dt[, F_class := fcase(F > 1, "F > 1 (check)", F > 0.5, "0.5 < F <= 1", default = "F <= 0.5")]
+    ggplot(f_dt, aes(x = F, y = FG_label, fill = F_class)) +
       geom_col() +
-      labs(title = "Fishing mortality (F) by functional group",
-           subtitle = "Biomass-weighted mean of species-level Fmort where any exists, else Yield_FG / Biomass_FG",
-           x = expression(F~(year^-1)), y = NULL, fill = "Source") +
+      geom_vline(xintercept = 1, linetype = "dashed", colour = "grey40") +
+      scale_fill_manual(values = c("F > 1 (check)" = "firebrick", "0.5 < F <= 1" = "darkorange", "F <= 0.5" = "grey50")) +
+      labs(title = "Fishing mortality (F) by functional group, 1994-1996",
+           subtitle = "F = (mean catch / model area) / Ecopath_B, FG level (02_fisheries.R F_by_fg.csv); FGs with F = 0 not shown",
+           x = expression(F~(year^-1)), y = NULL, fill = NULL) +
       theme_minimal(base_size = 7) + theme(legend.position = "bottom")
   }, error = function(e) { message("[05_validation.R plot] F by FG skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_f_by_fg)) {

@@ -64,3 +64,6 @@ tmp.tif
 # macOS
 .DS_Store
 .RDataTmp1
+
+# machine-specific output path used by the qmd setup chunk
+scripts/qmd_out_dir.txt
