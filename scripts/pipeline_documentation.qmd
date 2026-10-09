@@ -1720,6 +1720,28 @@ Outputs in `output/validation/`: `comparison_with_old_westmed_estimates_REVIEW.c
 
 ---
 
+# Gelatinous groups and macrozooplankton (added 2026-10-08)
+
+`lib_gelatinous_macrozoo_biomass.R`, called from `01b` (`GEL_MACRO_SOURCE = "datasets"`):
+
+| FG | Source | Conversion |
+|---|---|---|
+| Jellyfish | Luo et al. 2020 (Zenodo 3891704), Cnidaria, mg C/m³ per 1° cell | $W = 173.78\,C$ (Molina-Ramírez et al. 2015) |
+| Salps and other gelatinous zooplankton | Luo et al. 2020, Chordata + Ctenophora | tunicates $W = 446.68\,C^{1.54}$ per individual within 0.03–0.13 g C, else C = 1.04 % W; ctenophores $W = 173.78\,C$ |
+| Macro zooplankton | MAREDAT (Moriarty et al. 2013, PANGAEA.777398), median 0–350 m per 1° cell, minus the Luo gelatinous carbon | C = 4 % of WW (`MACRO_C_FRACTION_WW`, ASSUMPTION; krill 8.6 %) |
+
+- Concentrations are area-weighted over the lon −6…16 / lat 35…45 cells.
+- They are integrated over the model area with $z_{eff}(Z) = \sum_k A_k \min(z_{mid,k}, Z) / \sum_k A_k$ (MEDITS strata): Z = 350 m for MAREDAT, and Z = 200 m for Luo (ASSUMPTION).
+- Both sources are climatologies, used as 1994–1996.
+- With a value, the FG is no longer EE-estimated. Without one, it falls back to EE (and Macro zooplankton to the krill field minimum).
+- Outputs: `gelatinous_macrozoo_biomass_REVIEW.csv`, `gelatinous_luo2020_by_phylum_REVIEW.csv`.
+- **Run of 2026-10-08 (13:11).** Luo et al. 2020 gave implausible Western Med values: Cnidaria 9.3 mg C/m³ (mean of 47 cells; median 5.5), which comes to 233 t/km² of jellyfish. Ctenophora gave 140 t/km² (9 cells). The Luo gelatinous carbon (16 mg C/m³) is 25× the whole MAREDAT macrozooplankton carbon (0.59 mg C/m³, which itself includes gelatinous taxa).
+  - Interpretation: the JeDI-based cells are surface, bloom and presence-biased samples, not 0–200 m means.
+  - Defaults now: `GEL_LUO_USE_FOR_B = FALSE`, so Luo values go to the REVIEW files as an upper bound and Jellyfish and Salps stay EE-estimated.
+  - The median over cells is used (`luo_stat`).
+  - The gelatinous subtraction from MAREDAT is off. Macro zooplankton = MAREDAT 0.59 mg C/m³ × 214.5 m / 0.04 ≈ 3.2 t/km² (1.5 with the krill C fraction 8.6 %).
+- `ECOPATH_B_HAUL_CAP_FGS` = Commercial small demersal fish: its Ecopath_B baseline also uses the haul-capped index (one 1995 haul gave ×6.4).
+
 # Status of the 2026-10-07 run and open issues
 
 All five scripts completed without errors (logs `20261007_094022_01_biomass_log.txt` to `20261007_100250_05_validation_log.txt`). Changes made after this run — **rerun 02 → 03 → 05**:
@@ -1727,6 +1749,7 @@ All five scripts completed without errors (logs `20261007_094022_01_biomass_log.
 1. `02_fisheries.R` — F and the NEI F ≤ 1 cap use the final `Ecopath_B` (adult hake FG 27 now gets an F; macrozooplankton and suprabenthos are no longer capped against survey bycatch). Residual fleet column renamed "Target countries - fleet not resolved". "6 target countries" wording removed from messages.
 2. `03_pbqb-traits.R` — FG-level F from `F_by_fg.csv` added to P/B of non-fish FGs with catch (cephalopods, shrimps, lobsters, molluscs, macrobenthos); invertebrate Q/B recomputed as 3 × P/B. Previously this step only ran with a retired catch file, so these FGs had P/B without fishing mortality.
 3. `05_validation.R`, `01b_biomass_unsurveyed.R` — comments and the residual column name brought up to date.
+5. 2026-10-08 — **rerun 01 → 05** (the first 01 run recomputes the strata areas from NOAA bathymetry, which needs internet access). Changes: stale strata-area caches are now rebuilt (the 501–800 m hauls had been dropped); AquaMaps pseudo-strata are limited to depths above 1000 m and densities are expressed per km² of the 10–800 m model area (the 2026-10-07 fix had divided by 575,489 km²); FAO "Marine molluscs nei" goes to Benthic mollusc instead of being split over the cephalopods (`rank_alias_to_order.csv`: Mollusca → Bivalvia); the DuckDB progress bar no longer floods the 01 log.
 4. `lib_survey_fg_density_functions.R`, `01_biomass.R` (evening of 2026-10-07) — **rerun 01 → 05**. Region-wide MEDITS and MEDIAS densities now count zero catches: the denominator is the area of all cells sampled that year, not only the cells where the FG was caught. This lowers `Ecopath_B` of patchy or depth-restricted FGs: in an offline test the 1994–1996 means were ×1.7 too high at the median and ×3 or more for 17 FGs. F, P/B and the balance change with them. New Ecosim trend rules (haul cap at q95, years with < 80 % area coverage blank, upward-spike filter) change only the B series, not `Ecopath_B`; see `ecosim_haul_cap_effect_REVIEW.csv`, `survey_area_coverage_by_year.csv` and `ecosim_ts_spikes_removed_REVIEW.csv`.
 
 Open issues, by block:

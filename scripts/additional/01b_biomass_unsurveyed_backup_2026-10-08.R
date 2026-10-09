@@ -992,83 +992,6 @@ extrapolate_density_row <- function(density_value, density_unit, depth_min_m, de
   list(biomass_t = biomass_t, audit_note = audit_note)
 }
 
-## =================================================================
-## AquaMaps extension of LITERATURE densities to unsampled depths
-## (2026-10-08). A literature density measured over a restricted depth
-## band [z1, z2] is extended to every other depth band of the biomass
-## domain (MEDITS strata 10-800 m plus, with APPLY_AQUAMAPS_DEPTH_ADJUSTMENT,
-## the 0-10 m and 800-AQUAMAPS_B_MAX_DEPTH pseudo-strata - the same domain
-## the MEDITS biomass uses), scaled by the group's AquaMaps depth
-## suitability, same anchor idea as lib_aquamaps_depth_extension.R:
-##   D_k = D_band x S_k / S_band
-##   S_k    = mean AquaMaps suitability of the group over band k
-##            (trapezoid DepthMin-PrefMin-PrefMax-DepthMax, averaged over
-##            the group's species with an envelope, equal weights)
-##   S_band = the same over the sampled band(s) of that literature row
-##   B_extra = sum_k A_k (1 - f_k) D_k ;  f_k = share of band k inside the
-##            sampled band(s) of ANY row of the same Group (no double count;
-##            each unsampled band is anchored to the nearest sampled row)
-## Species: Habitat_species of the row, else the FG's species list
-## (FG_WMed_2026.csv). Rows with a mapped Habitat_area_km2 (seagrass,
-## macroalgae, coralligenous) are not extended - the map is their
-## occurrence. ASSUMPTION: relative density follows AquaMaps suitability.
-## LIT_AQUAMAPS_EXTEND = FALSE switches this off.
-## =================================================================
-if (!exists("LIT_AQUAMAPS_EXTEND")) LIT_AQUAMAPS_EXTEND <- TRUE
-.lit_domain_bands <- function() {
-  if (exists("aq") && is.list(aq) && !is.null(aq$strata_area) && !is.null(aq$strata_def)) {
-    sd <- as.data.table(aq$strata_def)[depth_min < get0("AQUAMAPS_B_MAX_DEPTH", ifnotfound = 1000)]
-    sa <- as.data.table(aq$strata_area)
-  } else {
-    sd <- as.data.table(MEDITS_STRATA); sa <- as.data.table(strata_area_by_area)
-  }
-  a <- sa[Stratum %in% sd$stratum_num, .(area_km2 = sum(area_km2, na.rm = TRUE)), by = Stratum]
-  merge(sd[, .(Stratum = stratum_num, zmin = depth_min, zmax = depth_max)], a, by = "Stratum")[order(zmin)]
-}
-.lit_group_suitability <- function(species, zmin, zmax) {
-  if (!length(species)) return(NA_real_)
-  if (!exists("aquamaps_envelope_mass", mode = "function")) source(file.path(git_dir, "scripts/lib_aquamaps_depth_extension.R"))
-  env <- tryCatch(fetch_aquamaps_depth_envelope(resolve_aquamaps_species_ids(unique(species))), error = function(e) NULL)
-  if (is.null(env)) return(NA_real_)
-  env <- env[!is.na(DepthMin) & !is.na(DepthMax)]
-  if (!nrow(env)) return(NA_real_)
-  vapply(seq_along(zmin), function(k) mean(vapply(seq_len(nrow(env)), function(i)
-    aquamaps_envelope_mass(zmin[k], zmax[k], env$DepthMin[i], env$DepthPrefMin[i], env$DepthPrefMax[i], env$DepthMax[i]) /
-      max(zmax[k] - zmin[k], 1e-9), 0)), 0)
-}
-## For one Group's literature rows (data.table with Depth_min_m, Depth_max_m,
-## density_t_km2): extra biomass (t) per row from the unsampled bands.
-lit_aquamaps_extension <- function(rows, species, label = "") {
-  bands <- .lit_domain_bands()
-  if (!nrow(bands) || !length(species)) return(list(extra_t = rep(0, nrow(rows)), note = rep("no AquaMaps extension (no species list)", nrow(rows))))
-  S <- .lit_group_suitability(species, bands$zmin, bands$zmax)
-  if (all(is.na(S))) return(list(extra_t = rep(0, nrow(rows)), note = rep("no AquaMaps extension (no AquaMaps envelope for the species)", nrow(rows))))
-  bands[, S := S]
-  ## share of each band covered by ANY sampled row of this Group
-  bands[, f := pmin(1, rowSums(matrix(vapply(seq_len(nrow(rows)), function(r)
-    pmax(0, pmin(zmax, rows$Depth_max_m[r]) - pmax(zmin, rows$Depth_min_m[r])) / (zmax - zmin), numeric(.N)), nrow = .N)))]
-  ## nearest sampled row for each band
-  bands[, owner := vapply(seq_len(.N), function(k) {
-    mid <- (zmin[k] + zmax[k]) / 2
-    which.min(pmax(0, rows$Depth_min_m - mid) + pmax(0, mid - rows$Depth_max_m))
-  }, 1L)]
-  extra <- numeric(nrow(rows)); note <- character(nrow(rows))
-  for (r in seq_len(nrow(rows))) {
-    ov <- pmax(0, pmin(bands$zmax, rows$Depth_max_m[r]) - pmax(bands$zmin, rows$Depth_min_m[r]))
-    S_band <- if (sum(ov * bands$area_km2 / (bands$zmax - bands$zmin)) > 0)
-      sum(bands$S * ov * bands$area_km2 / (bands$zmax - bands$zmin)) / sum(ov * bands$area_km2 / (bands$zmax - bands$zmin)) else NA_real_
-    own <- bands[owner == r & f < 1]
-    if (!nrow(own) || !is.finite(S_band) || S_band <= 0) { note[r] <- "no unsampled band to extend to (or zero suitability in the sampled band)"; next }
-    extra[r] <- rows$density_t_km2[r] * sum(own$area_km2 * (1 - own$f) * own$S / S_band)
-    note[r] <- paste0("AquaMaps extension to unsampled depths (D_k = D x S_k / S_band, S_band = ", signif(S_band, 3), "): ",
-                      paste0(own$zmin, "-", round(own$zmax), " m S=", signif(own$S, 2), collapse = ", "),
-                      " => +", round(extra[r], 1), " t")
-  }
-  message("[", label, "] AquaMaps extension for ", paste(unique(rows$Group), collapse = ", "), ": +",
-          round(sum(extra), 1), " t over unsampled depth bands (", length(species), " species).")
-  list(extra_t = extra, note = note)
-}
-
 load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, review_csv_name, output_csv_name,
                                             fallback_message, write_review_outputs = TRUE) {
   ## write_review_outputs = FALSE (these CSVs aren't used for the
@@ -1247,24 +1170,6 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
               "extrapolating via real habitat area (", n_with_override, " using an explicit Habitat_area_km2",
               " override, ", length(needs_row) - n_with_override, " estimated from depth range instead;",
               " see Source_citation for the per-row audit trail).")
-      ## AquaMaps extension of depth-band literature rows (see lit_aquamaps_extension())
-      lit_ext_extra <- rep(0, nrow(raw)); lit_ext_note <- rep(NA_character_, nrow(raw))
-      if (isTRUE(LIT_AQUAMAPS_EXTEND)) {
-        band_rows <- needs_row[is.na(raw$Habitat_area_km2[needs_row]) & !is.na(raw$Depth_min_m[needs_row]) & !is.na(raw$Depth_max_m[needs_row])]
-        for (g in unique(raw$Group[band_rows])) {
-          ix <- band_rows[raw$Group[band_rows] == g]
-          unit_key <- gsub("/", "_", tolower(gsub("[[:space:]]+", "_", trimws(as.character(raw$Density_unit[ix])))))
-          mult <- DENSITY_UNIT_TO_WET_G_M2[unit_key]; mult[is.na(mult)] <- 1
-          rows_g <- data.table(Group = g, Depth_min_m = raw$Depth_min_m[ix], Depth_max_m = raw$Depth_max_m[ix],
-                               density_t_km2 = raw$Density_value[ix] * mult)
-          sp_g <- unique(c(unlist(lapply(raw$Habitat_species[ix], function(x) if (is.na(x)) character(0) else trimws(strsplit(x, ";")[[1]]))),
-                           if (exists("dataframe2")) dataframe2[tolower(FG_name) == tolower(g), ScientificName] else character(0)))
-          sp_g <- sp_g[!is.na(sp_g) & nzchar(sp_g)]
-          ex <- tryCatch(lit_aquamaps_extension(rows_g, sp_g, label = label),
-                         error = function(e) { message("[", label, "] AquaMaps extension failed for ", g, ": ", conditionMessage(e)); NULL })
-          if (!is.null(ex)) { lit_ext_extra[ix] <- ex$extra_t; lit_ext_note[ix] <- ex$note }
-        }
-      }
       for (i in needs_row) {
         row_result <- extrapolate_density_row(
           density_value = raw$Density_value[i], density_unit = raw$Density_unit[i],
@@ -1272,10 +1177,10 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
           habitat_species = raw$Habitat_species[i], strata_area_by_area = strata_area_by_area,
           strata_def = MEDITS_STRATA, label = label,
           habitat_area_km2_override = raw$Habitat_area_km2[i])
-        set(raw, i, "group_biomass_t", (row_result$biomass_t + lit_ext_extra[i]) * (if (isTRUE(no_area_occ[i])) raw$Occupancy_fraction[i] else 1))
+        set(raw, i, "group_biomass_t", row_result$biomass_t * (if (isTRUE(no_area_occ[i])) raw$Occupancy_fraction[i] else 1))
         set(raw, i, "Source_citation",
             paste0(if (is.na(raw$Source_citation[i])) "" else paste0(raw$Source_citation[i], " | "),
-                   row_result$audit_note, if (!is.na(lit_ext_note[i])) paste0(" | ", lit_ext_note[i]) else ""))
+                   row_result$audit_note))
       }
     }
   }
@@ -1490,9 +1395,7 @@ MEGAFAUNA_TAXON_KEYWORDS <- list(
   PelagicSeabirds = c("pelagic/offshore seabird", "pelagic seabird"),
   CoastalSeabirds = c("coastal/inshore seabird", "coastal seabird"),
   SeaTurtles = c("turtle"),
-  MacroZooplankton = c("macro zooplankton"),  # density-derived reference value, see UNCERTAIN FGs below
-  Jellyfish        = c("jellyfish"),          # Luo et al. 2020 (GEL_MACRO_SOURCE), see UNCERTAIN FGs below
-  SalpsGelatinous  = c("salps and other gelatinous")
+  MacroZooplankton = c("macro zooplankton")   # density-derived reference value, see UNCERTAIN FGs below
 )
 
 ## =================================================================
@@ -1524,69 +1427,13 @@ MEGAFAUNA_TAXON_KEYWORDS <- list(
 ##   Set MACROZOO_SOURCE <- "ecopath_EE" to leave B blank for Ecopath
 ##   to estimate instead (check the estimate is >= this minimum).
 ## =================================================================
-## Gelatinous groups and macrozooplankton from global datasets
-## (2026-10-08, lib_gelatinous_macrozoo_biomass.R - equations, data and
-## references in its header):
-##   Jellyfish                              <- Luo et al. 2020, Cnidaria
-##   Salps and other gelatinous zooplankton <- Luo et al. 2020, Chordata + Ctenophora
-##   Macro zooplankton                      <- MAREDAT (Moriarty et al. 2013)
-##                                             minus the Luo gelatinous carbon
-## GEL_MACRO_SOURCE = "datasets" (default) or "none" (keep the old
-## behaviour). Files are downloaded once into pCloud data/zooplankton_maredat
-## and data/gelatinous_luo2020 (or put them there by hand). If MAREDAT
-## gives no value, Macro zooplankton falls back to MACROZOO_SOURCE.
-if (!exists("GEL_MACRO_SOURCE")) GEL_MACRO_SOURCE <- "datasets"
 if (!exists("MACROZOO_SOURCE")) MACROZOO_SOURCE <- "field_minimum"
-if (!exists("MACRO_C_FRACTION_WW")) MACRO_C_FRACTION_WW <- 0.04
-## GEL_LUO_USE_FOR_B (2026-10-08 run review): the Luo et al. 2020 values for
-## the Western Med give Jellyfish 138 t/km2 and Ctenophora 13 t/km2 even with
-## the median over cells (233 and 140 with the mean) - one to two orders of
-## magnitude above the meso+micro zooplankton field level (8.9 t/km2) and
-## above the WHOLE MAREDAT macrozooplankton carbon (0.59 mg C/m3, which
-## itself includes gelatinous taxa). The JeDI-based concentrations come
-## mostly from surface, bloom and presence-biased sampling and are not a
-## 0-200 m water-column mean. So by default they are written to the REVIEW
-## files only (as an upper bound) and Jellyfish / Salps stay EE-estimated.
-## TRUE = use them as Ecopath_B.
-if (!exists("GEL_LUO_USE_FOR_B")) GEL_LUO_USE_FOR_B <- FALSE
-gel_macro_estimates <- NULL
-if (identical(GEL_MACRO_SOURCE, "datasets")) {
-  source(file.path(git_dir, "scripts/lib_gelatinous_macrozoo_biomass.R"))
-  gel_macro_estimates <- tryCatch(
-    estimate_gelatinous_macrozoo_biomass(
-      maredat_dir = file.path(pcloud_dir, "data", "zooplankton_maredat"),
-      luo_dir = file.path(pcloud_dir, "data", "gelatinous_luo2020"),
-      strata_area_by_area = strata_area_by_area, macro_c_fraction_ww = MACRO_C_FRACTION_WW),
-    error = function(e) { message("[Gelatinous/macrozoo] estimate failed: ", conditionMessage(e)); NULL })
-  if (!is.null(gel_macro_estimates) && nrow(gel_macro_estimates)) {
-    fwrite(gel_macro_estimates, file.path(csv_out_dir, "gelatinous_macrozoo_biomass_REVIEW.csv"))
-    if (!is.null(attr(gel_macro_estimates, "luo_by_phylum")))
-      fwrite(attr(gel_macro_estimates, "luo_by_phylum"), file.path(csv_out_dir, "gelatinous_luo2020_by_phylum_REVIEW.csv"))
-    message("[Gelatinous/macrozoo] ", paste0(gel_macro_estimates$FG_name, " = ", signif(gel_macro_estimates$biomass_t_km2, 3),
-                                             " t/km2", collapse = "; "), " (gelatinous_macrozoo_biomass_REVIEW.csv)")
-  }
-}
-.gm_val <- function(fg) {
-  if (is.null(gel_macro_estimates) || !nrow(gel_macro_estimates)) return(NA_real_)
-  if (!isTRUE(GEL_LUO_USE_FOR_B) && fg %in% c("Jellyfish", "Salps and other gelatinous zooplankton")) return(NA_real_)
-  v <- gel_macro_estimates[FG_name == fg, biomass_t_km2]; if (length(v) == 1 && is.finite(v) && v > 0) v else NA_real_
-}
 .sa_unc <- as.data.table(strata_area_by_area)
 UNCERTAIN_MODEL_AREA_KM2 <- sum(.sa_unc$area_km2, na.rm = TRUE)
 UNCERTAIN_SLOPE_FRACTION <- .sa_unc[Depth_min_m > 200, sum(area_km2, na.rm = TRUE)] / UNCERTAIN_MODEL_AREA_KM2
 MACROZOO_FIELD <- list(ind_per_100m2 = 166.3, dw_mg_per_ind = 30, dw_to_ww = 0.19)
 uncertain_reference_rows <- data.table(Group = character(), Year = integer(), Biomass_t = numeric(), Source_citation = character())
-## Dataset values (Luo / MAREDAT) as Biomass_t over the model area
-for (.fg in c("Jellyfish", "Salps and other gelatinous zooplankton", "Macro zooplankton")) {
-  .v <- .gm_val(.fg)
-  if (is.finite(.v)) uncertain_reference_rows <- rbind(uncertain_reference_rows, data.table(
-    Group = c(Jellyfish = "Jellyfish", `Salps and other gelatinous zooplankton` = "SalpsGelatinous",
-              `Macro zooplankton` = "MacroZooplankton")[[.fg]],
-    Year = round(mean(YEAR_ECOPATH)), Biomass_t = .v * UNCERTAIN_MODEL_AREA_KM2,
-    Source_citation = paste0(gel_macro_estimates[FG_name == .fg, Source_citation], " [", gel_macro_estimates[FG_name == .fg, detail],
-                             " -> ", signif(.v, 3), " t WW/km2]")))
-}
-if (identical(MACROZOO_SOURCE, "field_minimum") && !is.finite(.gm_val("Macro zooplankton"))) {
+if (identical(MACROZOO_SOURCE, "field_minimum")) {
   macro_hab_t_km2 <- MACROZOO_FIELD$ind_per_100m2 / 100 * MACROZOO_FIELD$dw_mg_per_ind / MACROZOO_FIELD$dw_to_ww / 1000
   macro_model_t_km2 <- macro_hab_t_km2 * UNCERTAIN_SLOPE_FRACTION
   uncertain_reference_rows <- rbind(uncertain_reference_rows, data.table(
@@ -1606,10 +1453,10 @@ uncertain_fg_status <- data.table(
   FG_name = c("Other macro-benthos", "Jellyfish", "Salps and other gelatinous zooplankton", "Corals and gorgonians",
               "Macro zooplankton", "Suprabenthos"),
   status = c("literature compilation in progress - MEDITS bycatch only until then",
-             if (is.finite(.gm_val("Jellyfish"))) "Luo et al. 2020 Cnidaria climatology (lib_gelatinous_macrozoo_biomass.R)" else "MEDITS bycatch only - gelatinous plankton is not sampled quantitatively by a bottom trawl",
-             if (is.finite(.gm_val("Salps and other gelatinous zooplankton"))) "Luo et al. 2020 Chordata + Ctenophora climatology (lib_gelatinous_macrozoo_biomass.R)" else "NO field reference value found - no Ecopath_B (estimate from EE in Ecopath)",
+             "MEDITS bycatch only - gelatinous plankton is not sampled quantitatively by a bottom trawl",
+             "NO field reference value found - no Ecopath_B (estimate from EE in Ecopath)",
              "whole-habitat colony density x colony AFDM (Coppari et al. 2019) / AFDM:DW x 2.5 (ASSUMPTION) x EUSeaMap coralligenous area - excludes red coral and deep gardens",
-             if (is.finite(.gm_val("Macro zooplankton"))) "MAREDAT climatology minus Luo gelatinous carbon (lib_gelatinous_macrozoo_biomass.R); krill field minimum (Sardou et al. 1996) as a check" else if (identical(MACROZOO_SOURCE, "field_minimum")) "FIELD MINIMUM (krill only, Sardou et al. 1996) - lower bound" else "no Ecopath_B - estimate from EE",
+             if (identical(MACROZOO_SOURCE, "field_minimum")) "FIELD MINIMUM (krill only, Sardou et al. 1996) - lower bound" else "no Ecopath_B - estimate from EE",
              "literature density x depth band (literature_density_biomass.csv)"))
 fwrite(uncertain_fg_status, file.path(csv_out_dir, "uncertain_fg_biomass_status_REVIEW.csv"))
 MEGAFAUNA_PLUS_UNCERTAIN_PATH <- MEGAFAUNA_BIOMASS_PATH

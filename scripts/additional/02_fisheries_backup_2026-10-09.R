@@ -998,12 +998,8 @@ duckdb_home <- path.expand("~/.duckdb")
 if (!dir.exists(duckdb_home)) dir.create(file.path(duckdb_home, "extensions"), recursive = TRUE, showWarnings = FALSE)  # ensure rfishbase's duckdb cache dir exists
 
 message("\nSTEP - Querying common names for ", length(sci_names), " species...")
-## capture.output(): DuckDB (rfishbase) prints a progress bar through
-## R's stdout, which put ~3.5 MB of "DuckDB progress" into the run log
-## (2026-10-09). Captured and discarded.
-.quiet_fb <- function(expr) { out <- NULL; invisible(utils::capture.output(out <- expr)); out }
-fb_common  <- tryCatch(as.data.table(.quiet_fb(common_names(sci_names, server = "fishbase"))), error = function(e) data.table())  # look up English common names on FishBase
-slb_common <- tryCatch(as.data.table(.quiet_fb(common_names(sci_names, server = "sealifebase"))), error = function(e) data.table())  # look up English common names on SeaLifeBase
+fb_common  <- tryCatch(as.data.table(common_names(sci_names, server = "fishbase")), error = function(e) data.table())  # look up English common names on FishBase
+slb_common <- tryCatch(as.data.table(common_names(sci_names, server = "sealifebase")), error = function(e) data.table())  # look up English common names on SeaLifeBase
 fb_lookup <- unique(rbindlist(list(fb_common, slb_common), fill = TRUE)[
   Language == "English" & !is.na(ComName), .(ScientificName = Species, Species = ComName)])  # combine and keep only English common names
 message("Common names found: ", nrow(fb_lookup), " covering ", uniqueN(fb_lookup$ScientificName), " of ", length(sci_names), " species")

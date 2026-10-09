@@ -161,19 +161,6 @@ split_scientific_name <- function(scientific_name) {
 #' Genuinely unmatched species get SpeciesID = NA, match_method =
 #' "unmatched" - flagged, not dropped, so they're visible in the audit
 #' sheet rather than silently missing no shallow/deep adjustment.
-## Species IDs from an aquamapsdata search result, robust to (a) lazy
-## tables (nrow() = NA), (b) a differently cased or missing id column,
-## (c) NA/empty ids. Returns character(0) when there is no usable id.
-.am_hit_ids <- function(hit) {
-  if (is.null(hit)) return(character(0))
-  hit <- tryCatch(as.data.frame(dplyr::collect(hit)), error = function(e) tryCatch(as.data.frame(hit), error = function(e2) NULL))
-  if (is.null(hit) || !nrow(hit)) return(character(0))
-  idc <- names(hit)[tolower(names(hit)) == "speciesid"][1]
-  if (is.na(idc)) return(character(0))
-  ids <- unique(as.character(hit[[idc]]))
-  ids[!is.na(ids) & nzchar(ids)]
-}
-
 resolve_aquamaps_species_ids <- function(scientific_names) {
   scientific_names <- unique(scientific_names[!is.na(scientific_names) & scientific_names != ""])
   results <- vector("list", length(scientific_names))
@@ -226,9 +213,8 @@ resolve_aquamaps_species_ids <- function(scientific_names) {
     if (!is.na(parts$genus) && !is.na(parts$species)) {
       hit <- tryCatch(do.call(aquamapsdata::am_search_exact, list(Genus = parts$genus, Species = parts$species)),
                       error = show_first_error_once)
-      ids <- .am_hit_ids(hit)
-      if (length(ids) > 0) {
-        sp_id <- ids[1]
+      if (!is.null(hit) && nrow(hit) > 0) {
+        sp_id <- as.character(hit$SpeciesID[1])
         method <- "exact"
       }
     }
@@ -246,26 +232,9 @@ resolve_aquamaps_species_ids <- function(scientific_names) {
       fuzzy_term <- trimws(gsub("\\s+", " ", gsub("[^A-Za-z ]", " ", fuzzy_term)))
       hit <- if (nzchar(fuzzy_term)) tryCatch(aquamapsdata::am_search_fuzzy(search_term = fuzzy_term),
                                               error = show_first_error_once) else NULL
-      ids <- .am_hit_ids(hit)
-      if (length(ids) > 0) {
-        sp_id <- ids[1]
+      if (!is.null(hit) && nrow(hit) > 0) {
+        sp_id <- as.character(hit$SpeciesID[1])
         method <- "fuzzy"
-      }
-    }
-    ## Genus fallback (2026-10-08): no species-level match -> the depth
-    ## envelope of the genus = median of its AquaMaps congeners' envelopes
-    ## (all congener SpeciesIDs kept, "|"-separated; aggregated in
-    ## fetch_aquamaps_depth_envelope()). ASSUMPTION: congeners share a
-    ## similar depth range. Flagged as match_method = "genus".
-    ## The genus-only query can come back as a lazy table (nrow() = NA) and
-    ## with a differently cased id column, so it is collected and the id
-    ## column found case-insensitively; any problem -> stays unmatched.
-    if (is.na(sp_id) && !is.na(parts$genus)) {
-      ids <- tryCatch(.am_hit_ids(do.call(aquamapsdata::am_search_exact, list(Genus = parts$genus))),
-                      error = function(e) { show_first_error_once(e); character(0) })
-      if (length(ids) > 0) {
-        sp_id <- paste(ids, collapse = "|")
-        method <- "genus"
       }
     }
     results[[i]] <- data.table(ScientificName = nm, SpeciesID = sp_id, match_method = method)
@@ -288,26 +257,6 @@ resolve_aquamaps_species_ids <- function(scientific_names) {
 ## STEP C: fetch each matched species' depth envelope (am_hspen())
 ## =================================================================
 fetch_aquamaps_depth_envelope <- function(species_id_lookup) {
-  ## genus matches carry several "|"-separated congener IDs: look them all
-  ## up, then take the median envelope per ScientificName (see the genus
-  ## fallback in resolve_aquamaps_species_ids())
-  if (any(grepl("|", species_id_lookup$SpeciesID, fixed = TRUE))) {
-    long <- species_id_lookup[, .(SpeciesID = if (is.na(SpeciesID)) NA_character_ else strsplit(SpeciesID, "|", fixed = TRUE)[[1]]),
-                              by = .(ScientificName, match_method)]
-    env_long <- fetch_aquamaps_depth_envelope(long[, .(ScientificName = paste0(ScientificName, "\r", SpeciesID), SpeciesID, match_method)])
-    env_long[, ScientificName := sub("\r.*$", "", ScientificName)]
-    agg <- env_long[, .(SpeciesID = paste(unique(na.omit(SpeciesID)), collapse = "|"),
-                        ## as.numeric(): median() of an integer column is integer for an odd
-                        ## number of congeners and double for an even one - data.table needs
-                        ## one type across groups
-                        DepthMin = as.numeric(stats::median(as.numeric(DepthMin), na.rm = TRUE)),
-                        DepthPrefMin = as.numeric(stats::median(as.numeric(DepthPrefMin), na.rm = TRUE)),
-                        DepthPrefMax = as.numeric(stats::median(as.numeric(DepthPrefMax), na.rm = TRUE)),
-                        DepthMax = as.numeric(stats::median(as.numeric(DepthMax), na.rm = TRUE))),
-                    by = .(ScientificName, match_method)]
-    for (cc in c("DepthMin", "DepthPrefMin", "DepthPrefMax", "DepthMax")) agg[!is.finite(get(cc)), (cc) := NA_real_]
-    return(agg)
-  }
   matched_ids <- species_id_lookup[!is.na(SpeciesID), SpeciesID]
   if (length(matched_ids) == 0) {
     envelope <- data.table(SpeciesID = character(0), DepthMin = numeric(0),

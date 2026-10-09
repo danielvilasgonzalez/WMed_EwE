@@ -400,8 +400,22 @@ if (!exists("NORMALIZE_TS",  envir = .GlobalEnv, inherits = FALSE)) NORMALIZE_TS
 ##                              on log scale) are blanked in every Ecosim B
 ##                              series, survey or not.
 if (!exists("ECOSIM_HAUL_CAP_Q",        envir = .GlobalEnv, inherits = FALSE)) ECOSIM_HAUL_CAP_Q        <- 0.95
-if (!exists("ECOSIM_MIN_AREA_COVERAGE", envir = .GlobalEnv, inherits = FALSE)) ECOSIM_MIN_AREA_COVERAGE <- 0.80
+if (!exists("ECOSIM_MIN_AREA_COVERAGE", envir = .GlobalEnv, inherits = FALSE)) ECOSIM_MIN_AREA_COVERAGE <- 0    # 0 = off: unsampled cells are imputed instead (SURVEY_IMPUTE_UNSAMPLED_CELLS); was 0.80 on 2026-10-07
+## SURVEY_IMPUTE_UNSAMPLED_CELLS (2026-10-08): every valid haul is kept
+## (only outliers are removed). A GSA without hauls in a year (GSA 5 in
+## 1994, 2000, 2003; 2022: only GSAs 7-8 sampled) is left out of that
+## year: the density is the biomass of the sampled GSAs divided by THEIR
+## area - nothing is interpolated from other GSAs. Inside a sampled GSA,
+## depth strata without a haul that year are filled from the same GSA
+## (stratum x year model, impute_unsampled_cells(), lib).
+## FALSE = mean over the sampled cells only, no stratum filling.
+if (!exists("SURVEY_IMPUTE_UNSAMPLED_CELLS", envir = .GlobalEnv, inherits = FALSE)) SURVEY_IMPUTE_UNSAMPLED_CELLS <- TRUE
 if (!exists("ECOSIM_SPIKE_FILTER",      envir = .GlobalEnv, inherits = FALSE)) ECOSIM_SPIKE_FILTER      <- TRUE
+## FGs whose Ecopath_B baseline ALSO uses the haul-capped index (2026-10-08):
+## their 1994-1996 mean rests on a few extreme hauls (ecosim_haul_cap_effect_REVIEW.csv:
+## Commercial small demersal fish x6.4 from one 1995 haul of Gymnammodytes
+## cicerelus in GSA 11). For these the capped series is used as is, baseline included.
+if (!exists("ECOPATH_B_HAUL_CAP_FGS",   envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_HAUL_CAP_FGS   <- c("Commercial small demersal fish")
 # removes flagged observations (TRUE) or only reports them (FALSE)
 ## Per project decision, EcoBase (existing published Ecopath models) is
 ## the preferred source for biomass on FGs no survey here samples -
@@ -530,6 +544,9 @@ WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
 ## the `aquamapsdata` package's local database (~2GB/~10GB unpacked,
 ## downloaded once, cached after that - see ensure_aquamaps_db()).
 if (!exists("APPLY_AQUAMAPS_DEPTH_ADJUSTMENT", envir = .GlobalEnv, inherits = FALSE)) APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE
+## Deepest depth whose AquaMaps pseudo-stratum biomass is counted (see
+## STEP 7b): 1000 m = limit of bottom trawling (GFCM Rec. GFCM/2005/1).
+if (!exists("AQUAMAPS_B_MAX_DEPTH", envir = .GlobalEnv, inherits = FALSE)) AQUAMAPS_B_MAX_DEPTH <- 1000
 
 message(
   "This script will run for area(s): ", if (is.null(FILTER_AREAS)) "(derived from the custom area below)" else paste(FILTER_AREAS, collapse = ", "),
@@ -1261,11 +1278,17 @@ fg_cv_log_medits[, Survey := "MEDITS"]
 ## =================================================================
 ## STEP 7: weight densities per area -> FG, year (region-wide)
 ## =================================================================
-fg_index_regional <- weight_by_area(fg_index)
+## Real MEDITS cells (10-800 m): their area, for the GSAs sampled in a
+## year, is the denominator of that year's region-wide density.
+MODEL_SURVEY_CELLS <- unique(strata_area_by_area[!is.na(prop) & !is.na(area_km2), .(AreaID, Stratum, area_km2)])
+fg_index_regional <- weight_by_area(fg_index, impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
+                                    denominator_cells = MODEL_SURVEY_CELLS)
 
 ## species-level regional density (for the FG_spp Excel sheet)
 per_group_sp <- compute_species_densities_by_stratum(dt, strata = STRATA)
-species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area)
+species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area,
+                                                   impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
+                                                   denominator_cells = MODEL_SURVEY_CELLS)
 
 ## =================================================================
 ## STEP 7b: AquaMaps shallow/deep depth adjustment (OPT-IN - see
@@ -1321,9 +1344,32 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
   ## depth-envelope ratio in isolation.
   species_density_regional_unadjusted <- copy(species_density_regional)
   
-  fg_index <- weight_by_strata(aq$per_group_fg, aq$n_samples_by_stratum, aq$strata_area)
-  fg_index_regional <- weight_by_area(fg_index)
-  species_density_regional <- weight_species_by_area(aq$per_group_sp, aq$n_samples_by_stratum, aq$strata_area)
+  ## Model-area basis (2026-10-08). The extended strata add biomass from
+  ## 0-10 m and 800-1000 m (pseudo-strata deeper than AQUAMAPS_B_MAX_DEPTH
+  ## are left out: bottom trawling is banned below 1000 m, GFCM
+  ## Rec. GFCM/2005/1, so no model fleet fishes there). The region-wide
+  ## density is then that biomass divided by the SAMPLED AREA OF THE REAL
+  ## MEDITS STRATA (10-800 m), the same A_model used by 01b, 02 (F) and
+  ## Ecopath. Dividing by the extended area instead (575,489 km2 with the
+  ## 1000-2850 m band) made every density ~3.3x too low for A_model.
+  ## ASSUMPTION: biomass in 0-10 m and 800-1000 m is attributed to the
+  ## 10-800 m model area (the catch of those depths is in C as well).
+  .aq_keep <- aq$strata_def[depth_min < AQUAMAPS_B_MAX_DEPTH, stratum_num]
+  .aq_pg_fg <- aq$per_group_fg[Stratum %in% .aq_keep]
+  .aq_pg_sp <- aq$per_group_sp[Stratum %in% .aq_keep]
+  .aq_ns    <- aq$n_samples_by_stratum[Stratum %in% .aq_keep]
+  .aq_sa    <- aq$strata_area[Stratum %in% .aq_keep]
+  .model_area_den <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
+  fg_index <- weight_by_strata(.aq_pg_fg, .aq_ns, .aq_sa)
+  attr(fg_index, "sampled_area_by_year") <- .model_area_den
+  fg_index_regional <- weight_by_area(fg_index, impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
+                                      denominator_cells = MODEL_SURVEY_CELLS)
+  species_density_regional <- weight_species_by_area(.aq_pg_sp, .aq_ns, .aq_sa, denominator_area = .model_area_den,
+                                                     impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
+                                                     denominator_cells = MODEL_SURVEY_CELLS)
+  message("[AquaMaps] Strata kept for biomass (depth_min < ", AQUAMAPS_B_MAX_DEPTH, " m): ",
+          paste(aq$strata_def[stratum_num %in% .aq_keep, paste0(depth_min, "-", round(depth_max), " m")], collapse = ", "),
+          "; densities per km2 of the sampled 10-800 m model area.")
   aquamaps_depth_adjustment_audit <- aq$audit
   
   ## fg_index's own per_stratum attribute now spans all 8 strata (the
@@ -1382,14 +1428,18 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
 ##     shape used by Ecosim does. Capping lowers absolute densities by
 ##     construction, which is why it is not used for the Ecopath baseline.
 ## (b) Years with sampled area / total area < ECOSIM_MIN_AREA_COVERAGE are
-##     set to NA (blank in Ecosim_ts), except YEAR_ECOPATH years.
+##     set to NA (blank in Ecosim_ts), except YEAR_ECOPATH years. Off by
+##     default since 2026-10-08 (= 0): unsampled cells are imputed instead
+##     (SURVEY_IMPUTE_UNSAMPLED_CELLS). Coverage is still written to
+##     survey_area_coverage_by_year.csv.
 ## Comparison with the 1995 model's series (05 block 12, offline test
 ## 2026-10-07): FGs with a spike > 10x the series median 8 -> 4; series
 ## negatively correlated with the old model 24 -> 20.
 ecosim_haul_cap_effect <- NULL
 if (isTRUE(STRATA) && (!is.na(ECOSIM_HAUL_CAP_Q) || ECOSIM_MIN_AREA_COVERAGE > 0)) {
   .ts_regional <- function(d) weight_by_area(weight_by_strata(
-    compute_fg_densities_by_stratum(d, strata = TRUE), n_samples_by_stratum, strata_area_by_area))
+    compute_fg_densities_by_stratum(d, strata = TRUE), n_samples_by_stratum, strata_area_by_area),
+    impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS, denominator_cells = MODEL_SURVEY_CELLS)
   .raw <- .ts_regional(dt)[, .(Year, FG_num, I_raw = mean_density)]
   if (!is.na(ECOSIM_HAUL_CAP_Q)) {
     .h <- dt[!is.na(Stratum) & !is.na(FG_num) & !is.na(Density),
@@ -1405,6 +1455,10 @@ if (isTRUE(STRATA) && (!is.na(ECOSIM_HAUL_CAP_Q) || ECOSIM_MIN_AREA_COVERAGE > 0
     fg_index_regional[is.na(s), s := 1]
     fg_index_regional[, `:=`(ep_old = mean(mean_density[Year %in% YEAR_ECOPATH], na.rm = TRUE),
                              ep_new = mean((mean_density * s)[Year %in% YEAR_ECOPATH], na.rm = TRUE)), by = FG_num]
+    ## ECOPATH_B_HAUL_CAP_FGS: no rescaling - the capped level becomes the baseline too
+    fg_index_regional[FG_name %in% ECOPATH_B_HAUL_CAP_FGS, ep_old := ep_new]
+    if (length(ECOPATH_B_HAUL_CAP_FGS))
+      message("[Ecosim_ts] Ecopath_B baseline also haul-capped for: ", paste(ECOPATH_B_HAUL_CAP_FGS, collapse = ", "))
     fg_index_regional[, mean_density := fifelse(is.finite(ep_old) & is.finite(ep_new) & ep_new > 0,
                                                 mean_density * s * ep_old / ep_new, mean_density * s)]
     ecosim_haul_cap_effect <- merge(
@@ -2810,9 +2864,16 @@ message("[Ecosim_ts] ", length(ecosim_no_zero_fill), " FG(s) keep missing years 
 ## Poorly sampled FGs whose Ecopath B is left for Ecopath to estimate from
 ## EE (EE_input = ECOPATH_B_EE_VALUE in Ecopath_B). Their survey/literature
 ## value is kept as a reference column. Override before sourcing.
-if (!exists("ECOPATH_B_FROM_EE", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_FROM_EE <- c(
-  "Macro zooplankton", "Jellyfish", "Salps and other gelatinous zooplankton",
-  "Suprabenthos", "Other macro-benthos", "Benthic mollusc")
+## Since 2026-10-08 Macro zooplankton, Jellyfish and Salps get a B from
+## MAREDAT / Luo et al. 2020 (01b, GEL_MACRO_SOURCE); they stay EE-estimated
+## only when that estimate is missing.
+if (!exists("ECOPATH_B_FROM_EE", envir = .GlobalEnv, inherits = FALSE)) {
+  .gel_ok <- if (exists("gel_macro_estimates") && !is.null(gel_macro_estimates) && nrow(gel_macro_estimates))
+    gel_macro_estimates[is.finite(biomass_t_km2) & biomass_t_km2 > 0 &
+                          (FG_name == "Macro zooplankton" | isTRUE(get0("GEL_LUO_USE_FOR_B", ifnotfound = FALSE))), FG_name] else character(0)
+  ECOPATH_B_FROM_EE <- c(setdiff(c("Macro zooplankton", "Jellyfish", "Salps and other gelatinous zooplankton"), .gel_ok),
+                         "Suprabenthos", "Other macro-benthos", "Benthic mollusc")
+}
 if (!exists("ECOPATH_B_EE_VALUE", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_EE_VALUE <- 0.95
 export_ecopath_ecosim_excel(
   no_zero_fill_fg = ecosim_no_zero_fill,

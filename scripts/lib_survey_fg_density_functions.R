@@ -573,7 +573,11 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
       ## Fix: call load_taxa() with no species argument at all and let the
       ## existing `tax[Species %in% species_names, ...]` filter a few lines
       ## down (in the caller) do the filtering, same as it already does.
-      tax <- tryCatch(as.data.table(rfishbase::load_taxa(server = server)), error = function(e) e)
+      ## capture.output(): DuckDB (used by rfishbase) prints a progress bar
+      ## through R's stdout, which put ~8.7 MB of "DuckDB progress" lines into
+      ## the sink()ed run log (2026-10-08). Captured and discarded here.
+      tax <- tryCatch({ .tx <- NULL; invisible(utils::capture.output(.tx <- rfishbase::load_taxa(server = server)))
+                        as.data.table(.tx) }, error = function(e) e)
       if (!inherits(tax, "error")) return(tax)
       if (attempt < max_retries) {
         message("  rfishbase::load_taxa() failed on server '", server, "' (attempt ", attempt, "/", max_retries,
@@ -2245,8 +2249,16 @@ compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 
   if (nrow(bathy_df) == 0) return(NULL)
   
   bathy_dt <- as.data.table(bathy_df)
-  bathy_dt[, Stratum := strata_def$stratum_num[
-    findInterval(depth, strata_def$depth_min, all.inside = TRUE)]]
+  ## findInterval() WITHOUT all.inside (fixed 2026-10-08): all.inside = TRUE
+  ## maps every depth >= the LAST depth_min into the second-to-last
+  ## interval, so the deepest stratum never got any area - stratum 4
+  ## (201-500 m) carried the whole 201-800 m area and stratum 5 (501-800 m)
+  ## had none, which dropped every 501-800 m haul from the index; in the
+  ## AquaMaps set the 1000-2850 m area went into 800-1000 m. Depths are
+  ## already limited to [min(depth_min), max(depth_max)] above, so the
+  ## plain interval index is always 1..n here.
+  sd_ord <- as.data.table(strata_def)[order(depth_min)]
+  bathy_dt[, Stratum := sd_ord$stratum_num[findInterval(depth, sd_ord$depth_min)]]
   
   strata_areas <- bathy_dt[, .(area_km2 = sum(cell_area_km2, na.rm = TRUE)), by = Stratum]
   strata_areas[, prop := area_km2 / sum(area_km2)]
@@ -2288,7 +2300,32 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     if (!"AreaID" %in% names(cached) && area_id_label %in% names(cached)) setnames(cached, area_id_label, "AreaID")
     if (!"AreaID" %in% names(cached)) stop("Cached strata-area file '", cache_path, "' has neither 'AreaID' nor '",
                                            area_id_label, "' - delete it so it is recomputed.")
-    return(cached)
+    ## The cache must describe the SAME strata as strata_def (numbers and
+    ## depth bounds) and cover every requested area. Added 2026-10-08: the
+    ## cached real-strata file of 2026-10-05 had 4 strata (stratum 4 =
+    ## 201-800 m area, no stratum 5), so every 501-800 m haul was dropped
+    ## ("no computed area-proportion" warning), and the AquaMaps cache had
+    ## a single deep stratum 6 with the 800-6000 m area (396,116 km2) under
+    ## an 800-1000 m label. A mismatch now forces recomputation.
+    sd <- as.data.table(strata_def)
+    want <- unique(sd[, .(Stratum = stratum_num, dmin = depth_min, dmax = depth_max)])
+    have_strata <- sort(unique(cached$Stratum))
+    bounds_ok <- TRUE
+    if (all(c("Depth_min_m", "Depth_max_m") %in% names(cached))) {
+      chk <- merge(unique(cached[, .(Stratum, Depth_min_m, Depth_max_m)]), want, by = "Stratum")
+      bounds_ok <- nrow(chk) == nrow(want) && all(abs(chk$Depth_min_m - chk$dmin) < 1e-3) && all(abs(chk$Depth_max_m - chk$dmax) < 1e-3)
+    }
+    ## a single-band cache written without a Stratum column (MEDIAS 10-200 m
+    ## fallback) is valid when strata_def has one band
+    single_band_ok <- !"Stratum" %in% names(cached) && nrow(want) == 1
+    if ((single_band_ok || (identical(as.numeric(have_strata), as.numeric(sort(want$Stratum))) && bounds_ok)) &&
+        all(area_ids %in% cached$AreaID)) {
+      return(cached)
+    }
+    message("Cached strata areas in ", cache_path, " do not match the current strata definition (cache strata: ",
+            paste(have_strata, collapse = ","), "; expected: ", paste(sort(want$Stratum), collapse = ","),
+            ") or miss an area - recomputing (the old file is kept as ", basename(cache_path), ".stale).")
+    file.copy(cache_path, paste0(cache_path, ".stale"), overwrite = TRUE)
   }
   
   message("Computing strata areas via bathymetry for ", length(area_ids), " area(s)",
@@ -2333,6 +2370,76 @@ sampled_area_by_year <- function(n_samples_by_stratum, strata_area_by_area) {
   cells <- unique(n_samples_by_stratum[!is.na(n_samples) & n_samples > 0, .(AreaID, Year, Stratum)])
   areas <- unique(strata_area_by_area[!is.na(prop) & !is.na(area_km2), .(AreaID, Stratum, area_km2)])
   merge(cells, areas, by = c("AreaID", "Stratum"))[, .(sampled_area_km2 = sum(area_km2)), by = Year]
+}
+
+## impute_unsampled_cells() (2026-10-08): the region-wide mean of one year
+## only uses the GSAs (AreaID) that were sampled that year. A GSA with no
+## haul in a year is left out of BOTH the biomass and the area of that
+## year - nothing is interpolated into it from other GSAs. Inside a
+## sampled GSA, depth strata without a haul that year are filled from the
+## SAME GSA with a multiplicative stratum x year model fitted on its
+## sampled cells:
+##     m_{c,y} ~ a_c * b_{g,y}     (c = GSA x stratum cell, g = its GSA)
+## a_c = cell level (mean haul density of the cell), b_{g,y} = year level
+## of GSA g (area-weighted ratio of observed to expected density in the
+## cells of g sampled that year), by alternating least squares - the
+## classic missing-cell estimate of a two-way layout (Yates 1933, Empire
+## J. Exp. Agric. 1:129-142) in multiplicative form. If none of the
+## FG's range in g was sampled that year, b_{g,y} = median b_g over years.
+## Cells where the FG/species was never caught keep a_c = 0.
+##   obs           - id_cols + AreaID, Stratum, Year, m (mean density, positive cells)
+##   sampled_cells - AreaID, Stratum, Year of every cell with >= 1 haul
+##   cell_area     - AreaID, Stratum, area_km2 of the cells to sum over
+##   denom_cell_area - cells whose area forms the denominator (default
+##                   cell_area; the AquaMaps path passes the real 10-800 m
+##                   cells so densities stay per km2 of model area)
+## Returns id_cols + Year, numerator, denominator_km2 (area of the GSAs
+## sampled that year), area_imputed_km2.
+impute_unsampled_cells <- function(obs, sampled_cells, cell_area, id_cols, n_iter = 3,
+                                   denom_cell_area = NULL) {
+  key_c <- c("AreaID", "Stratum")
+  if (is.null(denom_cell_area)) denom_cell_area <- cell_area
+  sampled_gsa <- unique(sampled_cells[, .(AreaID, Year)])
+  den <- merge(sampled_gsa, denom_cell_area[, .(A = sum(area_km2)), by = AreaID], by = "AreaID")[
+    , .(denominator_km2 = sum(A)), by = Year]
+  obs <- merge(obs, cell_area, by = key_c)
+  pairs <- unique(obs[, c(id_cols, key_c), with = FALSE])
+  ## grid: every cell of the FG's range x every year in which ITS GSA was sampled
+  grid <- merge(pairs, sampled_gsa, by = "AreaID", allow.cartesian = TRUE)
+  grid <- merge(grid, cell_area, by = key_c)
+  grid <- merge(grid, unique(sampled_cells[, .(AreaID, Stratum, Year, sampled = TRUE)]),
+                by = c(key_c, "Year"), all.x = TRUE)
+  grid[is.na(sampled), sampled := FALSE]
+  grid <- merge(grid, obs[, c(id_cols, key_c, "Year", "m"), with = FALSE],
+                by = c(id_cols, key_c, "Year"), all.x = TRUE)
+  grid[sampled == TRUE & is.na(m), m := 0]
+  grid[sampled == FALSE, m := NA_real_]
+  grid[, a := mean(m, na.rm = TRUE), by = c(id_cols, key_c)]
+  grid[is.na(a), a := 0]
+  .year_level <- function() {
+    grid[, b := {
+      s <- sum((a * area_km2)[sampled]); if (s > 0) sum((m * area_km2)[sampled]) / s else NA_real_
+    }, by = c(id_cols, "AreaID", "Year")]
+    grid[, b := fifelse(is.na(b), stats::median(b, na.rm = TRUE), b), by = c(id_cols, "AreaID")]
+    grid[is.na(b), b := 1]
+  }
+  for (it in seq_len(n_iter)) {
+    .year_level()
+    grid[, a := {
+      ok <- sampled
+      if (any(ok) && sum(b[ok]^2) > 0) sum(m[ok] * b[ok]) / sum(b[ok]^2) else mean(m, na.rm = TRUE)
+    }, by = c(id_cols, key_c)]
+    grid[is.na(a), a := 0]
+  }
+  .year_level()
+  grid[, m_fill := fifelse(sampled, m, a * b)]
+  out <- grid[, .(numerator = sum(m_fill * area_km2), area_imputed_km2 = sum(area_km2[!sampled])),
+              by = c(id_cols, "Year")]
+  ## id x years with no positive cell at all in the sampled GSAs -> 0
+  all_y <- unique(obs[, id_cols, with = FALSE])[, .(Year = sort(unique(sampled_gsa$Year))), by = id_cols]
+  out <- merge(all_y, out, by = c(id_cols, "Year"), all.x = TRUE)
+  out[is.na(numerator), `:=`(numerator = 0, area_imputed_km2 = 0)]
+  merge(out, den, by = "Year")
 }
 
 weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_area) {
@@ -2381,6 +2488,10 @@ weight_by_strata <- function(per_group_fg, n_samples_by_stratum, strata_area_by_
   ## mean in weight_by_area(). per_stratum above only has the cells where
   ## the FG was caught, so it cannot be used as the denominator.
   attr(fg_index, "sampled_area_by_year") <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
+  ## sampled cells and cell areas, for impute_unsampled_cells() in weight_by_area()
+  .ca <- unique(strata_area_by_area[!is.na(prop) & !is.na(area_km2), .(AreaID, Stratum, area_km2)])
+  attr(fg_index, "cell_area") <- .ca
+  attr(fg_index, "sampled_cells") <- unique(n_samples_by_stratum[!is.na(n_samples) & n_samples > 0, .(AreaID, Stratum, Year)])
   attr(fg_index, "per_stratum_raw") <- per_stratum_raw  # kept for plot_strata_profile() (area-independent)
   message("Strata-weighted FG index built: ", nrow(fg_index), " rows.")
   fg_index
@@ -2423,7 +2534,12 @@ simple_area_density <- function(per_group_fg, n_samples_by_area) {
 ## calculation not currently implemented here since it depends on what
 ## "area" means for a non-stratified survey; flag if you need this path.
 
-weight_by_area <- function(fg_index_stratified) {
+## impute_unsampled = TRUE: strata not sampled in a year inside a SAMPLED
+## GSA are filled from that GSA (impute_unsampled_cells()); GSAs without
+## hauls that year are left out of numerator and denominator.
+## denominator_cells = cells whose area is the denominator (default: all
+## cells passed in).
+weight_by_area <- function(fg_index_stratified, impute_unsampled = FALSE, denominator_cells = NULL) {
   per_stratum <- attr(fg_index_stratified, "per_stratum")
   if (is.null(per_stratum)) {
     stop("weight_by_area() needs the per_stratum attribute from weight_by_strata() -",
@@ -2455,7 +2571,19 @@ weight_by_area <- function(fg_index_stratified) {
   }
   fg_index_regional[, c("numerator", "area_positive_cells") := NULL]
   if ("sampled_area_km2" %in% names(fg_index_regional)) fg_index_regional[, sampled_area_km2 := NULL]
-  message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows.")
+  if (isTRUE(impute_unsampled)) {
+    ca <- attr(fg_index_stratified, "cell_area"); sc <- attr(fg_index_stratified, "sampled_cells")
+    if (is.null(ca) || is.null(sc)) stop("weight_by_area(impute_unsampled = TRUE) needs the cell_area/sampled_cells attributes from weight_by_strata().")
+    obs <- per_stratum[!is.na(area_km2), .(FG_num, FG_name, AreaID, Stratum, Year, m = density_sum / n_samples)]
+    imp <- impute_unsampled_cells(obs, sc, ca, id_cols = c("FG_num", "FG_name"),
+                                  denom_cell_area = denominator_cells)
+    imp[, mean_density := numerator / denominator_km2]
+    fg_index_regional <- merge(imp[, .(Year, FG_num, FG_name, mean_density, area_imputed_km2)],
+                               fg_index_regional[, .(Year, FG_num, FG_name, n_areas_contributing, n_samples_total)],
+                               by = c("Year", "FG_num", "FG_name"), all.x = TRUE)
+  }
+  message("Region-wide (area-weighted) FG index built: ", nrow(fg_index_regional), " rows",
+          if (isTRUE(impute_unsampled)) " (unsampled area/stratum cells imputed)" else "", ".")
   fg_index_regional
 }
 
@@ -3219,7 +3347,12 @@ compute_species_densities_by_stratum <- function(dt, strata = TRUE) {
   per_sample_sp[, .(density_sum = sum(sp_density, na.rm = TRUE)), by = group_cols]
 }
 
-weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_area_by_area) {
+## denominator_area: optional data.table(Year, sampled_area_km2) to divide
+## by instead of the sampled area of the strata passed in (used by the
+## AquaMaps path so densities stay per km2 of the model area).
+weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_area_by_area,
+                                   denominator_area = NULL, impute_unsampled = FALSE,
+                                   denominator_cells = NULL) {
   ## no suffix collision risk - per_group_sp has only density_sum now,
   ## so n_samples below is unambiguously the total from n_samples_by_stratum
   merged <- merge(per_group_sp, n_samples_by_stratum, by = c("AreaID", "Year", "Stratum"), all.x = TRUE)
@@ -3231,7 +3364,17 @@ weight_species_by_area <- function(per_group_sp, n_samples_by_stratum, strata_ar
   ## where the species was caught.
   out <- merged[, .(numerator = sum((density_sum / n_samples) * area_km2, na.rm = TRUE)),
                 by = .(Year, FG_num, FG_name, ScientificName)]
-  out <- merge(out, sampled_area_by_year(n_samples_by_stratum, strata_area_by_area), by = "Year", all.x = TRUE)
+  if (isTRUE(impute_unsampled)) {
+    ## same cell x year imputation as weight_by_area(impute_unsampled = TRUE)
+    ca <- unique(strata_area_by_area[!is.na(prop) & !is.na(area_km2), .(AreaID, Stratum, area_km2)])
+    sc <- unique(n_samples_by_stratum[!is.na(n_samples) & n_samples > 0, .(AreaID, Stratum, Year)])
+    obs <- merged[, .(FG_num, FG_name, ScientificName, AreaID, Stratum, Year, m = density_sum / n_samples)]
+    imp <- impute_unsampled_cells(obs, sc, ca, id_cols = c("FG_num", "FG_name", "ScientificName"),
+                                  denom_cell_area = denominator_cells)
+    return(imp[, .(Year, FG_num, FG_name, ScientificName, mean_density = numerator / denominator_km2)])
+  }
+  den <- if (is.null(denominator_area)) sampled_area_by_year(n_samples_by_stratum, strata_area_by_area) else denominator_area
+  out <- merge(out, den, by = "Year", all.x = TRUE)
   out[, .(Year, FG_num, FG_name, ScientificName, mean_density = numerator / sampled_area_km2)]
 }
 
