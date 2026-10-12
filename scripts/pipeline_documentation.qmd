@@ -85,175 +85,70 @@ div.mermaid {
 }
 ```
 
+```{=html}
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js"></script>
+```
+
+```{=html}
 <script>
   mermaid.initialize({ startOnLoad: true, theme: "neutral",
                         flowchart: { padding: 20, nodeSpacing: 60, rankSpacing: 90 } });
 </script>
+```
 
 # Purpose of this document
 
-**What this produces and why it matters:** running this pipeline end to end
-produces one Excel workbook, `ecopath_ecosim_inputs.xlsx`, with the eleven
-sheets an Ecopath-with-Ecosim (EwE) model needs to get off the ground for a
-region — baseline biomass, catches/landings/discards by fleet, natural and
-fishing mortality, production and consumption ratios, life-history traits,
-and the predator-prey diet matrix. Having these sheets, already computed
-from real survey and catch data rather than left as blanks, is what lets a
-modeller open Ecopath and actually build and balance a working model for
-this region instead of starting from a spreadsheet of guesses.
+**What this produces and why it matters:** running this pipeline end to end produces one Excel workbook, `ecopath_ecosim_inputs.xlsx`, with the eleven sheets an Ecopath-with-Ecosim (EwE) model needs to get off the ground for a region — baseline biomass, catches/landings/discards by fleet, natural and fishing mortality, production and consumption ratios, life-history traits, and the predator-prey diet matrix. Having these sheets, already computed from real survey and catch data rather than left as blanks, is what lets a modeller open Ecopath and actually build and balance a working model for this region instead of starting from a spreadsheet of guesses.
 
-This document describes a general-purpose R pipeline for turning MEDITS/
-MEDIAS trawl-survey and catch data into input sheets for an Ecopath-with-
-Ecosim (EwE) model, for **any region in the Mediterranean Sea** — a single
-GFCM Geographical Sub-Area (GSA), any subset or the full set of GSAs, or a
-completely user-defined region (a bounding box or an arbitrary shapefile
-that doesn't line up with GSA lines at all, e.g. a bay, an MPA, or a
-footprint spanning parts of several GSAs). It covers every script provided,
-what each one reads and writes, and every function in the shared library
-those scripts call.
+This document describes a general-purpose R pipeline for turning MEDITS/ MEDIAS trawl-survey and catch data into input sheets for an Ecopath-with- Ecosim (EwE) model, for **any region in the Mediterranean Sea** — a single GFCM Geographical Sub-Area (GSA), any subset or the full set of GSAs, or a completely user-defined region (a bounding box or an arbitrary shapefile that doesn't line up with GSA lines at all, e.g. a bay, an MPA, or a footprint spanning parts of several GSAs). It covers every script provided, what each one reads and writes, and every function in the shared library those scripts call.
 
-The scripts as delivered are configured for the **Western Mediterranean**
-(GSA 1–11) as a **worked example** — this is what `01_biomass.R`,
-and `export_gsa_boundaries.R` currently point at, and
-what a few reference tables (e.g. the MEDIAS Handbook area crosswalk) are
-currently populated for. The underlying mechanism — GSA-based selection via
-`FILTER_AREAS`, or an arbitrary custom region via `01_biomass.R`'s
-`AREA_MODE <- "custom"` switch — is not Western-Med-specific; see
-[Adapting this pipeline to a different region]
-below for exactly what to change to point the same pipeline at another part
-of the Mediterranean.
+The scripts as delivered are configured for the **Western Mediterranean** (GSA 1–11) as a **worked example** — this is what `01_biomass.R`, and `export_gsa_boundaries.R` currently point at, and what a few reference tables (e.g. the MEDIAS Handbook area crosswalk) are currently populated for. The underlying mechanism — GSA-based selection via `FILTER_AREAS`, or an arbitrary custom region via `01_biomass.R`'s `AREA_MODE <- "custom"` switch — is not Western-Med-specific; see [Adapting this pipeline to a different region] below for exactly what to change to point the same pipeline at another part of the Mediterranean.
 
-All scripts read from and write to **one shared workbook**,
-`output/ecopath_ecosim_inputs.xlsx`, via two library functions designed for
-exactly this purpose:
+All scripts read from and write to **one shared workbook**, `output/ecopath_ecosim_inputs.xlsx`, via two library functions designed for exactly this purpose:
 
-* `upsert_workbook_sheets()` — adds/replaces named sheets, leaves every other
-  sheet in the workbook untouched. Safe to call from any script, in any order,
-  any number of times.
-* `finalize_workbook_sheet_order()` — called at the end of every numbered
-  script. Drops intermediate sheets (they live as CSV in each block's folder)
-  and orders the 11 final sheets (see [Final target sheet order (11 sheets)]).
+- `upsert_workbook_sheets()` — adds/replaces named sheets, leaves every other sheet in the workbook untouched. Safe to call from any script, in any order, any number of times.
+- `finalize_workbook_sheet_order()` — called at the end of every numbered script. Drops intermediate sheets (they live as CSV in each block's folder) and orders the 11 final sheets (see [Final target sheet order (11 sheets)](#final-target-sheet-order-11-sheets)).
 
-Because of this design, the numbered pipeline scripts are
-**order-independent with respect to the shared workbook** — except where a
-script's own calculations literally need a file another script produced
-first (documented per-script below).
+Because of this design, the numbered pipeline scripts are **order-independent with respect to the shared workbook** — except where a script's own calculations literally need a file another script produced first (documented per-script below).
 
 # Region, time window & configuration
 
-Before anything else, this is what a viewer needs to see to know **what
-was actually modeled**: which region, which years, and which top-level
-settings.
+Before anything else, this is what a viewer needs to see to know **what was actually modeled**: which region, which years, and which top-level settings.
 
-* **Region — `AREA_MODE`** (set at the top of `01_biomass.R`):
-  - `"westmed"` (the default, and what this worked example uses) —
-    GSA-based selection via `FILTER_AREAS <- 1:11`, i.e. **GSA 1–11, the
-    Western Mediterranean**. Any other GSA or set of GSAs anywhere in the
-    GFCM area can be modeled by changing this one line.
-  - `"custom"` — a fully custom, non-GSA study area: a bounding box
-    (`CUSTOM_BBOX`, e.g. `WESTMED_BBOX`), an arbitrary shapefile
-    (`CUSTOM_SHAPEFILE_PATH`), or a custom grouping of GSAs
-    (`CUSTOM_GSA_IDS`), set via `CUSTOM_AREA_TYPE`. Useful for a bay, an
-    MPA, or a footprint spanning parts of several GSAs that don't line up
-    with GSA boundaries. See [`AREA_MODE == "custom"`] below for the full
-    mechanism.
-* **Time window:**
-  - `YEAR_ECOPATH <- 1994:1996` — the Ecopath baseline snapshot years (the
-    single 3-year average that `Ecopath_B`, PB, QB, Landings and Discards
-    are all computed against).
-  - `TS_YEARS`/`START_YEAR`/`END_YEAR` <- `1995:2023` — the multi-year
-    Ecosim time series window.
-  - Both are ordinary variables at the top of each script, guarded so they
-    can be overridden from a calling/driver script without editing the
-    script itself — see [Adapting this pipeline to a different region]
-    below.
-* **Run configuration — where code, data and outputs live:**
-  - `git_dir` — the local clone of the WestMed EwE GitHub repository
-    (code only, no raw data).
-  - `pcloud_dir` — the local mount/sync of the WestMed EwE pCloud drive
-    (all raw survey, catch and reference data; never code).
-  - `out_dir` — a local folder every script writes its CSVs, plots and the
-    shared workbook to; not synced back to pCloud or GitHub by the scripts
-    themselves.
-  - All three are plain local paths resolved at the top of each script —
-    hardcoded for one user, or picked interactively via
-    `rstudioapi::selectDirectory()` for anyone else — never fixed
-    locations baked into the pipeline's logic.
+- **Region — `AREA_MODE`** (set at the top of `01_biomass.R`):
+  - `"westmed"` (the default, and what this worked example uses) — GSA-based selection via `FILTER_AREAS <- 1:11`, i.e. **GSA 1–11, the Western Mediterranean**. Any other GSA or set of GSAs anywhere in the GFCM area can be modeled by changing this one line.
+  - `"custom"` — a fully custom, non-GSA study area: a bounding box (`CUSTOM_BBOX`, e.g. `WESTMED_BBOX`), an arbitrary shapefile (`CUSTOM_SHAPEFILE_PATH`), or a custom grouping of GSAs (`CUSTOM_GSA_IDS`), set via `CUSTOM_AREA_TYPE`. Useful for a bay, an MPA, or a footprint spanning parts of several GSAs that don't line up with GSA boundaries. See \[`AREA_MODE == "custom"`\] below for the full mechanism.
+- **Time window:**
+  - `YEAR_ECOPATH <- 1994:1996` — the Ecopath baseline snapshot years (the single 3-year average that `Ecopath_B`, PB, QB, Landings and Discards are all computed against).
+  - `TS_YEARS`/`START_YEAR`/`END_YEAR` \<- `1995:2023` — the multi-year Ecosim time series window.
+  - Both are ordinary variables at the top of each script, guarded so they can be overridden from a calling/driver script without editing the script itself — see [Adapting this pipeline to a different region] below.
+- **Run configuration — where code, data and outputs live:**
+  - `git_dir` — the local clone of the WestMed EwE GitHub repository (code only, no raw data).
+  - `pcloud_dir` — the local mount/sync of the WestMed EwE pCloud drive (all raw survey, catch and reference data; never code).
+  - `out_dir` — a local folder every script writes its CSVs, plots and the shared workbook to; not synced back to pCloud or GitHub by the scripts themselves.
+  - All three are plain local paths resolved at the top of each script — hardcoded for one user, or picked interactively via `rstudioapi::selectDirectory()` for anyone else — never fixed locations baked into the pipeline's logic.
 
-See [Data and code locations] just below for more on how code/data/output
-separation works, and [Adapting this pipeline to a different region] for
-every other knob (`TARGET_COUNTRIES`, `DATASET_VERSION`, etc.) a different
-region or time window would need.
+See [Data and code locations] just below for more on how code/data/output separation works, and [Adapting this pipeline to a different region] for every other knob (`TARGET_COUNTRIES`, `DATASET_VERSION`, etc.) a different region or time window would need.
 
 # Data and code locations
 
-* **Code** — every script and library file documented here lives in the
-  **WestMed EwE GitHub repository** (`WMed_EwE`, cloned locally to what the
-  scripts call `git_dir`). All shared-library `source()` calls
-  (`lib_survey_fg_density_functions.R`, `lib_worms_taxonomy_lookup.R`,
-  `lib_fishbase_diet_matrix.R`, `lib_aquamaps_depth_extension.R`,
-  `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`)
-  resolve against this repository's
-  `scripts/` folder.
-* **Input data** — every raw survey, catch and reference file each script
-  reads (`FG_WMed_2026.csv`, `TM_list_(April_2019).xlsx`, MEDITS `TA.csv`/
-  `TB.csv`, MEDIAS `abundance.csv`/`biomass.csv`, `ASFIS_sp_2026.1.csv`,
-  the catchability CSV, GFCM capture/reference CSVs) is read from the
-  **WestMed EwE pCloud drive** (`EwE Western Med 2026`, mounted/synced
-  locally to what the scripts call `pcloud_dir`), **not** from the GitHub
-  repository — the repository holds code only, no raw data.
-* **Outputs** — every CSV, plot, and the shared `ecopath_ecosim_inputs.xlsx`
-  workbook are written to a local `out_dir` (not synced back to pCloud or
-  GitHub by the scripts themselves).
+- **Code** — every script and library file documented here lives in the **WestMed EwE GitHub repository** (`WMed_EwE`, cloned locally to what the scripts call `git_dir`). All shared-library `source()` calls (`lib_survey_fg_density_functions.R`, `lib_worms_taxonomy_lookup.R`, `lib_fishbase_diet_matrix.R`, `lib_aquamaps_depth_extension.R`, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`) resolve against this repository's `scripts/` folder.
+- **Input data** — every raw survey, catch and reference file each script reads (`FG_WMed_2026.csv`, `TM_list_(April_2019).xlsx`, MEDITS `TA.csv`/ `TB.csv`, MEDIAS `abundance.csv`/`biomass.csv`, `ASFIS_sp_2026.1.csv`, the catchability CSV, GFCM capture/reference CSVs) is read from the **WestMed EwE pCloud drive** (`EwE Western Med 2026`, mounted/synced locally to what the scripts call `pcloud_dir`), **not** from the GitHub repository — the repository holds code only, no raw data.
+- **Outputs** — every CSV, plot, and the shared `ecopath_ecosim_inputs.xlsx` workbook are written to a local `out_dir` (not synced back to pCloud or GitHub by the scripts themselves).
 
-Throughout this document, `<pcloud_dir>` means *the WestMed EwE pCloud
-drive* and `<git_dir>` means *the WestMed EwE GitHub repository*. Retargeting
-the pipeline to a different region (see [Adapting this pipeline to a
-different region]) does not require moving off pCloud/GitHub — only
-pointing `pcloud_dir`/`git_dir` at that region's own drive/repository, or
-adding that region's data alongside the Western Med data in the same
-drive/repository.
+Throughout this document, `<pcloud_dir>` means *the WestMed EwE pCloud drive* and `<git_dir>` means *the WestMed EwE GitHub repository*. Retargeting the pipeline to a different region (see [Adapting this pipeline to a different region]) does not require moving off pCloud/GitHub — only pointing `pcloud_dir`/`git_dir` at that region's own drive/repository, or adding that region's data alongside the Western Med data in the same drive/repository.
 
-**A note on the plots and column tables in this document:** this
-documentation was written without direct access to the WestMed EwE pCloud
-drive's actual data files. The **column-reference tables** throughout are
-not guesses — they list exactly the column names each script's own code
-reads (`select()`/`merge()`/`setnames()` calls, etc.), so they're accurate
-regardless of the actual data values. The **figures**, however, are the
-pipeline's own real output and only appear once you've generated them — see
-[Populating the real figures] below.
+**A note on the plots and column tables in this document:** this documentation was written without direct access to the WestMed EwE pCloud drive's actual data files. The **column-reference tables** throughout are not guesses — they list exactly the column names each script's own code reads (`select()`/`merge()`/`setnames()` calls, etc.), so they're accurate regardless of the actual data values. The **figures**, however, are the pipeline's own real output and only appear once you've generated them — see [Populating the real figures] below.
 
 ## Populating the real figures
 
-Several sections below embed a figure via a small `safe_include_graphics()`
-helper (defined in this document's setup chunk). Each one checks for a file
-under `figures/` (a folder that must sit next to this `.Rmd`) and shows the
-real image if present, or a plain "not yet available" message with the
-exact script/output path to copy from if not — so this document always
-knits cleanly either way. To populate them for real:
+Several sections below embed a figure via a small `safe_include_graphics()` helper (defined in this document's setup chunk). Each one checks for a file under `figures/` (a folder that must sit next to this `.Rmd`) and shows the real image if present, or a plain "not yet available" message with the exact script/output path to copy from if not — so this document always knits cleanly either way. To populate them for real:
 
-1. Run the relevant script (named in each placeholder message) against the
-   real WestMed EwE pCloud drive data.
-2. Copy the named `.png` from that script's `<out_dir>/plots/` into a
-   `figures/` folder next to this `.Rmd`, keeping the same filename.
-3. Re-knit.
+1.  Run the relevant script (named in each placeholder message) against the real WestMed EwE pCloud drive data.
+2.  Copy the named `.png` from that script's `<out_dir>/plots/` into a `figures/` folder next to this `.Rmd`, keeping the same filename.
+3.  Re-knit.
 
-Four **other** diagrams in this document (the pipeline flow, the
-FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon
-dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**,
-in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams
-(same `flowchart LR` layout, the same gray/purple/teal/coral `classDef`
-palette). They show the code's own logic — which function calls which,
-which sheet gets written by what, which fallback branch runs when — built
-directly from the script and library contents described here, not from
-any survey or model output. Being plain text (Mermaid syntax rendered via
-`mermaid.js` from a CDN), they always render, with or without a connection
-to the pCloud drive — unlike the `safe_include_graphics()` placeholders
-above. They do need a connection *to the Mermaid CDN* at view time to draw
-the SVG in the browser; `rmarkdown::html_document(self_contained = TRUE)`
-inlines the `<script>` tags instead if that CDN is unreachable from
-wherever the HTML is opened.
+Four **other** diagrams in this document (the pipeline flow, the FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**, in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams (same `flowchart LR` layout, the same gray/purple/teal/coral `classDef` palette). They show the code's own logic — which function calls which, which sheet gets written by what, which fallback branch runs when — built directly from the script and library contents described here, not from any survey or model output. Being plain text (Mermaid syntax rendered via `mermaid.js` from a CDN), they always render, with or without a connection to the pCloud drive — unlike the `safe_include_graphics()` placeholders above. They do need a connection *to the Mermaid CDN* at view time to draw the SVG in the browser; `rmarkdown::html_document(self_contained = TRUE)` inlines the `<script>` tags instead if that CDN is unreachable from wherever the HTML is opened.
 
 # Pipeline overview
 
@@ -291,7 +186,7 @@ flowchart LR
 ```
 
 | Step | Script | What it writes | Needs first |
-|---|---|---|---|
+|----|----|----|----|
 | 1 | `01_biomass.R` (+ `01b_biomass_unsurveyed.R`, `lib_aquamaps_depth_extension.R`, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`) | `Ecopath_B`, `FG_spp`, B part of `Ecosim_ts`; `output/biomass/` | — |
 | 2 | `02_fisheries.R` (+ `02b_sau_extraction.R`) | `Ecopath_L`, `Ecopath_Di`, catch and effort part of `Ecosim_ts`; `F_by_fg.csv`; `output/fisheries/` | 1 (`strata_area_by_area.csv`, `species_density_regional_combined.csv`, `Ecopath_B`) |
 | 3 | `03_pbqb-traits.R` (+ `03b_ecobase.R`) | `Ecopath_PBQB`, `Ecopath_traits`, `Ecobase`; `output/pbqb-traits/` | 1, 2 (`F_by_species_fg.csv`, `F_by_fg.csv`) |
@@ -302,19 +197,19 @@ Every t/km² in every sheet uses the same model area, $A_{model}$ = sum of `stra
 
 Library files (no driver code): `lib_survey_fg_density_functions.R` (survey density, workbook writing, `safe_fwrite()`/`csv_has_nul()` for the pCloud drive, `compute_stanza_catch_split_from_length()`), `lib_worms_taxonomy_lookup.R`, `lib_fishbase_diet_matrix.R`, `lib_aquamaps_depth_extension.R`, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`. Helper scripts: `combine_STAR_RAMlegacy.R` (builds `combined_medbs_star_ramlegacy.csv`), `export_gsa_boundaries.R`; standalone exploration scripts not called by the pipeline: `posidonia.R`, `coral_gorgonian.R`, `phyto.R`, `emodnet_benthic_habitat_biomass_extraction.R`.
 
----
+------------------------------------------------------------------------
 
 # Detailed methodology per output block — B, C, L, Di, M, TRAITS, F, PB, QB, DIET
 
 Full equations with references are in `medbs_pipeline_methodology.qmd` (sections Biomass, Fisheries, PB/QB, Diet, Validation) and in the `NOTATION, EQUATIONS AND DATA SOURCES` header at the top of each script. This section summarises each block and where its code lives.
 
 | Block | What it is | Primary source(s) | Key caveat |
-|---|---|---|---|
+|----|----|----|----|
 | **B** — Biomass | `Ecopath_B` (1994–1996 mean, t/km²) and the B series in `Ecosim_ts` | MEDITS / q, MEDIAS (+ per-GSA small-pelagic series), stock assessments (hake stanzas, BFT, SWO), literature × habitat maps, ISIMIP3a COBALT plankton | groups the surveys cannot sample come from cited literature and models, each with its own assumptions (see `01b`) |
 | **C** — Catches | FG × year catch of the target countries | GFCM capture production, STECF FDI, Sea Around Us, FishMIP discard ratios, ICCAT Task I | only the coastal states of the model GSAs (Spain, France, Italy); ICCAT scaled to the model GSAs by FDI landings share |
 | **L** — Landings | `Ecopath_L`: FG × fleet | C split by FDI / SAU fleet shares, ICCAT gear field for BFT/SWO/ALB | unresolved fleet → "Target countries - fleet not resolved" column |
 | **Di** — Discards | `Ecopath_Di`: FG × fleet | FDI per-fleet discard ratio, else FishMIP | no source → discards 0 |
-| **M** — Natural mortality | fish $M$ inside $P/B = M + F$ | FishBase/SeaLifeBase, TropFishR, FishLife | priority Then > Pauly > Hoenig > Alverson & Carney > FishLife > Gascuel |
+| **M** — Natural mortality | fish $M$ inside $P/B = M + F$ | FishBase/SeaLifeBase, TropFishR, FishLife | priority Then \> Pauly \> Hoenig \> Alverson & Carney \> FishLife \> Gascuel |
 | **F** — Fishing mortality | $F_f = (\bar C_f/A_{model})/B_f$, 1994–1996 | C (02) and the final `Ecopath_B` (01) | one region-wide, all-gear rate per FG |
 | **PB** | fish $M + F$; mammals Barlow & Boveng / Gascuel; seabirds Gascuel; invertebrates Tumbiolo & Downing / Brey / Gascuel, $+F_f$ for fished FGs | 03 | invertebrate empirical P/B treated as $M$ (ASSUMPTION) |
 | **QB** | Palomares & Pauly / Christensen & Pauly (fish); Innes/Trites (mammals); Nilsson & Nilsson (seabirds); Q/P = 3 (invertebrates) | 03 | fish diet dummies fixed |
@@ -324,9 +219,11 @@ Full equations with references are in `medbs_pipeline_methodology.qmd` (sections
 ## B — Biomass
 
 ### 1. What it is
+
 The 1994–1996 (`YEAR_ECOPATH`) mean biomass density per FG in t/km² of $A_{model}$ (`Ecopath_B`), and the yearly B series in `Ecosim_ts` (relative to 1995).
 
 ### 2. Inputs / data sources
+
 - MEDITS bottom-trawl survey (TA/TB/TC) and MEDIAS acoustic survey, processed with `lib_survey_fg_density_functions.R`.
 - Catchability table `catchability_factors_ecotrans_medits_2021_spp.csv` (ECOTRANS).
 - `combined_medbs_star_ramlegacy.csv` (GFCM STAR + RAM Legacy v4.44; built by `combine_STAR_RAMlegacy.R`): small-pelagic trends, hake SSB.
@@ -334,31 +231,37 @@ The 1994–1996 (`YEAR_ECOPATH`) mean biomass density per FG in t/km² of $A_{mo
 - `FG_WMed_2026.csv` (species → FG and taxonomy).
 
 ### 3. Computation method
-1. Haul density → catchability → outlier screen → stratified mean per GSA → model-area mean → FG sum (equations 1–7 in the 01 header).
-2. MEDIAS shelf density rescaled to $A_{model}$; sardine and anchovy from the per-GSA acoustic series with stock-assessment-trend gap filling (`small_pelagics_per_gsa_series_REVIEW.csv`).
-3. Priority per FG × year: single-species stock assessment (FGs the surveys don't measure) > MEDIAS > MEDITS; survey-exempt FGs take only the `01b` value (never survey bycatch).
-4. Hake stanzas from the assessment (`HAKE_STOCK_GSAS`): $B_{adult} \approx SSB$, $B_{juv} = B_{adult}(1-r)/r$, $r = 0.42$, back-cast with the MEDITS index (adult 0.0746, juvenile 0.103 t/km²).
-5. `01b_biomass_unsurveyed.R` (see its own section below) adds megafauna, BFT/SWO, benthic habitats, plankton, suprabenthos and detritus.
-6. `Ecopath_B` = mean over `YEAR_ECOPATH`; `FG_spp` = species share of FG biomass (`prop_sp_fg`); EcoBase biomass is evaluated only (`ecobase_biomass_evaluation_NOT_INCORPORATED.csv`).
+
+1.  Haul density → catchability → outlier screen → stratified mean per GSA → model-area mean → FG sum (equations 1–7 in the 01 header).
+2.  MEDIAS shelf density rescaled to $A_{model}$; sardine and anchovy from the per-GSA acoustic series with stock-assessment-trend gap filling (`small_pelagics_per_gsa_series_REVIEW.csv`).
+3.  Priority per FG × year: single-species stock assessment (FGs the surveys don't measure) \> MEDIAS \> MEDITS; survey-exempt FGs take only the `01b` value (never survey bycatch).
+4.  Hake stanzas from the assessment (`HAKE_STOCK_GSAS`): $B_{adult} \approx SSB$, $B_{juv} = B_{adult}(1-r)/r$, $r = 0.42$, back-cast with the MEDITS index (adult 0.0746, juvenile 0.103 t/km²).
+5.  `01b_biomass_unsurveyed.R` (see its own section below) adds megafauna, BFT/SWO, benthic habitats, plankton, suprabenthos and detritus.
+6.  `Ecopath_B` = mean over `YEAR_ECOPATH`; `FG_spp` = species share of FG biomass (`prop_sp_fg`); EcoBase biomass is evaluated only (`ecobase_biomass_evaluation_NOT_INCORPORATED.csv`).
 
 ### 4. Known caveats / limitations
+
 - 5 FGs have no Ecopath_B (3 Expanding FGs, Salps — left for Ecopath — and Discards).
 - 123 species in 7 FGs use an even within-FG split.
 - `FG_WMed_2026.csv` has no `survey_exempt` column; the hard-coded `EXEMPT_FG_NAMES` list is used (log message).
 - Assumptions in the unsurveyed groups are listed in the `01b` section and in each row's `Source_citation`.
 
 ### 5. Code location
+
 `01_biomass.R` (survey cascade, small pelagics, hake stanza block, priority rule, `Ecopath_B`/`FG_spp`/`Ecosim_ts`); `01b_biomass_unsurveyed.R` (`load_manual_cited_biomass_group()`, `extrapolate_density_row()`, `estimate_habitat_area_km2()`, `compute_euseamap_habitat_area()`, ISIMIP/CMEMS plankton block); `lib_survey_fg_density_functions.R`.
 
 ### 6. References
+
 See the 01 and 01b headers; main ones: MEDITS Working Group 2017; Leonori et al. 2021; Ricard et al. 2012; Cochran 1977; Pante & Simon-Bouhet 2013; Stock et al. 2020; Bernardeau-Esteller et al. 2023; Coppari et al. 2019; Ballesteros 2006; Colléter et al. 2015.
 
-## DIET — Ecopath_diet sheet / diet matrix
+## DIET — Ecopath_diet sheet / diet matrix {#diet-ecopath_diet-sheet-diet-matrix}
 
 ### 1. What it is
+
 Predator FG × prey FG diet composition $DC_{f,j}$ (each predator column sums to 1), written to `Ecopath_diet` and to `diet_composition_ewe.csv` (EwE import format).
 
 ### 2. Inputs / data sources
+
 - Mediterranean trophic metaweb `data_entry_metaweb_empty.xlsx` (still an empty template).
 - MAISHA v1.2 (Vascotto et al. 2026, doi:10.13120/hwpn1e, CC-BY 4.0), Darwin Core Archive at `<pcloud_dir>/data/diet/MAISHA/MAISHA_DwC-A` (or `.zip`, or any `maisha*.xlsx/csv` under `data/diet`; `MAISHA_PATH`).
 - FishBase and SeaLifeBase diet tables via `rfishbase` (cached in `output/diet`).
@@ -366,27 +269,29 @@ Predator FG × prey FG diet composition $DC_{f,j}$ (each predator column sums to
 - `biomass_proportion_by_species_fg.csv` and `Ecopath_B` from 01; `FG_WMed_2026.csv`.
 
 ### 3. Computation method
-1. Tier per predator FG: metaweb → MAISHA (per species with records) → FishBase/SeaLifeBase → EcoBase (`DIET_FALLBACK_ENABLE_MAISHA`, `DIET_FALLBACK_ENABLE_FISHBASE`, `DIET_FALLBACK_ENABLE_ECOBASE`; `DIET_FISHBASE_METHOD = "fg_matrix"`).
-2. Study proportions $p_{s,d,k} = v_k/\sum_k v_k$ with $v$ = first available of IRI, %W, %N, %FO (`DIET_METRIC_PRIORITY`); Mediterranean studies only when a species has any.
-3. Prey → FG: species → genus/family/order/class/phylum (equal split, `DIET_TAXON_SPLIT`) → food-category regex (split by Ecopath B, `DIET_CATEGORY_SPLIT`) → WoRMS second pass; eggs/larvae → zooplankton; detritus dropped for predators with TL ≥ 3 (`DIET_DETRITUS_MAX_TL`); non-food items dropped and the study renormalised.
-4. $DC_{s,j}$ = mean over studies; $DC_{f,j} = \sum_s b_{s|f} DC_{s,j} / \sum_s b_{s|f}$; columns renormalised to 1.
-5. Checks: column sums, cannibalism > 0.1.
+
+1.  Tier per predator FG: metaweb → MAISHA (per species with records) → FishBase/SeaLifeBase → EcoBase (`DIET_FALLBACK_ENABLE_MAISHA`, `DIET_FALLBACK_ENABLE_FISHBASE`, `DIET_FALLBACK_ENABLE_ECOBASE`; `DIET_FISHBASE_METHOD = "fg_matrix"`).
+2.  Study proportions $p_{s,d,k} = v_k/\sum_k v_k$ with $v$ = first available of IRI, %W, %N, %FO (`DIET_METRIC_PRIORITY`); Mediterranean studies only when a species has any.
+3.  Prey → FG: species → genus/family/order/class/phylum (equal split, `DIET_TAXON_SPLIT`) → food-category regex (split by Ecopath B, `DIET_CATEGORY_SPLIT`) → WoRMS second pass; eggs/larvae → zooplankton; detritus dropped for predators with TL ≥ 3 (`DIET_DETRITUS_MAX_TL`); non-food items dropped and the study renormalised.
+4.  $DC_{s,j}$ = mean over studies; $DC_{f,j} = \sum_s b_{s|f} DC_{s,j} / \sum_s b_{s|f}$; columns renormalised to 1.
+5.  Checks: column sums, cannibalism \> 0.1.
 
 ### 4. Known caveats / limitations
+
 - The metaweb has no rows yet, so every diet comes from MAISHA, FishBase/SeaLifeBase or nothing.
 - Category shares split by prey biomass is an assumption (prey eaten in proportion to availability).
 - EcoBase's web service exposes no diet matrices, so tier 4 finds nothing.
 - No diet for corals and gorgonians, meso and micro zooplankton, suprabenthos (2026-10-07 run).
 
 ### 5. Code location
+
 `04_diets.R` (config, tiers, `build_fg_diet()`, export, checks); `lib_fishbase_diet_matrix.R` (`maisha_diet_records()`, `fb_fetch_diet_tables()`, `fishbase_diet_records()`, `diet_resolve_prey()`, `diet_records_to_fg_matrix()`, `write_diet_source_outputs()`); `lib_worms_taxonomy_lookup.R`.
 
 ### 6. References
+
 Vascotto et al. 2026 (MAISHA); Froese & Pauly (FishBase); Palomares & Pauly (SeaLifeBase); Boettiger, Lang & Wainwright 2012 (rfishbase); Hyslop 1980; Pinkas, Oliphant & Iverson 1971 (IRI); Christensen, Walters & Pauly 2005; Colléter et al. 2015.
 
-
----
-
+------------------------------------------------------------------------
 
 ## References
 
@@ -426,7 +331,7 @@ Palomares, M.L.D., & Pauly, D. (1998). Predicting food consumption of fish popul
 
 Pauly, D. (1980). On the interrelationships between natural mortality, growth parameters, and mean environmental temperature in 175 fish stocks. *ICES Journal of Marine Science*, 39(2), 175–192.
 
-Pauly, D., & Zeller, D. (Eds.) (2016). *Global Atlas of Marine Fisheries: A Critical Appraisal of Catches and Ecosystem Impacts.* Island Press. [Sea Around Us]
+Pauly, D., & Zeller, D. (Eds.) (2016). *Global Atlas of Marine Fisheries: A Critical Appraisal of Catches and Ecosystem Impacts.* Island Press. \[Sea Around Us\]
 
 Pinkas, L., Oliphant, M.S., & Iverson, I.L.K. (1971). Food habits of albacore, bluefin tuna, and bonito in California waters. *California Department of Fish and Game, Fish Bulletin*, 152.
 
@@ -442,12 +347,12 @@ WoRMS Editorial Board. World Register of Marine Species. www.marinespecies.org.
 
 ICCAT (International Commission for the Conservation of Atlantic Tunas). GBYP (Grand Bluefin Tuna Year Program) aerial survey, CREEM Phase 11 report (2021).
 
----
+------------------------------------------------------------------------
 
 # Run order and dependencies
 
 | Step | Script | Depends on | Must run before |
-|---|---|---|---|
+|----|----|----|----|
 | 1 | `01_biomass.R` (`AREA_MODE` picks westmed vs. custom; sources `01b_biomass_unsurveyed.R`) | nothing | 2, 3, 4 |
 | 2 | `02_fisheries.R` | 1: `strata_area_by_area.csv`, `species_density_regional_combined.csv`, `Ecopath_B` sheet | 3 |
 | 3 | `03_pbqb-traits.R` (sources `03b_ecobase.R`) | 1: `FG_spp`, biomass proportions; 2: `F_by_species_fg.csv`, `F_by_fg.csv` | 5 |
@@ -456,30 +361,18 @@ ICCAT (International Commission for the Conservation of Atlantic Tunas). GBYP (G
 
 After a change in 01, rerun 02 → 03 → 04 → 05, because $F$ (02) uses `Ecopath_B` and P/B (03) uses $F$. Each script calls `finalize_workbook_sheet_order()` at the end, so the workbook is always in its final layout.
 
----
+------------------------------------------------------------------------
 
 # Script 1a — `01_biomass.R`
 
-**Role:** Pipeline Step 1 of 5 — a single script for **any region in the
-Mediterranean**, GSA-based or fully custom, picked by the `AREA_MODE`
-config variable (`"westmed"`, the default, or `"custom"` — see
-[`AREA_MODE == "custom"`] below). No dependency on the other numbered
-scripts; `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R` all require this step's
-output to exist first, regardless of which `AREA_MODE` produced it.
+**Role:** Pipeline Step 1 of 5 — a single script for **any region in the Mediterranean**, GSA-based or fully custom, picked by the `AREA_MODE` config variable (`"westmed"`, the default, or `"custom"` — see \[`AREA_MODE == "custom"`\] below). No dependency on the other numbered scripts; `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R` all require this step's output to exist first, regardless of which `AREA_MODE` produced it.
 
-Runs two independent surveys over the same GSAs/FG scheme (MEDITS bottom
-trawl + MEDIAS acoustic) and combines both into one set of Ecopath/Ecosim
-sheets, rather than producing separate MEDIAS sheets. As delivered it's
-configured for the Western Med (GSA 1–11, via `FILTER_AREAS <- 1:11`) as a
-worked example; retargeting it to a different GSA subset elsewhere in the
-Mediterranean — the Adriatic, the Aegean, the whole basin — is a matter of
-changing that one line and the region-specific reference tables listed in
-[Adapting this pipeline to a different region].
+Runs two independent surveys over the same GSAs/FG scheme (MEDITS bottom trawl + MEDIAS acoustic) and combines both into one set of Ecopath/Ecosim sheets, rather than producing separate MEDIAS sheets. As delivered it's configured for the Western Med (GSA 1–11, via `FILTER_AREAS <- 1:11`) as a worked example; retargeting it to a different GSA subset elsewhere in the Mediterranean — the Adriatic, the Aegean, the whole basin — is a matter of changing that one line and the region-specific reference tables listed in [Adapting this pipeline to a different region].
 
 ## Inputs
 
 | File | Format | Role |
-|---|---|---|
+|----|----|----|
 | `<pcloud_dir>/data/FG_WMed_2026.csv` | csv (`;`) | Species → Functional Group reference with taxonomy (`dataframe2`: `species`→`ScientificName`, `FG_number`→`FG_num`, `FG_name`; `Genus`…`Phylum`, `source`, `status`). The old `FG_WMed.xlsx` is retired. |
 | `<pcloud_dir>/.../TM_list_(April_2019).xlsx` | xlsx | MEDITS species-code → scientific-name lookup |
 | `<pcloud_dir>/.../Demersal/TA.csv` | csv | MEDITS haul/sample metadata (position, depth, gear, swept-area inputs) |
@@ -490,122 +383,29 @@ changing that one line and the region-specific reference tables listed in
 | GFCM GSA shapefile | auto-downloaded zip from `gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip` | Study-area polygons (`area_shp`); `SMU_CODE` 111/112 (W/E Sardinia) merged into GSA 11 |
 | NOAA bathymetry | auto-downloaded via `marmap::getNOAA.bathy()` inside `compute_strata_area_by_area()` | Depth-stratum area calculation |
 
-`FILTER_AREAS <- 1:11` (this example's Western Med GSAs — set to any GSA
-number or set of GSA numbers, anywhere in the GFCM area, to retarget the
-whole script to a different region), `YEAR_ECOPATH <- 1994:1996`,
-`TS_YEARS <- 1995:2023`, `STRATA <- TRUE`, `DROP_OUTLIERS <- FALSE`,
-`NORMALIZE_TS <- TRUE`, `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- FALSE` (opt-in —
-see Step 7b below).
+`FILTER_AREAS <- 1:11` (this example's Western Med GSAs — set to any GSA number or set of GSA numbers, anywhere in the GFCM area, to retarget the whole script to a different region), `YEAR_ECOPATH <- 1994:1996`, `TS_YEARS <- 1995:2023`, `STRATA <- TRUE`, `DROP_OUTLIERS <- FALSE`, `NORMALIZE_TS <- TRUE`, `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- FALSE` (opt-in — see Step 7b below).
 
 ### Step 7b — AquaMaps shallow/deep depth adjustment (opt-in)
 
-MEDITS' own 5 standard strata (`MEDITS_STRATA`) only cover 10–800 m.
-`compute_strata_area_by_area()`'s area-proportion weighting normalizes
-across just those 5 strata, so as delivered, this pipeline's Biomass/
-density figures implicitly treat the whole modeled area as if it were
-entirely 10–800 m seafloor — a species with real biomass shallower than
-10 m or deeper than 800 m is invisible to these numbers, not just
-imprecisely measured. Setting `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE`
-(default `FALSE`) adds genuine **derived** pseudo-strata: one shallow
-(0–10 m) plus, by default, the deep zone split into **two** sub-bands —
-800–1000 m and 1000–2850 m — rather than one lumped 800–6000 m stratum
-(2850 m is a practical ceiling for the western Mediterranean's own real
-depths specifically, not the Mediterranean-wide ~5267 m Calypso Deep,
-which sits in the eastern/Ionian basin outside these GSAs). Each
-pseudo-stratum gets its own real bathymetric area (the same
-`compute_strata_area_by_area()` machinery already used for the 5 real
-strata) and a density **derived, not measured**, anchored to the ONE
-real MEDITS stratum immediately adjacent to it — the shallowest real
-stratum (10–50 m) for the shallow pseudo-band, the deepest real stratum
-(500–800 m) for every deep pseudo-band — rather than an area-weighted
-average across all 5 real strata. Each pseudo-stratum's density equals
-that adjacent stratum's own **measured** density (`compute_species_
-anchor_stratum_density()`), scaled by the ratio of AquaMaps mean
-suitability between the pseudo-band and that same adjacent stratum's own
-depth range. A species at equal AquaMaps suitability in both bands gets
-a multiplier of exactly 1 — its pseudo-stratum density literally equals
-what MEDITS measured next door, with no distortion from averaging across
-strata the species may barely occupy. (An earlier version of this
-adjustment compared each pseudo-band's suitability against the whole
-10–800 m composite range instead — that systematically understated
-narrow pseudo-bands relative to the ~790 m-wide reference purely from
-the width mismatch, independent of actual suitability level; the
-anchor-stratum design replaces it.) The trade-off: a species with real
-catch elsewhere in 10–800 m but none specifically in the one adjacent
-anchor stratum gets no pseudo-stratum density at all for that area
-(flagged in the audit sheet), rather than being extrapolated from
-unrelated, non-adjacent strata. These pseudo-strata are folded into the
-exact same `weight_by_strata()`/`weight_species_by_area()` calls used
-for the 5 real strata — not a separate formula — so `fg_index`/
-`fg_index_regional`/`species_density_regional` end up as one consistent
-area-weighted sum across all 8 strata (5 real + 3 derived), real and
-derived alike. The number and boundaries of deep sub-bands are
-controlled by `apply_aquamaps_depth_adjustment()`'s `deep_ranges`
-argument — a list of `c(from, to)` pairs — so this can be collapsed back
-to one lump (`list(c(800, 6000))`) or split further without changing
-anything else; all deep sub-bands anchor to the same deepest real
-stratum, they don't chain off each other.
+MEDITS' own 5 standard strata (`MEDITS_STRATA`) only cover 10–800 m. `compute_strata_area_by_area()`'s area-proportion weighting normalizes across just those 5 strata, so as delivered, this pipeline's Biomass/ density figures implicitly treat the whole modeled area as if it were entirely 10–800 m seafloor — a species with real biomass shallower than 10 m or deeper than 800 m is invisible to these numbers, not just imprecisely measured. Setting `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE` (default `FALSE`) adds genuine **derived** pseudo-strata: one shallow (0–10 m) plus, by default, the deep zone split into **two** sub-bands — 800–1000 m and 1000–2850 m — rather than one lumped 800–6000 m stratum (2850 m is a practical ceiling for the western Mediterranean's own real depths specifically, not the Mediterranean-wide \~5267 m Calypso Deep, which sits in the eastern/Ionian basin outside these GSAs). Each pseudo-stratum gets its own real bathymetric area (the same `compute_strata_area_by_area()` machinery already used for the 5 real strata) and a density **derived, not measured**, anchored to the ONE real MEDITS stratum immediately adjacent to it — the shallowest real stratum (10–50 m) for the shallow pseudo-band, the deepest real stratum (500–800 m) for every deep pseudo-band — rather than an area-weighted average across all 5 real strata. Each pseudo-stratum's density equals that adjacent stratum's own **measured** density (`compute_species_ anchor_stratum_density()`), scaled by the ratio of AquaMaps mean suitability between the pseudo-band and that same adjacent stratum's own depth range. A species at equal AquaMaps suitability in both bands gets a multiplier of exactly 1 — its pseudo-stratum density literally equals what MEDITS measured next door, with no distortion from averaging across strata the species may barely occupy. (An earlier version of this adjustment compared each pseudo-band's suitability against the whole 10–800 m composite range instead — that systematically understated narrow pseudo-bands relative to the \~790 m-wide reference purely from the width mismatch, independent of actual suitability level; the anchor-stratum design replaces it.) The trade-off: a species with real catch elsewhere in 10–800 m but none specifically in the one adjacent anchor stratum gets no pseudo-stratum density at all for that area (flagged in the audit sheet), rather than being extrapolated from unrelated, non-adjacent strata. These pseudo-strata are folded into the exact same `weight_by_strata()`/`weight_species_by_area()` calls used for the 5 real strata — not a separate formula — so `fg_index`/ `fg_index_regional`/`species_density_regional` end up as one consistent area-weighted sum across all 8 strata (5 real + 3 derived), real and derived alike. The number and boundaries of deep sub-bands are controlled by `apply_aquamaps_depth_adjustment()`'s `deep_ranges` argument — a list of `c(from, to)` pairs — so this can be collapsed back to one lump (`list(c(800, 6000))`) or split further without changing anything else; all deep sub-bands anchor to the same deepest real stratum, they don't chain off each other.
 
-**Core assumption, stated plainly rather than absorbed silently**: a
-species' relative density across depth is assumed proportional to
-AquaMaps' relative occurrence-suitability across depth (its trapezoidal
-`DepthMin`/`DepthPrefMin`/`DepthPrefMax`/`DepthMax` envelope, per
-AquaMaps' own "Algorithm and Data Sources" documentation). Occurrence
-suitability is not the same thing as density — this is a standard
-extrapolation approach when direct sampling doesn't cover a species' full
-depth range, but an approximation nonetheless. Every resulting multiplier
-is written to the `AquaMaps_Depth_Adjustment` sheet (species, its
-`DepthMin`/`DepthPrefMin`/`DepthPrefMax`/`DepthMax`, probability masses,
-resulting `multiplier_shallow`/`multiplier_deep_800_1000`/
-`multiplier_deep_1000_2850` (one column per configured deep sub-band,
-named by its own depth bounds), and a `note` explaining species that got
-NO adjustment for a given band — unmatched to AquaMaps, no depth
-envelope in `am_hspen()`, or essentially zero AquaMaps suitability in
-that band's own adjacent real anchor stratum, making a ratio against
-that unstable) — reviewable per species, not a black box.
+**Core assumption, stated plainly rather than absorbed silently**: a species' relative density across depth is assumed proportional to AquaMaps' relative occurrence-suitability across depth (its trapezoidal `DepthMin`/`DepthPrefMin`/`DepthPrefMax`/`DepthMax` envelope, per AquaMaps' own "Algorithm and Data Sources" documentation). Occurrence suitability is not the same thing as density — this is a standard extrapolation approach when direct sampling doesn't cover a species' full depth range, but an approximation nonetheless. Every resulting multiplier is written to the `AquaMaps_Depth_Adjustment` sheet (species, its `DepthMin`/`DepthPrefMin`/`DepthPrefMax`/`DepthMax`, probability masses, resulting `multiplier_shallow`/`multiplier_deep_800_1000`/ `multiplier_deep_1000_2850` (one column per configured deep sub-band, named by its own depth bounds), and a `note` explaining species that got NO adjustment for a given band — unmatched to AquaMaps, no depth envelope in `am_hspen()`, or essentially zero AquaMaps suitability in that band's own adjacent real anchor stratum, making a ratio against that unstable) — reviewable per species, not a black box.
 
-Requires the `aquamapsdata` R package (github.com/raquamaps/aquamapsdata),
-the only verified way to get AquaMaps' per-species HSPEN depth-envelope
-table without scraping — its `download_db()` pulls a real, deliberate
-**~2GB (~10GB unpacked) local SQLite database once** (`ensure_aquamaps_db()`
-uses `force = FALSE`, so this never re-downloads on subsequent runs).
-Implemented in `lib_aquamaps_depth_extension.R` (species → AquaMaps
-`SpeciesID` resolution, envelope fetch, envelope math, pseudo-strata
-construction) — see that file's own header for the full mechanism.
-Requires `STRATA <- TRUE` (errors clearly if not — there's no unstratified
-equivalent). Available under **either** `AREA_MODE` — the adjustment
-operates on species depth envelopes and strata generically, with no
-GSA-specific assumptions, so it applies the same way to a custom region.
+Requires the `aquamapsdata` R package (github.com/raquamaps/aquamapsdata), the only verified way to get AquaMaps' per-species HSPEN depth-envelope table without scraping — its `download_db()` pulls a real, deliberate **\~2GB (\~10GB unpacked) local SQLite database once** (`ensure_aquamaps_db()` uses `force = FALSE`, so this never re-downloads on subsequent runs). Implemented in `lib_aquamaps_depth_extension.R` (species → AquaMaps `SpeciesID` resolution, envelope fetch, envelope math, pseudo-strata construction) — see that file's own header for the full mechanism. Requires `STRATA <- TRUE` (errors clearly if not — there's no unstratified equivalent). Available under **either** `AREA_MODE` — the adjustment operates on species depth envelopes and strata generically, with no GSA-specific assumptions, so it applies the same way to a custom region.
 
-Two outputs make the strata (real + derived) inspectable directly,
-independent of `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT` — they cover whichever
-strata are actually in play, 5 or 8:
+Two outputs make the strata (real + derived) inspectable directly, independent of `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT` — they cover whichever strata are actually in play, 5 or 8:
 
-- **`survey_fg_depth_strata_profile.png`** (Step 8, `plot_strata_profile()`)
-  — a bar chart of raw per-sample density by stratum, faceted per FG, for
-  sanity-checking that known deep-water FGs actually peak in the deep
-  strata and vice versa. Reads `weight_by_strata()`'s `per_stratum_raw`
-  attribute specifically (not `per_stratum`), so a stratum with real
-  sample data but no computed area-proportion for a given AreaID still
-  shows up here rather than silently vanishing.
-- **`FG_Density_by_Stratum`** sheet (Step 12c, `build_fg_density_by_stratum_sheet()`)
-  — the same information as an Excel table: one row per FG, one column
-  per stratum (region-wide, area-weighted, `YEAR_ECOPATH`-averaged), plus
-  a `Total_Density` column that reproduces `fg_index_regional`'s own
-  `mean_density` exactly, since each stratum column is that stratum's own
-  additive contribution to the total, not an independently-normalized
-  figure.
+- **`survey_fg_depth_strata_profile.png`** (Step 8, `plot_strata_profile()`) — a bar chart of raw per-sample density by stratum, faceted per FG, for sanity-checking that known deep-water FGs actually peak in the deep strata and vice versa. Reads `weight_by_strata()`'s `per_stratum_raw` attribute specifically (not `per_stratum`), so a stratum with real sample data but no computed area-proportion for a given AreaID still shows up here rather than silently vanishing.
+- **`FG_Density_by_Stratum`** sheet (Step 12c, `build_fg_density_by_stratum_sheet()`) — the same information as an Excel table: one row per FG, one column per stratum (region-wide, area-weighted, `YEAR_ECOPATH`-averaged), plus a `Total_Density` column that reproduces `fg_index_regional`'s own `mean_density` exactly, since each stratum column is that stratum's own additive contribution to the total, not an independently-normalized figure.
 
 ### Column reference — key input files
 
-Columns as actually referenced by the code (from the `<pcloud_dir>` files
-above). Not every column in the real file is necessarily listed — only the
-ones the script reads.
+Columns as actually referenced by the code (from the `<pcloud_dir>` files above). Not every column in the real file is necessarily listed — only the ones the script reads.
 
 **`FG_WMed_2026.csv`** (→ `dataframe2`, the species→FG master; semicolon-separated):
 
 | Column | Renamed to | Meaning |
-|---|---|---|
+|----|----|----|
 | `species` | `ScientificName` | Species scientific name |
 | `FG_number` | `FG_num` | Functional Group number |
 | `FG_name` | `FG_name` | Functional Group name |
@@ -614,16 +414,12 @@ ones the script reads.
 
 Life-history traits (`traits_ewe`) are no longer read here; `03_pbqb-traits.R` builds `Ecopath_traits` from FishBase/SeaLifeBase.
 
-**`TM_list_(April_2019).xlsx`, sheet 1 (skip first 2 rows)** — the code
-locates its two needed columns by regex rather than a fixed name, since the
-exact header text has drifted between file versions: a column matching
-`/MEDITS/i` (the MEDITS species code) and a column matching `/Scientific/i`
-(the scientific name).
+**`TM_list_(April_2019).xlsx`, sheet 1 (skip first 2 rows)** — the code locates its two needed columns by regex rather than a fixed name, since the exact header text has drifted between file versions: a column matching `/MEDITS/i` (the MEDITS species code) and a column matching `/Scientific/i` (the scientific name).
 
 **MEDITS `TA.csv`** (haul/sample metadata):
 
 | Column | Used for |
-|---|---|
+|----|----|
 | `country`, `area`, `vessel`, `year`, `haul_number`, `month`, `day` | Built into `SampleID` (concatenated, `_`-separated) |
 | `distance` | Trawl distance towed → swept area |
 | `wing_opening` | Trawl wing opening (decimetres) → swept area |
@@ -634,7 +430,7 @@ exact header text has drifted between file versions: a column matching
 **MEDITS `TB.csv`** (catch-per-haul data):
 
 | Column | Used for |
-|---|---|
+|----|----|
 | `country`, `area`, `vessel`, `year`, `haul_number`, `month`, `day` | Built into `SampleID`, joined against `TA.csv` |
 | `genus`, `species` | Concatenated into `species_code`, joined against `TM_list` |
 | `ptot` | Total catch weight (grams; negative values treated as `NA`, converted to tonnes) |
@@ -642,7 +438,7 @@ exact header text has drifted between file versions: a column matching
 **MEDIAS `abundance.csv` / `biomass.csv`** (acoustic survey raw records):
 
 | Column | Used for |
-|---|---|
+|----|----|
 | `country`, `year`, `species` | Grouping key for aggregation |
 | `area` | Text field containing a GSA number, extracted via regex (`\d+`) |
 | `sex` | Filtered to `"C"` (combined sexes) when present |
@@ -651,18 +447,17 @@ exact header text has drifted between file versions: a column matching
 **`ASFIS_sp_2026.1.csv`** (FAO species reference list):
 
 | Column | Used for |
-|---|---|
+|----|----|
 | `Alpha3_Code` | MEDIAS species code → joined against `abundance`/`biomass` |
 | `Scientific_Name` | Resolved scientific name |
 | *(also present: `ISSCAAP_Group`, `Taxonomic_Code`, `English_name`, …)* | Not read by this pipeline |
 
-**Catchability CSV** (`catchability_factors_ecotrans_medits_2021_spp.csv`,
-optional):
+**Catchability CSV** (`catchability_factors_ecotrans_medits_2021_spp.csv`, optional):
 
-| Column | Renamed to | Meaning |
-|---|---|---|
-| `species` | `ScientificName` | Species scientific name |
-| `q_FACTOR` | `q` | Catchability correction factor |
+| Column     | Renamed to       | Meaning                        |
+|------------|------------------|--------------------------------|
+| `species`  | `ScientificName` | Species scientific name        |
+| `q_FACTOR` | `q`              | Catchability correction factor |
 
 ```{r sample-coverage-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_sample_map() output — MEDITS sample coverage by area."}
 safe_include_graphics(
@@ -674,115 +469,50 @@ safe_include_graphics(
 
 ## Processing steps
 
-1. **Config** — resolve `out_dir`/`pcloud_dir`/`git_dir`, download/cache the GSA
-   shapefile, source `lib_survey_fg_density_functions.R` and
-   `lib_worms_taxonomy_lookup.R`.
-2. **Load MEDITS data** — read `TA.csv`/`TB.csv`, compute swept area
-   (`distance × wing_opening_m / 1e6`, wing opening in decimetres), convert
-   DDMM.mmm lat/lon to decimal degrees, fix the Alboran Sea (GSA 1–3)
-   longitude sign — a Western-Med-specific correction, harmless (a no-op) if
-   your `FILTER_AREAS` doesn't include GSA 1–3 — reshape into the
-   standardized `dataframe1`/`dataframe2` format. Runs `validate_survey_data()`
-   and `plot_sample_map()` (→ `survey_sample_coverage_map.png`,
-   `survey_sample_coverage_map_by_year.png`).
-3. **FG matching (Steps 3–4)** — `prepare_fg_lookup()` →
-   `match_species_to_fg()` → `match_nominate_subspecies_fg()` → manual
-   overrides (species codes absent from the MEDITS taxonomic list, e.g.
-   `ARGRACU`→*Argyropelecus aculeatus*) → `fallback_match_fg_by_taxonomy()`
-   (Genus→Family→Order→Class→Phylum) → `apply_seed_fg_rules()` (FGs with zero
-   reference species, e.g. Holothuroidea→"Sea cucumbers") →
-   `summarize_unresolved_species()` → `survey_unmatched_for_manual_review.csv`.
-4. **Densities (Step 5)** — `match_samples_to_area()`,
-   `assign_depth_stratum()`, `compute_sample_densities()`, restrict to
-   `FILTER_AREAS`, `apply_catchability_correction()` (if the catchability CSV
-   exists), `remove_sample_outliers()` (→ `survey_outliers_flagged.csv` if
-   any flagged), `compute_fg_densities_by_stratum()`.
-5. **Strata/area weighting (Steps 6–7)** — `compute_strata_area_by_area()`
-   (cached to `strata_area_by_area.csv`), `weight_by_strata()`,
-   `weight_by_area()`, `compute_species_densities_by_stratum()`,
-   `weight_species_by_area()`.
-6. **MEDITS plots (Step 8)** — `plot_fg_timeseries_by_area()`,
-   `plot_fg_timeseries_regional()`, `plot_strata_profile()` →
-   `survey_fg_density_timeseries.png`,
-   `survey_fg_density_timeseries_regional.png`,
-   `survey_fg_depth_strata_profile.png`.
+1.  **Config** — resolve `out_dir`/`pcloud_dir`/`git_dir`, download/cache the GSA shapefile, source `lib_survey_fg_density_functions.R` and `lib_worms_taxonomy_lookup.R`.
 
-   ```{r fg-timeseries-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_fg_timeseries_by_area() output — MEDITS trawl survey density by FG and area (strata-weighted)."}
-   safe_include_graphics(
-     "figures/survey_fg_density_timeseries.png",
-     script = "01_biomass.R",
-     out_dir_note = "<out_dir>/plots/survey_fg_density_timeseries.png"
-   )
-   ```
+2.  **Load MEDITS data** — read `TA.csv`/`TB.csv`, compute swept area (`distance × wing_opening_m / 1e6`, wing opening in decimetres), convert DDMM.mmm lat/lon to decimal degrees, fix the Alboran Sea (GSA 1–3) longitude sign — a Western-Med-specific correction, harmless (a no-op) if your `FILTER_AREAS` doesn't include GSA 1–3 — reshape into the standardized `dataframe1`/`dataframe2` format. Runs `validate_survey_data()` and `plot_sample_map()` (→ `survey_sample_coverage_map.png`, `survey_sample_coverage_map_by_year.png`).
 
-   ```{r strata-profile-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_strata_profile() output — raw per-sample density across depth strata, by FG."}
-   safe_include_graphics(
-     "figures/survey_fg_depth_strata_profile.png",
-     script = "01_biomass.R",
-     out_dir_note = "<out_dir>/plots/survey_fg_depth_strata_profile.png"
-   )
-   ```
-7. **MEDIAS acoustic survey (Step 9, sub-steps 9a–9g)** — load and collapse
-   raw abundance/biomass records, map species codes via ASFIS, match to FG
-   the same way as MEDITS, attach area (MEDIAS Handbook Table 1, hand-keyed
-   `MEDIAS_HANDBOOK_AREAS` — as delivered this table only has Western Med
-   entries, since that's this example's scope; extending to another region
-   means adding that region's own Handbook rows, with a bathymetry-derived
-   10–200 m fallback via `compute_strata_area_by_area()` covering any
-   country/GSA combination the table doesn't have a row for), compute
-   region-wide FG and species density, then
-   **combine MEDITS + MEDIAS** into one FG-level and one species-level table
-   (averaged on Year/FG or Year/species overlap, overlaps flagged/printed).
-   Outputs: `medias_fg_annual_density_by_area.csv`,
-   `medias_fg_annual_density_regional.csv`,
-   `medias_fg_biomass_density_timeseries_regional.png`,
-   `medias_fg_abundance_density_timeseries_regional.png`,
-   `species_density_regional_combined.csv` (**contract file** — read by
-   `02_fisheries.R` for F and the NEI cap, and by `03_pbqb-traits.R`).
-8. **Excel export (Step 10)** — `survey_fg_annual_index.csv`,
-   `survey_fg_annual_index_regional_combined.csv`, then
-   `export_ecopath_ecosim_excel()` writes sheets `FG_spp_Ecopath`, `Ecopath`,
-   `Ecosim`, `FG_spp_Ecosim` into `ecopath_ecosim_inputs.xlsx`. **Also writes
-   a `PB_QB_spp` scaffold** — reusing `FG_spp_Ecopath`'s own `Species`/
-   `FG_num`/`Density`/`prop_sp_fg` (renamed to `PB_QB_spp`'s convention:
-   `Biomass`, `prop_biomass_FG`), with `PB`/`prop_biomass_PB`/`QB`/
-   `prop_biomass_QB` all blank and a `Note` column — so `PB_QB_spp` exists in
-   the workbook after this script alone, without needing `03_pbqb-traits.R`
-   (Step 4) to have run first. This function has no PB/QB computation of its
-   own (that's entirely Step 4's, from life-history parameters, not survey
-   density), so the scaffold's numbers are genuinely blank, not estimated.
-   Running Step 4 afterward replaces the scaffold with the real sheet
-   automatically (`upsert_workbook_sheets()` always fully replaces a
-   same-named sheet). Guarded against clobbering the other way: if
-   `PB_QB_spp` already has real (non-`NA`) `PB` values — i.e. Step 4 already
-   ran against this exact workbook — re-running this script leaves it
-   untouched rather than overwriting it with a blank scaffold again.
-9. **Complete `FG_spp_Ecopath`/`FG_lookup` (Step 11)** — union of observed +
-   reference-catalog species, zero-fill species with no base-year density,
-   attach taxonomy, defensive check for FGs with no species at all. Written
-   via `upsert_workbook_sheets()`.
+3.  **FG matching (Steps 3–4)** — `prepare_fg_lookup()` → `match_species_to_fg()` → `match_nominate_subspecies_fg()` → manual overrides (species codes absent from the MEDITS taxonomic list, e.g. `ARGRACU`→*Argyropelecus aculeatus*) → `fallback_match_fg_by_taxonomy()` (Genus→Family→Order→Class→Phylum) → `apply_seed_fg_rules()` (FGs with zero reference species, e.g. Holothuroidea→"Sea cucumbers") → `summarize_unresolved_species()` → `survey_unmatched_for_manual_review.csv`.
+
+4.  **Densities (Step 5)** — `match_samples_to_area()`, `assign_depth_stratum()`, `compute_sample_densities()`, restrict to `FILTER_AREAS`, `apply_catchability_correction()` (if the catchability CSV exists), `remove_sample_outliers()` (→ `survey_outliers_flagged.csv` if any flagged), `compute_fg_densities_by_stratum()`.
+
+5.  **Strata/area weighting (Steps 6–7)** — `compute_strata_area_by_area()` (cached to `strata_area_by_area.csv`), `weight_by_strata()`, `weight_by_area()`, `compute_species_densities_by_stratum()`, `weight_species_by_area()`.
+
+6.  **MEDITS plots (Step 8)** — `plot_fg_timeseries_by_area()`, `plot_fg_timeseries_regional()`, `plot_strata_profile()` → `survey_fg_density_timeseries.png`, `survey_fg_density_timeseries_regional.png`, `survey_fg_depth_strata_profile.png`.
+
+    ```{r fg-timeseries-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_fg_timeseries_by_area() output — MEDITS trawl survey density by FG and area (strata-weighted)."}
+    safe_include_graphics(
+      "figures/survey_fg_density_timeseries.png",
+      script = "01_biomass.R",
+      out_dir_note = "<out_dir>/plots/survey_fg_density_timeseries.png"
+    )
+    ```
+
+    ```{r strata-profile-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="plot_strata_profile() output — raw per-sample density across depth strata, by FG."}
+    safe_include_graphics(
+      "figures/survey_fg_depth_strata_profile.png",
+      script = "01_biomass.R",
+      out_dir_note = "<out_dir>/plots/survey_fg_depth_strata_profile.png"
+    )
+    ```
+
+7.  **MEDIAS acoustic survey (Step 9, sub-steps 9a–9g)** — load and collapse raw abundance/biomass records, map species codes via ASFIS, match to FG the same way as MEDITS, attach area (MEDIAS Handbook Table 1, hand-keyed `MEDIAS_HANDBOOK_AREAS` — as delivered this table only has Western Med entries, since that's this example's scope; extending to another region means adding that region's own Handbook rows, with a bathymetry-derived 10–200 m fallback via `compute_strata_area_by_area()` covering any country/GSA combination the table doesn't have a row for), compute region-wide FG and species density, then **combine MEDITS + MEDIAS** into one FG-level and one species-level table (averaged on Year/FG or Year/species overlap, overlaps flagged/printed). Outputs: `medias_fg_annual_density_by_area.csv`, `medias_fg_annual_density_regional.csv`, `medias_fg_biomass_density_timeseries_regional.png`, `medias_fg_abundance_density_timeseries_regional.png`, `species_density_regional_combined.csv` (**contract file** — read by `02_fisheries.R` for F and the NEI cap, and by `03_pbqb-traits.R`).
+
+8.  **Excel export (Step 10)** — `survey_fg_annual_index.csv`, `survey_fg_annual_index_regional_combined.csv`, then `export_ecopath_ecosim_excel()` writes sheets `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim` into `ecopath_ecosim_inputs.xlsx`. **Also writes a `PB_QB_spp` scaffold** — reusing `FG_spp_Ecopath`'s own `Species`/ `FG_num`/`Density`/`prop_sp_fg` (renamed to `PB_QB_spp`'s convention: `Biomass`, `prop_biomass_FG`), with `PB`/`prop_biomass_PB`/`QB`/ `prop_biomass_QB` all blank and a `Note` column — so `PB_QB_spp` exists in the workbook after this script alone, without needing `03_pbqb-traits.R` (Step 4) to have run first. This function has no PB/QB computation of its own (that's entirely Step 4's, from life-history parameters, not survey density), so the scaffold's numbers are genuinely blank, not estimated. Running Step 4 afterward replaces the scaffold with the real sheet automatically (`upsert_workbook_sheets()` always fully replaces a same-named sheet). Guarded against clobbering the other way: if `PB_QB_spp` already has real (non-`NA`) `PB` values — i.e. Step 4 already ran against this exact workbook — re-running this script leaves it untouched rather than overwriting it with a blank scaffold again.
+
+9.  **Complete `FG_spp_Ecopath`/`FG_lookup` (Step 11)** — union of observed + reference-catalog species, zero-fill species with no base-year density, attach taxonomy, defensive check for FGs with no species at all. Written via `upsert_workbook_sheets()`.
+
 10. **`traits_ewe` (Step 12)** — moved to `03_pbqb-traits.R` (`Ecopath_traits`).
+
 11. **Finalize sheet order (Step 13)** — `finalize_workbook_sheet_order()`.
 
 ## Outputs
 
-* **CSVs** (in `out_dir`): `survey_sample_coverage_map.png` and other plot
-  PNGs (in `out_dir/plots`), `survey_unmatched_for_manual_review.csv`,
-  `survey_outliers_flagged.csv`, `strata_area_by_area.csv`,
-  `medias_fg_annual_density_by_area.csv`,
-  `medias_fg_annual_density_regional.csv`,
-  `species_density_regional_combined.csv`, `survey_fg_annual_index.csv`,
-  `survey_fg_annual_index_regional_combined.csv`.
-* **Workbook** `ecopath_ecosim_inputs.xlsx`, sheets written/updated:
-  `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim`, `FG_lookup`
-  (renamed to `FG`), `traits_ewe`, `PB_QB_spp` (scaffold, unless it
-  already has real data from `03_pbqb-traits.R`), `AquaMaps_Depth_Adjustment`
-  (only when `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE` — see Step 7b), and
-  `FG_Density_by_Stratum` (only when `STRATA <- TRUE` — Step 12c; density
-  by FG x depth stratum, region-wide, covering whichever strata are
-  actually in play).
+- **CSVs** (in `out_dir`): `survey_sample_coverage_map.png` and other plot PNGs (in `out_dir/plots`), `survey_unmatched_for_manual_review.csv`, `survey_outliers_flagged.csv`, `strata_area_by_area.csv`, `medias_fg_annual_density_by_area.csv`, `medias_fg_annual_density_regional.csv`, `species_density_regional_combined.csv`, `survey_fg_annual_index.csv`, `survey_fg_annual_index_regional_combined.csv`.
+- **Workbook** `ecopath_ecosim_inputs.xlsx`, sheets written/updated: `FG_spp_Ecopath`, `Ecopath`, `Ecosim`, `FG_spp_Ecosim`, `FG_lookup` (renamed to `FG`), `traits_ewe`, `PB_QB_spp` (scaffold, unless it already has real data from `03_pbqb-traits.R`), `AquaMaps_Depth_Adjustment` (only when `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE` — see Step 7b), and `FG_Density_by_Stratum` (only when `STRATA <- TRUE` — Step 12c; density by FG x depth stratum, region-wide, covering whichever strata are actually in play).
 
----
+------------------------------------------------------------------------
 
 # Script 1b — `01b_biomass_unsurveyed.R`
 
@@ -791,7 +521,7 @@ safe_include_graphics(
 ## Sources (the "SOURCE A–D" roadmap in the script)
 
 | Source | FGs | Method | Reference table / data |
-|---|---|---|---|
+|----|----|----|----|
 | A. Stock assessment | Bluefin tuna, swordfish; marine megafauna | ICCAT density (GBYP aerial survey for BFT; $0.72\,B_{MSY}$ for SWO); megafauna density or count × body mass | `marine_megafauna_biomass.csv`; ICCAT reports |
 | B. Literature density × depth band | Benthic mollusc, other macro-benthos (literature first, MEDITS fallback), sea pens, suprabenthos | $B = D \times A(z_{min}, z_{max}) / A_{model}$, $A$ from the strata/bathymetry | `literature_density_biomass.csv` |
 | C. Habitat map × density × occupancy | Posidonia, Cymodocea, macroalgae, coralligenous corals and gorgonians | $B = D \times c_{WW} \times A_{map} \times occ / A_{model}$ | `habitat_shapefile_biomass.csv`, `density_unit_to_wet_g_m2.csv`, EUSeaMap 2025, EMODnet macroalgae |
@@ -806,7 +536,7 @@ B and C are added together per FG × year.
 ## Values and assumptions (2026-10-07 run)
 
 | FG | Density / method | Ecopath_B (t/km²) | Assumptions |
-|---|---|---|---|
+|----|----|----|----|
 | Posidonia | 168 g DW/m² leaf (280 at 2–4 m × depth factor 0.6) × 4.17 × 3,111.9 km² × 0.7 | 8.68 | depth factor, no seasonal correction, occupancy |
 | Cymodocea | 410.4 g DW/m² × 4.17 × (10–15 m band) × 0.6 | 14.70 | no map; may include below-ground biomass |
 | Macroalgae | 1,650 g DW/m² × 7 × 325.05 km² × 0.4 | 8.55 | DW→WW × 7, occupancy, ICES-ecoregion area |
@@ -821,97 +551,40 @@ B and C are added together per FG × year.
 Full citations are in the script header (`REFERENCES`) and in each row's `Source_citation`, which is copied to `FG_References`.
 
 ## Outputs (in `output/biomass/`)
+
 `habitat_shapefile_biomass_by_fg.csv`, `literature_density_biomass_by_fg.csv`, `marine_megafauna_biomass_by_fg.csv`, `uncertain_fg_biomass_status_REVIEW.csv`, `temporal_mismatch_REVIEW_*.csv`, `ecobase_biomass_evaluation_NOT_INCORPORATED.csv`, `fg_missing_ecopath_B_REVIEW.csv`.
 
----
+------------------------------------------------------------------------
 
 # `AREA_MODE == "custom"` — a fully custom study area, in `01_biomass.R`
 
-**Role:** Not a separate script — a config switch inside `01_biomass.R`
-(`AREA_MODE <- "custom"`, instead of the `"westmed"` default) for **any
-study area anywhere in the Mediterranean that doesn't line up with GSA
-boundaries** — a single custom bounding box or shapefile (e.g. one EwE
-model's own footprint, a bay, an MPA, or a region spanning parts of several
-GSAs, in any part of the basin), or a custom subset/grouping of real GSAs.
+**Role:** Not a separate script — a config switch inside `01_biomass.R` (`AREA_MODE <- "custom"`, instead of the `"westmed"` default) for **any study area anywhere in the Mediterranean that doesn't line up with GSA boundaries** — a single custom bounding box or shapefile (e.g. one EwE model's own footprint, a bay, an MPA, or a region spanning parts of several GSAs, in any part of the basin), or a custom subset/grouping of real GSAs.
 
-**Merged into `01_biomass.R`.** This used to be a second script,
-`01_survey_density_custom.R`, run *instead of* `01_biomass.R`. It is now
-merged into `01_biomass.R` itself, so there's one script and one set of
-fixes/improvements both regions benefit from. `01_survey_density_custom.R`
-is retired and no longer in the repository.
+**Merged into `01_biomass.R`.** This used to be a second script, `01_survey_density_custom.R`, run *instead of* `01_biomass.R`. It is now merged into `01_biomass.R` itself, so there's one script and one set of fixes/improvements both regions benefit from. `01_survey_density_custom.R` is retired and no longer in the repository.
 
-Structurally identical to `AREA_MODE == "westmed"` for the MEDITS loading
-and FG-matching stages (Steps 1–4 use the exact same shared-library
-functions, unconditionally). What's genuinely different:
+Structurally identical to `AREA_MODE == "westmed"` for the MEDITS loading and FG-matching stages (Steps 1–4 use the exact same shared-library functions, unconditionally). What's genuinely different:
 
-* **MEDIAS acoustic survey and GFCM stock-assessment biomass are skipped**
-  (Step 9, and the stock-assessment/priority blocks right after it) —
-  both are West-Med-subregion-scoped data sources (MEDIAS Handbook Table 1
-  areas, STAR/RAM Legacy species-by-GSA assessments) with no defined
-  meaning outside the named GSAs they're built around. `fg_index_regional_combined`/
-  `species_density_regional_combined`/`fg_cv_log_combined` — the same
-  variable names Step 10 onward reads either way — are built as plain
-  MEDITS-only aliases instead.
-* **`AREA_NAME`** — a user-supplied label for this custom study area (typed
-  interactively via `rstudioapi::showPrompt()`, or hardcoded for the
-  `daniel` user). Used to build a **dedicated output subfolder**
-  (`out_dir/<AREA_NAME>/`), so a custom-region run never collides with the
-  default Western-Med `out_dir` or with another custom run under a
-  different `AREA_NAME`.
-* **Study-area definition** — `CUSTOM_AREA_TYPE <- "bbox"` (default; a
-  rectangle defined by `CUSTOM_BBOX <- c(xmin, xmax, ymin, ymax)`),
-  `"shapefile"` (an arbitrary `sf` polygon read via `st_read()`), or **`"gsa"`**
-  (one or more GFCM GSAs, picked out of the same GSA shapefile downloaded
-  for `AREA_MODE == "westmed"`, via `CUSTOM_GSA_IDS <- c(...)` — e.g. a
-  single GSA, or a different regional grouping than the fixed `1:11`
-  Western-Med range). For `"bbox"`/`"shapefile"` the result is a
-  single-feature `area_shp` with `AREA_ID_COL = "area_id"`, always
-  `area_id = 1` — there is no GSA sub-division inside a custom region unless
-  the user builds one. For `"gsa"`, `area_shp` can have **one row per
-  selected GSA**, each keeping its own `gsa_num` as `area_id` (same
-  convention as `AREA_MODE == "westmed"`), so a multi-GSA custom region is
-  NOT forced down to a single `area_id = 1`.
-* **`AreaID` is derived spatially** for `"bbox"`/`"shapefile"`, not read off
-  MEDITS' own `area` (GSA) column — every sample gets `AreaID = 1`, then
-  `filter_samples_by_area()` drops everything outside the custom boundary.
-  For `"gsa"`, `AreaID` follows the selected GSA(s) directly, same as
-  `AREA_MODE == "westmed"`.
-* **Strata-area computation (Step 6)** — `compute_strata_area_by_area()`
-  called with whichever `AreaID`s are actually in scope (a single custom
-  polygon for `"bbox"`/`"shapefile"`, or the selected `CUSTOM_GSA_IDS` for
-  `"gsa"`) — the function itself is agnostic to this distinction either way,
-  no branch needed.
+- **MEDIAS acoustic survey and GFCM stock-assessment biomass are skipped** (Step 9, and the stock-assessment/priority blocks right after it) — both are West-Med-subregion-scoped data sources (MEDIAS Handbook Table 1 areas, STAR/RAM Legacy species-by-GSA assessments) with no defined meaning outside the named GSAs they're built around. `fg_index_regional_combined`/ `species_density_regional_combined`/`fg_cv_log_combined` — the same variable names Step 10 onward reads either way — are built as plain MEDITS-only aliases instead.
+- **`AREA_NAME`** — a user-supplied label for this custom study area (typed interactively via `rstudioapi::showPrompt()`, or hardcoded for the `daniel` user). Used to build a **dedicated output subfolder** (`out_dir/<AREA_NAME>/`), so a custom-region run never collides with the default Western-Med `out_dir` or with another custom run under a different `AREA_NAME`.
+- **Study-area definition** — `CUSTOM_AREA_TYPE <- "bbox"` (default; a rectangle defined by `CUSTOM_BBOX <- c(xmin, xmax, ymin, ymax)`), `"shapefile"` (an arbitrary `sf` polygon read via `st_read()`), or **`"gsa"`** (one or more GFCM GSAs, picked out of the same GSA shapefile downloaded for `AREA_MODE == "westmed"`, via `CUSTOM_GSA_IDS <- c(...)` — e.g. a single GSA, or a different regional grouping than the fixed `1:11` Western-Med range). For `"bbox"`/`"shapefile"` the result is a single-feature `area_shp` with `AREA_ID_COL = "area_id"`, always `area_id = 1` — there is no GSA sub-division inside a custom region unless the user builds one. For `"gsa"`, `area_shp` can have **one row per selected GSA**, each keeping its own `gsa_num` as `area_id` (same convention as `AREA_MODE == "westmed"`), so a multi-GSA custom region is NOT forced down to a single `area_id = 1`.
+- **`AreaID` is derived spatially** for `"bbox"`/`"shapefile"`, not read off MEDITS' own `area` (GSA) column — every sample gets `AreaID = 1`, then `filter_samples_by_area()` drops everything outside the custom boundary. For `"gsa"`, `AreaID` follows the selected GSA(s) directly, same as `AREA_MODE == "westmed"`.
+- **Strata-area computation (Step 6)** — `compute_strata_area_by_area()` called with whichever `AreaID`s are actually in scope (a single custom polygon for `"bbox"`/`"shapefile"`, or the selected `CUSTOM_GSA_IDS` for `"gsa"`) — the function itself is agnostic to this distinction either way, no branch needed.
 
-Three files stay at plain, unsuffixed names regardless of `AREA_MODE`,
-because `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R` read them by that exact
-fixed name: `species_density_regional_combined.csv`,
-`ecopath_ecosim_inputs.xlsx`, `strata_area_by_area.csv`. The dedicated
-`AREA_NAME` output subfolder (not a filename suffix) is what keeps a custom
-run's copies of these three from colliding with the default run's.
+Three files stay at plain, unsuffixed names regardless of `AREA_MODE`, because `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R` read them by that exact fixed name: `species_density_regional_combined.csv`, `ecopath_ecosim_inputs.xlsx`, `strata_area_by_area.csv`. The dedicated `AREA_NAME` output subfolder (not a filename suffix) is what keeps a custom run's copies of these three from colliding with the default run's.
 
 ## Inputs
 
-Same as `AREA_MODE == "westmed"` minus the MEDIAS/ASFIS inputs (the GSA
-shapefile is still downloaded when `CUSTOM_AREA_TYPE == "gsa"`), plus (for
-`CUSTOM_AREA_TYPE == "shapefile"`) a user-supplied boundary shapefile.
+Same as `AREA_MODE == "westmed"` minus the MEDIAS/ASFIS inputs (the GSA shapefile is still downloaded when `CUSTOM_AREA_TYPE == "gsa"`), plus (for `CUSTOM_AREA_TYPE == "shapefile"`) a user-supplied boundary shapefile.
 
 ## Processing steps
 
-Steps 1–8 and 11–13 are identical code to `AREA_MODE == "westmed"` (see
-above), running against the custom `area_shp`/`AreaID`. Step 9 (MEDIAS +
-stock-assessment + priority combine) is skipped entirely — its `else{}`
-branch aliases `fg_index_regional`/`species_density_regional`/
-`fg_cv_log_medits` (already computed in Steps 5–7) as the `*_combined`
-tables instead, so the `species_density_regional` table feeding Step 10 is
-MEDITS-only — no MEDITS+MEDIAS averaging step.
+Steps 1–8 and 11–13 are identical code to `AREA_MODE == "westmed"` (see above), running against the custom `area_shp`/`AreaID`. Step 9 (MEDIAS + stock-assessment + priority combine) is skipped entirely — its `else{}` branch aliases `fg_index_regional`/`species_density_regional`/ `fg_cv_log_medits` (already computed in Steps 5–7) as the `*_combined` tables instead, so the `species_density_regional` table feeding Step 10 is MEDITS-only — no MEDITS+MEDIAS averaging step.
 
 ## Outputs
 
-Same file set and workbook sheets as `AREA_MODE == "westmed"` (see above),
-written to `out_dir/<AREA_NAME>/`, with the three contract files above
-staying unsuffixed.
+Same file set and workbook sheets as `AREA_MODE == "westmed"` (see above), written to `out_dir/<AREA_NAME>/`, with the three contract files above staying unsuffixed.
 
----
+------------------------------------------------------------------------
 
 # Script 2 — `02_fisheries.R`
 
@@ -927,26 +600,21 @@ staying unsuffixed.
 
 ## Processing steps
 
-1. **GFCM catch → FG.** Species matched to FGs by scientific name, common name, the FAO `Name_En` → `Scientific_Name` bridge (ASFIS), genus, taxonomic rank (`match_bare_rank_to_fg()`) and NEI keywords (`nei_keyword_to_rank.csv`). Every match goes through `resolve_matches_safely()` (non-commercial rule below).
-2. **Magnitude calibration** to STECF FDI for EU countries: $k_{c,f} = \sum C^{FDI}/\sum C^{GFCM}$ (2014–2023), not applied when > 10 (`catch_calibration_factor_capped_REVIEW.csv`).
-3. **Excluded gears** (`FleetType = EXCLUDED` in `gear_to_fleettype.csv`) removed by their FDI (2014+) or SAU share.
-4. **Discards** $Di = C \times r$ (FDI per-fleet ratio, else FishMIP ratio); $L = C - Di$.
-5. **ICCAT** (BFT, SWO, ALB): Task I nominal catch of `TARGET_COUNTRIES`, Mediterranean rows only, × `fdi_model_gsa_share` (each country's FDI landings share inside the model GSAs, 2014+); replaces the GFCM value for these cells and gives a real gear split (`resolve_iccat_fleet_type()`, checked against ICCAT ST01 vessel length).
-6. **Hake stanzas.** `compute_stanza_catch_split_from_length()` (library) uses MEDITS TC length frequencies of 1994–1996 in the model GSAs, VBGF ($L_\infty$ 110 cm, $K$ 0.178, $t_0$ 0; Mellon-Duval et al. 2010), $W = aL^{3.035}$, juvenile = age < 2 (L < 32.9 cm), MCRS 20 cm: 55.9 % of landings and 100 % of discards → FG 26, the rest → FG 27; applied at FG and fleet level (`multistanza_juv_adult_age_split.csv`).
-7. **Fleet split** $C_l = C_{c,f,y}\,p_{l,c,f,y}$ (FDI → SAU hindcast → FDI multi-year mean → country mix → equal share, each flagged). Residual target-country catch with no fleet → column "Target countries - fleet not resolved".
-8. **Effort.** $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$ (Rousseau nominal effort calibrated to FDI); fleet shares from FDI since 2014 and, before, the catch × days-per-tonne share rescaled per fleet to the 2014–2016 FDI mean (no jump at 2014; boundary check printed in the log). Technology creep below.
-9. **Ecopath sheets.** `Ecopath_L`, `Ecopath_Di`: 1994–1996 mean / $A_{model}$ by FG × fleet.
+1.  **GFCM catch → FG.** Species matched to FGs by scientific name, common name, the FAO `Name_En` → `Scientific_Name` bridge (ASFIS), genus, taxonomic rank (`match_bare_rank_to_fg()`) and NEI keywords (`nei_keyword_to_rank.csv`). Every match goes through `resolve_matches_safely()` (non-commercial rule below).
+2.  **Magnitude calibration** to STECF FDI for EU countries: $k_{c,f} = \sum C^{FDI}/\sum C^{GFCM}$ (2014–2023), not applied when \> 10 (`catch_calibration_factor_capped_REVIEW.csv`).
+3.  **Excluded gears** (`FleetType = EXCLUDED` in `gear_to_fleettype.csv`) removed by their FDI (2014+) or SAU share.
+4.  **Discards** $Di = C \times r$ (FDI per-fleet ratio, else FishMIP ratio); $L = C - Di$.
+5.  **ICCAT** (BFT, SWO, ALB): Task I nominal catch of `TARGET_COUNTRIES`, Mediterranean rows only, × `fdi_model_gsa_share` (each country's FDI landings share inside the model GSAs, 2014+); replaces the GFCM value for these cells and gives a real gear split (`resolve_iccat_fleet_type()`, checked against ICCAT ST01 vessel length).
+6.  **Hake stanzas.** `compute_stanza_catch_split_from_length()` (library) uses MEDITS TC length frequencies of 1994–1996 in the model GSAs, VBGF ($L_\infty$ 110 cm, $K$ 0.178, $t_0$ 0; Mellon-Duval et al. 2010), $W = aL^{3.035}$, juvenile = age \< 2 (L \< 32.9 cm), MCRS 20 cm: 55.9 % of landings and 100 % of discards → FG 26, the rest → FG 27; applied at FG and fleet level (`multistanza_juv_adult_age_split.csv`).
+7.  **Fleet split** $C_l = C_{c,f,y}\,p_{l,c,f,y}$ (FDI → SAU hindcast → FDI multi-year mean → country mix → equal share, each flagged). Residual target-country catch with no fleet → column "Target countries - fleet not resolved".
+8.  **Effort.** $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$ (Rousseau nominal effort calibrated to FDI); fleet shares from FDI since 2014 and, before, the catch × days-per-tonne share rescaled per fleet to the 2014–2016 FDI mean (no jump at 2014; boundary check printed in the log). Technology creep below.
+9.  **Ecopath sheets.** `Ecopath_L`, `Ecopath_Di`: 1994–1996 mean / $A_{model}$ by FG × fleet.
 10. **Fishing mortality.** `F_by_fg.csv`: $F_f = (\bar C_f/A_{model})/B_f$ with $B_f$ = the final `Ecopath_B` read from the workbook (helper `.use_ecopath_b()`; survey density only for FGs with no Ecopath_B; column `B_source`). `F_by_species_fg.csv` repeats the FG value per species. Changed on 2026-10-07 (before: survey density for every FG).
 11. **Ecosim.** Catch $C_{f,y}/A_{model}$ and effort relative to 1995 in `Ecosim_ts`.
 
 ## Technology-creep correction
 
-Raw nominal effort — FDI's own `Effort_days`/`Effort_kWdays_total` and the
-Rousseau-calibrated series for the target countries — understates
-real fishing power over time: gear, electronics and engine efficiency
-improve ("technology creep") even when the number of days fished stays
-flat. `tech_creep_multiplier()` converts nominal to an *effective* effort
-figure to correct for this.
+Raw nominal effort — FDI's own `Effort_days`/`Effort_kWdays_total` and the Rousseau-calibrated series for the target countries — understates real fishing power over time: gear, electronics and engine efficiency improve ("technology creep") even when the number of days fished stays flat. `tech_creep_multiplier()` converts nominal to an *effective* effort figure to correct for this.
 
 For a calendar year $y$ and gear class $g \in \{\text{bottom\_trawl},
 \text{other}\}$, the annual creep rate $r(y,g)$ (`TECH_CREEP_PERIOD_RATES`):
@@ -960,30 +628,11 @@ r(y, g) =
 \end{cases}
 $$
 
-- **0.79%/year, 1994–2013 bottom-trawl (FDI's "DTS" code)** — Damalas, D.,
-  Maravelias, C.D., Osio, G.C., Maynou, F., Sbrana, M., Sartor, P. (2015).
-  "Once upon a Time in the Mediterranean" — long term trends of
-  Mediterranean fisheries resources based on fishers' Traditional
-  Ecological Knowledge. *PLoS ONE*, 10(3), e0119330, as directly quoted by
-  Tsagarakis et al. (2022, *Frontiers in Marine Science* 9:919793).
-- **2.0%/year, 1994–2013 every other gear** — Tsagarakis et al. (2022)'s
-  own summary of the wider Mediterranean creep literature (best-fitting of
-  0%/1%/2%/year tested for a Mediterranean Ecopath hindcast, 1993–2020).
-- **4.5%/year, 2014–2023, flat across gears** — Palomares & Pauly (2019)'s
-  $C\% = 13.8 \times Y^{-0.511}$, evaluated **once** at $Y=9$ (the window's
-  full length) = 4.49%/year — not re-evaluated at each year's own elapsed
-  distance, which would spike to 13.8%/year at the window's start (correct
-  algebraically, not a realistic annual rate, since $Y$ is meant as a
-  whole-window average).
+- **0.79%/year, 1994–2013 bottom-trawl (FDI's "DTS" code)** — Damalas, D., Maravelias, C.D., Osio, G.C., Maynou, F., Sbrana, M., Sartor, P. (2015). "Once upon a Time in the Mediterranean" — long term trends of Mediterranean fisheries resources based on fishers' Traditional Ecological Knowledge. *PLoS ONE*, 10(3), e0119330, as directly quoted by Tsagarakis et al. (2022, *Frontiers in Marine Science* 9:919793).
+- **2.0%/year, 1994–2013 every other gear** — Tsagarakis et al. (2022)'s own summary of the wider Mediterranean creep literature (best-fitting of 0%/1%/2%/year tested for a Mediterranean Ecopath hindcast, 1993–2020).
+- **4.5%/year, 2014–2023, flat across gears** — Palomares & Pauly (2019)'s $C\% = 13.8 \times Y^{-0.511}$, evaluated **once** at $Y=9$ (the window's full length) = 4.49%/year — not re-evaluated at each year's own elapsed distance, which would spike to 13.8%/year at the window's start (correct algebraically, not a realistic annual rate, since $Y$ is meant as a whole-window average).
 
-A year outside every listed period uses whichever listed period's midpoint
-is closest. The rate is further scaled by a country multiplier
-$c(\text{Country})$ (`TECH_CREEP_COUNTRY_MULTIPLIER`: EU-3 = 1.0; the
-0.7 for Morocco/Algeria/Tunisia is unused while they are outside `TARGET_COUNTRIES`) and a sector multiplier $s(\text{Sector})$
-(`TECH_CREEP_SECTOR_MULTIPLIER`: Industrial = 1.0; Artisanal/Recreational =
-0.6) — both flagged in the code as judgment calls, not literature-derived.
-Combining $cm = c \times s$, the cumulative multiplier compounds year by
-year from `TECH_CREEP_BASE_YEAR`:
+A year outside every listed period uses whichever listed period's midpoint is closest. The rate is further scaled by a country multiplier $c(\text{Country})$ (`TECH_CREEP_COUNTRY_MULTIPLIER`: EU-3 = 1.0; the 0.7 for Morocco/Algeria/Tunisia is unused while they are outside `TARGET_COUNTRIES`) and a sector multiplier $s(\text{Sector})$ (`TECH_CREEP_SECTOR_MULTIPLIER`: Industrial = 1.0; Artisanal/Recreational = 0.6) — both flagged in the code as judgment calls, not literature-derived. Combining $cm = c \times s$, the cumulative multiplier compounds year by year from `TECH_CREEP_BASE_YEAR`:
 
 $$
 M(\text{Country}, Y, \text{Sector}, g) =
@@ -998,83 +647,24 @@ $$
 \text{Effort}_{\text{effective}}(\text{Country}, Y, \text{Sector}, g) = \text{Effort}_{\text{raw}}(\text{Country}, Y, \text{Sector}, g) \times M(\text{Country}, Y, \text{Sector}, g)
 $$
 
-Implemented as `tech_creep_rate_for_year()` / `tech_creep_multiplier()`,
-applied identically to FDI's `Effort_kWdays_total` and FishMIP's
-`nom_active_kWdays`, just with a different Country/Sector/gear_class set
-per source.
+Implemented as `tech_creep_rate_for_year()` / `tech_creep_multiplier()`, applied identically to FDI's `Effort_kWdays_total` and FishMIP's `nom_active_kWdays`, just with a different Country/Sector/gear_class set per source.
 
 ## NEI catch fallback with an F≤1 cap
 
-Raw catch records reported under a broad FAO "NEI" (not elsewhere
-included) common name — "Marine fishes NEI", "Cuttlefish, bobtail squids
-NEI", "Marine crustaceans NEI", "Various squids NEI", etc. — previously
-fell through every matching step unresolved (~97% of unresolved catch
-tonnage in a real review). `nei_keyword_to_rank.csv` maps each such
-keyword to a target taxonomic Class/Phylum; the matched catch is then
-biomass-weight-split across the commercial FGs under that rank (reusing
-`match_bare_rank_to_fg()`, the same tiered Genus→Family→Order→Class→Phylum
-splitter the bare-rank taxonomic fallback uses elsewhere), explicitly
-excluding non-commercial FGs from the split (see the next section).
+Raw catch records reported under a broad FAO "NEI" (not elsewhere included) common name — "Marine fishes NEI", "Cuttlefish, bobtail squids NEI", "Marine crustaceans NEI", "Various squids NEI", etc. — previously fell through every matching step unresolved (\~97% of unresolved catch tonnage in a real review). `nei_keyword_to_rank.csv` maps each such keyword to a target taxonomic Class/Phylum; the matched catch is then biomass-weight-split across the commercial FGs under that rank (reusing `match_bare_rank_to_fg()`, the same tiered Genus→Family→Order→Class→Phylum splitter the bare-rank taxonomic fallback uses elsewhere), explicitly excluding non-commercial FGs from the split (see the next section).
 
-Before this split is applied to `catches_discards_fg`, each candidate FG's
-resulting fishing mortality — the same $F = (\text{Catch}_{t,\text{avg}} /
-\text{Total\_Area\_km}^2) / B_f$ used for the F block, with $B_f$ the final
-`Ecopath_B` (survey density only where an FG has no Ecopath_B; since
-2026-10-07), averaged over `YEAR_ECOPATH` — is checked. Any FG that would exceed
-$F=1$ because of its NEI-attributed catch has that catch trimmed back down
-to exactly its $F=1$ cap; the removed tonnage is redistributed (a single
-proportional pass across the other candidate FGs under the same rank that
-still have headroom — not a fully iterative water-filling algorithm) to
-FGs with room; whatever can't be placed anywhere without pushing another
-FG over $F=1$ is left capped out and reported via a console message, never
-silently dropped or forced through. Writes `nei_keyword_fcap_adjustments.csv`
-(Species × FG × delta, `YEAR_ECOPATH` only).
+Before this split is applied to `catches_discards_fg`, each candidate FG's resulting fishing mortality — the same $F = (\text{Catch}_{t,\text{avg}} /
+\text{Total\_Area\_km}^2) / B_f$ used for the F block, with $B_f$ the final `Ecopath_B` (survey density only where an FG has no Ecopath_B; since 2026-10-07), averaged over `YEAR_ECOPATH` — is checked. Any FG that would exceed $F=1$ because of its NEI-attributed catch has that catch trimmed back down to exactly its $F=1$ cap; the removed tonnage is redistributed (a single proportional pass across the other candidate FGs under the same rank that still have headroom — not a fully iterative water-filling algorithm) to FGs with room; whatever can't be placed anywhere without pushing another FG over $F=1$ is left capped out and reported via a console message, never silently dropped or forced through. Writes `nei_keyword_fcap_adjustments.csv` (Species × FG × delta, `YEAR_ECOPATH` only).
 
 ## Non-commercial-FG exclusion rule
 
-A raw catch record can never resolve onto a non-commercial FG — nobody
-reports landed catch of a group nobody is allowed/able to land. This rule
-is enforced in two places with different scopes; the second one is the
-real backstop, applying to **every** catch-to-FG match the cascade
-produces, not only the taxonomic-rank fallback.
+A raw catch record can never resolve onto a non-commercial FG — nobody reports landed catch of a group nobody is allowed/able to land. This rule is enforced in two places with different scopes; the second one is the real backstop, applying to **every** catch-to-FG match the cascade produces, not only the taxonomic-rank fallback.
 
-**`match_bare_rank_to_fg()`** (the shared taxonomic-rank splitter used by
-both the ordinary bare-rank fallback and the NEI keyword fallback above)
-drops any FG whose name matches `non-commercial|noncommercial`
-(case-insensitive) from a rank's candidate set *before* computing biomass
-weights — and if a rank's candidates are now empty because they were ALL
-non-commercial, falls through to try the next broader rank instead of
-returning an empty/non-commercial result.
+**`match_bare_rank_to_fg()`** (the shared taxonomic-rank splitter used by both the ordinary bare-rank fallback and the NEI keyword fallback above) drops any FG whose name matches `non-commercial|noncommercial` (case-insensitive) from a rank's candidate set *before* computing biomass weights — and if a rank's candidates are now empty because they were ALL non-commercial, falls through to try the next broader rank instead of returning an empty/non-commercial result.
 
-**`resolve_matches_safely()`** — the one function nearly every merge step in
-the cascade funnels its result through (direct name match, FAO
-`Scientific_Name` bridge, genus fallback, word-containment fallback, manual
-overrides, the rerun cascade for late-arriving species, and both SAU match
-tiers) — originally only checked for non-commercial candidates in its
-*ambiguous* branch (`n_distinct_fg > 1`): when an ambiguous species' FGs
-span a commercial-vs-non-commercial split of the same taxon, dropping the
-non-commercial candidate(s) could leave exactly one FG, rescuing the match
-onto the commercial one. That left a real gap, flagged in review: a
-species that already resolved to exactly **one** FG via any of those
-merge steps — a direct scientific-name hit, a common-name match, the FAO
-bridge, a genus match, SAU, and so on — had no non-commercial check at
-all, because the check only ever ran on the `n_distinct_fg > 1` branch. If
-that one matching FG happened to be non-commercial, it was accepted as a
-valid match with nothing to catch it.
+**`resolve_matches_safely()`** — the one function nearly every merge step in the cascade funnels its result through (direct name match, FAO `Scientific_Name` bridge, genus fallback, word-containment fallback, manual overrides, the rerun cascade for late-arriving species, and both SAU match tiers) — originally only checked for non-commercial candidates in its *ambiguous* branch (`n_distinct_fg > 1`): when an ambiguous species' FGs span a commercial-vs-non-commercial split of the same taxon, dropping the non-commercial candidate(s) could leave exactly one FG, rescuing the match onto the commercial one. That left a real gap, flagged in review: a species that already resolved to exactly **one** FG via any of those merge steps — a direct scientific-name hit, a common-name match, the FAO bridge, a genus match, SAU, and so on — had no non-commercial check at all, because the check only ever ran on the `n_distinct_fg > 1` branch. If that one matching FG happened to be non-commercial, it was accepted as a valid match with nothing to catch it.
 
-The fix broadens the check to run before the safe/ambiguous split, not
-just inside it: for every query, if **all** of its candidate FG(s) — one
-candidate or several — are non-commercial, that query is moved out of
-`safe_queries` into `ambiguous_queries`, regardless of how many candidates
-it had. This isn't a "drop the species" change: every caller of
-`resolve_matches_safely()` only removes `$safe`'s species from its own
-`remaining` table before moving to the next cascade step, so a query that
-lands in `$ambiguous` instead simply stays in `remaining` and gets another
-attempt at a later, broader step (taxonomy fallback, SAU, STAR/RAM, ICCAT,
-...) exactly as an ambiguous match always has — it is never force-matched
-to a non-commercial FG, and never silently lost. A species with no
-remaining commercial candidate anywhere in the cascade ends up correctly
-unresolved (flagged for manual review), rather than wrongly assigned.
+The fix broadens the check to run before the safe/ambiguous split, not just inside it: for every query, if **all** of its candidate FG(s) — one candidate or several — are non-commercial, that query is moved out of `safe_queries` into `ambiguous_queries`, regardless of how many candidates it had. This isn't a "drop the species" change: every caller of `resolve_matches_safely()` only removes `$safe`'s species from its own `remaining` table before moving to the next cascade step, so a query that lands in `$ambiguous` instead simply stays in `remaining` and gets another attempt at a later, broader step (taxonomy fallback, SAU, STAR/RAM, ICCAT, ...) exactly as an ambiguous match always has — it is never force-matched to a non-commercial FG, and never silently lost. A species with no remaining commercial candidate anywhere in the cascade ends up correctly unresolved (flagged for manual review), rather than wrongly assigned.
 
 ## Effort of non-target countries
 
@@ -1083,7 +673,7 @@ The FishMIP forward-fill for Morocco/Algeria/Tunisia (effort held flat after Fis
 ## Outputs (in `output/fisheries/` unless stated)
 
 | File | Content |
-|---|---|
+|----|----|
 | `Ecopath_L`, `Ecopath_Di` (workbook) | FG × fleet landings and discards, t/km²/yr, 1994–1996 |
 | `F_by_fg.csv`, `F_by_species_fg.csv` | F per FG (with `B_source`), repeated per species |
 | `Catches_Discards_FG_ts.csv`, `Catches_Ecopath`, `Catches_Ecosim` | FG × year series |
@@ -1101,84 +691,43 @@ The FishMIP forward-fill for Morocco/Algeria/Tunisia (effort held flat after Fis
 - Rousseau vs FDI effort correlation, 2014–2017: France 0.96, Spain 0.95, Italy −0.24.
 - Highest F (before the Ecopath_B change): deep-water rose shrimp 5.86; suprabenthos and macro zooplankton 1.0 (capped against survey biomass — fixed by the change); coastal benthic cephalopods 0.85.
 
----
+------------------------------------------------------------------------
 
 # Script 3 — `03b_ecobase.R`
 
-**Role:** Pipeline Step 3 of 4. Independent of Steps 1/2 — can run anytime
-before Step 4. **Optional** input to Step 4 for literature-based PB/QB
-gap-filling and comparison against the empirical formula estimates.
+**Role:** Pipeline Step 3 of 4. Independent of Steps 1/2 — can run anytime before Step 4. **Optional** input to Step 4 for literature-based PB/QB gap-filling and comparison against the empirical formula estimates.
 
-Queries **EcoBase** (ecobase.ecopath.org), an open-access repository of
-published Ecopath models, via its SOAP/XML web service — the official
-EcoBase R example ported from RCurl/XML to httr/xml2. The script author
-notes this was **not tested against the live service** from within the
-authoring sandbox (no network access to `sirs.agrocampus-ouest.fr`) — the
-diagnostics throughout are there specifically to surface an endpoint change,
-not just fail silently.
+Queries **EcoBase** (ecobase.ecopath.org), an open-access repository of published Ecopath models, via its SOAP/XML web service — the official EcoBase R example ported from RCurl/XML to httr/xml2. The script author notes this was **not tested against the live service** from within the authoring sandbox (no network access to `sirs.agrocampus-ouest.fr`) — the diagnostics throughout are there specifically to surface an endpoint change, not just fail silently.
 
-**Fixed: `merge(mediterranean_models, all_status, ...)` — "x has duplicated
-column name [comments_objectives]".** Root cause traced to
-`xml_node_to_dt_row()` (formerly an inline anonymous function, at two call
-sites — the model-list parse and, in `fetch_model_inputs()`, the per-model
-group parse): when a single `<model>` (or `<group>`) XML node repeats a
-child tag — confirmed EcoBase's own XML does this, e.g. a duplicated
-`<comments_objectives>` — `setNames(as.list(xml_text(fields)),
-xml_name(fields))` produced a list with two entries sharing one name, and
-`as.data.table()` on that silently creates a data.table with two
-same-named columns. data.table allows that at creation time; it only
-rejects it the moment something needs unique names — which is why the
-error surfaced three functions and one `rbindlist()` away from where the
-duplicate actually originated, at the `merge()` call. Fix: both parse
-sites now go through one shared `xml_node_to_dt_row()` that detects a
-repeated tag name and collapses its values into ONE column, joined with
-`"; "` — nothing is dropped, there's just no longer two columns fighting
-over one name.
+**Fixed: `merge(mediterranean_models, all_status, ...)` — "x has duplicated column name \[comments_objectives\]".** Root cause traced to `xml_node_to_dt_row()` (formerly an inline anonymous function, at two call sites — the model-list parse and, in `fetch_model_inputs()`, the per-model group parse): when a single `<model>` (or `<group>`) XML node repeats a child tag — confirmed EcoBase's own XML does this, e.g. a duplicated `<comments_objectives>` — `setNames(as.list(xml_text(fields)), xml_name(fields))` produced a list with two entries sharing one name, and `as.data.table()` on that silently creates a data.table with two same-named columns. data.table allows that at creation time; it only rejects it the moment something needs unique names — which is why the error surfaced three functions and one `rbindlist()` away from where the duplicate actually originated, at the `merge()` call. Fix: both parse sites now go through one shared `xml_node_to_dt_row()` that detects a repeated tag name and collapses its values into ONE column, joined with `"; "` — nothing is dropped, there's just no longer two columns fighting over one name.
 
 ## Inputs (network)
 
 | Endpoint | Purpose |
-|---|---|
+|----|----|
 | `sirs.agrocampus-ouest.fr/EcoBase/php/webser/soap-client_3.php` | Full model list |
 | `sirs.agrocampus-ouest.fr/EcoBase/php/webser/soap-client.php?no_model=<id>` | Per-model input values (Biomass/PB/QB per group) |
 
-`pcloud_dir`/`git_dir` are resolved for consistency with the other scripts
-but not actually used — this script is self-contained.
+`pcloud_dir`/`git_dir` are resolved for consistency with the other scripts but not actually used — this script is self-contained.
 
 ## Processing steps
 
-1. Fetch the full EcoBase model list; save `ecobase_model_list_full.csv`.
-2. Filter geographically to the Mediterranean, using each model's
-   `geographic_extent` bounding box (not text/keyword matching on
-   country/ecosystem names — more robust). Save
-   `ecobase_mediterranean_models.csv`.
-3. Filter further to `dissemination_allow == "true"` — EcoBase's own flag for
-   which models actually have downloadable input data (per the site, only
-   ~233 of ~500 listed models do; the rest are metadata/reference-only).
-   `KNOWN_RELEVANT_MODEL_IDS` is the resulting query list.
-4. Fetch per-model group-level Biomass/PB/QB for each disseminable model
-   (`fetch_model_inputs()`), explicitly detecting the "data not available
-   despite the flag" case (confirmed against a real response for model 418).
-   `-9999` (Ecopath's own sentinel for "not provided") is converted to `NA`.
-5. Save a full status audit (`ecobase_mediterranean_models_status.csv`) and
-   the failure-only subset (`ecobase_models_without_data.csv`).
-6. Compile the final summary table: `FG_name, PB, QB, EwE_model, year,
-   authors` (model metadata columns matched by best-guess candidate names
-   against `model_list`, since EcoBase's exact field names aren't confirmed).
+1.  Fetch the full EcoBase model list; save `ecobase_model_list_full.csv`.
+2.  Filter geographically to the Mediterranean, using each model's `geographic_extent` bounding box (not text/keyword matching on country/ecosystem names — more robust). Save `ecobase_mediterranean_models.csv`.
+3.  Filter further to `dissemination_allow == "true"` — EcoBase's own flag for which models actually have downloadable input data (per the site, only \~233 of \~500 listed models do; the rest are metadata/reference-only). `KNOWN_RELEVANT_MODEL_IDS` is the resulting query list.
+4.  Fetch per-model group-level Biomass/PB/QB for each disseminable model (`fetch_model_inputs()`), explicitly detecting the "data not available despite the flag" case (confirmed against a real response for model 418). `-9999` (Ecopath's own sentinel for "not provided") is converted to `NA`.
+5.  Save a full status audit (`ecobase_mediterranean_models_status.csv`) and the failure-only subset (`ecobase_models_without_data.csv`).
+6.  Compile the final summary table: `FG_name, PB, QB, EwE_model, year, authors` (model metadata columns matched by best-guess candidate names against `model_list`, since EcoBase's exact field names aren't confirmed).
 
 ## Outputs
 
-* `ecobase_model_list_full.csv`, `ecobase_mediterranean_models.csv`,
-  `ecobase_mediterranean_models_status.csv`, `ecobase_models_without_data.csv`,
-  `ecobase_literature_pb_qb_raw.csv`,
-  **`ecobase_literature_pb_qb_simple.csv`** (the file `03_pbqb-traits.R` reads).
-* No workbook writes from this script directly — `03_pbqb-traits.R` is what
-  merges this CSV into the workbook's `Ecobase` sheet.
+- `ecobase_model_list_full.csv`, `ecobase_mediterranean_models.csv`, `ecobase_mediterranean_models_status.csv`, `ecobase_models_without_data.csv`, `ecobase_literature_pb_qb_raw.csv`, **`ecobase_literature_pb_qb_simple.csv`** (the file `03_pbqb-traits.R` reads).
+- No workbook writes from this script directly — `03_pbqb-traits.R` is what merges this CSV into the workbook's `Ecobase` sheet.
 
 ### Column reference — `ecobase_literature_pb_qb_simple.csv`
 
 | Column | Meaning |
-|---|---|
+|----|----|
 | `FG_name` | EcoBase group name (matched to your own `FG_name` by text in `03_pbqb-traits.R` — group naming won't line up automatically across different published models) |
 | `PB` | Literature Production/Biomass (`-9999`, EcoBase's own "not provided" sentinel, converted to `NA`) |
 | `QB` | Literature Consumption/Biomass (same `-9999`→`NA` handling) |
@@ -1186,25 +735,18 @@ but not actually used — this script is self-contained.
 | `year` | Source model's reference year |
 | `authors` | Source model's authors |
 
----
+------------------------------------------------------------------------
 
 # Script 4 — `03_pbqb-traits.R`
 
 **Role:** Pipeline Step 3. Requires Step 1 (`FG_spp`, `biomass_proportion_by_species_fg.csv`) and Step 2 (`F_by_species_fg.csv`, `F_by_fg.csv` in `output/fisheries/`); sources `03b_ecobase.R` for the EcoBase cross-check. Missing optional inputs produce a message, not an error.
 
-Estimates Production/Biomass (PB) and Consumption/Biomass (QB) for every EwE
-Functional Group, following the taxon-specific methods in *"Quick guide on
-how to calculate P/B and Q/B for EwE models"* (Vilas, Coll, Piroddi,
-Steenbeek). Growth parameters, length-weight a/b, maturity, body weight,
-longevity, trophic level, temperature, depth and aspect ratio are all fetched
-automatically from FishBase + SeaLifeBase (`rfishbase` ≥ 4.0.0 required — the
-script hard-stops with install instructions if an old, broken pre-4.0 CRAN
-build, or a `duckdbfs` install missing `duckdb_config`, is detected).
+Estimates Production/Biomass (PB) and Consumption/Biomass (QB) for every EwE Functional Group, following the taxon-specific methods in *"Quick guide on how to calculate P/B and Q/B for EwE models"* (Vilas, Coll, Piroddi, Steenbeek). Growth parameters, length-weight a/b, maturity, body weight, longevity, trophic level, temperature, depth and aspect ratio are all fetched automatically from FishBase + SeaLifeBase (`rfishbase` ≥ 4.0.0 required — the script hard-stops with install instructions if an old, broken pre-4.0 CRAN build, or a `duckdbfs` install missing `duckdb_config`, is detected).
 
 ## Inputs
 
 | File | Format | Role |
-|---|---|---|
+|----|----|----|
 | `species_density_regional_combined.csv`, `FG_spp` | csv / sheet | **From Step 1.** `species_df` is built from `FG_WMed_2026.csv` (`FG_REFERENCE_CSV_PATH`) with each species' biomass from `FG_spp` (Species, FG, Biomass density, Yield=NA) |
 | `output/fisheries/F_by_species_fg.csv`, `F_by_fg.csv` | csv | **From Step 2.** $F$ per FG ($C/B$ with the final Ecopath_B); fish get $P/B = M + F$ per species, non-fish FGs get $F$ added at FG level |
 | `strata_area_by_area.csv` | csv | **From Step 1.** Study area, needed to convert FG catch totals into a density comparable to Biomass |
@@ -1218,20 +760,19 @@ build, or a `duckdbfs` install missing `duckdb_config`, is detected).
 
 ### Column reference — key input files
 
-**`species_density_regional_combined.csv`** (from Step 1 — required columns,
-enforced by `build_species_df_from_survey()`):
+**`species_density_regional_combined.csv`** (from Step 1 — required columns, enforced by `build_species_df_from_survey()`):
 
-| Column | Meaning |
-|---|---|
-| `Year` | Survey year |
+| Column              | Meaning                  |
+|---------------------|--------------------------|
+| `Year`              | Survey year              |
 | `FG_num`, `FG_name` | Functional Group id/name |
-| `ScientificName` | Species scientific name |
-| `mean_density` | Species density, t/km² |
+| `ScientificName`    | Species scientific name  |
+| `mean_density`      | Species density, t/km²   |
 
 **`F_by_fg.csv`** (from Step 2):
 
 | Column | Meaning |
-|---|---|
+|----|----|
 | `FG_num`, `FG_name` | Functional Group id/name |
 | `Biomass_density_avg` | $B_f$, t/km² (final Ecopath_B; `B_source` says which) |
 | `Catch_t_avg`, `Catch_density_avg` | 1994–1996 mean catch, t/yr and t/km²/yr |
@@ -1239,23 +780,21 @@ enforced by `build_species_df_from_survey()`):
 
 **`strata_area_by_area.csv`** (from Step 1):
 
-| Column | Meaning |
-|---|---|
-| `AreaID` | GSA number (or `1` for a custom-region run) |
-| `Stratum` | Depth-stratum number |
-| `area_km2` | Stratum area within that GSA/region, km² |
-| `prop` | That stratum's proportion of the area's total |
+| Column     | Meaning                                       |
+|------------|-----------------------------------------------|
+| `AreaID`   | GSA number (or `1` for a custom-region run)   |
+| `Stratum`  | Depth-stratum number                          |
+| `area_km2` | Stratum area within that GSA/region, km²      |
+| `prop`     | That stratum's proportion of the area's total |
 
-**`landings_by_species_gsa_year.csv`** (placeholder path — not yet a real
-data source; schema below is what `attach_yield_from_landings()` expects if
-this is ever wired up):
+**`landings_by_species_gsa_year.csv`** (placeholder path — not yet a real data source; schema below is what `attach_yield_from_landings()` expects if this is ever wired up):
 
-| Column | Meaning |
-|---|---|
+| Column           | Meaning                 |
+|------------------|-------------------------|
 | `ScientificName` | Species scientific name |
-| `Year` | Landings year |
-| `AreaID` | GSA number |
-| `catch_t` | Landed catch, tonnes |
+| `Year`           | Landings year           |
+| `AreaID`         | GSA number              |
+| `catch_t`        | Landed catch, tonnes    |
 
 ```{r pbqb-comparison-fig, echo=FALSE, eval=TRUE, results="asis", fig.cap="fish_PB_methods_comparison.png — all 6 fish PB/M methods per species, chosen method highlighted."}
 safe_include_graphics(
@@ -1267,154 +806,81 @@ safe_include_graphics(
 
 ## Processing steps
 
-1. **Setup** — package loading, `rfishbase`/`duckdbfs` version guard, GUI or
-   console progress tracker across 13 named pipeline stages.
-2. **Load `species_df`** (`SPECIES_DF_SOURCE = "survey"`): species and FGs from `FG_WMed_2026.csv`, biomass from `FG_spp` (log: "Built species_df: … rows").
-3. **Fishing mortality attachment** — `F_by_species_fg.csv` from `02_fisheries.R` gives every species of a fished FG the FG value `Fmort_FG` (log: "[F] Read F_by_species_fg.csv …"). Fish use it inside `calc_fish()` ($P/B = M + F$). The legacy paths (`FISHERIES_DATA_SOURCE`, `YIELD_SOURCE`, `FG_YIELD_SOURCE`, which read files of the retired `02_fao_catches.R`/`02a_fisheries_multisource.R`) stay in the code as fallbacks; with the current run they find no file and only print a message. $F$ is one region-wide, all-gear rate per FG.
-4. **Taxonomic classification** — `worms_taxonomy_lookup()` for every species
-   in `species_df`, dispatch-classified into `fish` / `mammal` / `seabird` /
-   `phytoplankton` / `invertebrate` (default) by WoRMS Class, with a
-   synonym→accepted-name resolution fallback for species WoRMS returns no
-   Class for.
-5. **Trait fetching (Step 2a–2f)** — `select_best_rows()` picks the best
-   population-specific study per species from FishBase/SeaLifeBase
-   multi-record tables, tiered: Western-Med locality keywords → broader
-   Mediterranean keywords → most recent year → first available.
-   `extract_provenance()` captures Locality/Year/Reference citation for each
-   selected row (used later for the `References` sheet/CSV).
-6. **Gap-filling** — `fill_by_taxonomic_proximity()`: local within-dataset
-   donors first (Genus→Family→Order→Class, restricted to directly-computed
-   values), then, for methods in `EXTERNAL_FORMULA_REGISTRY` (fish/mammal/
-   general Gascuel formulas plus raw-trait identity mappings), an **external**
-   FishBase/SeaLifeBase donor lookup — querying other species sharing the
-   same taxonomic rank, not limited to species already in `species_df`.
-7. **Taxon-specific PB/QB calculation** (dispatch by group) — the diagram
-   below shows the actual dispatch and method-cascade logic:
+1.  **Setup** — package loading, `rfishbase`/`duckdbfs` version guard, GUI or console progress tracker across 13 named pipeline stages.
 
-   ```{=html}
-   <div class="mermaid">
-   %%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
-   flowchart LR
-       T["worms_taxonomy_lookup()&lt;br/&gt;WoRMS Class"] --> F["calc_fish()&lt;br/&gt;PB: 6 M methods + Fmort&lt;br/&gt;QB: 4 methods"]
-       T --> M["calc_mammal()&lt;br/&gt;PB: Siler surv. to Gascuel&lt;br/&gt;QB: Innes&amp;Trites to Q/P=3"]
-       T --> S["calc_seabird()&lt;br/&gt;PB: Gascuel only&lt;br/&gt;QB: Nilsson-Nilsson (no Q/P=3)"]
-       T --> I["calc_invertebrate() (default)&lt;br/&gt;PB: Tumbiolo/Brey to Gascuel&lt;br/&gt;QB: Q/P=3 only"]
-       F --> D["fill_by_taxonomic_proximity()&lt;br/&gt;local then external donors"]
-       M --> D
-       S --> D
-       I --> D
-       D --> AGG["FG-level aggregation&lt;br/&gt;biomass-weighted mean"]
-       AGG --> OUT["Ecobase gap-fill -&gt; Ecopath_PBQB&lt;br/&gt;(PB_QB/PB_QB_spp/Ecobase CSVs)"]
+2.  **Load `species_df`** (`SPECIES_DF_SOURCE = "survey"`): species and FGs from `FG_WMed_2026.csv`, biomass from `FG_spp` (log: "Built species_df: … rows").
 
-       classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-       classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-       classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-       classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-       class T gray
-       class F,M,S,I purple
-       class D teal
-       class AGG,OUT coral
-   </div>
-   ```
+3.  **Fishing mortality attachment** — `F_by_species_fg.csv` from `02_fisheries.R` gives every species of a fished FG the FG value `Fmort_FG` (log: "\[F\] Read F_by_species_fg.csv …"). Fish use it inside `calc_fish()` ($P/B = M + F$). The legacy paths (`FISHERIES_DATA_SOURCE`, `YIELD_SOURCE`, `FG_YIELD_SOURCE`, which read files of the retired `02_fao_catches.R`/`02a_fisheries_multisource.R`) stay in the code as fallbacks; with the current run they find no file and only print a message. $F$ is one region-wide, all-gear rate per FG.
 
-   *Phytoplankton is flagged by `worms_taxonomy_lookup()` but not computed
-   (needs separate production-sampling data, out of scope for this
-   pipeline) — not shown above.*
+4.  **Taxonomic classification** — `worms_taxonomy_lookup()` for every species in `species_df`, dispatch-classified into `fish` / `mammal` / `seabird` / `phytoplankton` / `invertebrate` (default) by WoRMS Class, with a synonym→accepted-name resolution fallback for species WoRMS returns no Class for.
 
-   * `calc_fish()` — PB from 6 independent M methods (Pauly 1980, FishLife,
-     Gascuel 2008, Hoenig 1983, Then et al. 2015, Alverson & Carney 1975) +
-     Fmort; QB from 4 methods (Palomares & Pauly 1998 Eq.27/Eq.26, Christensen
-     & Pauly 1992, Q/P=3 fallback). Chosen value via priority order or mean
-     (`PB_QB_SELECTION_MODE`).
-   * `calc_mammal()` — PB via Siler-survivorship (Barlow & Boveng 1991),
-     fallback Gascuel (2008); QB via Innes & Trites (1997), fallback Q/P=3.
-   * `calc_seabird()` — PB via Gascuel (2008) only; QB via Nilsson & Nilsson
-     (1976), **no** Q/P=3 fallback (that heuristic is fish/ectotherm-derived
-     and would badly underestimate endotherm QB).
-   * `calc_invertebrate()` — PB via Tumbiolo & Downing (1994), Brey (1999),
-     fallback Gascuel (2008); QB via Q/P=3 only (Brey's 2012 ANN model
-     flagged as non-automatable — top-10 highest-biomass invertebrates
-     exported instead for manual cross-check).
-   * Phytoplankton — flagged, not computed (needs separate production-
-     sampling data, out of scope for this pipeline).
-8. **FG-level aggregation** — biomass-weighted mean PB/QB per FG, with
-   coverage/count audit columns (`n_species_with_PB`, `biomass_coverage_PB`,
-   etc.).
-9. **EcoBase literature merge** (if `ecobase_literature_pb_qb_simple.csv`
-   exists) — averages multiple matching literature models per `FG_name`,
-   flags >2×/<0.5× divergence from the empirical estimate, gap-fills only
-   where the empirical value is `NA`. Writes sheet **`Ecobase`** (one row per
-   FG, averaged PB/QB across every matching model, plus a `References`
-   column listing each contributing model) **and `Ecobase_by_Model`** (one
-   row per FG × individual published model — `FG_num`, `FG_name`,
-   `EwE_model`, `year`, `authors`, `PB`, `QB` — the un-averaged detail behind
-   `Ecobase`'s own per-FG mean, since a single FG typically has several
-   different published models backing it and the averaged sheet alone loses
-   which model said what).
+5.  **Trait fetching (Step 2a–2f)** — `select_best_rows()` picks the best population-specific study per species from FishBase/SeaLifeBase multi-record tables, tiered: Western-Med locality keywords → broader Mediterranean keywords → most recent year → first available. `extract_provenance()` captures Locality/Year/Reference citation for each selected row (used later for the `References` sheet/CSV).
+
+6.  **Gap-filling** — `fill_by_taxonomic_proximity()`: local within-dataset donors first (Genus→Family→Order→Class, restricted to directly-computed values), then, for methods in `EXTERNAL_FORMULA_REGISTRY` (fish/mammal/ general Gascuel formulas plus raw-trait identity mappings), an **external** FishBase/SeaLifeBase donor lookup — querying other species sharing the same taxonomic rank, not limited to species already in `species_df`.
+
+7.  **Taxon-specific PB/QB calculation** (dispatch by group) — the diagram below shows the actual dispatch and method-cascade logic:
+
+    ```{=html}
+    <div class="mermaid">
+    %%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '18px'}}}%%
+    flowchart LR
+        T["worms_taxonomy_lookup()&lt;br/&gt;WoRMS Class"] --> F["calc_fish()&lt;br/&gt;PB: 6 M methods + Fmort&lt;br/&gt;QB: 4 methods"]
+        T --> M["calc_mammal()&lt;br/&gt;PB: Siler surv. to Gascuel&lt;br/&gt;QB: Innes&amp;Trites to Q/P=3"]
+        T --> S["calc_seabird()&lt;br/&gt;PB: Gascuel only&lt;br/&gt;QB: Nilsson-Nilsson (no Q/P=3)"]
+        T --> I["calc_invertebrate() (default)&lt;br/&gt;PB: Tumbiolo/Brey to Gascuel&lt;br/&gt;QB: Q/P=3 only"]
+        F --> D["fill_by_taxonomic_proximity()&lt;br/&gt;local then external donors"]
+        M --> D
+        S --> D
+        I --> D
+        D --> AGG["FG-level aggregation&lt;br/&gt;biomass-weighted mean"]
+        AGG --> OUT["Ecobase gap-fill -&gt; Ecopath_PBQB&lt;br/&gt;(PB_QB/PB_QB_spp/Ecobase CSVs)"]
+
+        classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+        classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
+        classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+        classDef coral fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+        class T gray
+        class F,M,S,I purple
+        class D teal
+        class AGG,OUT coral
+    </div>
+    ```
+
+    *Phytoplankton is flagged by `worms_taxonomy_lookup()` but not computed (needs separate production-sampling data, out of scope for this pipeline) — not shown above.*
+
+    - `calc_fish()` — PB from 6 independent M methods (Pauly 1980, FishLife, Gascuel 2008, Hoenig 1983, Then et al. 2015, Alverson & Carney 1975) + Fmort; QB from 4 methods (Palomares & Pauly 1998 Eq.27/Eq.26, Christensen & Pauly 1992, Q/P=3 fallback). Chosen value via priority order or mean (`PB_QB_SELECTION_MODE`).
+    - `calc_mammal()` — PB via Siler-survivorship (Barlow & Boveng 1991), fallback Gascuel (2008); QB via Innes & Trites (1997), fallback Q/P=3.
+    - `calc_seabird()` — PB via Gascuel (2008) only; QB via Nilsson & Nilsson (1976), **no** Q/P=3 fallback (that heuristic is fish/ectotherm-derived and would badly underestimate endotherm QB).
+    - `calc_invertebrate()` — PB via Tumbiolo & Downing (1994), Brey (1999), fallback Gascuel (2008); QB via Q/P=3 only (Brey's 2012 ANN model flagged as non-automatable — top-10 highest-biomass invertebrates exported instead for manual cross-check).
+    - Phytoplankton — flagged, not computed (needs separate production- sampling data, out of scope for this pipeline).
+
+8.  **FG-level aggregation** — biomass-weighted mean PB/QB per FG, with coverage/count audit columns (`n_species_with_PB`, `biomass_coverage_PB`, etc.).
+
+9.  **EcoBase literature merge** (if `ecobase_literature_pb_qb_simple.csv` exists) — averages multiple matching literature models per `FG_name`, flags \>2×/\<0.5× divergence from the empirical estimate, gap-fills only where the empirical value is `NA`. Writes sheet **`Ecobase`** (one row per FG, averaged PB/QB across every matching model, plus a `References` column listing each contributing model) **and `Ecobase_by_Model`** (one row per FG × individual published model — `FG_num`, `FG_name`, `EwE_model`, `year`, `authors`, `PB`, `QB` — the un-averaged detail behind `Ecobase`'s own per-FG mean, since a single FG typically has several different published models backing it and the averaged sheet alone loses which model said what).
+
 10. **FG-level F top-up** — FGs with no species-level F (invertebrates, mammals, seabirds) get $P/B_f = P/B^{emp}_f + F_f$ from `F_by_fg.csv`; for all-invertebrate FGs $Q/B_f$ is recomputed as $3\,P/B_f$. Written to `fg_pb_qb_weighted_with_F.csv` (`PB_FG_before_F`, `QB_FG_before_F`, `F_FG`). Added on 2026-10-07; before, this step only ran with the retired `fg_catch_csv` input, so fished invertebrate FGs had P/B without $F$. ASSUMPTION: the empirical invertebrate P/B is treated as natural mortality.
-11. **Workbook write** — `add_pbqb_to_ecopath_workbook()` writes sheet
-    **`PB_QB`** (one row per FG — the biomass-weighted rollup), and, since
-    `results` (the species-level table) is passed in as its
-    `species_pb_qb` argument, also writes sheet **`PB_QB_spp`** (one row
-    per species, mirroring `FG_spp_Ecopath`'s shape — every species that
-    went into computing `PB_FG`/`QB_FG`, with three proportion columns:
-    `prop_biomass_FG` — share of the FG's total biomass, regardless of
-    whether that species got a PB/QB; `prop_biomass_PB`/`prop_biomass_QB`
-    — that species' actual weight inside `PB_FG`'s/`QB_FG`'s own
-    biomass-weighted mean, `NA` if that species' own PB/QB didn't
-    compute. This is the sheet to check *which* species and *how much*
-    of each FG's biomass a given `PB_FG`/`QB_FG` number was built from —
-    without it, that detail only existed outside the workbook, in
-    `species_pb_qb_by_taxon_group.csv`). If `01_biomass.R` already
-    wrote a `PB_QB_spp` **scaffold** into this workbook (Species/FG_num/
-    Biomass/`prop_biomass_FG` only, no real PB/QB yet), this call replaces
-    it wholesale with the full sheet — `upsert_workbook_sheets()` always
-    fully overwrites a same-named sheet, so no separate merge step is
-    needed. A separate `upsert_workbook_sheets()`
-    call writes sheet **`References`** (later renamed `PB_QB_References_`
-    by `finalize_workbook_sheet_order()`, run from Script 1).
-12. **Diagnostic plots** — per-method PB/QB comparison plots for fish, plus
-    paginated species-level and FG-level PB/QB comparison plots across every
-    dispatch group (auto-paginated when a plot would exceed `ggsave`'s
-    50-inch height limit).
-13. **Ecopath-ready CSV export** — `ecopath_ready_PB_QB.csv`, formatted to
-    match a real Ecopath Basic Input CSV's exact column layout and
-    European comma-decimal number formatting (verified against a real
-    exported file, `westernmed90s-Basic_input.csv`).
+
+11. **Workbook write** — `add_pbqb_to_ecopath_workbook()` writes sheet **`PB_QB`** (one row per FG — the biomass-weighted rollup), and, since `results` (the species-level table) is passed in as its `species_pb_qb` argument, also writes sheet **`PB_QB_spp`** (one row per species, mirroring `FG_spp_Ecopath`'s shape — every species that went into computing `PB_FG`/`QB_FG`, with three proportion columns: `prop_biomass_FG` — share of the FG's total biomass, regardless of whether that species got a PB/QB; `prop_biomass_PB`/`prop_biomass_QB` — that species' actual weight inside `PB_FG`'s/`QB_FG`'s own biomass-weighted mean, `NA` if that species' own PB/QB didn't compute. This is the sheet to check *which* species and *how much* of each FG's biomass a given `PB_FG`/`QB_FG` number was built from — without it, that detail only existed outside the workbook, in `species_pb_qb_by_taxon_group.csv`). If `01_biomass.R` already wrote a `PB_QB_spp` **scaffold** into this workbook (Species/FG_num/ Biomass/`prop_biomass_FG` only, no real PB/QB yet), this call replaces it wholesale with the full sheet — `upsert_workbook_sheets()` always fully overwrites a same-named sheet, so no separate merge step is needed. A separate `upsert_workbook_sheets()` call writes sheet **`References`** (later renamed `PB_QB_References_` by `finalize_workbook_sheet_order()`, run from Script 1).
+
+12. **Diagnostic plots** — per-method PB/QB comparison plots for fish, plus paginated species-level and FG-level PB/QB comparison plots across every dispatch group (auto-paginated when a plot would exceed `ggsave`'s 50-inch height limit).
+
+13. **Ecopath-ready CSV export** — `ecopath_ready_PB_QB.csv`, formatted to match a real Ecopath Basic Input CSV's exact column layout and European comma-decimal number formatting (verified against a real exported file, `westernmed90s-Basic_input.csv`).
 
 ## Outputs
 
-* **CSVs (all under `output/pbqb-traits/`, not the top-level
-  `output/`):** `invertebrates_for_brey_manual_check.csv`,
-  `species_pb_qb_by_taxon_group.csv`, `fg_pb_qb_weighted.csv`,
-  `phytoplankton_needs_separate_method.csv`,
-  `fg_pb_qb_weighted_with_ecobase.csv`, `fg_pb_qb_weighted_with_F.csv`,
-  `species_parameter_references.csv` (species-level parameter provenance —
-  not the same table as the workbook's `FG_References` sheet, see below),
-  `ecopath_ready_PB_QB.csv`, native `PB_QB.csv`/`PB_QB_spp.csv`.
-* **Plots:** `fish_PB_methods_comparison.png`,
-  `fish_QB_methods_comparison.png`,
-  `species_PB_QB_comparison[_pageN].png`, `FG_PB_QB_comparison[_pageN].png`.
-* **Workbook** `ecopath_ecosim_inputs.xlsx`, final sheets written:
-  `Ecopath_PBQB`, `Ecopath_traits`. (`PB_QB`/`PB_QB_spp`/`Ecobase` are
-  native/intermediate CSVs only now, not workbook sheets — see "Excel
-  workbook functions" in the shared-library section below.)
+- **CSVs (all under `output/pbqb-traits/`, not the top-level `output/`):** `invertebrates_for_brey_manual_check.csv`, `species_pb_qb_by_taxon_group.csv`, `fg_pb_qb_weighted.csv`, `phytoplankton_needs_separate_method.csv`, `fg_pb_qb_weighted_with_ecobase.csv`, `fg_pb_qb_weighted_with_F.csv`, `species_parameter_references.csv` (species-level parameter provenance — not the same table as the workbook's `FG_References` sheet, see below), `ecopath_ready_PB_QB.csv`, native `PB_QB.csv`/`PB_QB_spp.csv`.
+- **Plots:** `fish_PB_methods_comparison.png`, `fish_QB_methods_comparison.png`, `species_PB_QB_comparison[_pageN].png`, `FG_PB_QB_comparison[_pageN].png`.
+- **Workbook** `ecopath_ecosim_inputs.xlsx`, final sheets written: `Ecopath_PBQB`, `Ecopath_traits`. (`PB_QB`/`PB_QB_spp`/`Ecobase` are native/intermediate CSVs only now, not workbook sheets — see "Excel workbook functions" in the shared-library section below.)
 
----
+------------------------------------------------------------------------
 
 # Shared library — `lib_survey_fg_density_functions.R`
 
-Sourced by `01_biomass.R`, `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R`; has **no top-level driver code** of its
-own — every symbol below is a function definition only.
+Sourced by `01_biomass.R`, `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R`; has **no top-level driver code** of its own — every symbol below is a function definition only.
 
 ## FG-matching functions
 
-Every observed species runs through this cascade, in order, until it
-resolves to a Functional Group or falls through to manual review — the
-diagram shows the actual fallback order implemented in the code below
-(same style as `medbs_pipeline_methodology.qmd`'s `@sec-fg-matching`
-diagram; each stage only attempts species the previous one left
-unmatched).
+Every observed species runs through this cascade, in order, until it resolves to a Functional Group or falls through to manual review — the diagram shows the actual fallback order implemented in the code below (same style as `medbs_pipeline_methodology.qmd`'s `@sec-fg-matching` diagram; each stage only attempts species the previous one left unmatched).
 
 ```{=html}
 <div class="mermaid">
@@ -1433,7 +899,7 @@ flowchart LR
 ```
 
 | Function | Purpose | Returns |
-|---|---|---|
+|----|----|----|
 | `validate_survey_data(dataframe1, dataframe2, strata = TRUE)` | Fail-fast schema/uniqueness check on the two standardized input tables (required columns present, `SampleID` unique per survey) | `invisible(TRUE)` |
 | `prepare_fg_lookup(dataframe2)` | Deduplicates species→FG reference; keeps genuine stanza splits (a species exclusively mapped to ≥2 FGs), excludes/flags ambiguous multi-FG species | deduped `data.table(ScientificName, FG_num, FG_name)` |
 | `match_species_to_fg(dataframe1, fg_lookup_safe)` | Direct left-merge by `ScientificName` | merged `dt` |
@@ -1444,92 +910,47 @@ flowchart LR
 | `summarize_unresolved_species(dt, taxonomy = NULL)` | Mean biomass + appearance count per still-unmatched species, sorted by appearance count | summary `data.table` |
 | `build_fg_manual_review_template(csv_out_dir, out_path = file.path(csv_out_dir, "FG_manual_review_template.xlsx"))` | Combines `survey_unmatched_for_manual_review.csv` + `medias_unmatched_for_manual_review.csv` into one de-duplicated review workbook, with blank `GF`/`FG_name` columns ready to hand-fill | invisibly returns the combined `data.table`; writes an `.xlsx` |
 
-`build_fg_manual_review_template()` is a one-off, run-it-yourself helper, not
-part of the automated pipeline — nothing calls it from `01_biomass.R` itself.
-After a run leaves species unmatched, call it against that run's
-`output/biomass/` folder to get one workbook (a `README` sheet plus a
-`For_review` sheet, sorted by how often each species actually showed up in
-the data — review the highest-impact species first). Its `ESPECIE`/`GF`/
-`FG_name` columns deliberately use the exact same names as `FG_WMed_2026.csv`'s
-own sheet 4 (`fg_wmed_95`) — fill in `GF`/`FG_name` for whichever species you
-want to resolve, then copy columns A:C straight into a **new** version of
-that sheet (never overwrite the original in place), and point `fg_file` at
-the new file for the next run. There's no code path that writes the filled-in
-review back into `FG_WMed_2026.csv` automatically — that hand-off is deliberately
-manual, since it's a genuine judgment call about which FG a given species
-belongs to.
+`build_fg_manual_review_template()` is a one-off, run-it-yourself helper, not part of the automated pipeline — nothing calls it from `01_biomass.R` itself. After a run leaves species unmatched, call it against that run's `output/biomass/` folder to get one workbook (a `README` sheet plus a `For_review` sheet, sorted by how often each species actually showed up in the data — review the highest-impact species first). Its `ESPECIE`/`GF`/ `FG_name` columns deliberately use the exact same names as `FG_WMed_2026.csv`'s own sheet 4 (`fg_wmed_95`) — fill in `GF`/`FG_name` for whichever species you want to resolve, then copy columns A:C straight into a **new** version of that sheet (never overwrite the original in place), and point `fg_file` at the new file for the next run. There's no code path that writes the filled-in review back into `FG_WMed_2026.csv` automatically — that hand-off is deliberately manual, since it's a genuine judgment call about which FG a given species belongs to.
 
-| `snapshot_full_extent_species(matched_dt, species_taxonomy, source_label, csv_out_dir, sci_name_col = "ScientificName")` | One row per distinct species a source's own FG-matching step saw, taken BEFORE that source's `FILTER_AREAS`/year restriction — i.e. every species anywhere in the raw file(s) that source loaded, independent of this run's config. Called once each for MEDITS (Steps 3-4), MEDIAS (Step 9), and stock assessment | writes `all_species_<source>_full_extent.csv` |
-| `build_full_fg_species_catalog(csv_out_dir, out_path = file.path(csv_out_dir, "FG_WMed_full_species_catalog.csv"))` | Combines the three `all_species_*_full_extent.csv` snapshots above into ONE species catalog — matched species (a real `FG_number`/`FG_name`) and still-unmatched species (`FG_number`/`FG_name` blank) together, with a `sources` column (e.g. `"MEDITS+MEDIAS"`) showing which source(s) actually observed each one. Note the column is named `FG_number` here (not `GF`, as in `FG_WMed.xlsx`/`build_fg_manual_review_template()` above) since this catalog spans all three sources rather than being a direct fill-in template for the Excel sheet | invisibly returns the combined `data.table`; writes a CSV |
+| `snapshot_full_extent_species(matched_dt, species_taxonomy, source_label, csv_out_dir, sci_name_col = "ScientificName")` \| One row per distinct species a source's own FG-matching step saw, taken BEFORE that source's `FILTER_AREAS`/year restriction — i.e. every species anywhere in the raw file(s) that source loaded, independent of this run's config. Called once each for MEDITS (Steps 3-4), MEDIAS (Step 9), and stock assessment \| writes `all_species_<source>_full_extent.csv` \|
+| `build_full_fg_species_catalog(csv_out_dir, out_path = file.path(csv_out_dir, "FG_WMed_full_species_catalog.csv"))` \| Combines the three `all_species_*_full_extent.csv` snapshots above into ONE species catalog — matched species (a real `FG_number`/`FG_name`) and still-unmatched species (`FG_number`/`FG_name` blank) together, with a `sources` column (e.g. `"MEDITS+MEDIAS"`) showing which source(s) actually observed each one. Note the column is named `FG_number` here (not `GF`, as in `FG_WMed.xlsx`/`build_fg_manual_review_template()` above) since this catalog spans all three sources rather than being a direct fill-in template for the Excel sheet \| invisibly returns the combined `data.table`; writes a CSV \|
 
-`01_biomass.R` calls `build_full_fg_species_catalog(csv_out_dir)` itself,
-near the very end (Step 14, right after `trim_workbook_to_final_sheets()`)
-— **`FG_WMed_full_species_catalog.csv`** lands in `output/biomass/` on every
-run without any extra step. It's a candidate "sheet 4" replacement covering
-every species — matched (`status = "matched"`, already correctly resolved)
-and unmatched (`status = "needs review"`, blank) — in one file, sorted with
-matched rows first. Same read-only relationship to `FG_WMed_2026.csv` as
-`build_fg_manual_review_template()` above — nothing writes back into it
-automatically.
+`01_biomass.R` calls `build_full_fg_species_catalog(csv_out_dir)` itself, near the very end (Step 14, right after `trim_workbook_to_final_sheets()`) — **`FG_WMed_full_species_catalog.csv`** lands in `output/biomass/` on every run without any extra step. It's a candidate "sheet 4" replacement covering every species — matched (`status = "matched"`, already correctly resolved) and unmatched (`status = "needs review"`, blank) — in one file, sorted with matched rows first. Same read-only relationship to `FG_WMed_2026.csv` as `build_fg_manual_review_template()` above — nothing writes back into it automatically.
 
-Unlike the matched/unmatched CSVs everything else in this script reads and
-writes, the three `all_species_*_full_extent.csv` snapshots — and so this
-catalog — are **NOT scoped by `FILTER_AREAS`/`YEAR_ECOPATH`/`TS_YEARS`**, by
-construction: `snapshot_full_extent_species()` is called right after each
-source's own FG-matching step and *before* that source's own area
-restriction (MEDITS: before `dt <- dt[AreaID %in% FILTER_AREAS]`; MEDIAS:
-`acoustic_matched` itself is never restricted in place, only derived summary
-tables are; stock assessment: `star_wm` is already the whole West Med
-subregion, not this run's `FILTER_AREAS`). So this catalog always covers the
-**whole available survey extent** — every GSA and year the raw MEDITS/
-MEDIAS/stock-assessment files actually contain — on every run, regardless
-of what region/years that particular run happens to be configured for. A
-source's snapshot (and its contribution to the catalog) simply won't exist
-for a run where that source didn't execute at all — `AREA_MODE == "custom"`
-skips MEDIAS and stock assessment entirely, so a custom run's catalog is
-MEDITS-only there, which is a real limit of that mode (no MEDIAS/stock-
-assessment data exists to catalog), not something a wider `FILTER_AREAS`
-would fix.
+Unlike the matched/unmatched CSVs everything else in this script reads and writes, the three `all_species_*_full_extent.csv` snapshots — and so this catalog — are **NOT scoped by `FILTER_AREAS`/`YEAR_ECOPATH`/`TS_YEARS`**, by construction: `snapshot_full_extent_species()` is called right after each source's own FG-matching step and *before* that source's own area restriction (MEDITS: before `dt <- dt[AreaID %in% FILTER_AREAS]`; MEDIAS: `acoustic_matched` itself is never restricted in place, only derived summary tables are; stock assessment: `star_wm` is already the whole West Med subregion, not this run's `FILTER_AREAS`). So this catalog always covers the **whole available survey extent** — every GSA and year the raw MEDITS/ MEDIAS/stock-assessment files actually contain — on every run, regardless of what region/years that particular run happens to be configured for. A source's snapshot (and its contribution to the catalog) simply won't exist for a run where that source didn't execute at all — `AREA_MODE == "custom"` skips MEDIAS and stock assessment entirely, so a custom run's catalog is MEDITS-only there, which is a real limit of that mode (no MEDIAS/stock- assessment data exists to catalog), not something a wider `FILTER_AREAS` would fix.
 
 ## Area / stratum / density functions
 
 | Function | Purpose | Returns |
-|---|---|---|
+|----|----|----|
 | `match_samples_to_area(dt, area_shp, area_id_col)` | Spatial join (`sf::st_join`) of sample points to polygons; no-op if `AreaID` already fully populated | `dt` |
 | `assign_depth_stratum(dt, strata_def)` | Bins `Depth` into strata via `findInterval()`; out-of-range depths → `Stratum = NA` | `dt` |
 | `filter_samples_by_area(dt, area_filter, filter_type = c("shapefile","bbox"), points_crs = 4326)` | Custom sub-region filter, independent of GSA/`AreaID` | `dt` filtered to in-area `SampleID`s |
 | `compute_sample_densities(dt)` | `Density := Biomass / Effort` | `dt` |
 | `apply_catchability_correction(dt, catchability_table, default_q = 1, species_taxonomy = NULL, exempt_fg_names = NULL, exempt_species = NULL)` | 5-tier resolution: direct species → genus "spp" entries → explicit broad-rank entries → taxonomic-proximity fallback → `default_q`; exemptions override last. Divides `Density`/`Biomass` by resolved `q` | `dt` |
 | `remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = TRUE, log_scale = TRUE)` | Per-species/per-area robust z-score (median/MAD) on `log1p(Density)`; sets flagged `Density`/`Biomass` to `NA` if `drop_outliers = TRUE` | `dt`, with `attr(dt,"flagged_outliers")` |
-| `compute_fg_densities_by_stratum(dt, strata = TRUE)` | Sums species density within FG per sample, then across samples by area/year/[stratum]/FG | `per_group_fg` (`density_sum`) |
+| `compute_fg_densities_by_stratum(dt, strata = TRUE)` | Sums species density within FG per sample, then across samples by area/year/\[stratum\]/FG | `per_group_fg` (`density_sum`) |
 | `compute_strata_area_by_area(area_ids, area_shp, area_id_col, strata_def, cache_path = NULL, resolution = 1)` | Downloads NOAA bathymetry per area, bins cell area into depth strata (latitude-corrected); optional CSV cache | `strata_area_by_area` table |
 | `weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_area)` | Core strata-weighted estimator: `D_area = Σ_h (density_sum_h/n_samples_h) · area_prop_h` | `fg_index`, with `attr(fg_index,"per_stratum")` |
 | `simple_area_density(per_group_fg, n_samples_by_area)` | Unstratified path (`strata = FALSE`) | `data.table` |
-| `weight_by_area(fg_index_stratified)` | Region-wide weighting from absolute stratum areas (`per_stratum` attribute); denominator = area of all cells sampled that year (`sampled_area_by_year` attribute), so zero catches count (fixed 2026-10-07) — requires the stratified path upstream | `fg_index_regional` |
-| `sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)` | Area of the (area, stratum) cells with ≥ 1 haul per year — denominator of the region-wide means | `data.table(Year, sampled_area_km2)` |
-| `flag_ts_upward_spikes(year, x, half = 2, k = 3, min_fold = 3)` | One-sided Hampel filter on log values; used by `export_ecopath_ecosim_excel(spike_filter = TRUE)` to blank isolated spikes in Ecosim B series | logical vector |
+| `weight_by_area(fg_index_stratified)` | Region-wide weighting from absolute stratum areas (`per_stratum` attribute) — requires the stratified path upstream | `fg_index_regional` |
 | `compute_species_densities_by_stratum(dt, strata = TRUE)` / `weight_species_by_area(per_group_sp, n_samples_by_stratum, strata_area_by_area)` | Species-level analogs of the two functions above, feeding the `FG_spp` sheets | `data.table(Year, FG_num, FG_name, ScientificName, mean_density)` |
 | `compute_cv_log_by_fg(value_dt, value_col, min_replicates = 2)` | `cv_log = sd(log1p(x))/mean(log1p(x))` per FG/Year, averaged across years — feeds the Ecosim "Weight" row | `data.table(FG_num, FG_name, cv_log, n_years)` |
 
 ## Plotting functions
 
 | Function | Produces |
-|---|---|
+|----|----|
 | `plot_sample_map(dt, area_shp, area_id_col, ..., by_year = FALSE, selected_areas = NULL, land_on_top = FALSE)` | Sample coverage map, points colored inside/outside the study area, polygons shaded by sample intensity |
 | `plot_fg_timeseries_by_area(fg_index, ...)` / `plot_fg_timeseries_regional(fg_index_regional, ...)` | Faceted FG density time series, per-area vs. region-wide |
 | `plot_strata_profile(fg_index_stratified, strata_def, ...)` | Depth-strata validation bar chart (pre-area-weighting, per-sample density by stratum) |
 
 ## Excel workbook functions
 
-`ecopath_ecosim_inputs.xlsx`
-carries **only the 10 final target sheets** — every native/intermediate
-table each block used to also keep as a workbook sheet is now CSV-only
-(see "Per-block output CSV subfolders" and "Final target sheet order"
-below). The table below reflects the current function signatures, not the
-older ones this document used to describe.
+`ecopath_ecosim_inputs.xlsx` carries **only the 10 final target sheets** — every native/intermediate table each block used to also keep as a workbook sheet is now CSV-only (see "Per-block output CSV subfolders" and "Final target sheet order" below). The table below reflects the current function signatures, not the older ones this document used to describe.
 
 | Function | Purpose |
-|---|---|
+|----|----|
 | `upsert_workbook_sheets(sheets, out_path)` | Adds/replaces the named sheets in `out_path`, **leaves every other sheet untouched**. Creates the workbook if it doesn't exist yet. Safe to call repeatedly, from any script, in any order. |
 | `write_native_sheet_csv(dt, name, out_dir)` / `write_native_sheets_csv(sheets, out_dir)` / `read_native_sheet_csv(name, out_dir)` | Generic CSV read/write for a block's own native/intermediate tables — `out_dir` is always passed explicitly by the caller (the block's own subfolder), never assumed |
 | `read_existing_ts_years(out_path, sheet_name, csv_dir = NULL)` | Reads year values from column 1 of an existing native CSV sheet (e.g. `Ecosim`), so `Catches_Ecosim`'s years stay aligned with it. `csv_dir` defaults to `dirname(out_path)` for back-compat; the numbered scripts pass the correct block's subfolder explicitly |
@@ -1541,8 +962,7 @@ older ones this document used to describe.
 | `build_fg_references_sheet(out_path, biomass_csv_dir = NULL, fisheries_csv_dir = NULL, pbqb_csv_dir = NULL, diet_csv_dir = NULL)` | Builds the final `FG_References` sheet — one row per FG, consolidating which data source fed each block (see "The FG_References sheet" below) |
 | `trim_workbook_to_final_sheets(out_path)` | **Run last**, by every numbered script. Reduces the workbook to exactly the 10 final target sheets (see below), dropping any native/intermediate sheet a much older run of this workbook might still be carrying |
 
-The diagram below shows which script/function writes which sheet into the
-one shared workbook, and the final trim that runs after each script.
+The diagram below shows which script/function writes which sheet into the one shared workbook, and the final trim that runs after each script.
 
 ```{=html}
 <div class="mermaid">
@@ -1567,62 +987,41 @@ flowchart LR
 
 ## Per-block output CSV subfolders
 
-Every native/intermediate CSV a block writes now lands in that block's own
-subfolder under the shared `out_dir`, instead of a single flat directory
-shared by all scripts:
+Every native/intermediate CSV a block writes now lands in that block's own subfolder under the shared `out_dir`, instead of a single flat directory shared by all scripts:
 
-* `01_biomass.R` (+ `01b`) → `output/biomass/` (plots `output/plots/biomass/`)
-* `02_fisheries.R` → `output/fisheries/` (plots `output/plots/fisheries/`)
-* `03_pbqb-traits.R` → `output/pbqb-traits/`
-* `04_diets.R` → `output/diet/` (plots `output/plots/diets/`)
-* `05_validation.R` → `output/validation/` (plots `output/plots/validation/`, including the P/B–Q/B, F and P/Q plots built from 03's CSVs)
-* a custom-region run (`AREA_MODE = "custom"`) writes to `output/<AREA_NAME>/`
+- `01_biomass.R` (+ `01b`) → `output/biomass/` (plots `output/plots/biomass/`)
+- `02_fisheries.R` → `output/fisheries/` (plots `output/plots/fisheries/`)
+- `03_pbqb-traits.R` → `output/pbqb-traits/`
+- `04_diets.R` → `output/diet/` (plots `output/plots/diets/`)
+- `05_validation.R` → `output/validation/` (plots `output/plots/validation/`, including the P/B–Q/B, F and P/Q plots built from 03's CSVs)
+- a custom-region run (`AREA_MODE = "custom"`) writes to `output/<AREA_NAME>/`
 
-`ecopath_ecosim_inputs.xlsx` itself stays at the top-level `output/` — all
-four scripts read and write it, so it has no single owning block. Each
-script defines its own `csv_out_dir` near the top and passes it (or a
-`*_csv_dir` pointing at a *different* block's subfolder, for the handful of
-cross-block reads — species density, strata area, `FG_lookup.csv`,
-`Ecosim.csv`, `biomass_proportion_by_species_fg.csv`, catch time series)
-into the library functions above. Every one of those new directory
-arguments defaults to `dirname(out_path)` (the workbook's own top-level
-folder) when omitted, so nothing breaks if some other caller doesn't pass
-them.
+`ecopath_ecosim_inputs.xlsx` itself stays at the top-level `output/` — all four scripts read and write it, so it has no single owning block. Each script defines its own `csv_out_dir` near the top and passes it (or a `*_csv_dir` pointing at a *different* block's subfolder, for the handful of cross-block reads — species density, strata area, `FG_lookup.csv`, `Ecosim.csv`, `biomass_proportion_by_species_fg.csv`, catch time series) into the library functions above. Every one of those new directory arguments defaults to `dirname(out_path)` (the workbook's own top-level folder) when omitted, so nothing breaks if some other caller doesn't pass them.
 
-## Final target sheet order (11 sheets)
+## Final target sheet order (11 sheets) {#final-target-sheet-order-11-sheets}
 
 `target_order`, used by `trim_workbook_to_final_sheets()` / `finalize_workbook_sheet_order()` at the end of every numbered script (order confirmed by the 2026-10-07 logs):
 
-1. `info` — run metadata (areas, countries, YEAR_ECOPATH, TS_YEARS, …)
-2. `FG_spp` — FG × species × taxonomy and biomass share, written by `01_biomass.R`
-3. `Ecopath_B` — FG biomass (t/km²), 1994–1996 mean, with a `Reference` column
-4. `Ecopath_L` — FG × fleet landings, `02_fisheries.R`
-5. `Ecopath_Di` — FG × fleet discards, `02_fisheries.R`
-6. `Ecopath_PBQB` — FG P/B, Q/B and their sources, `03_pbqb-traits.R`
-7. `Ecopath_traits` — species traits under FG header rows, `03_pbqb-traits.R`
-8. `Ecopath_diet` — predator FG × prey FG, `04_diets.R`
-9. `Ecosim_ts` — B, catch and effort series
+1.  `info` — run metadata (areas, countries, YEAR_ECOPATH, TS_YEARS, …)
+2.  `FG_spp` — FG × species × taxonomy and biomass share, written by `01_biomass.R`
+3.  `Ecopath_B` — FG biomass (t/km²), 1994–1996 mean, with a `Reference` column
+4.  `Ecopath_L` — FG × fleet landings, `02_fisheries.R`
+5.  `Ecopath_Di` — FG × fleet discards, `02_fisheries.R`
+6.  `Ecopath_PBQB` — FG P/B, Q/B and their sources, `03_pbqb-traits.R`
+7.  `Ecopath_traits` — species traits under FG header rows, `03_pbqb-traits.R`
+8.  `Ecopath_diet` — predator FG × prey FG, `04_diets.R`
+9.  `Ecosim_ts` — B, catch and effort series
 10. `FG_References` — per-FG sources (`B_ref`, `L_ref`, `Di_ref`, `PBQB_ref`, `PBQB_method_ref`, `traits_ref`, `diet_ref`), built last by `04_diets.R`
 11. `Ecobase` — EcoBase values used for comparison (reference only)
 
-Every native/intermediate table (`Ecopath`, `Catches_Ecopath`, `PB_QB`,
-`Ecosim`, `Catches_Ecosim`, `Fishing_Effort_by_Fleet`, `FG_spp_Ecopath`,
-`FG_spp_Ecosim`, `FG_lookup`, `traits_ewe`, `fg_traits_weighted`,
-`PB_QB_spp`, `References` [species-parameter-level, `03_pbqb-traits.R`'s
-own audit CSV — a different table from the `FG_References` workbook sheet
-above, despite the similar name], `Ecobase`, `Catches_Discards_FG_ts`,
-`diet_references_by_fg`, ...) lives only as CSV, in its own block's
-subfolder, never as a workbook sheet — `trim_workbook_to_final_sheets()`
-drops anything else it finds regardless.
+Every native/intermediate table (`Ecopath`, `Catches_Ecopath`, `PB_QB`, `Ecosim`, `Catches_Ecosim`, `Fishing_Effort_by_Fleet`, `FG_spp_Ecopath`, `FG_spp_Ecosim`, `FG_lookup`, `traits_ewe`, `fg_traits_weighted`, `PB_QB_spp`, `References` \[species-parameter-level, `03_pbqb-traits.R`'s own audit CSV — a different table from the `FG_References` workbook sheet above, despite the similar name\], `Ecobase`, `Catches_Discards_FG_ts`, `diet_references_by_fg`, ...) lives only as CSV, in its own block's subfolder, never as a workbook sheet — `trim_workbook_to_final_sheets()` drops anything else it finds regardless.
 
 ## The FG_References sheet
 
-Built by `build_fg_references_sheet()`
-(`lib_survey_fg_density_functions.R`), run by `04_diets.R` after every other
-script has had a chance to run. One row per FG, with columns:
+Built by `build_fg_references_sheet()` (`lib_survey_fg_density_functions.R`), run by `04_diets.R` after every other script has had a chance to run. One row per FG, with columns:
 
 | Column | What it summarizes | Read from |
-|---|---|---|
+|----|----|----|
 | `FG_num`, `FG_name` | The full FG reference | `FG_lookup.csv` (`output/biomass/`) |
 | `B_ref` | Which biomass source (MEDITS/MEDIAS survey vs. stock assessment) fed `Ecopath_B`/`Ecosim_ts`'s B block for this FG | `biomass_source` in `survey_fg_annual_index_regional_combined.csv` (`output/biomass/`) |
 | `L_ref`, `Di_ref` | Which catch/discard source (GFCM/FDI/SAU-derived vs. stock assessment) fed `Ecopath_L`/`Ecopath_Di`/`Ecosim_ts`'s catch time series for this FG | `catch_source` in `Catches_Discards_FG_ts.csv` (`output/fisheries/`) |
@@ -1630,20 +1029,13 @@ script has had a chance to run. One row per FG, with columns:
 | `diet_ref` | Which diet studies (metaweb references, MAISHA study citations, FishBase/SeaLifeBase references) fed this FG's column in `Ecopath_diet` | `diet_references_by_fg.csv` (`output/diet/`), rolled up from `build_species_diet()`'s per-predator citations via the same species→FG mapping the diet matrix itself uses |
 | `PBQB_method_ref` | The calculation METHOD/literature behind `PB_FG`/`QB_FG` (as opposed to `PBQB_ref`, which is about the *data*, not the method) | `dispatch_group` in `PB_QB_spp.csv` (`output/pbqb-traits/`), mapped to a literature citation |
 
-Each column is a best-effort summary (distinct values `" | "`-joined when a
-FG drew on more than one source across years/species/studies), not a full
-audit trail — the individual block's own CSV named in the table above has
-the complete detail. A column is left blank for a FG when the block behind
-it hasn't run yet against this workbook, with a message saying so rather
-than an error; running `build_fg_references_sheet()` again later (as
-`04_diets.R` does every run) fills in whatever is available by then.
+Each column is a best-effort summary (distinct values `" | "`-joined when a FG drew on more than one source across years/species/studies), not a full audit trail — the individual block's own CSV named in the table above has the complete detail. A column is left blank for a FG when the block behind it hasn't run yet against this workbook, with a message saying so rather than an error; running `build_fg_references_sheet()` again later (as `04_diets.R` does every run) fills in whatever is available by then.
 
----
+------------------------------------------------------------------------
 
-> **Note:** the detailed guide for adapting this pipeline to a different region, and the standalone library/cartography files, are moved to [Appendix: Adapting this pipeline & other library files] at the end of this document, out of the way of the main demo walk-through.
+> **Note:** the detailed guide for adapting this pipeline to a different region, and the standalone library/cartography files, are moved to [Appendix: Adapting this pipeline & other library files](#appendix-adapting-this-pipeline-other-library-files) at the end of this document, out of the way of the main demo walk-through.
 
----
-
+------------------------------------------------------------------------
 
 # Script 5 — `04_diets.R`
 
@@ -1652,7 +1044,7 @@ than an error; running `build_fg_references_sheet()` again later (as
 ## Configuration
 
 | Variable | Default | Meaning |
-|---|---|---|
+|----|----|----|
 | `METAWEB_XLSX_PATH` | `data/Complementary data/data_entry_metaweb_empty.xlsx` | metaweb (empty template) |
 | `DIET_FALLBACK_ENABLE_MAISHA` | `TRUE` | use MAISHA |
 | `MAISHA_PATH` | first existing of `data/diet/MAISHA/MAISHA_DwC-A`, `…/MAISHA_DwC-A.zip`, any `maisha*.xlsx/csv` under `data/diet` (case-insensitive) | MAISHA location |
@@ -1661,12 +1053,12 @@ than an error; running `build_fg_references_sheet()` again later (as
 | `DIET_FALLBACK_ENABLE_ECOBASE` | `TRUE` | try EcoBase diet matrices |
 | `DIET_TAXON_SPLIT` / `DIET_CATEGORY_SPLIT` | `"equal"` / `"biomass"` | split of a prey taxon / food category over its FGs |
 | `DIET_DETRITUS_MAX_TL` | 3 | detritus dropped for predators with TL ≥ 3 |
-| `DIET_METRIC_PRIORITY` | `diet_metric_priority.csv` | IRI > %W > %N > %FO > presence |
+| `DIET_METRIC_PRIORITY` | `diet_metric_priority.csv` | IRI \> %W \> %N \> %FO \> presence |
 
 ## Inputs
 
 | File | Role |
-|---|---|
+|----|----|
 | `<pcloud_dir>/data/FG_WMed_2026.csv` | species → FG and taxonomy |
 | `<pcloud_dir>/data/Complementary data/data_entry_metaweb_empty.xlsx` | metaweb (`DATA_ENTRY`, `Taxonomic_codes`, `Non_taxonomic_groups`) |
 | `<pcloud_dir>/data/diet/MAISHA/MAISHA_DwC-A` | MAISHA v1.2 Darwin Core Archive: `occurrence.txt` (one "Predator" record per study × predator, `occurrenceRemarks == "Predator"`, with citation, date and coordinates, listing its prey records in `associatedOccurrences`; prey records carry the WoRMS `scientificName`) and `extendedmeasurementorfact.txt` (per prey: gravimetric %, numerosity %, frequency of occurrence; per predator: the unknown/debris/detritus fractions — detritus kept as a prey item, unknown and debris dropped) |
@@ -1677,12 +1069,12 @@ than an error; running `build_fg_references_sheet()` again later (as
 
 ## Method
 
-See [DIET — Ecopath_diet sheet / diet matrix] above and `medbs_pipeline_methodology.qmd` (Diet Matrix) for the equations. In short: tier per predator FG (metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase); study proportions by the first available metric; prey → FG by species, then taxonomic rank (equal split), then food category (biomass split), then a WoRMS second pass (`worms_diet_prey_cache.rds`); eggs and larvae → zooplankton; detritus dropped for TL ≥ 3; studies averaged; species weighted by biomass share; columns renormalised to 1.
+See [DIET — Ecopath_diet sheet / diet matrix](#diet-ecopath_diet-sheet-diet-matrix) above and `medbs_pipeline_methodology.qmd` (Diet Matrix) for the equations. In short: tier per predator FG (metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase); study proportions by the first available metric; prey → FG by species, then taxonomic rank (equal split), then food category (biomass split), then a WoRMS second pass (`worms_diet_prey_cache.rds`); eggs and larvae → zooplankton; detritus dropped for TL ≥ 3; studies averaged; species weighted by biomass share; columns renormalised to 1.
 
 ## Outputs (in `output/diet/`)
 
 | File | Content |
-|---|---|
+|----|----|
 | `MAISHA/`, `FishBase/` | each source alone: species-level diets, FG matrix (long/wide), item mapping and unassigned items (REVIEW) |
 | `external_diet_matrix_fg_long.csv`, `external_diet_matrix_fg_wide.csv` | MAISHA + FishBase combined (used in `Ecopath_diet`) |
 | `external_diet_item_mapping_REVIEW.csv`, `external_diet_unassigned_items_REVIEW.csv` | how each prey item was assigned / not assigned |
@@ -1695,7 +1087,7 @@ See [DIET — Ecopath_diet sheet / diet matrix] above and `medbs_pipeline_method
 ## Key functions
 
 | Function | File | Role |
-|---|---|---|
+|----|----|----|
 | `maisha_diet_records()` | `lib_fishbase_diet_matrix.R` | reads MAISHA (DwC-A folder/zip, or a flat table), tags Mediterranean studies by coordinates (lon −6 to 36.5, lat 30 to 46; non-Mediterranean studies are dropped when the predator has Mediterranean ones), returns study × predator × prey rows with W/N/FO |
 | `fb_fetch_diet_tables()`, `fishbase_diet_records()` | `lib_fishbase_diet_matrix.R` | FishBase/SeaLifeBase tables with per-server DietCode joins; Mediterranean studies first |
 | `diet_resolve_prey()` | `lib_fishbase_diet_matrix.R` | prey item → FG weights $w_{k \to j}$ |
@@ -1705,7 +1097,7 @@ See [DIET — Ecopath_diet sheet / diet matrix] above and `medbs_pipeline_method
 | `export_ewe_matrix_csv()`, `build_ecopath_diet_sheet()` | `04_diets.R` | exports |
 | `build_fg_references_sheet()` | `lib_survey_fg_density_functions.R` | `FG_References` |
 
----
+------------------------------------------------------------------------
 
 # Script 6 — `05_validation.R`
 
@@ -1718,68 +1110,44 @@ See [DIET — Ecopath_diet sheet / diet matrix] above and `medbs_pipeline_method
 
 Outputs in `output/validation/`: `comparison_with_old_westmed_estimates_REVIEW.csv`, `biomass_vs_old_model_REVIEW.csv`, `old_workbook_unmatched_fg_names_REVIEW.csv`, `validation_summary_ALL.csv`, `zooplankton_total_field_check_REVIEW.csv`.
 
----
-
-# Gelatinous groups and macrozooplankton (added 2026-10-08)
-
-`lib_gelatinous_macrozoo_biomass.R`, called from `01b` (`GEL_MACRO_SOURCE = "datasets"`):
-
-| FG | Source | Conversion |
-|---|---|---|
-| Jellyfish | Luo et al. 2020 (Zenodo 3891704), Cnidaria, mg C/m³ per 1° cell | $W = 173.78\,C$ (Molina-Ramírez et al. 2015) |
-| Salps and other gelatinous zooplankton | Luo et al. 2020, Chordata + Ctenophora | tunicates $W = 446.68\,C^{1.54}$ per individual within 0.03–0.13 g C, else C = 1.04 % W; ctenophores $W = 173.78\,C$ |
-| Macro zooplankton | MAREDAT (Moriarty et al. 2013, PANGAEA.777398), median 0–350 m per 1° cell, minus the Luo gelatinous carbon | C = 4 % of WW (`MACRO_C_FRACTION_WW`, ASSUMPTION; krill 8.6 %) |
-
-- Concentrations are area-weighted over the lon −6…16 / lat 35…45 cells.
-- They are integrated over the model area with $z_{eff}(Z) = \sum_k A_k \min(z_{mid,k}, Z) / \sum_k A_k$ (MEDITS strata): Z = 350 m for MAREDAT, and Z = 200 m for Luo (ASSUMPTION).
-- Both sources are climatologies, used as 1994–1996.
-- With a value, the FG is no longer EE-estimated. Without one, it falls back to EE (and Macro zooplankton to the krill field minimum).
-- Outputs: `gelatinous_macrozoo_biomass_REVIEW.csv`, `gelatinous_luo2020_by_phylum_REVIEW.csv`.
-- **Run of 2026-10-08 (13:11).** Luo et al. 2020 gave implausible Western Med values: Cnidaria 9.3 mg C/m³ (mean of 47 cells; median 5.5), which comes to 233 t/km² of jellyfish. Ctenophora gave 140 t/km² (9 cells). The Luo gelatinous carbon (16 mg C/m³) is 25× the whole MAREDAT macrozooplankton carbon (0.59 mg C/m³, which itself includes gelatinous taxa).
-  - Interpretation: the JeDI-based cells are surface, bloom and presence-biased samples, not 0–200 m means.
-  - Defaults now: `GEL_LUO_USE_FOR_B = FALSE`, so Luo values go to the REVIEW files as an upper bound and Jellyfish and Salps stay EE-estimated.
-  - The median over cells is used (`luo_stat`).
-  - The gelatinous subtraction from MAREDAT is off. Macro zooplankton = MAREDAT 0.59 mg C/m³ × 214.5 m / 0.04 ≈ 3.2 t/km² (1.5 with the krill C fraction 8.6 %).
-- `ECOPATH_B_HAUL_CAP_FGS` = Commercial small demersal fish: its Ecopath_B baseline also uses the haul-capped index (one 1995 haul gave ×6.4).
+------------------------------------------------------------------------
 
 # Status of the 2026-10-07 run and open issues
 
 All five scripts completed without errors (logs `20261007_094022_01_biomass_log.txt` to `20261007_100250_05_validation_log.txt`). Changes made after this run — **rerun 02 → 03 → 05**:
 
-1. `02_fisheries.R` — F and the NEI F ≤ 1 cap use the final `Ecopath_B` (adult hake FG 27 now gets an F; macrozooplankton and suprabenthos are no longer capped against survey bycatch). Residual fleet column renamed "Target countries - fleet not resolved". "6 target countries" wording removed from messages.
-2. `03_pbqb-traits.R` — FG-level F from `F_by_fg.csv` added to P/B of non-fish FGs with catch (cephalopods, shrimps, lobsters, molluscs, macrobenthos); invertebrate Q/B recomputed as 3 × P/B. Previously this step only ran with a retired catch file, so these FGs had P/B without fishing mortality.
-3. `05_validation.R`, `01b_biomass_unsurveyed.R` — comments and the residual column name brought up to date.
-5. 2026-10-08 — **rerun 01 → 05** (the first 01 run recomputes the strata areas from NOAA bathymetry, which needs internet access). Changes: stale strata-area caches are now rebuilt (the 501–800 m hauls had been dropped); AquaMaps pseudo-strata are limited to depths above 1000 m and densities are expressed per km² of the 10–800 m model area (the 2026-10-07 fix had divided by 575,489 km²); FAO "Marine molluscs nei" goes to Benthic mollusc instead of being split over the cephalopods (`rank_alias_to_order.csv`: Mollusca → Bivalvia); the DuckDB progress bar no longer floods the 01 log.
-4. `lib_survey_fg_density_functions.R`, `01_biomass.R` (evening of 2026-10-07) — **rerun 01 → 05**. Region-wide MEDITS and MEDIAS densities now count zero catches: the denominator is the area of all cells sampled that year, not only the cells where the FG was caught. This lowers `Ecopath_B` of patchy or depth-restricted FGs: in an offline test the 1994–1996 means were ×1.7 too high at the median and ×3 or more for 17 FGs. F, P/B and the balance change with them. New Ecosim trend rules (haul cap at q95, years with < 80 % area coverage blank, upward-spike filter) change only the B series, not `Ecopath_B`; see `ecosim_haul_cap_effect_REVIEW.csv`, `survey_area_coverage_by_year.csv` and `ecosim_ts_spikes_removed_REVIEW.csv`.
+1.  `02_fisheries.R` — F and the NEI F ≤ 1 cap use the final `Ecopath_B` (adult hake FG 27 now gets an F; macrozooplankton and suprabenthos are no longer capped against survey bycatch). Residual fleet column renamed "Target countries - fleet not resolved". "6 target countries" wording removed from messages.
+2.  `03_pbqb-traits.R` — FG-level F from `F_by_fg.csv` added to P/B of non-fish FGs with catch (cephalopods, shrimps, lobsters, molluscs, macrobenthos); invertebrate Q/B recomputed as 3 × P/B. Previously this step only ran with a retired catch file, so these FGs had P/B without fishing mortality.
+3.  `05_validation.R`, `01b_biomass_unsurveyed.R` — comments and the residual column name brought up to date.
 
 Open issues, by block:
 
 | Block | Issue | Where to look |
-|---|---|---|
+|----|----|----|
 | F | Deep-water rose shrimp F = 5.86 (catch 3,713 t/yr, B 0.0036 t/km²) | `F_by_fg.csv`; MEDITS q; NEI decapod split |
-| F | Benthic mollusc F ≈ 5 once Ecopath_B (0.022 t/km²) is used — catch 20,414 t/yr, probably largely from < 10 m and lagoons | `F_by_fg.csv`; decide whether this catch belongs to the model area |
-| C/L | 9 FGs with < 50 % of landings in a named fleet; 24 FGs with species but zero catch; 564 zero-tonne rows with no fleet share | `ecopath_L_fg_coverage_check.csv`, `fg_missing_ecopath_L_Di_REVIEW.csv` |
+| F | Benthic mollusc F ≈ 5 once Ecopath_B (0.022 t/km²) is used — catch 20,414 t/yr, probably largely from \< 10 m and lagoons | `F_by_fg.csv`; decide whether this catch belongs to the model area |
+| C/L | 9 FGs with \< 50 % of landings in a named fleet; 24 FGs with species but zero catch; 564 zero-tonne rows with no fleet share | `ecopath_L_fg_coverage_check.csv`, `fg_missing_ecopath_L_Di_REVIEW.csv` |
 | Effort | Italy Rousseau vs FDI r = −0.24 | 02 log |
-| B | Cymodocea 14.7 > Posidonia 8.7 t/km² (no map, density may include rhizomes) | `habitat_shapefile_biomass.csv` |
+| B | Cymodocea 14.7 \> Posidonia 8.7 t/km² (no map, density may include rhizomes) | `habitat_shapefile_biomass.csv` |
 | B | Meso + micro zooplankton 29.6 t/km², 2× the field maximum | `zooplankton_total_field_check_REVIEW.csv` |
 | B | Macrozooplankton 0.124 (krill minimum) vs 30 in the old model; salps without B | Ecopath_B; `MACROZOO_SOURCE` |
 | B | Hake assessments in RAM end in 2014; old adult hake 1.81 vs new 0.075 t/km² (same area) | `hake_stanza_stock_assessment_REVIEW.csv` |
 | B | 123 species on an even within-FG split; pre-MEDIAS acoustic values to check against the PDFs | `fg_species_biomass_needs_review.csv`, `small_pelagics_per_gsa_series_REVIEW.csv` |
-| PB/QB | 8 FGs without P/B or Q/B; 28 FGs outside P/Q 0.05–0.3; 23 FGs > 2× from EcoBase | `plausibility_flag_REVIEW.csv`, 03 log |
+| PB/QB | 8 FGs without P/B or Q/B; 28 FGs outside P/Q 0.05–0.3; 23 FGs \> 2× from EcoBase | `plausibility_flag_REVIEW.csv`, 03 log |
 | DIET | No diet: corals and gorgonians, meso and micro zooplankton, suprabenthos | `diet_still_missing_REVIEW.csv` |
 | DIET | Cannibalism: other macro-benthos 0.286, non-commercial decapods 0.101 | `diet_cannibalism_REVIEW.csv` |
 | Data | `FG_WMed_2026.csv` lacks a `survey_exempt` column | 01 log |
 | Output | `plots/pbqb-traits/` still holds copies of validation plots from an older layout (05 now writes to `plots/validation/`) | delete the old copies by hand |
 
----
+------------------------------------------------------------------------
 
 # Methodology document — `medbs_pipeline_methodology.qmd`
 
 A Quarto write-up of the method (R chunks `eval: false`, except the setup chunk that copies figures and outputs). It documents `lib_survey_fg_density_functions.R` and `01_biomass.R` in both `AREA_MODE`s (FG matching, study area, haul density, catchability, outliers, stratified and regional estimators, MEDIAS), then one section per script with its equations and references (Biomass with `01b`, Fisheries, PB/QB, Diet, Validation) and the status and open issues of the latest run. It embeds the GFCM GSA GeoJSON (from `export_gsa_boundaries.R`) in a Leaflet map with a client-side configuration generator. The setup chunk copies figures from `out_dir/plots/<block>/` (and `out_dir/<AREA_NAME>/plots/` for the custom example) into `figures/`, and key outputs into `downloads/`, so the rendered HTML is portable.
 
----
+------------------------------------------------------------------------
 
-# Appendix: Adapting this pipeline & other library files
+# Appendix: Adapting this pipeline & other library files {#appendix-adapting-this-pipeline-other-library-files}
 
 *(Moved here from the main body — useful for a future maintainer retargeting this pipeline to a different region, not needed to follow the demo.)*
 
@@ -1787,175 +1155,60 @@ A Quarto write-up of the method (R chunks `eval: false`, except the setup chunk 
 
 ### `lib_worms_taxonomy_lookup.R`
 
-Library file, no top-level driver code — `source()`'d automatically by the
-numbered scripts. Defines a single function:
+Library file, no top-level driver code — `source()`'d automatically by the numbered scripts. Defines a single function:
 
-**`worms_taxonomy_lookup(names_vector)`** — the single taxonomy source used
-everywhere in the pipeline (so genus/family comparisons are always
-apples-to-apples, never a FishBase-derived family compared against a
-WoRMS-derived one for the same actual family). Strips `"Genus spp."`
-suffixes so genus-level placeholders still resolve, chunks the query list
-(50 names/chunk) against `worrms::wm_records_names()`, picks the best
-(`status == "accepted"` preferred) match per name, and returns
-`data.table(original_name, search_term, AphiaID, matched_name, rank, status,
-phylum, class, order, family, genus)`. Explicitly namespaces `purrr::map()`
-rather than calling `map()` bare — the `maps` package (loaded elsewhere in
-this pipeline for basemap plotting) also exports an unrelated `map()`, and
-whichever package attached most recently silently wins an unqualified call.
+**`worms_taxonomy_lookup(names_vector)`** — the single taxonomy source used everywhere in the pipeline (so genus/family comparisons are always apples-to-apples, never a FishBase-derived family compared against a WoRMS-derived one for the same actual family). Strips `"Genus spp."` suffixes so genus-level placeholders still resolve, chunks the query list (50 names/chunk) against `worrms::wm_records_names()`, picks the best (`status == "accepted"` preferred) match per name, and returns `data.table(original_name, search_term, AphiaID, matched_name, rank, status, phylum, class, order, family, genus)`. Explicitly namespaces `purrr::map()` rather than calling `map()` bare — the `maps` package (loaded elsewhere in this pipeline for basemap plotting) also exports an unrelated `map()`, and whichever package attached most recently silently wins an unqualified call.
 
 ### `lib_build_species_df_from_survey.R` (retired — not in the repository)
 
-No longer used: `03_pbqb-traits.R` builds `species_df` itself (see Script 4, step 2). Former description, kept for reference: library file — bridges `01_biomass.R`'s survey output and
-`03_pbqb-traits.R`'s PB/QB estimation. Defines:
+No longer used: `03_pbqb-traits.R` builds `species_df` itself (see Script 4, step 2). Former description, kept for reference: library file — bridges `01_biomass.R`'s survey output and `03_pbqb-traits.R`'s PB/QB estimation. Defines:
 
-**`build_species_df_from_survey(survey_csv_path, year_ecopath_range,
-out_rds_path = NULL)`** — reads `species_density_regional_combined.csv`,
-restricts to `YEAR_ECOPATH`'s snapshot years (the same years used for the
-`Ecopath` sheet's Biomass column, so PB/QB weighting and the reported Biomass
-describe the same time snapshot), collapses to one mean-density `Biomass`
-value per species (stops with an error if any species maps to more than one
-FG within that year range — shouldn't happen given upstream FG-matching
-logic), sets `Yield := NA` (this survey pipeline has no catch/landings data
-of its own — F = Yield/Biomass isn't computable from it directly). Optionally
-saves the result as an `.rds`. Returns
-`species_df(Species, FG, FG_name, Biomass, Yield)`.
+**`build_species_df_from_survey(survey_csv_path, year_ecopath_range, out_rds_path = NULL)`** — reads `species_density_regional_combined.csv`, restricts to `YEAR_ECOPATH`'s snapshot years (the same years used for the `Ecopath` sheet's Biomass column, so PB/QB weighting and the reported Biomass describe the same time snapshot), collapses to one mean-density `Biomass` value per species (stops with an error if any species maps to more than one FG within that year range — shouldn't happen given upstream FG-matching logic), sets `Yield := NA` (this survey pipeline has no catch/landings data of its own — F = Yield/Biomass isn't computable from it directly). Optionally saves the result as an `.rds`. Returns `species_df(Species, FG, FG_name, Biomass, Yield)`.
 
----
+------------------------------------------------------------------------
 
 ## Standalone cartography utilities (not part of the numbered pipeline)
 
 ### `export_gsa_boundaries.R`
 
-Standalone — does not need `01_biomass.R` or the shared
-library sourced first. Downloads the same GFCM GSA shapefile via the same URL
-and GSA-numbering fix (`SMU_CODE` 111/112 → 11). **Western-Med-specific as
-delivered:** restricts to GSA 1–11 — change the `gsa_num %in% 1:11` filter to
-any other GSA range to export a different region's boundaries. Simplifies
-the result for web embedding via
-`rmapshaper::ms_simplify(keep = 0.05, keep_shapes = TRUE)` (keeps small
-polygons like Alboran Island, GSA 2, from being deleted outright), and writes
-`gsa_boundaries.geojson` — the file embedded in
-`medbs_pipeline_methodology.qmd`'s interactive Leaflet map.
+Standalone — does not need `01_biomass.R` or the shared library sourced first. Downloads the same GFCM GSA shapefile via the same URL and GSA-numbering fix (`SMU_CODE` 111/112 → 11). **Western-Med-specific as delivered:** restricts to GSA 1–11 — change the `gsa_num %in% 1:11` filter to any other GSA range to export a different region's boundaries. Simplifies the result for web embedding via `rmapshaper::ms_simplify(keep = 0.05, keep_shapes = TRUE)` (keeps small polygons like Alboran Island, GSA 2, from being deleted outright), and writes `gsa_boundaries.geojson` — the file embedded in `medbs_pipeline_methodology.qmd`'s interactive Leaflet map.
 
 ### `fig_WMed_basemap.R` (not in the repository)
 
-Standalone map-generation script (not sourced by anything else), purely
-cartographic — not required by the numbered pipeline at all.
-**Western-Med-specific as delivered:** downloads the GFCM GSA shapefile,
-splits polygons into Western Med (GSA 1–11, the target study area) vs.
-context GSAs (12, 16 — Northern Tunisia, South of Sicily) and draws the
-Sicily Channel divide (Cape Bon–Cape Lilibeo) as the Western/Central
-Mediterranean boundary; all three of those choices would need editing to
-produce an equivalent basemap for a different region. The general
-technique — label placement via the "pole of inaccessibility" algorithm
-(`polylabelr`, more robust than `st_point_on_surface()` for narrow,
-coastline-hugging GSAs) plus a high-resolution (`rnaturalearthhires`)
-coastline — is reusable as-is for any region. Output:
-`output/plots/westmed_gsa_map.png`.
+Standalone map-generation script (not sourced by anything else), purely cartographic — not required by the numbered pipeline at all. **Western-Med-specific as delivered:** downloads the GFCM GSA shapefile, splits polygons into Western Med (GSA 1–11, the target study area) vs. context GSAs (12, 16 — Northern Tunisia, South of Sicily) and draws the Sicily Channel divide (Cape Bon–Cape Lilibeo) as the Western/Central Mediterranean boundary; all three of those choices would need editing to produce an equivalent basemap for a different region. The general technique — label placement via the "pole of inaccessibility" algorithm (`polylabelr`, more robust than `st_point_on_surface()` for narrow, coastline-hugging GSAs) plus a high-resolution (`rnaturalearthhires`) coastline — is reusable as-is for any region. Output: `output/plots/westmed_gsa_map.png`.
 
----
+------------------------------------------------------------------------
 
 ## Adapting this pipeline to a different region
 
-Everything below applies whether the target region is a single GSA, an
-arbitrary GSA subset, the whole Mediterranean GSA-by-GSA, or a fully
-custom (non-GSA) boundary.
+Everything below applies whether the target region is a single GSA, an arbitrary GSA subset, the whole Mediterranean GSA-by-GSA, or a fully custom (non-GSA) boundary.
 
 ### Preferred method: source the scripts with pre-set options
 
-`01_biomass.R`, `02_fisheries.R`,
-`03_pbqb-traits.R`, `04_diets.R` and `05_validation.R` are **source-able**: every region/year/method knob each
-one uses (`FILTER_AREAS`, `TARGET_COUNTRIES`, `YEAR_ECOPATH`,
-`START_YEAR`/`END_YEAR`, `TS_YEARS`, `DATASET_VERSION`,
-`TARGET_COUNTRIES_OVERRIDE`, `OUTLIER_METHOD`, `PB_QB_SELECTION_MODE`, `MACROZOO_SOURCE`, `MAISHA_PATH`,
-`out_dir`/`pcloud_dir`/`git_dir`, and a handful more — each script's own
-"Configuration" section, under a comment block headed `SOURCE-ABLE
-SCRIPT`, lists exactly which variables it recognizes) is wrapped in
-`if (!exists("VAR", envir = .GlobalEnv, inherits = FALSE)) VAR <- <default>`.
-That means:
+`01_biomass.R`, `02_fisheries.R`, `03_pbqb-traits.R`, `04_diets.R` and `05_validation.R` are **source-able**: every region/year/method knob each one uses (`FILTER_AREAS`, `TARGET_COUNTRIES`, `YEAR_ECOPATH`, `START_YEAR`/`END_YEAR`, `TS_YEARS`, `DATASET_VERSION`, `TARGET_COUNTRIES_OVERRIDE`, `OUTLIER_METHOD`, `PB_QB_SELECTION_MODE`, `MACROZOO_SOURCE`, `MAISHA_PATH`, `out_dir`/`pcloud_dir`/`git_dir`, and a handful more — each script's own "Configuration" section, under a comment block headed `SOURCE-ABLE SCRIPT`, lists exactly which variables it recognizes) is wrapped in `if (!exists("VAR", envir = .GlobalEnv, inherits = FALSE)) VAR <- <default>`. That means:
 
-* If a variable is **already set** in the calling environment before the
-  script is `source()`-d, the script uses that value and skips its own
-  default entirely.
-* If it is **not set**, the script falls back to its original Western Med
-  default (GSA 1–11, 1994–2023) — running any of the three scripts on its
-  own, exactly as before, is completely unchanged.
+- If a variable is **already set** in the calling environment before the script is `source()`-d, the script uses that value and skips its own default entirely.
+- If it is **not set**, the script falls back to its original Western Med default (GSA 1–11, 1994–2023) — running any of the three scripts on its own, exactly as before, is completely unchanged.
 
-`run_pipeline_demo.R` is a driver script demonstrating this: it sets
-`out_dir`/`pcloud_dir`/`git_dir` once, then `source()`s
-`01_biomass.R` → `02_fisheries.R` →
-`03_pbqb-traits.R` → `04_diets.R` in that dependency order (01 must run
-first — see [Adapting this pipeline to a different region] below and each
-script's own header comment for why; 04 specifically needs 01's
-`FG_spp_Ecopath` sheet in the shared workbook for its species'
-share-of-FG-biomass values, and is otherwise optional — diet composition
-isn't needed for every run). It includes two ready-to-run examples,
-switched via a `RUN_MODE` flag at the top:
+`run_pipeline_demo.R` is a driver script demonstrating this: it sets `out_dir`/`pcloud_dir`/`git_dir` once, then `source()`s `01_biomass.R` → `02_fisheries.R` → `03_pbqb-traits.R` → `04_diets.R` in that dependency order (01 must run first — see [Adapting this pipeline to a different region] below and each script's own header comment for why; 04 specifically needs 01's `FG_spp_Ecopath` sheet in the shared workbook for its species' share-of-FG-biomass values, and is otherwise optional — diet composition isn't needed for every run). It includes two ready-to-run examples, switched via a `RUN_MODE` flag at the top:
 
-* `RUN_MODE <- "westmed_default"` — sets nothing beyond the three paths;
-  every script uses its built-in West Med default.
-* `RUN_MODE <- "custom_example"` — sets `FILTER_AREAS <- 17:18`,
-  `TARGET_COUNTRIES <- c("Italy", "Croatia", "Slovenia")`,
-  `YEAR_ECOPATH <- 2005:2007`, `TS_YEARS <- 2000:2020`, and
-  `START_YEAR`/`END_YEAR <- 2000`/`2020` as a worked Adriatic-GSA example
-  — copy and adapt this block for any other region/year range, setting
-  only the variables that need to differ from the West Med default.
+- `RUN_MODE <- "westmed_default"` — sets nothing beyond the three paths; every script uses its built-in West Med default.
+- `RUN_MODE <- "custom_example"` — sets `FILTER_AREAS <- 17:18`, `TARGET_COUNTRIES <- c("Italy", "Croatia", "Slovenia")`, `YEAR_ECOPATH <- 2005:2007`, `TS_YEARS <- 2000:2020`, and `START_YEAR`/`END_YEAR <- 2000`/`2020` as a worked Adriatic-GSA example — copy and adapt this block for any other region/year range, setting only the variables that need to differ from the West Med default.
 
-`YEAR_ECOPATH` in particular is read by all three scripts and must stay
-consistent across them (it defines the single Biomass snapshot the PB/QB
-weights are computed against) — setting it once in the driver script
-before any of the three are sourced keeps them in sync automatically,
-which is easy to forget when editing each script's hardcoded copy by hand.
+`YEAR_ECOPATH` in particular is read by all three scripts and must stay consistent across them (it defines the single Biomass snapshot the PB/QB weights are computed against) — setting it once in the driver script before any of the three are sourced keeps them in sync automatically, which is easy to forget when editing each script's hardcoded copy by hand.
 
-This sourcing approach and the manual per-script editing approach
-described in the rest of this section are not mutually exclusive — the
-`if (!exists(...))` guards mean a variable can still be hardcoded by
-editing the script directly (equivalent to always setting it), or left
-alone to pick up a caller's override, on a variable-by-variable basis.
+This sourcing approach and the manual per-script editing approach described in the rest of this section are not mutually exclusive — the `if (!exists(...))` guards mean a variable can still be hardcoded by editing the script directly (equivalent to always setting it), or left alone to pick up a caller's override, on a variable-by-variable basis.
 
-**To model a different GSA or set of GSAs** (Adriatic, Ionian, Aegean,
-Levant, or the whole basin), starting from `01_biomass.R` as
-a template:
+**To model a different GSA or set of GSAs** (Adriatic, Ionian, Aegean, Levant, or the whole basin), starting from `01_biomass.R` as a template:
 
-* `FILTER_AREAS` — set to the target GSA number(s). No other GSA-based code
-  in `lib_survey_fg_density_functions.R` hardcodes a Western-Med-only
-  assumption — `compute_strata_area_by_area()`, `weight_by_strata()`,
-  `weight_by_area()` etc. are all region-agnostic and operate on whatever
-  `area_ids`/`area_shp` they're given.
-* `ALBORAN_GSAS`/`fix_alboran_longitude_sign()` — a Western-Med-only
-  correction (GSA 1–3); harmless no-op elsewhere, delete if not needed.
-* `MEDIAS_HANDBOOK_AREAS`/`GSA_AREA_CROSSWALK` — only populated for Western
-  Med GSAs; add the target region's own rows from the MEDIAS Handbook
-  (or rely entirely on the bathymetry-derived 10–200 m fallback if MEDIAS
-  data or handbook-reported areas aren't available for that region).
-* `out_dir`/`pcloud_dir`/`git_dir` paths, and the raw MEDITS/MEDIAS/FG-
-  reference file paths under them — point at the target region's own data.
-* `export_gsa_boundaries.R` — optional cartography
-  only; edit the GSA-range filters if you want an equivalent map for the
-  new region, otherwise skip it (nothing downstream needs it).
+- `FILTER_AREAS` — set to the target GSA number(s). No other GSA-based code in `lib_survey_fg_density_functions.R` hardcodes a Western-Med-only assumption — `compute_strata_area_by_area()`, `weight_by_strata()`, `weight_by_area()` etc. are all region-agnostic and operate on whatever `area_ids`/`area_shp` they're given.
+- `ALBORAN_GSAS`/`fix_alboran_longitude_sign()` — a Western-Med-only correction (GSA 1–3); harmless no-op elsewhere, delete if not needed.
+- `MEDIAS_HANDBOOK_AREAS`/`GSA_AREA_CROSSWALK` — only populated for Western Med GSAs; add the target region's own rows from the MEDIAS Handbook (or rely entirely on the bathymetry-derived 10–200 m fallback if MEDIAS data or handbook-reported areas aren't available for that region).
+- `out_dir`/`pcloud_dir`/`git_dir` paths, and the raw MEDITS/MEDIAS/FG- reference file paths under them — point at the target region's own data.
+- `export_gsa_boundaries.R` — optional cartography only; edit the GSA-range filters if you want an equivalent map for the new region, otherwise skip it (nothing downstream needs it).
 
-**To model a fully custom (non-GSA) region anywhere in the Mediterranean**,
-set `AREA_MODE <- "custom"` before sourcing `01_biomass.R`, plus `AREA_NAME`,
-`CUSTOM_AREA_TYPE` (`"bbox"` (default), `"shapefile"`, or `"gsa"`), and
-`CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH`/`CUSTOM_GSA_IDS` set to the target
-boundary — see [`AREA_MODE == "custom"`] above. No GSA-specific code path
-is involved for `"bbox"`/`"shapefile"` (the Alboran-sign fix is present but
-is a documented no-op outside GSA 1–3); MEDIAS and stock-assessment biomass
-are skipped entirely under `AREA_MODE == "custom"`, regardless of
-`CUSTOM_AREA_TYPE`.
+**To model a fully custom (non-GSA) region anywhere in the Mediterranean**, set `AREA_MODE <- "custom"` before sourcing `01_biomass.R`, plus `AREA_NAME`, `CUSTOM_AREA_TYPE` (`"bbox"` (default), `"shapefile"`, or `"gsa"`), and `CUSTOM_BBOX`/`CUSTOM_SHAPEFILE_PATH`/`CUSTOM_GSA_IDS` set to the target boundary — see \[`AREA_MODE == "custom"`\] above. No GSA-specific code path is involved for `"bbox"`/`"shapefile"` (the Alboran-sign fix is present but is a documented no-op outside GSA 1–3); MEDIAS and stock-assessment biomass are skipped entirely under `AREA_MODE == "custom"`, regardless of `CUSTOM_AREA_TYPE`.
 
-Everything downstream of Step 1 — `02_fisheries.R`, `03b_ecobase.R`,
-`03_pbqb-traits.R`, and the shared library's Excel-export/PB-QB functions — is
-already region-agnostic: they operate on whatever `strata_area_by_area.csv`
-and `species_density_regional_combined.csv` Step 1 produced, with no
-Western-Med-specific logic beyond `02_fisheries.R`'s GFCM division codes
-(37.1.1–37.1.3) and `GSA_COASTAL_STATE` table (which country is the coastal
-state of which GSA; `TARGET_COUNTRIES` is derived from it and from
-`FILTER_AREAS`) — both need checking for another region — and `03b_ecobase.R`'s
-`MED_LON_MIN/MAX`/`MED_LAT_MIN/MAX` bounding box (already covers the **full**
-Mediterranean by default — Gibraltar to the Levant — so it does not need
-editing for a sub-region; narrow it only if you specifically want to exclude
-literature models from elsewhere in the basin).
+Everything downstream of Step 1 — `02_fisheries.R`, `03b_ecobase.R`, `03_pbqb-traits.R`, and the shared library's Excel-export/PB-QB functions — is already region-agnostic: they operate on whatever `strata_area_by_area.csv` and `species_density_regional_combined.csv` Step 1 produced, with no Western-Med-specific logic beyond `02_fisheries.R`'s GFCM division codes (37.1.1–37.1.3) and `GSA_COASTAL_STATE` table (which country is the coastal state of which GSA; `TARGET_COUNTRIES` is derived from it and from `FILTER_AREAS`) — both need checking for another region — and `03b_ecobase.R`'s `MED_LON_MIN/MAX`/`MED_LAT_MIN/MAX` bounding box (already covers the **full** Mediterranean by default — Gibraltar to the Levant — so it does not need editing for a sub-region; narrow it only if you specifically want to exclude literature models from elsewhere in the basin).
 
----
-
+------------------------------------------------------------------------
