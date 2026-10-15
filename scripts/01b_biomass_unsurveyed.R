@@ -114,9 +114,9 @@
 ##     Cymodocea/Posidonia area ratio (16.12 km2, Informe Mar Balear 2020 /
 ##     569.8 km2 EUSeaMap GSA 5) x model Posidonia area > 10 m = 88 km2,
 ##     cover 0.47 (Menorca mean, same report). ASSUMPTION: Balearic ratio.
-##   - Meso + micro zooplankton: level anchored to field data (Fernandez
-##     de Puelles et al. 2023, Water 15:4267), COBALT trend kept
-##     (ZOO_MESOMICRO_ANCHOR).
+##   - Meso + micro zooplankton: COBALT level and trend (since 2026-10-14);
+##     the Western Med net value (Fernandez de Puelles et al. 2023, Water
+##     15:4267) is kept as a reference (ZOO_MESOMICRO_ANCHOR).
 ##   - Corals and gorgonians: whole-habitat densities and colony AFDM
 ##     (Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550, Tables 1, 3),
 ##     AFDM:DW 0.11-0.1513 (Ponti et al. 2014; Palma et al. 2018), DW->WW
@@ -209,6 +209,13 @@
 ## STAR_RAMLEGACY_DIR. Optional - message + skip if not found, same
 ## convention as every other optional source in this pipeline.
 ## =================================================================
+## Model area A_model (km2) and its cells (AreaID x depth stratum), set by
+## 01_biomass.R (MODEL_AREA_BASIS: whole GSA area by default since
+## 2026-10-14). Every t <-> t/km2 conversion in this file uses .A_model().
+.A_model <- function() if (exists("MODEL_AREA_KM2") && is.finite(MODEL_AREA_KM2)) MODEL_AREA_KM2 else sum(strata_area_by_area$area_km2, na.rm = TRUE)
+.model_cells <- function() if (exists("MODEL_AREA_CELLS")) as.data.table(MODEL_AREA_CELLS) else as.data.table(strata_area_by_area)
+.model_strata_def <- function() if (exists("MODEL_AREA_STRATA_DEF")) as.data.table(MODEL_AREA_STRATA_DEF) else as.data.table(MEDITS_STRATA)
+
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
 STAR_RAMLEGACY_DIR <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")  # folder for combine_STAR_RAMlegacy.R's own output CSV
@@ -352,8 +359,8 @@ if (nrow(star_ram_combined) > 0) {
   ## FLAGGED ASSUMPTION: that covered-area density is then applied to the
   ## whole domain. gsa_coverage_frac reports how much of the domain the
   ## assessments actually cover, so partial coverage stays visible.
-  total_area_km2_biomass <- sum(strata_area_by_area$area_km2, na.rm = TRUE)
-  gsa_area <- strata_area_by_area[, .(gsa_area_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]  # in-memory id column is AreaID (= GSA number in the West Med run)
+  total_area_km2_biomass <- .A_model()
+  gsa_area <- .model_cells()[, .(gsa_area_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]  # in-memory id column is AreaID (= GSA number in the West Med run)
   star_biomass_by_fg <- star_matched[, {
     gs <- unique(trimws(unlist(strsplit(gsa, "[,;]"))))
     cov_area <- sum(gsa_area[GSA %in% gs, gsa_area_km2])
@@ -1016,7 +1023,9 @@ extrapolate_density_row <- function(density_value, density_unit, depth_min_m, de
 ## =================================================================
 if (!exists("LIT_AQUAMAPS_EXTEND")) LIT_AQUAMAPS_EXTEND <- TRUE
 .lit_domain_bands <- function() {
-  if (exists("aq") && is.list(aq) && !is.null(aq$strata_area) && !is.null(aq$strata_def)) {
+  if (exists("MODEL_AREA_CELLS") && exists("MODEL_AREA_STRATA_DEF")) {   # whole model area, all model GSAs
+    sd <- .model_strata_def(); sa <- .model_cells()
+  } else if (exists("aq") && is.list(aq) && !is.null(aq$strata_area) && !is.null(aq$strata_def)) {
     sd <- as.data.table(aq$strata_def)[depth_min < get0("AQUAMAPS_B_MAX_DEPTH", ifnotfound = 1000)]
     sa <- as.data.table(aq$strata_area)
   } else {
@@ -1269,8 +1278,8 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
         row_result <- extrapolate_density_row(
           density_value = raw$Density_value[i], density_unit = raw$Density_unit[i],
           depth_min_m = raw$Depth_min_m[i], depth_max_m = raw$Depth_max_m[i],
-          habitat_species = raw$Habitat_species[i], strata_area_by_area = strata_area_by_area,
-          strata_def = MEDITS_STRATA, label = label,
+          habitat_species = raw$Habitat_species[i], strata_area_by_area = .model_cells(),
+          strata_def = .model_strata_def(), label = label,
           habitat_area_km2_override = raw$Habitat_area_km2[i])
         set(raw, i, "group_biomass_t", (row_result$biomass_t + lit_ext_extra[i]) * (if (isTRUE(no_area_occ[i])) raw$Occupancy_fraction[i] else 1))
         set(raw, i, "Source_citation",
@@ -1366,7 +1375,7 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
       group_sources = paste(unique(na.omit(Source_citation)), collapse = "; ")
     ), by = .(FG_num, FG_name, Year)]
     out[group_sources == "", group_sources := paste0(label, " (source_citation not filled in)")]
-    out[, stock_assessment_density_t_km2 := group_biomass_t / sum(strata_area_by_area$area_km2, na.rm = TRUE)]
+    out[, stock_assessment_density_t_km2 := group_biomass_t / .A_model()]
     out <- out[group_biomass_t > 0]
     if (write_review_outputs) {
       fwrite(out, file.path(csv_out_dir, output_csv_name))
@@ -1556,7 +1565,7 @@ if (identical(GEL_MACRO_SOURCE, "datasets")) {
     estimate_gelatinous_macrozoo_biomass(
       maredat_dir = file.path(pcloud_dir, "data", "zooplankton_maredat"),
       luo_dir = file.path(pcloud_dir, "data", "gelatinous_luo2020"),
-      strata_area_by_area = strata_area_by_area, macro_c_fraction_ww = MACRO_C_FRACTION_WW),
+      strata_area_by_area = .model_cells(), macro_c_fraction_ww = MACRO_C_FRACTION_WW),
     error = function(e) { message("[Gelatinous/macrozoo] estimate failed: ", conditionMessage(e)); NULL })
   if (!is.null(gel_macro_estimates) && nrow(gel_macro_estimates)) {
     fwrite(gel_macro_estimates, file.path(csv_out_dir, "gelatinous_macrozoo_biomass_REVIEW.csv"))
@@ -1571,8 +1580,8 @@ if (identical(GEL_MACRO_SOURCE, "datasets")) {
   if (!isTRUE(GEL_LUO_USE_FOR_B) && fg %in% c("Jellyfish", "Salps and other gelatinous zooplankton")) return(NA_real_)
   v <- gel_macro_estimates[FG_name == fg, biomass_t_km2]; if (length(v) == 1 && is.finite(v) && v > 0) v else NA_real_
 }
-.sa_unc <- as.data.table(strata_area_by_area)
-UNCERTAIN_MODEL_AREA_KM2 <- sum(.sa_unc$area_km2, na.rm = TRUE)
+.sa_unc <- .model_cells()
+UNCERTAIN_MODEL_AREA_KM2 <- .A_model()
 UNCERTAIN_SLOPE_FRACTION <- .sa_unc[Depth_min_m > 200, sum(area_km2, na.rm = TRUE)] / UNCERTAIN_MODEL_AREA_KM2
 MACROZOO_FIELD <- list(ind_per_100m2 = 166.3, dw_mg_per_ind = 30, dw_to_ww = 0.19)
 uncertain_reference_rows <- data.table(Group = character(), Year = integer(), Biomass_t = numeric(), Source_citation = character())
@@ -1878,7 +1887,7 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
     ecobase_draft <- ecobase_best_lowtrophic[, .(
       Year = round(mean(YEAR_ECOPATH)),
       Group = TargetGroup,
-      Biomass_t = Biomass_t_km2 * sum(strata_area_by_area$area_km2, na.rm = TRUE),
+      Biomass_t = Biomass_t_km2 * .A_model(),
       Source_citation
     )]
     ## ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv
@@ -2008,8 +2017,9 @@ PLANKTON_ALLOCATION <- list(
 ## GSAs the model area actually covers: the ones with MEDITS strata area
 ## (strata_area_by_area), NOT all of FILTER_AREAS - FILTER_AREAS = 1:11
 ## also lists GSAs 3/4 (Morocco/Algeria), which have no MEDITS data and
-## so are not part of the 175,660 km2 every Ecopath_B is divided by.
+## so are not part of the model area every Ecopath_B is divided by.
 .model_area_ids <- function() {
+  if (exists("MODEL_GSAS") && length(MODEL_GSAS)) return(sort(unique(MODEL_GSAS)))   # all model GSAs (2026-10-14)
   if (exists("strata_area_by_area")) {
     sa <- as.data.table(strata_area_by_area); gc <- intersect(c("AreaID", "GSA"), names(sa))[1]
     if (!is.na(gc)) return(sort(unique(sa[[gc]])))
@@ -2035,8 +2045,12 @@ PLANKTON_ALLOCATION <- list(
   shp <- sf::st_transform(sf::st_make_valid(shp), 4326)
   in_poly <- lengths(suppressMessages(sf::st_intersects(pts, shp))) > 0
   depth_ok <- rep(TRUE, nrow(grid))
-  dmin <- if (exists("MEDITS_STRATA")) min(MEDITS_STRATA$depth_min) else 10
-  dmax <- if (exists("MEDITS_STRATA")) max(MEDITS_STRATA$depth_max) else 800
+  ## Depth range of the model area: whole GSA (coast to bottom) when
+  ## MODEL_AREA_BASIS = "whole_gsa", else the MEDITS strata (10-800 m).
+  if (identical(get0("MODEL_AREA_BASIS", ifnotfound = "medits_10_800"), "whole_gsa")) { dmin <- 0; dmax <- Inf } else {
+    dmin <- if (exists("MEDITS_STRATA")) min(MEDITS_STRATA$depth_min) else 10
+    dmax <- if (exists("MEDITS_STRATA")) max(MEDITS_STRATA$depth_max) else 800
+  }
   bathy <- tryCatch(marmap::getNOAA.bathy(lon1 = min(lon) - 0.1, lon2 = max(lon) + 0.1,
                                           lat1 = min(lat) - 0.1, lat2 = max(lat) + 0.1, resolution = 2),
                     error = function(e) { message("[Plankton domain] Bathymetry download failed (", conditionMessage(e),
@@ -2410,10 +2424,18 @@ if (!exists("ISIMIP_YEARS")) ISIMIP_YEARS <- 1994:2010
 fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                                                  bbox = c(lon_min = -6, lon_max = 16, lat_min = 35, lat_max = 45),
                                                  years = ISIMIP_YEARS, alloc = PLANKTON_ALLOCATION, c_to_ww_detritus = 9) {
-  out_csv_path <- file.path(out_dir, "isimip3a_cobalt2_plankton_detritus_timeseries.csv")
+  ## the cache is per model-area basis (the COBALT domain mean depends on it)
+  out_csv_path <- file.path(out_dir, paste0("isimip3a_cobalt2_plankton_detritus_timeseries",
+                                            if (identical(get0("MODEL_AREA_BASIS", ifnotfound = "medits_10_800"), "whole_gsa")) "_wholegsa" else "", ".csv"))
   if (!force_refresh && file.exists(out_csv_path)) {
-    message("[ISIMIP] Using cached ", out_csv_path, " (force_refresh = TRUE to recompute).")
-    return(invisible(fread(out_csv_path)))
+    .cached <- fread(out_csv_path)
+    ## a cache written while offline can miss Detritus (euphotic depth from
+    ## Copernicus failed); it is then recomputed (2026-10-14)
+    if ("Detritus" %in% .cached$TargetGroup) {
+      message("[ISIMIP] Using cached ", out_csv_path, " (force_refresh = TRUE to recompute).")
+      return(invisible(.cached))
+    }
+    message("[ISIMIP] Cached ", out_csv_path, " has no Detritus rows (written offline?) - recomputing.")
   }
   if (!requireNamespace("ncdf4", quietly = TRUE)) stop("package 'ncdf4' is required")
   vars <- c("phydiat-vint", "phypico-vint", "phydiaz-vint", "zmicro-vint", "zmeso-vint", "intpp")
@@ -2502,7 +2524,7 @@ if (!is.null(pp_hand) && nrow(pp_hand) > 0 && all(c("Group", "Source_citation") 
 } else pp_hand <- data.table(Year = integer(), Group = character(), Biomass_t = numeric(), Source_citation = character())
 pp_hand_groups <- unique(tolower(trimws(pp_hand[is.na(Source_citation) | !grepl("ecobase", Source_citation, ignore.case = TRUE), Group])))
 plankton_missing <- setdiff(plankton_targets, pp_hand_groups)
-study_area_km2 <- sum(strata_area_by_area$area_km2, na.rm = TRUE)
+study_area_km2 <- .A_model()
 .to_model_rows <- function(draft, label) {
   if (is.null(draft) || nrow(draft) == 0) return(NULL)
   ## A draft WITH a Year column (ISIMIP annual series) keeps one row per
@@ -2529,36 +2551,58 @@ if (ENABLE_CMEMS_PLANKTON && length(plankton_missing) > 0) {
                error = function(e) { message("[ISIMIP] FAILED - falling back to Copernicus: ", conditionMessage(e)); NULL }) else NULL
     if (!is.null(isimip_draft) && nrow(isimip_draft) > 0) {
       plankton_model_rows <- .to_model_rows(isimip_draft, "ISIMIP3a GFDL-MOM6-COBALT2 OBSCLIM ANNUAL SERIES (01b ISIMIP section)")
-      ## --- Meso + micro zooplankton LEVEL anchored to field data ---------
-      ## COBALT integrates the whole water column and gave ~30 t/km2, about
-      ## 2x the top of the field range. The field level sets the Ecopath
-      ## value; COBALT keeps only the year-to-year trend:
-      ##  z_eff  = sum_k A_k min(zmid_k, 100) / sum_k A_k (strata; tows 0-100 m)
-      ##  B_meso = DM x z_eff / DW:WW / 1000;  B_meso+micro = B_meso / (1 - s_micro)
-      ##  B_y    = COBALT_y x B_meso+micro / mean(COBALT, YEAR_ECOPATH)
-      ## DM = 10 mg dry mass/m3, 0-100 m, 250 um Bongo, Alboran-Balearic
-      ## 2007-2017 (Fernandez de Puelles, Gaza, Cabanellas-Reboredo & O'Brien
-      ## 2023, Water 15:4267, doi:10.3390/w15244267); DW:WW 0.15 = ASSUMPTION
-      ## (0.1-0.2); s_micro = 0.35 micro share of meso+micro (same split as
-      ## elsewhere in this file, ASSUMPTION). ZOO_MESOMICRO_ANCHOR = "model"
-      ## keeps the raw COBALT level.
-      if (!exists("ZOO_MESOMICRO_ANCHOR")) ZOO_MESOMICRO_ANCHOR <- "field"
+      ## --- Meso + micro zooplankton: COBALT level, field value as reference --
+      ## Since 2026-10-14 (project decision) the Ecopath value is the COBALT
+      ## level itself (ZOO_MESOMICRO_ANCHOR = "model", default): zmicro-vint +
+      ## zmeso-vint converted to wet weight with the cited C:WW (above).
+      ## The Western Med net value is NOT used to rescale it; it is written
+      ## as a reference to zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv.
+      ## The two are not the same quantity, which is why COBALT is higher:
+      ##  - depth: COBALT integrates the whole water column of each 10-800 m
+      ##    cell (area-weighted mean column depth of the model area ~290 m);
+      ##    the net samples 0-100 m (area-weighted z_eff below, ~87 m).
+      ##  - size: the 250 um Bongo net misses microzooplankton (COBALT zmicro)
+      ##    and part of the small mesozooplankton.
+      ## Field reference (as published, Fernandez de Puelles, Gaza,
+      ## Cabanellas-Reboredo & O'Brien 2023, Water 15:4267): 10 mg dry
+      ## mass/m3, 0-100 m, Alboran-Balearic 2007-2017, reported here as
+      ## g DM/m2 over z_eff = sum_k A_k min(zmid_k, 100) / sum_k A_k.
+      ## ZOO_MESOMICRO_ANCHOR = "field" restores the old field-anchored
+      ## level (it needs a DW:WW and a micro share, ZOO_FIELD, which are
+      ## not measured for this region).
+      if (!exists("ZOO_MESOMICRO_ANCHOR")) ZOO_MESOMICRO_ANCHOR <- "model"
       if (!exists("ZOO_FIELD")) ZOO_FIELD <- list(dm_mg_m3 = 10, dw_to_ww = 0.15, micro_share = 0.35)
       .zidx <- tolower(plankton_model_rows$Group) == "mesomicrozooplankton"
-      if (identical(ZOO_MESOMICRO_ANCHOR, "field") && any(.zidx)) {
-        .sa_z <- as.data.table(strata_area_by_area)
+      if (any(.zidx)) {
+        .sa_z <- .model_cells()
         .z_eff <- sum(.sa_z$area_km2 * pmin((.sa_z$Depth_min_m + .sa_z$Depth_max_m) / 2, 100)) / sum(.sa_z$area_km2)
-        .target <- ZOO_FIELD$dm_mg_m3 * .z_eff / ZOO_FIELD$dw_to_ww / 1000 / (1 - ZOO_FIELD$micro_share)
+        .z_col <- sum(.sa_z$area_km2 * (.sa_z$Depth_min_m + .sa_z$Depth_max_m) / 2) / sum(.sa_z$area_km2)
         .base <- mean(plankton_model_rows[.zidx & Year %in% YEAR_ECOPATH, Biomass_t], na.rm = TRUE) / study_area_km2
-        if (is.finite(.base) && .base > 0) {
+        .baseC <- if ("Biomass_tC_km2" %in% names(isimip_draft)) mean(isimip_draft[TargetGroup == "MesoMicroZooplankton" & Year %in% YEAR_ECOPATH, Biomass_tC_km2], na.rm = TRUE) else NA_real_
+        .field_dm <- ZOO_FIELD$dm_mg_m3 * .z_eff / 1000   # g DM/m2 = t DM/km2, 0-100 m, >= 250 um
+        .ref <- data.table(
+          quantity = c("COBALT meso+micro, whole water column (Ecopath value)", "COBALT meso+micro, whole water column",
+                       "Field net (>= 250 um, 0-100 m) dry mass", "Field-anchored level used before 2026-10-14 (needs DW:WW and micro share)",
+                       "Mean water-column depth of the model area (COBALT integration)", "Mean net sampling depth z_eff (0-100 m tows)"),
+          value = c(.base, .baseC, .field_dm, .field_dm / ZOO_FIELD$dw_to_ww / (1 - ZOO_FIELD$micro_share), .z_col, .z_eff),
+          unit = c("t WW/km2", "t C/km2", "t DM/km2", "t WW/km2", "m", "m"),
+          source = c("ISIMIP3a GFDL-MOM6-COBALT2 obsclim, zmicro-vint + zmeso-vint, C:WW 0.07 / 0.09 (Fenchel & Finlay 1983; Kiorboe 2013)",
+                     "same, carbon", "Fernandez de Puelles et al. 2023, Water 15:4267 (10 mg DM/m3)",
+                     paste0("DW:WW ", ZOO_FIELD$dw_to_ww, ", micro share ", ZOO_FIELD$micro_share, " (not measured - reference only)"),
+                     "strata_area_by_area.csv", "strata_area_by_area.csv"))
+        fwrite(.ref, file.path(csv_out_dir, "zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv"))
+        message("[Plankton biomass] Meso+micro zooplankton: COBALT ", signif(.base, 3), " t WW/km2 (", paste(range(YEAR_ECOPATH), collapse = "-"),
+                ", whole water column, mean depth ", round(.z_col), " m). Field reference (net >= 250 um, 0-100 m): ", signif(.field_dm, 3),
+                " t DM/km2 - not the same quantity (depth range and size range differ); written to zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv.")
+        if (identical(ZOO_MESOMICRO_ANCHOR, "field") && is.finite(.base) && .base > 0) {
+          .target <- .ref$value[4]
           .k <- .target / .base
           plankton_model_rows[.zidx, Biomass_t := Biomass_t * .k]
-          plankton_model_rows[.zidx, Source_citation := paste0("FIELD-ANCHORED LEVEL: ", signif(.target, 3), " t WW/km2 in ",
-            paste(range(YEAR_ECOPATH), collapse = "-"), " = ", ZOO_FIELD$dm_mg_m3, " mg DM/m3 x ", round(.z_eff, 1), " m / ",
-            ZOO_FIELD$dw_to_ww, " DW:WW / 1000 / (1 - ", ZOO_FIELD$micro_share, " micro share) (Fernandez de Puelles et al. 2023,",
-            " Water 15:4267; DW:WW and micro share = ASSUMPTION); trend = COBALT x ", signif(.k, 3), ". ", Source_citation)]
-          message("[Plankton biomass] Meso+micro zooplankton anchored to field data: ", signif(.target, 3), " t/km2 (",
-                  paste(range(YEAR_ECOPATH), collapse = "-"), "); COBALT level was ", signif(.base, 3), " t/km2 (x ", signif(.k, 3), ").")
+          plankton_model_rows[.zidx, Source_citation := paste0("FIELD-ANCHORED LEVEL (ZOO_MESOMICRO_ANCHOR = 'field'): ", signif(.target, 3),
+            " t WW/km2 = ", ZOO_FIELD$dm_mg_m3, " mg DM/m3 x ", round(.z_eff, 1), " m / ", ZOO_FIELD$dw_to_ww, " DW:WW / 1000 / (1 - ",
+            ZOO_FIELD$micro_share, ") (Fernandez de Puelles et al. 2023; DW:WW and micro share = ASSUMPTION); trend = COBALT x ",
+            signif(.k, 3), ". ", Source_citation)]
+          message("[Plankton biomass] ZOO_MESOMICRO_ANCHOR = 'field': level set to ", signif(.target, 3), " t/km2 (COBALT x ", signif(.k, 3), ").")
         }
       }
     } else {

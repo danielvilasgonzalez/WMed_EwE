@@ -190,8 +190,8 @@ MAISHA_COLS <- list(
   occ_f <- list.files(dir, pattern = "^occurrence\\.(txt|csv)$", full.names = TRUE, ignore.case = TRUE)[1]
   emf_f <- list.files(dir, pattern = "measurementorfact", full.names = TRUE, ignore.case = TRUE)[1]
   if (is.na(occ_f) || is.na(emf_f)) { message("[MAISHA] occurrence.txt / extendedmeasurementorfact.txt not found in ", dir, "."); return(data.table()) }
-  occ <- fread(occ_f, sep = "\t", quote = "", encoding = "UTF-8", colClasses = "character")
-  emf <- fread(emf_f, sep = "\t", quote = "", encoding = "UTF-8", colClasses = "character")
+  occ <- .fread_local(occ_f, sep = "\t", quote = "", encoding = "UTF-8", colClasses = "character")
+  emf <- .fread_local(emf_f, sep = "\t", quote = "", encoding = "UTF-8", colClasses = "character")
   if (!all(c("id", "occurrenceRemarks", "associatedOccurrences", "scientificName") %in% names(occ))) {
     message("[MAISHA] Unexpected occurrence.txt columns: ", paste(names(occ), collapse = ", ")); return(data.table())
   }
@@ -226,12 +226,26 @@ MAISHA_COLS <- list(
   out
 }
 
+## fread() memory-maps the file it reads. On a cloud-synced folder (pCloud
+## Drive) a file that is not fully downloaded makes the mapped pages
+## unreadable and macOS kills R with SIGBUS (R "bomb"; crash report
+## 2026-10-13: data.table freadMain/nextGoodLine, KERN_MEMORY_ERROR while
+## 04_diets.R read the MAISHA files). The file is first copied to a local
+## temp file with normal reads (which forces the download), then read.
+.fread_local <- function(path, ...) {
+  tmp <- tempfile(fileext = paste0(".", tools::file_ext(path)))
+  ok <- tryCatch(file.copy(path, tmp, overwrite = TRUE), error = function(e) FALSE)
+  if (!isTRUE(ok)) stop("could not copy ", path, " to a local temp file")
+  on.exit(unlink(tmp), add = TRUE)
+  fread(tmp, ...)
+}
+
 maisha_diet_records <- function(path) {
   if (is.null(path) || !length(path) || is.na(path) || !file.exists(path)) return(data.table())
   if (dir.exists(path)) return(.maisha_from_dwca(path))
   ext <- tolower(tools::file_ext(path))
   if (ext == "zip") { td <- file.path(tempdir(), "maisha_dwca"); utils::unzip(path, exdir = td); return(.maisha_from_dwca(td)) }
-  if (ext == "csv") return(.maisha_from_table(fread(path, encoding = "UTF-8"), basename(path)))
+  if (ext == "csv") return(.maisha_from_table(.fread_local(path, encoding = "UTF-8"), basename(path)))
   if (ext %in% c("xlsx", "xls")) {
     sh <- readxl::excel_sheets(path)
     tabs <- lapply(sh, function(s) as.data.table(readxl::read_excel(path, sheet = s)))
@@ -253,7 +267,7 @@ fb_fetch_diet_tables <- function(species, cache_dir, force_refresh = FALSE) {
   names(paths) <- c("diet", "items", "food", "taxa")
   if (!force_refresh && all(file.exists(paths[c("diet", "items", "food")]))) {
     message("[FishBase diet] Using cached FishBase/SeaLifeBase diet tables in ", cache_dir, " (force_refresh = TRUE to re-query).")
-    return(lapply(paths, function(p) if (file.exists(p)) fread(p, encoding = "UTF-8") else data.table()))
+    return(lapply(paths, function(p) if (file.exists(p)) .fread_local(p, encoding = "UTF-8") else data.table()))
   }
   srv <- c("fishbase", "sealifebase")
   get_all <- function(fn, ...) rbindlist(lapply(srv, function(s) { x <- .fb_call(fn, ..., server = s); if (nrow(x)) x[, server := s]; x }), fill = TRUE)

@@ -51,10 +51,19 @@ while (sink.number() > 0) sink()
 ## DC_f,j = fraction of prey j in the diet of predator f (sum_j = 1;
 ## Christensen, Walters & Pauly 2005, EwE User Guide).
 ## Tiers, first available wins per predator FG:
-##  1. Mediterranean trophic metaweb (DATA_ENTRY rows): per study,
-##     metric chosen by diet_metric_priority.csv (IRI > %W > %N > %F >
-##     presence; Hyslop 1980, J. Fish Biol. 17:411-429 for the metrics),
-##     normalised to 1, averaged over studies.
+##  1. Mediterranean trophic metaweb (DATA_ENTRY rows; Coll et al.,
+##     template data_entry_metaweb_empty.xlsx): per study, ONE metric
+##     chosen by diet_metric_priority.csv (IRI > %W > %Vol > SIA mixing
+##     model > %N > %F > presence; Hyslop 1980, J. Fish Biol. 17:411-429
+##     for the metrics), normalised to 1, averaged over studies. Goes
+##     through the same prey -> FG resolution as MAISHA and FishBase
+##     (metaweb_diet_records(), STEP 5b). Decided per predator FG: an
+##     FG with any metaweb record takes its diet ONLY from the metaweb
+##     (main matrix = Ecopath_diet); FGs with none take it from the
+##     reference matrix (MAISHA + FishBase/SeaLifeBase), then EcoBase.
+##     The reference matrix is also built for EVERY FG and written next
+##     to the main one (diet_matrix_main_vs_reference.xlsx: Main,
+##     Reference, Main_minus_Reference, Source) for hand-tuning.
 ##  2. MAISHA, Mediterranean Archive of Integrated Stomach and feeding
 ##     Habits Analysis (Vascotto et al. 2026, OGS NODC, doi:10.13120/
 ##     hwpn1e; 213 Mediterranean studies 1977-2025, WoRMS-standardised),
@@ -410,6 +419,123 @@ build_species_diet <- function(data_entry, lookup) {
   predator_references <- dt[, .(references = paste(sort(unique(Reference)), collapse = "; ")), by = predator_name]
   
   list(species_diet = species_diet[], predator_references = predator_references[])
+}
+
+## =================================================================
+## STEP 5b: Metaweb DATA_ENTRY -> diet records in the SAME format as
+## MAISHA and FishBase (predator, prey_name, p, study, locality, stage,
+## tier), so the metaweb goes through the same prey -> FG resolution as
+## the other sources (species, then genus/family/order/class/phylum of
+## FG_WMed_2026.csv, then fishbase_food_category_to_fg.csv rules, then
+## WoRMS), the same juvenile/adult stage selection and the same
+## biomass-weighted species -> FG aggregation (diet_records_to_fg_matrix
+## in lib_fishbase_diet_matrix.R). Used when DIET_FISHBASE_METHOD =
+## "fg_matrix" (default); "species_legacy" keeps build_species_diet().
+##
+## Per DATA_ENTRY row:
+##  - Code_predator / Code_prey -> name through Taxonomic_codes
+##    (Valid_code, then Old_Code_species for codes entered before a
+##    taxonomy update) and Non_taxonomic_groups (Group code). Generic
+##    groups ("Pelagic fish", "Zooplankton", ...) are placed by the
+##    metaweb rules at the top of fishbase_food_category_to_fg.csv.
+##  - study = Reference (else DOI) x Region_specific x Beginning_year x
+##    End_year x Data (life stage) x Season: one diet per sampled
+##    population of a paper.
+##  - metric: diet_metric_priority.csv, ONE metric per study (the best
+##    the study reports, so %W and %N are never mixed in one diet);
+##    values normalised to sum to 1 per study (Hyslop 1980). Presence
+##    (1/0) only when the study has no quantitative metric: equal split
+##    among present prey (ASSUMPTION).
+##  - stage: Data 2 = adult, 3 = juvenile, 4 = larvae (used for the hake
+##    stanzas); 0/1 = no stage.
+##  - every row is Mediterranean by construction (locality tag), so the
+##    "Mediterranean studies first" rule never drops metaweb rows.
+## Studies are averaged with equal weight, as for MAISHA and FishBase
+## (predator_number is not used as a weight).
+## =================================================================
+.mw_clean <- function(x) gsub("^_|_$", "", gsub("_+", "_", gsub("[^a-z0-9]+", "_", tolower(x))))
+
+metaweb_diet_records <- function(data_entry, tax_codes, nontax_groups, metric_priority = DIET_METRIC_PRIORITY,
+                                 review_dir = NULL) {
+  empty <- data.table()
+  if (is.null(data_entry) || !nrow(data_entry)) return(empty)
+  dt <- copy(as.data.table(data_entry))
+  setnames(dt, make.unique(.mw_clean(names(dt))))
+  if (!all(c("code_predator", "code_prey") %in% names(dt))) {
+    message("[Metaweb] DATA_ENTRY has no Code_predator/Code_prey columns (found: ", paste(head(names(dt), 10), collapse = ", "), ") - metaweb tier skipped.")
+    return(empty)
+  }
+  dt[, `:=`(code_predator = trimws(as.character(code_predator)), code_prey = trimws(as.character(code_prey)))]
+  dt <- dt[!is.na(code_predator) & code_predator != "" & !is.na(code_prey) & code_prey != ""]
+  if (!nrow(dt)) {
+    message("[Metaweb] DATA_ENTRY has no filled rows yet (template) - metaweb tier contributes nothing this run.")
+    return(empty)
+  }
+  ## code -> name
+  tc <- as.data.table(tax_codes); ng <- as.data.table(nontax_groups)
+  lk <- rbindlist(list(
+    tc[, .(code = Valid_code, name = valid_name)],
+    if ("Old_Code_species" %in% names(tc)) tc[, .(code = Old_Code_species, name = valid_name)],
+    ng[, .(code = Group_code, name = Group_name)]), fill = TRUE)
+  lk[, `:=`(code = trimws(as.character(code)), name = trimws(as.character(name)))]
+  lk <- unique(lk[!is.na(code) & code != "" & !is.na(name) & name != ""], by = "code")
+  dt[, predator  := lk$name[match(code_predator, lk$code)]]
+  dt[, prey_name := lk$name[match(code_prey, lk$code)]]
+  unres <- unique(rbind(dt[is.na(predator), .(role = "predator", code = code_predator)],
+                        dt[is.na(prey_name), .(role = "prey", code = code_prey)]))
+  if (nrow(unres)) {
+    message("[Metaweb] ", nrow(unres), " code(s) not in Taxonomic_codes / Non_taxonomic_groups (",
+            paste(head(unres$code, 10), collapse = ", "), if (nrow(unres) > 10) ", ..." else "",
+            ") - predators dropped, prey kept under the raw code (they end up in the unassigned REVIEW file).")
+    if (!is.null(review_dir)) fwrite(unres, file.path(review_dir, "metaweb_unresolved_codes_REVIEW.csv"))
+  }
+  dt[is.na(prey_name), prey_name := code_prey]
+  dt <- dt[!is.na(predator)]
+  col <- function(n) if (n %in% names(dt)) trimws(as.character(dt[[n]])) else rep(NA_character_, nrow(dt))
+  ref <- col("reference"); doi <- col("doi")
+  ref <- fifelse(is.na(ref) | ref == "", doi, ref)
+  ref[is.na(ref) | ref == ""] <- "metaweb (no reference given)"
+  dt[, ref := ref]
+  dt[, study := paste(ref, col("region_specific"), col("beginning_year"), col("end_year"), col("data"), col("season"), sep = " | ")]
+  stg <- col("data")
+  dt[, stage := fcase(stg == "2", "adult", stg == "3", "juvenile", stg == "4", "larvae", default = NA_character_)]
+  reg <- col("region_specific")
+  dt[, locality := paste0("Mediterranean (metaweb)", fifelse(is.na(reg) | reg == "", "", paste0(": ", reg)))]
+  ## one value per row, by metric priority
+  num <- function(x) suppressWarnings(as.numeric(gsub(",", ".", as.character(x))))
+  pres <- "presence_no_number_data"
+  pr <- intersect(.mw_clean(metric_priority), names(dt))
+  quant <- setdiff(pr, pres)
+  if (!length(pr)) {
+    message("[Metaweb] None of the diet_metric_priority.csv metrics (", paste(metric_priority, collapse = ", "),
+            ") is a DATA_ENTRY column - metaweb tier skipped.")
+    return(empty)
+  }
+  dt[, `:=`(v = NA_real_, metric = NA_character_)]
+  for (m in quant) {
+    x <- num(dt[[m]])
+    take <- is.na(dt$v) & is.finite(x) & x > 0
+    if (any(take)) dt[take, `:=`(v = x[take], metric = m)]
+  }
+  if (pres %in% pr) {
+    pv <- num(dt[[pres]])
+    dt[, has_q := any(!is.na(metric)), by = .(predator, study)]
+    take <- !dt$has_q & is.finite(pv) & pv == 1
+    if (any(take)) dt[take, `:=`(v = 1, metric = "presence")]
+    dt[, has_q := NULL]
+  }
+  dt <- dt[is.finite(v) & v > 0]
+  if (!nrow(dt)) { message("[Metaweb] Filled rows found but none has a usable diet value - metaweb tier skipped."); return(empty) }
+  rank_of <- c(quant, "presence")
+  dt[, mrank := match(metric, rank_of)]
+  dt <- dt[, .SD[mrank == min(mrank)], by = .(predator, study)]
+  dt[, p := v / sum(v), by = .(predator, study)]
+  out <- dt[, .(predator, prey_name, p, study, locality, stage, ref, metric,
+                tier = "Mediterranean trophic metaweb (DATA_ENTRY)")]
+  message("[Metaweb] DATA_ENTRY: ", nrow(out), " diet record(s), ", uniqueN(out$predator), " predator species, ",
+          uniqueN(out$study), " study population(s) from ", uniqueN(out$ref), " reference(s); metrics used: ",
+          paste(out[, .N, by = metric][, paste0(metric, " ", N)], collapse = ", "), ".")
+  out
 }
 
 ## =================================================================
@@ -1073,11 +1199,25 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                                            manual_override_path = group_table_path)   # moved up from STEP 9's old position - the fallback tiers below need the predator FG list before the diet matrix is built, not just at export time
   species_to_fg_reference_only <- read_species_to_fg_from_reference(fg_reference_path)   # moved up from the FishBase-fallback block below - also needed here now, to map metaweb predators to FG
   
-  species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
-  species_diet   <- species_diet_result$species_diet
-  predator_references <- species_diet_result$predator_references
-  if (nrow(predator_references) > 0) predator_references[, source := "metaweb"]
-  metaweb_predators <- unique(species_diet$predator_name)
+  ## Metaweb tier. With DIET_FISHBASE_METHOD = "fg_matrix" (default) the
+  ## DATA_ENTRY rows become diet records in the MAISHA/FishBase format
+  ## (metaweb_diet_records(), STEP 5b) and go through the same prey -> FG
+  ## resolution. An FG covered by the metaweb takes its diet only from
+  ## it; the others from MAISHA + FishBase/SeaLifeBase (see below).
+  ## "species_legacy" keeps build_species_diet().
+  use_fg_matrix <- identical(DIET_FISHBASE_METHOD, "fg_matrix")
+  mw_rec <- if (use_fg_matrix) metaweb_diet_records(metaweb$data_entry, metaweb$tax_codes, metaweb$nontax_groups,
+                                                    review_dir = csv_out_dir) else data.table()
+  if (use_fg_matrix) {
+    species_diet <- data.table(predator_name = character(), prey_name = character(), proportion = numeric(), n_studies = integer())
+    predator_references <- data.table(predator_name = character(), references = character())
+  } else {
+    species_diet_result <- build_species_diet(metaweb$data_entry, lookup)
+    species_diet   <- species_diet_result$species_diet
+    predator_references <- species_diet_result$predator_references
+    if (nrow(predator_references) > 0) predator_references[, source := "metaweb"]
+  }
+  metaweb_predators <- if (use_fg_matrix) unique(mw_rec$predator) else unique(species_diet$predator_name)
   message("[04_diets.R] Metaweb (DATA_ENTRY) tier: ", uniqueN(metaweb_predators), " predator(s) with real diet-study rows.")
   
   ## Predator-FG selection: build_group_table_auto() already defaults
@@ -1121,7 +1261,8 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   fb_predators <- character(0)
   fb_fg_rows <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric())
   fb_fg_tags <- data.table(fg_name = character(), diet_ref = character(), diet_source = character())
-  if ((DIET_FALLBACK_ENABLE_FISHBASE || DIET_FALLBACK_ENABLE_MAISHA) && identical(DIET_FISHBASE_METHOD, "fg_matrix") && length(missing_after_metaweb) > 0) {
+  ref_fg_diet_all <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric())   # reference matrix (MAISHA + FishBase), all FGs
+  if (use_fg_matrix && (nrow(mw_rec) > 0 || DIET_FALLBACK_ENABLE_FISHBASE || DIET_FALLBACK_ENABLE_MAISHA) && length(all_predator_species) > 0) {
     ## --- FishBase/SeaLifeBase FG diet matrix (lib_fishbase_diet_matrix.R) ---
     if (requireNamespace("duckdbfs", quietly = TRUE)) invisible(try(duckdbfs::duckdb_config(enable_progress_bar = FALSE), silent = TRUE))
     fg_ref_full <- fread(fg_reference_path, encoding = "UTF-8")
@@ -1129,14 +1270,33 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     b_tab <- read_biomass_proportion_from_workbook(workbook_path, biomass_csv_dir = BIOMASS_CSV_DIR)
     bp_path <- file.path(BIOMASS_CSV_DIR, "biomass_proportion_by_species_fg.csv")
     fg_B <- if (file.exists(bp_path)) unique(fread(bp_path)[, .(fg_name = FG_name, B = as.numeric(Ecopath_B_Biomass))])[, .(B = max(B, na.rm = TRUE)), by = fg_name][is.finite(B)] else data.table(fg_name = character(), B = numeric())
-    fb_preds <- merge(unique(species_to_fg_reference_only[species %in% missing_after_metaweb & fg_name %in% predator_fg_names_all, .(species, fg_name)]),
+    fb_preds <- merge(unique(species_to_fg_reference_only[species %in% all_predator_species & fg_name %in% predator_fg_names_all, .(species, fg_name)]),
                       b_tab[, .(species, fg_name, b_share = biomass_proportion)], by = c("species", "fg_name"), all.x = TRUE)
     xw_path <- file.path(DIET_REFERENCE_DIR, "fishbase_food_category_to_fg.csv")
     if (!file.exists(xw_path)) stop("[04_diets.R] Missing ", xw_path, " (FishBase food category -> FG crosswalk).")
     xw <- fread(xw_path)
     fgu <- group_table$group_name
-    ## Tier 2a - MAISHA (Mediterranean stomach contents): species with MAISHA records use them;
-    ## Tier 2b - FishBase/SeaLifeBase: only species without MAISHA records.
+    ## MAIN matrix (Ecopath_diet) = the metaweb xlsx, decided per FG: a
+    ## predator FG with at least one usable metaweb (DATA_ENTRY) record
+    ## takes its diet ONLY from the metaweb; an FG with none takes it from
+    ## the REFERENCE matrix below (and, if still empty, EcoBase).
+    ## REFERENCE matrix = MAISHA (per species) + FishBase/SeaLifeBase (species
+    ## without MAISHA records), built for EVERY predator FG whether or not
+    ## the metaweb covers it, so each value of the main matrix can be
+    ## compared with, and tuned against, an independent estimate
+    ## (diet/diet_matrix_main_vs_reference.xlsx, see below).
+    wc <- file.path(csv_out_dir, "worms_diet_prey_cache.rds")
+    if (nrow(mw_rec)) mw_rec <- mw_rec[predator %in% fb_preds$species]
+    res_mw <- if (nrow(mw_rec)) diet_records_to_fg_matrix(mw_rec, fb_preds, fg_ref_full, fg_B, xw, fgu, prefer_med = FALSE,
+                                                          worms_cache = wc, label = "Metaweb (DATA_ENTRY)") else NULL
+    mw_fgs <- if (!is.null(res_mw) && nrow(res_mw$fg_diet)) unique(res_mw$fg_diet$predator_fg) else character(0)
+    message("[04_diets.R] Metaweb (main source): ", length(mw_fgs), " predator FG(s) covered",
+            if (length(mw_fgs)) paste0(" - these take their diet only from the metaweb: ", paste(mw_fgs, collapse = ", "))
+            else " - every FG takes its diet from the reference sources (MAISHA, FishBase/SeaLifeBase, then EcoBase).")
+    if (length(mw_fgs)) {
+      mw_dir <- file.path(csv_out_dir, "Metaweb"); dir.create(mw_dir, showWarnings = FALSE, recursive = TRUE)
+      write_diet_source_outputs(res_mw, group_table, mw_dir, "metaweb")
+    }
     mai_rec <- if (isTRUE(DIET_FALLBACK_ENABLE_MAISHA)) maisha_diet_records(MAISHA_PATH) else data.table()
     if (nrow(mai_rec)) {
       mai_rec[, tier := "MAISHA (Vascotto et al. 2026)"]
@@ -1148,28 +1308,45 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     }
     fb_rec <- if (isTRUE(DIET_FALLBACK_ENABLE_FISHBASE)) fishbase_diet_records(setdiff(fb_preds$species, unique(mai_rec$predator)), csv_out_dir,
                                                                              force_refresh = DIET_FISHBASE_FORCE_REFRESH) else data.table()
-    ## each source on its own (comparison outputs, one subfolder each) ...
+    ## each reference source on its own (one subfolder each) ...
     for (src in c("MAISHA", "FishBase")) {
       if (src == "FishBase" && !isTRUE(DIET_FALLBACK_ENABLE_FISHBASE)) next
       rec <- if (src == "MAISHA") mai_rec else fishbase_diet_records(fb_preds$species, csv_out_dir)
       if (!nrow(rec)) next
-      res_src <- diet_records_to_fg_matrix(rec, fb_preds, fg_ref_full, fg_B, xw, fgu, prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = file.path(csv_out_dir, "worms_diet_prey_cache.rds"), label = src)
+      res_src <- diet_records_to_fg_matrix(rec, fb_preds, fg_ref_full, fg_B, xw, fgu, prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = wc, label = src)
       src_dir <- file.path(csv_out_dir, src); dir.create(src_dir, showWarnings = FALSE, recursive = TRUE)
       write_diet_source_outputs(res_src, group_table, src_dir, tolower(src))
     }
-    ## ... and combined (MAISHA first per species), which feeds Ecopath_diet
-    fb <- diet_records_to_fg_matrix(rbindlist(list(mai_rec, fb_rec), use.names = TRUE, fill = TRUE), fb_preds, fg_ref_full, fg_B, xw, fgu,
-                                    prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = file.path(csv_out_dir, "worms_diet_prey_cache.rds"), label = "MAISHA + FishBase/SeaLifeBase")
-    if (nrow(fb$fg_diet) > 0) {
-      write_diet_source_outputs(fb, group_table, csv_out_dir, "external")
-      fb_fg_rows <- fb$fg_diet
-      fb_predators <- unique(fb$species_diet$predator)
-      fb_fg_tags <- fb$provenance[, .(fg_name = FG_name,
-                                      diet_ref = paste0(tiers, " (", n_studies, " study record(s), ", n_species, " species",
-                                                        fifelse(med_only, ", Mediterranean studies", ""), ")"),
-                                      diet_source = fifelse(grepl("MAISHA", tiers), "maisha+fishbase", "fishbase_sealifebase"))]
-      message("[04_diets.R] External diet matrices written: diet/MAISHA/, diet/FishBase/ (each source alone) and",
-              " diet/external_diet_matrix_fg_long.csv / _wide.csv (combined, used in Ecopath_diet).")
+    ## ... and the combined REFERENCE matrix (MAISHA first per species), for every predator FG
+    ref <- diet_records_to_fg_matrix(rbindlist(list(mai_rec, fb_rec), use.names = TRUE, fill = TRUE), fb_preds, fg_ref_full, fg_B, xw, fgu,
+                                     prefer_med = DIET_FISHBASE_PREFER_MED, worms_cache = wc, label = "Reference: MAISHA + FishBase/SeaLifeBase")
+    if (nrow(ref$fg_diet)) {
+      write_diet_source_outputs(ref, group_table, csv_out_dir, "reference")
+      ref_fg_diet_all <- copy(ref$fg_diet)
+    }
+    .tags <- function(prov, src_fun) prov[, .(fg_name = FG_name,
+                                              diet_ref = paste0(tiers, " (", n_studies, " study record(s), ", n_species, " species",
+                                                                fifelse(med_only, ", Mediterranean studies", ""), ")"),
+                                              diet_source = src_fun(tiers))]
+    ref_main <- ref$fg_diet[!predator_fg %in% mw_fgs]
+    fb_fg_rows <- rbindlist(list(if (length(mw_fgs)) res_mw$fg_diet, ref_main), use.names = TRUE, fill = TRUE)
+    fb_predators <- unique(c(if (length(mw_fgs)) res_mw$species_diet$predator,
+                             if (nrow(ref$species_diet)) ref$species_diet[fg_name %in% ref_main$predator_fg]$predator))
+    mw_tags <- if (length(mw_fgs)) {
+      mw_refs <- merge(unique(mw_rec[, .(predator, ref)]), unique(fb_preds[, .(predator = species, fg_name)]), by = "predator", allow.cartesian = TRUE)[
+        , .(refs = paste(sort(unique(ref)), collapse = "; ")), by = fg_name]
+      tg <- .tags(res_mw$provenance, function(t) rep("metaweb", length(t)))
+      tg <- merge(tg, mw_refs, by = "fg_name", all.x = TRUE)
+      tg[!is.na(refs), diet_ref := paste0(diet_ref, ": ", refs)][, refs := NULL][]
+    }
+    fb_fg_tags <- rbindlist(list(
+      mw_tags,
+      if (nrow(ref$provenance)) .tags(ref$provenance[!FG_name %in% mw_fgs], function(t) fifelse(grepl("MAISHA", t), "maisha+fishbase", "fishbase_sealifebase"))),
+      use.names = TRUE, fill = TRUE)
+    if (nrow(fb_fg_rows) > 0) {
+      message("[04_diets.R] Main diet matrix: ", length(mw_fgs), " FG(s) from the metaweb, ", uniqueN(ref_main$predator_fg),
+              " FG(s) from the reference sources. Reference matrix (all FGs): diet/reference_diet_matrix_fg_long.csv / _wide.csv;",
+              " each source alone in diet/Metaweb/, diet/MAISHA/, diet/FishBase/.")
     }
   } else if (DIET_FALLBACK_ENABLE_FISHBASE && length(missing_after_metaweb) > 0) {
     fb_result <- fetch_fishbase_diet_for_species(missing_after_metaweb)
@@ -1357,6 +1534,36 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     }
   }
   
+  ## --- Main vs reference diet matrix, for hand-tuning ----------------
+  ## diet_matrix_main_vs_reference.xlsx: sheets "Main" (= Ecopath_diet),
+  ## "Reference" (MAISHA + FishBase/SeaLifeBase for every predator FG),
+  ## "Main_minus_Reference" and "Source" (where each main column came
+  ## from); plus the long table diet_main_vs_reference_REVIEW.csv
+  ## (predator, prey, main, reference, difference). Use it to check or
+  ## change single values of the main matrix against an independent
+  ## estimate; after a hand change the column has to sum to 1 again.
+  if (nrow(fg_diet) > 0 || nrow(ref_fg_diet_all) > 0) {
+    cmp <- merge(fg_diet[, .(predator_fg, prey_fg, main = weight)], ref_fg_diet_all[, .(predator_fg, prey_fg, reference = weight)],
+                 by = c("predator_fg", "prey_fg"), all = TRUE)
+    cmp[is.na(main), main := 0][is.na(reference), reference := 0]
+    cmp[, difference := main - reference]
+    cmp <- merge(cmp, diet_provenance_by_fg[, .(predator_fg = FG_name, main_source = diet_source)], by = "predator_fg", all.x = TRUE)
+    setorder(cmp, predator_fg, -main)
+    fwrite(cmp, file.path(csv_out_dir, "diet_main_vs_reference_REVIEW.csv"))
+    wb_cmp <- tryCatch({
+      main_w <- build_ecopath_diet_sheet(fg_diet, group_table)
+      ref_w  <- build_ecopath_diet_sheet(ref_fg_diet_all, group_table)
+      diff_w <- build_ecopath_diet_sheet(cmp[, .(predator_fg, prey_fg, weight = difference)], group_table)
+      openxlsx::write.xlsx(list(Main = main_w, Reference = ref_w, Main_minus_Reference = diff_w,
+                                Source = diet_provenance_by_fg), file.path(csv_out_dir, "diet_matrix_main_vs_reference.xlsx"), overwrite = TRUE)
+      TRUE
+    }, error = function(e) { message("[04_diets.R] diet_matrix_main_vs_reference.xlsx not written - ", conditionMessage(e)); FALSE })
+    n_big <- cmp[main_source == "metaweb" & abs(difference) > 0.2, uniqueN(predator_fg)]
+    message("[04_diets.R] Main vs reference diet matrix: diet_main_vs_reference_REVIEW.csv",
+            if (isTRUE(wb_cmp)) " and diet_matrix_main_vs_reference.xlsx" else "", " written (",
+            cmp[, uniqueN(predator_fg)], " predator FG(s); ", n_big, " metaweb FG(s) differ from the reference by > 0.2 in at least one prey).")
+  }
+
   export_ewe_matrix_csv(fg_diet, group_table, out_path)
   ecopath_diet_sheet <- build_ecopath_diet_sheet(fg_diet, group_table)
   upsert_workbook_sheets(list(Ecopath_diet = ecopath_diet_sheet), workbook_path)

@@ -2232,7 +2232,7 @@ compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 
                           resolution = resolution),
     error = function(e) { message("  Bathymetry download failed: ", conditionMessage(e)); NULL }
   )
-  if (is.null(bathy)) return(NULL)
+  if (is.null(bathy)) return("download_failed")   # told apart from an area with no cells in the strata (NULL below)
   
   bathy_r <- marmap::as.raster(bathy)
   bathy_r <- raster::reclassify(bathy_r, cbind(0, Inf, NA), right = FALSE)
@@ -2309,6 +2309,13 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     ## an 800-1000 m label. A mismatch now forces recomputation.
     sd <- as.data.table(strata_def)
     want <- unique(sd[, .(Stratum = stratum_num, dmin = depth_min, dmax = depth_max)])
+    ## Older caches have no Depth_min_m/Depth_max_m columns; code downstream
+    ## (e.g. the MEDIAS shelf/model-area ratio in 01_biomass.R) needs them,
+    ## so they are added from strata_def by Stratum (2026-10-13).
+    if ("Stratum" %in% names(cached) && !all(c("Depth_min_m", "Depth_max_m") %in% names(cached))) {
+      cached[, c("Depth_min_m", "Depth_max_m") := NULL]
+      cached <- merge(cached, want[, .(Stratum, Depth_min_m = dmin, Depth_max_m = dmax)], by = "Stratum", all.x = TRUE)
+    }
     have_strata <- sort(unique(cached$Stratum))
     bounds_ok <- TRUE
     if (all(c("Depth_min_m", "Depth_max_m") %in% names(cached))) {
@@ -2334,10 +2341,21 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     message(" Processing area ", a, "...")
     poly <- area_shp[area_shp[[area_id_col]] == a, ]
     res <- compute_strata_area_for_polygon(poly, strata_def, resolution)
+    if (identical(res, "download_failed")) return(res)
     if (!is.null(res)) res[, AreaID := a]
     res
   })
+  failed_ids <- area_ids[vapply(results, function(r) identical(r, "download_failed"), logical(1))]
+  results <- results[!vapply(results, is.character, logical(1))]
   strata_area_by_area <- rbindlist(results, fill = TRUE)
+  ## Every area must have its bathymetry (2026-10-14): a failed download
+  ## (no internet) used to save a cache without those GSAs, which shrank
+  ## the model area (311,669 instead of ~650,000 km2) and dropped their
+  ## biomass. Now the run stops and nothing is written.
+  if (length(failed_ids) > 0)
+    stop("Bathymetry (NOAA ETOPO via marmap) could not be downloaded for area(s) ", paste(failed_ids, collapse = ", "),
+         " - no internet connection? Nothing was saved to ", if (is.null(cache_path)) "the cache" else cache_path,
+         ". Check the connection and run again.", call. = FALSE)
   
   strata_depth_bounds <- unique(as.data.table(strata_def)[, .(Stratum = stratum_num,
                                                               Depth_min_m = depth_min,

@@ -19,7 +19,7 @@
 ## Every script writes its own log (output/YYYYMMDD_<script>_log.txt,
 ## overwritten by a rerun on the same day).
 ##
-## Last updated 2026-10-08 (12:30).
+## Last updated 2026-10-14.
 ## =================================================================
 
 ## ---- 0. Fresh session ----------------------------------------------
@@ -87,15 +87,33 @@ if (any(!file.exists(.scripts))) stop("[run_pipeline_demo.R] Missing in git_dir:
 
 ## ---- 2. Run settings -----------------------------------------------
 if (RUN_MODE == "westmed_default") {
-  ## Western Med model (GSAs 1, 2, 5-11; Spain, France, Italy;
-  ## Ecopath 1994-1996; Ecosim 1995-2023). Nothing needs to be set: each
-  ## script uses its own defaults. The main ones, with their current
-  ## default values - uncomment a line to change it for this run only:
+  ## Western Med model. Model area and years are set here (all scripts
+  ## read them); change them to filter the area or the period.
+  ##
+  ## MODEL_GSAS: GSAs that make up the model area. Default = the whole
+  ##   Western Med (GSAs 1-11). Filter with e.g. c(6, 7) (Northern Spain +
+  ##   Gulf of Lion). Survey data are used only for these GSAs; a GSA the
+  ##   surveys do not cover (3 Southern Alboran, 4 Algeria) takes the survey
+  ##   density per km2 of the others (ASSUMPTION). Catch is kept for every
+  ##   coastal state of these GSAs (GSA 3 Morocco, 4 Algeria, 1-2 and 5-6
+  ##   Spain, 7-8 France, 9-11 Italy).
+  ## MODEL_AREA_BASIS: "whole_gsa" = A_model is the whole sea area of
+  ##   MODEL_GSAS, coast to bottom (depths outside 10-800 m filled with
+  ##   AquaMaps); "medits_10_800" = only the 10-800 m MEDITS strata.
+  MODEL_GSAS       <- 1:11
+  MODEL_AREA_BASIS <- "whole_gsa"
+  YEAR_ECOPATH     <- 1994:1996     # Ecopath baseline (01, 02, 03)
+  TS_YEARS         <- 1995:2023     # Ecosim biomass series (01)
+  START_YEAR       <- 1994          # catch / effort series (02)
+  END_YEAR         <- 2023
+  ##
+  ## Other settings, with their current default values - uncomment a line
+  ## to change it for this run only:
   ##
   ## Biomass (01)
   # DROP_OUTLIERS                 <- TRUE   # remove flagged outlier hauls (haul-level rule)
   # SURVEY_IMPUTE_UNSAMPLED_CELLS <- TRUE   # unsampled GSA left out of that year; unsampled strata of a sampled GSA filled from the same GSA
-  # AQUAMAPS_B_MAX_DEPTH          <- 1000   # AquaMaps pseudo-strata biomass counted down to this depth (bottom trawling banned below 1000 m)
+  # AQUAMAPS_B_MAX_DEPTH          <- Inf    # AquaMaps pseudo-strata biomass counted down to this depth (whole_gsa: all depths; medits_10_800: 1000)
   # ECOSIM_HAUL_CAP_Q             <- 0.95   # Ecosim trend only: cap haul FG density at this quantile (GSA x stratum); NA = off
   # ECOSIM_MIN_AREA_COVERAGE      <- 0      # Ecosim trend only: blank survey years below this sampled-area share; 0 = off
   # ECOSIM_SPIKE_FILTER           <- TRUE   # Ecosim B series: blank isolated upward spikes
@@ -105,27 +123,34 @@ if (RUN_MODE == "westmed_default") {
   # ECOPATH_B_FROM_EE             <- c("Suprabenthos", "Other macro-benthos", "Benthic mollusc")  # B left for Ecopath (EE_input); default adds the gelatinous/macro FGs only when their dataset estimate is missing
   # ECOPATH_B_EE_VALUE            <- 0.95
   ##
+  ## Fisheries (02)
+  # CATCH_FDI_FIRST       <- TRUE    # EU catch = STECF FDI where reported (2014+); GFCM (scaled to FDI) before and for non-EU countries
+  # MOLLUSC_NEI_SPLIT     <- TRUE    # "Marine molluscs nei" split by each country's identified mollusc catch
+  ##
   ## P/B, Q/B (03)
   # ENABLE_ECOBASE_QUERY  <- TRUE    # FALSE = no EcoBase network call
   # ECOBASE_FORCE_REFRESH <- FALSE   # TRUE = re-query EcoBase instead of the cached CSV
   ##
   ## Validation (05)
   # RUN_VALIDATION <- TRUE
-  message("\n=== Running the Western Med pipeline ===\n")
+  message("\n=== Running the Western Med pipeline: GSAs ", paste(MODEL_GSAS, collapse = ", "), " (", MODEL_AREA_BASIS, "), Ecopath ",
+          paste(range(YEAR_ECOPATH), collapse = "-"), ", Ecosim ", paste(range(TS_YEARS), collapse = "-"), " ===\n")
 
 } else if (RUN_MODE == "custom_example") {
   ## Example of another region / period (Adriatic GSAs 17-18).
-  FILTER_AREAS     <- 17:18
-  TARGET_COUNTRIES <- c("Italy", "Croatia", "Slovenia")   # 02_fisheries.R
+  MODEL_GSAS       <- 17:18
+  MODEL_AREA_BASIS <- "whole_gsa"
+  TARGET_COUNTRIES_OVERRIDE <- c("Italy", "Croatia", "Slovenia")   # 02_fisheries.R
   YEAR_ECOPATH     <- 2005:2007                            # same baseline for 01, 02, 03
   TS_YEARS         <- 2000:2020                            # 01_biomass.R
   START_YEAR       <- 2000                                 # 02_fisheries.R
   END_YEAR         <- 2020
-  message("\n=== Running a CUSTOM region (GSA ", paste(FILTER_AREAS, collapse = ", "), ", ",
+  message("\n=== Running a CUSTOM region (GSA ", paste(MODEL_GSAS, collapse = ", "), ", ",
           START_YEAR, "-", END_YEAR, ") ===\n")
 } else {
   stop("Unknown RUN_MODE '", RUN_MODE, "' - use 'westmed_default' or 'custom_example'.")
 }
+FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the model GSAs
 
 ## ---- 3. Run the five steps -----------------------------------------
 ## Each step runs in the global environment (so later steps see the

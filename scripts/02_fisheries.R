@@ -237,16 +237,31 @@ if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPA
 ## those GSAs (project decision: catch taken outside the model GSAs is
 ## not included). Without that file: FILTER_AREAS as set, else GSAs 1, 2,
 ## 5-11.
+## Since 2026-10-14 the model GSAs are read from model_area_by_gsa.csv
+## (01_biomass.R, MODEL_GSAS: GSAs 1-11, surveyed or not), so the catch of
+## every coastal state of the model GSAs is kept (Spain, France, Italy,
+## Morocco GSA 3, Algeria GSA 4).
 .sa_path_dom <- file.path(out_dir, "biomass", "strata_area_by_area.csv")
 .sa_dom <- if (file.exists(.sa_path_dom)) fread(.sa_path_dom) else NULL
-if (!is.null(.sa_dom)) {
+.ma_path_dom <- file.path(out_dir, "biomass", "model_area_by_gsa.csv")
+if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) {
+  FILTER_AREAS <- sort(unique(as.numeric(MODEL_GSAS)))   # set in run_pipeline_demo.R
+  if (!is.null(.sa_dom)) .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
+  if (file.exists(.ma_path_dom) && !setequal(FILTER_AREAS, fread(.ma_path_dom)$GSA))
+    warning("[02_fisheries.R] MODEL_GSAS (", paste(FILTER_AREAS, collapse = ","), ") differs from the GSAs in ", .ma_path_dom,
+            " - run 01_biomass.R first with the same MODEL_GSAS, or biomass and catch cover different areas.", call. = FALSE)
+} else if (file.exists(.ma_path_dom)) {
+  FILTER_AREAS <- sort(unique(as.numeric(fread(.ma_path_dom)$GSA)))
+  if (!is.null(.sa_dom)) .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
+} else if (!is.null(.sa_dom)) {
   .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
   FILTER_AREAS <- sort(unique(as.numeric(.sa_dom[[.gc_dom]])))
-} else if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- c(1, 2, 5:11)
+} else if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- 1:11
 ## Coastal state(s) of each GSA (GFCM Geographical Sub-Areas, Resolution
 ## GFCM/33/2009/2). Countries with no coast in the model GSAs are not
-## model fleets: their catch (e.g. Morocco GSA 3, Algeria GSA 4, Tunisia
-## GSA 12) is outside the domain. TARGET_COUNTRIES_OVERRIDE to change.
+## model fleets: their catch (e.g. Tunisia GSA 12) is outside the domain.
+## With GSAs 1-11 the coastal states are Spain, Morocco (3), Algeria (4),
+## France and Italy. TARGET_COUNTRIES_OVERRIDE to change.
 GSA_COASTAL_STATE <- list("1" = "Spain", "2" = "Spain", "3" = "Morocco", "4" = "Algeria", "5" = "Spain", "6" = "Spain",
                           "7" = "France", "8" = "France", "9" = "Italy", "10" = "Italy", "11" = "Italy",
                           "12" = "Tunisia", "13" = "Tunisia", "14" = "Tunisia")
@@ -495,7 +510,17 @@ if (nrow(gsa_shp_for_area) == 0) {
 ## sum of strata_area_by_area.csv), otherwise L/B and F = C/B mix two
 ## areas (the whole-GSA polygons were 804,310 km2 vs 175,660 km2 for B).
 Total_Area_km2_polygons <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6  # m^2 -> km^2
-if (!is.null(.sa_dom)) {
+## Since 2026-10-14 01_biomass.R writes model_area_by_gsa.csv (A_model per
+## GSA for its MODEL_AREA_BASIS: the whole GSA area by default); that file
+## wins, so catch and biomass are always on the same area.
+.ma_path <- file.path(out_dir, "biomass", "model_area_by_gsa.csv")
+if (file.exists(.ma_path)) {
+  .ma <- fread(.ma_path)
+  Total_Area_km2 <- sum(.ma[as.numeric(GSA) %in% FILTER_AREAS, area_km2], na.rm = TRUE)
+  message("\n[Area] Model area for every t/km2 conversion: ", round(Total_Area_km2, 1), " km^2 = Ecopath_B's area",
+          " (01_biomass.R model_area_by_gsa.csv, basis '", .ma$basis[1], "', GSAs ", paste(FILTER_AREAS, collapse = ", "),
+          "). GSA polygons: ", round(Total_Area_km2_polygons), " km^2.")
+} else if (!is.null(.sa_dom)) {
   Total_Area_km2 <- sum(.sa_dom[as.numeric(get(.gc_dom)) %in% FILTER_AREAS, area_km2], na.rm = TRUE)
   message("\n[Area] Model area for every t/km2 conversion: ", round(Total_Area_km2, 1), " km^2 = Ecopath_B's area",
           " (01_biomass.R strata_area_by_area.csv, GSAs ", paste(FILTER_AREAS, collapse = ", "), "). Whole-GSA polygons",
@@ -830,8 +855,9 @@ split_by_biomass <- function(fg_weights) {
 ## (all of the mesopelagic cephalopod catch, 733 t/yr to coastal benthic
 ## cephalopods in 1994-1996). Cephalopod catch is reported under its own
 ## codes (octopuses, cuttlefish, squids nei), so "Marine molluscs nei" is
-## routed to the bivalves (FG Benthic mollusc). ASSUMPTION: the NEI mollusc
-## landings are mostly bivalves/gastropods.
+## routed to the bivalves (FG Benthic mollusc). Since 2026-10-14 this route
+## is only the fallback: "Marine molluscs nei" is split by the identified
+## mollusc catch of the same country and year (MOLLUSC_NEI_SPLIT, below).
 rank_alias_dt <- read_fisheries_reference("rank_alias_to_order.csv", required_cols = c("alias", "real_order"))
 RANK_ALIAS_TO_ORDER <- setNames(rank_alias_dt$real_order, rank_alias_dt$alias)
 apply_rank_alias <- function(query_clean) {
@@ -1004,8 +1030,23 @@ message("\nSTEP - Querying common names for ", length(sci_names), " species...")
 .quiet_fb <- function(expr) { out <- NULL; invisible(utils::capture.output(out <- expr)); out }
 fb_common  <- tryCatch(as.data.table(.quiet_fb(common_names(sci_names, server = "fishbase"))), error = function(e) data.table())  # look up English common names on FishBase
 slb_common <- tryCatch(as.data.table(.quiet_fb(common_names(sci_names, server = "sealifebase"))), error = function(e) data.table())  # look up English common names on SeaLifeBase
-fb_lookup <- unique(rbindlist(list(fb_common, slb_common), fill = TRUE)[
-  Language == "English" & !is.na(ComName), .(ScientificName = Species, Species = ComName)])  # combine and keep only English common names
+## Offline guard (2026-10-14): without internet common_names() returns
+## nothing ("Object 'Language' not found"). A successful pull is cached in
+## fisheries/fishbase_common_names_cache.csv and reused when the servers
+## cannot be reached; with neither, the run stops (matching without common
+## names would silently lose most of the catch).
+.cn_cache <- file.path(csv_out_dir, "fishbase_common_names_cache.csv")
+.cn_all <- rbindlist(list(fb_common, slb_common), fill = TRUE)
+if (nrow(.cn_all) > 0 && all(c("Language", "ComName", "Species") %in% names(.cn_all))) {
+  fb_lookup <- unique(.cn_all[Language == "English" & !is.na(ComName), .(ScientificName = Species, Species = ComName)])  # combine and keep only English common names
+  fwrite(fb_lookup, .cn_cache)
+} else if (file.exists(.cn_cache)) {
+  fb_lookup <- fread(.cn_cache)
+  message("[FishBase] Common names could not be downloaded (no internet?) - using the cached copy ", .cn_cache, ".")
+} else {
+  stop("FishBase/SeaLifeBase could not be reached (no internet?) and there is no cached copy of the common names (",
+       .cn_cache, "). Check the internet connection and run again.", call. = FALSE)
+}
 message("Common names found: ", nrow(fb_lookup), " covering ", uniqueN(fb_lookup$ScientificName), " of ", length(sci_names), " species")
 
 clean_name <- function(x) {
@@ -1430,9 +1471,68 @@ rerun_species_fg_cascade <- function(species_names) {
   unique(out, by = c("Species", "FG_num"))  # by = "Species" alone would collapse a taxonomy-rank split's multiple FG rows for the same species down to just one, silently dropping the split
 }
 
+## --- "Marine molluscs nei": split by the identified mollusc catch -------
+## (2026-10-14, project decision). FAO "Marine molluscs nei" has no taxon
+## below the phylum. Its catch is split over the commercial mollusc FGs
+## (cephalopods and Benthic mollusc) in proportion to the mollusc catch
+## the SAME country (or GFCM division) reported to species or group level
+## in the SAME year:
+##   C_nei,f,k,y = C_nei,k,y x C_ident,f,k,y / sum_f C_ident,f,k,y
+## (k = country or division). If that key/year has no identified mollusc
+## catch, the key's all-year shares are used, then the shares of all keys
+## pooled; only if there is no identified mollusc catch at all does the
+## rank_alias_to_order.csv route (Mollusca -> Bivalvia) remain.
+## MOLLUSC_NEI_SPLIT = FALSE keeps the rank_alias route for all of it.
+if (!exists("MOLLUSC_NEI_SPLIT")) MOLLUSC_NEI_SPLIT <- TRUE
+MOLLUSC_NEI_REGEX <- "(?i)^marine molluscs nei$"
+.mollusc_fgs <- if (!is.null(taxonomy_rank_ref) && "Phylum" %in% names(taxonomy_rank_ref))
+  unique(taxonomy_rank_ref[tolower(Phylum) == "mollusca" & !grepl("non-commercial|noncommercial", FG_name, ignore.case = TRUE), .(FG_num, FG_name)]) else
+  data.table(FG_num = numeric(), FG_name = character())
+if (!nrow(.mollusc_fgs) && exists("fg_lookup"))   # no Phylum column: mollusc FGs by name
+  .mollusc_fgs <- unique(fg_lookup[grepl("(?i)cephalopod|mollusc", FG_name, perl = TRUE) & !grepl("(?i)non-commercial", FG_name, perl = TRUE), .(FG_num, FG_name)])
+.mollusc_nei_split <- function(ts, key) {
+  if (!isTRUE(MOLLUSC_NEI_SPLIT) || !nrow(.mollusc_fgs) || !nrow(ts) || !key %in% names(ts)) return(NULL)
+  nei <- ts[grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)]
+  if (!nrow(nei)) return(NULL)
+  id <- merge(ts[!grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)], species_to_fg, by = "Species", allow.cartesian = TRUE)[
+    FG_num %in% .mollusc_fgs$FG_num, .(C = sum(Catch * Split_weight, na.rm = TRUE)), by = c(key, "Year", "FG_num", "FG_name")]
+  if (!nrow(id) || id[, sum(C)] <= 0) return(NULL)
+  sh_ky <- id[, .(FG_num, FG_name, w = C / sum(C)), by = c(key, "Year")][is.finite(w)]
+  sh_k  <- id[, .(C = sum(C)), by = c(key, "FG_num", "FG_name")][, .(FG_num, FG_name, w = C / sum(C)), by = key]
+  sh_all <- id[, .(C = sum(C)), by = .(FG_num, FG_name)][, w := C / sum(C)][, C := NULL]
+  keys <- unique(nei[, c(key, "Year"), with = FALSE])
+  out <- rbindlist(lapply(seq_len(nrow(keys)), function(i) {
+    kv <- keys[[key]][i]; yv <- keys$Year[i]
+    w <- sh_ky[get(key) == kv & Year == yv]; how <- "same key and year"
+    if (!nrow(w)) { w <- sh_k[get(key) == kv]; how <- "same key, all years" }
+    if (!nrow(w)) { w <- sh_all; how <- "all keys pooled" }
+    data.table(kv, yv, w$FG_num, w$FG_name, w$w, paste0("mollusc_nei_identified_share (", how, ")"))
+  }))
+  setnames(out, c(key, "Year", "FG_num", "FG_name", "Split_weight", "match_method"))
+  out
+}
+.apply_mollusc_nei <- function(ts, key, by_cols) {
+  base <- merge(ts, species_to_fg, by = "Species", allow.cartesian = TRUE)
+  sp <- .mollusc_nei_split(ts, key)
+  if (is.null(sp)) return(base)
+  nei_rows <- merge(ts[grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)], sp, by = c(key, "Year"), allow.cartesian = TRUE)
+  rbind(base[!grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)], nei_rows, fill = TRUE)
+}
+if (isTRUE(MOLLUSC_NEI_SPLIT) && nrow(ts_data$country_species_ts) > 0) {
+  .mn <- .mollusc_nei_split(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES], "Country")
+  if (!is.null(.mn)) {
+    .mn_t <- merge(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES & grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)],
+                   .mn, by = c("Country", "Year"))[, .(t_per_yr = sum(Catch * Split_weight) / length(YEAR_ECOPATH)), by = FG_name]
+    fwrite(.mn, file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv"))
+    message("\n[Mollusc NEI] 'Marine molluscs nei' split by each country's identified mollusc catch of the same year (",
+            paste(range(YEAR_ECOPATH), collapse = "-"), " mean, t/yr): ",
+            paste0(.mn_t$FG_name, " ", round(.mn_t$t_per_yr), collapse = "; "), ". Shares: mollusc_nei_split_by_country_year.csv.")
+  }
+}
+
 ## GFCM catches by species/FG x year x Division (all West Med reporting
 ## countries - the "by species and year and GSA[Division]" deliverable):
-gfcm_species_division_fg <- merge(ts_data$species_ts, species_to_fg, by = "Species", allow.cartesian = TRUE)  # attach FG to the species-level catch timeseries - allow.cartesian since a taxonomy-rank-split species now fans out into more than one FG row
+gfcm_species_division_fg <- .apply_mollusc_nei(ts_data$species_ts, "Division")  # attach FG to the species-level catch timeseries - allow.cartesian since a taxonomy-rank-split species now fans out into more than one FG row
 gfcm_species_division_fg <- gfcm_species_division_fg[Year >= START_YEAR & Year <= END_YEAR,
                                                      .(Landings_t = sum(Catch * Split_weight, na.rm = TRUE)), by = .(Year, Division, FG_num, FG_name, Species, match_method)]  # sum landings by year x division x FG x species, within the study period - Catch scaled by Split_weight (1 for a normal match, so unchanged) before summing so a split species' catch is divided across its candidate FGs, not counted in full against each one. match_method is added to the grouping key - it's already a deterministic function of (Species, FG_num) via species_to_fg, so this adds a column without splitting any existing group further; needed downstream so the nei_keyword_* fallback's own contribution can be isolated for the F<=1 cap (see fg_catch_timeseries below).
 fwrite(gfcm_species_division_fg, file.path(csv_out_dir, paste0("gfcm_catches_by_species_year_division_", DATASET_VERSION, ".csv")))  # write result to CSV
@@ -1444,7 +1544,7 @@ message("\n[GFCM] gfcm_catches_by_species_year_division_", DATASET_VERSION, ".cs
 ## the fleet/sector split, discard, and unreported steps below):
 gfcm_country_fg <- data.table()
 if (nrow(ts_data$country_species_ts) > 0) {
-  gfcm_country_fg <- merge(ts_data$country_species_ts, species_to_fg, by = "Species", allow.cartesian = TRUE)  # attach FG to the country-level catch timeseries - allow.cartesian since a taxonomy-rank-split species now fans out into more than one FG row
+  gfcm_country_fg <- .apply_mollusc_nei(ts_data$country_species_ts, "Country")  # attach FG to the country-level catch timeseries - allow.cartesian since a taxonomy-rank-split species now fans out into more than one FG row
   gfcm_country_fg <- gfcm_country_fg[Country %in% TARGET_COUNTRIES & Year >= START_YEAR & Year <= END_YEAR,
                                      .(Landings_t = sum(Catch * Split_weight, na.rm = TRUE)), by = .(Country, FG_num, FG_name, Year)]  # sum landings by country x FG x year, target countries and study period only - Catch scaled by Split_weight (1 for a normal match, so unchanged) before summing
   message("[GFCM] Country x FG x Year backbone: ", nrow(gfcm_country_fg), " row(s), ",
@@ -3802,6 +3902,36 @@ if (nrow(gfcm_zero_catch_fdi_backfill) > 0) {
           " both flagged as a structural placeholder, never a genuine 1994-1996 measurement, in magnitude_source.")
 }
 
+## --- FDI first for EU countries (2026-10-15, project decision) ---------
+## Spain, France and Italy: where STECF FDI reports landings for a
+## Country x FG x Year (2014+, model GSAs only), that FDI value IS the
+## landings. GFCM (FAO-GFCM capture production) is used only for the
+## years FDI does not cover (1994-2013, incl. the Ecopath baseline) and
+## for the non-EU countries (Morocco, Algeria). The pre-FDI GFCM years
+## keep the FDI/GFCM magnitude factor above, so the series has no step
+## at the first FDI year. CATCH_FDI_FIRST = FALSE restores the previous
+## rule (GFCM every year, scaled to FDI).
+if (!exists("CATCH_FDI_FIRST")) CATCH_FDI_FIRST <- TRUE
+if (isTRUE(CATCH_FDI_FIRST) && exists("stecf_catch_cfy") && nrow(stecf_catch_cfy) > 0) {
+  .fdi <- stecf_catch_cfy[Country %in% c("Spain", "France", "Italy") & is.finite(Catch_t_stecf), .(Country, FG_num, Year, Landings_t_fdi = Catch_t_stecf)]
+  .fdi <- .fdi[, .(Landings_t_fdi = sum(Landings_t_fdi)), by = .(Country, FG_num, Year)]
+  .before <- gfcm_country_fg[Year %in% unique(.fdi$Year), sum(Landings_t, na.rm = TRUE)]
+  gfcm_country_fg <- merge(gfcm_country_fg, .fdi, by = c("Country", "FG_num", "Year"), all = TRUE)
+  ## FG_name for FDI-only cells (FG present in FDI, absent from GFCM that year)
+  .fgn <- unique(rbind(gfcm_country_fg[!is.na(FG_name), .(FG_num, FG_name_fill = FG_name)],
+                      if (exists("fg_lookup")) fg_lookup[, .(FG_num = as.numeric(FG_num), FG_name_fill = FG_name)]), by = "FG_num")
+  gfcm_country_fg <- merge(gfcm_country_fg, .fgn, by = "FG_num", all.x = TRUE)
+  gfcm_country_fg[is.na(FG_name), FG_name := FG_name_fill][, FG_name_fill := NULL]
+  gfcm_country_fg[!is.na(Landings_t_fdi), `:=`(Landings_t = Landings_t_fdi, magnitude_source = "STECF FDI landings (model GSAs, this year)")]
+  gfcm_country_fg[is.na(Landings_t), Landings_t := 0]
+  gfcm_country_fg[, Landings_t_fdi := NULL]
+  .n_fdi <- gfcm_country_fg[magnitude_source == "STECF FDI landings (model GSAs, this year)", .N]
+  message("[Catch source] FDI first: ", .n_fdi, " Spain/France/Italy Country x FG x Year cell(s) (",
+          paste(range(.fdi$Year), collapse = "-"), ") now use STECF FDI landings directly; GFCM (scaled to FDI) fills ",
+          "the years before FDI and GFCM/Sea Around Us the non-EU countries. Landings in the FDI years: ",
+          round(.before), " t (GFCM scaled) -> ", round(gfcm_country_fg[Year %in% unique(.fdi$Year), sum(Landings_t, na.rm = TRUE)]), " t.")
+}
+
 ## Country x FG x Year catch WITH discards added back onto GFCM's landings
 ## (now scaled to STECF FDI's magnitude above wherever a factor exists).
 ## Joined on FG_num x Year (was FG_num alone) - discard_by_fg is
@@ -5888,8 +6018,14 @@ message("\n[Fleet split] fleet_prop_final: ", n_stecf_cells, " cell(s) use STECF
 ## years but not others had the same problem. Fallback order per missing
 ## cell: (1) that Country x FG's own mean share across its other years;
 ## (2) country_overall's Country x FleetType mix; (3) equal share.
+## Cells whose fleet shares exist but are all NA/0 (2026-10-15: Algeria
+## 1994 and 2020-2023, e.g. SAU hindcast rows outside SAU's own years,
+## 484,486 t) count as missing too; before, they passed this check and
+## were then dropped at the join below.
+.ok_cfy <- fleet_prop_final[is.finite(prop_fleet), .(s = sum(prop_fleet)), by = .(Country, FG_num, Year)][s > 0, .(Country, FG_num, Year)]
+fleet_prop_final <- fleet_prop_final[is.finite(prop_fleet)][.ok_cfy, on = c("Country", "FG_num", "Year"), nomatch = 0]
 missing_cfy <- unique(catch_with_unreported[, .(Country, FG_num, Year)])
-missing_cfy <- missing_cfy[!unique(fleet_prop_final[, .(Country, FG_num, Year)]), on = c("Country", "FG_num", "Year")]
+missing_cfy <- missing_cfy[!.ok_cfy, on = c("Country", "FG_num", "Year")]
 if (nrow(missing_cfy) > 0) {
   fleet_prop_topup <- merge(missing_cfy, fleet_types_ref[, .(Country, FleetType)], by = "Country", allow.cartesian = TRUE)
   own_mean <- fleet_prop_final[, .(prop_own = mean(prop_fleet, na.rm = TRUE)), by = .(Country, FG_num, FleetType)]

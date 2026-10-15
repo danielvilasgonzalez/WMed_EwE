@@ -373,6 +373,10 @@ message("This script will write its outputs to:\n  out_dir  = ", out_dir, "\n  p
 ## below (STEP 1's area-definition block), since a custom bbox/shapefile
 ## doesn't have a fixed, known-in-advance set of area codes the way the
 ## Western Med's GSA 1-11 does.
+## MODEL_GSAS (set in run_pipeline_demo.R like the years) = the GSAs of the
+## model area; FILTER_AREAS (the survey filter) follows it. Default: the
+## whole Western Med, GSAs 1-11.
+if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) FILTER_AREAS <- MODEL_GSAS
 if (!exists("FILTER_AREAS",  envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS  <- if (AREA_MODE == "custom") NULL else 1:11        # GSA
 if (!exists("STRATA",        envir = .GlobalEnv, inherits = FALSE)) STRATA        <- TRUE         # function attribute: strata
 if (!exists("YEAR_ECOPATH",  envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH  <- 1994:1996     # function attribute: year_ecopath
@@ -544,9 +548,41 @@ WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
 ## the `aquamapsdata` package's local database (~2GB/~10GB unpacked,
 ## downloaded once, cached after that - see ensure_aquamaps_db()).
 if (!exists("APPLY_AQUAMAPS_DEPTH_ADJUSTMENT", envir = .GlobalEnv, inherits = FALSE)) APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE
+## MODEL AREA (2026-10-14, project decision). "whole_gsa" (default): the
+## model area A_model is the WHOLE sea area of the model GSAs, from the
+## coast to the bottom. MEDITS measures 10-800 m; the other depths
+## (0-10 m, 800-1000 m, 1000-2850 m, 2850 m to the bottom) get AquaMaps
+## pseudo-strata (STEP 7b), and every t/km2 of the pipeline (Ecopath_B,
+## catch, F, 01b groups) is per km2 of that whole area. Written to
+## model_area_by_gsa.csv / model_area_cells.csv, which 02, 03 and 05 read.
+## "medits_10_800": the previous basis (A_model = the 10-800 m MEDITS
+## strata only, 175,660 km2 for GSAs 1, 2, 5-11).
+if (!exists("MODEL_AREA_BASIS", envir = .GlobalEnv, inherits = FALSE)) MODEL_AREA_BASIS <- "whole_gsa"
+if (identical(MODEL_AREA_BASIS, "whole_gsa") && !isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
+  message("[Model area] MODEL_AREA_BASIS = 'whole_gsa' needs APPLY_AQUAMAPS_DEPTH_ADJUSTMENT = TRUE (biomass outside 10-800 m",
+          " comes from the AquaMaps pseudo-strata) - using 'medits_10_800' for this run.")
+  MODEL_AREA_BASIS <- "medits_10_800"
+}
+## MODEL GSAs (2026-10-14, project decision): the model area covers every
+## GSA in FILTER_AREAS (1-11 for the Western Med: Spain, France, Italy,
+## Morocco, Algeria), not only the GSAs MEDITS/MEDIAS survey (1, 2, 5-11).
+## ASSUMPTION: the survey density (t per km2 of the surveyed GSAs) holds
+## for the unsurveyed GSAs (3, 4) too; their area enters A_model, so the
+## biomass in tonnes covers the whole model area. Catch of all coastal
+## states of these GSAs is kept (02_fisheries.R reads the GSA list from
+## model_area_by_gsa.csv).
+if (!exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE)) MODEL_GSAS <- FILTER_AREAS
+
+## Deep AquaMaps bands (pseudo-strata below the deepest MEDITS stratum).
+## whole_gsa: down to 6000 m so the bands cover the whole GSA area.
+if (!exists("AQUAMAPS_DEEP_RANGES", envir = .GlobalEnv, inherits = FALSE))
+  AQUAMAPS_DEEP_RANGES <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) list(c(800, 1000), c(1000, 2850), c(2850, 6000)) else
+    list(c(800, 1000), c(1000, 2850))
 ## Deepest depth whose AquaMaps pseudo-stratum biomass is counted (see
-## STEP 7b): 1000 m = limit of bottom trawling (GFCM Rec. GFCM/2005/1).
-if (!exists("AQUAMAPS_B_MAX_DEPTH", envir = .GlobalEnv, inherits = FALSE)) AQUAMAPS_B_MAX_DEPTH <- 1000
+## STEP 7b). whole_gsa: all depths (Inf). medits_10_800: 1000 m = limit
+## of bottom trawling (GFCM Rec. GFCM/2005/1).
+if (!exists("AQUAMAPS_B_MAX_DEPTH", envir = .GlobalEnv, inherits = FALSE))
+  AQUAMAPS_B_MAX_DEPTH <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) Inf else 1000
 
 message(
   "This script will run for area(s): ", if (is.null(FILTER_AREAS)) "(derived from the custom area below)" else paste(FILTER_AREAS, collapse = ", "),
@@ -1258,6 +1294,26 @@ strata_area_by_area <- compute_strata_area_by_area(
   ## stays "AreaID" there.
   area_id_label = if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa")) "GSA" else "AreaID")
 
+## Model-area cells: MEDITS strata here; replaced by the AquaMaps-extended
+## cells (whole GSA area) in STEP 7b when MODEL_AREA_BASIS = "whole_gsa".
+## GSAs of MODEL_GSAS without survey hauls (3, 4) get their own areas
+## for the same strata (bathymetry, cached separately).
+.add_unsurveyed_gsas <- function(cells, strata_def, cache_name) {
+  miss <- setdiff(MODEL_GSAS, unique(cells$AreaID))
+  if (!length(miss) || is.null(MODEL_GSAS)) return(cells)
+  extra <- compute_strata_area_by_area(area_ids = miss, area_shp = area_shp, area_id_col = AREA_ID_COL, strata_def = strata_def,
+                                       cache_path = file.path(csv_out_dir, cache_name),
+                                       area_id_label = if (AREA_MODE == "westmed") "GSA" else "AreaID")
+  message("[Model area] Unsurveyed model GSA(s) ", paste(miss, collapse = ", "), " added to A_model: ",
+          round(sum(extra$area_km2, na.rm = TRUE)), " km2 (survey density assumed to hold there).")
+  unique(rbind(cells, as.data.table(extra), fill = TRUE))
+}
+MODEL_AREA_STRATA_DEF <- as.data.table(MEDITS_STRATA)
+MODEL_AREA_CELLS <- unique(as.data.table(strata_area_by_area)[!is.na(area_km2) & (is.null(FILTER_AREAS) | AreaID %in% FILTER_AREAS)])
+if (identical(MODEL_AREA_BASIS, "medits_10_800"))
+  MODEL_AREA_CELLS <- .add_unsurveyed_gsas(MODEL_AREA_CELLS, MEDITS_STRATA, "strata_area_by_area_unsurveyed_gsas.csv")
+MODEL_AREA_KM2 <- MODEL_AREA_CELLS[, sum(area_km2)]
+
 fg_index <- if (STRATA) {
   weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_area)
 } else {
@@ -1325,7 +1381,7 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
     n_samples_by_stratum = n_samples_by_stratum,
     medits_strata_def = MEDITS_STRATA,
     area_ids = sort(unique(dt$AreaID[dt$AreaID %in% FILTER_AREAS])),
-    area_shp = area_shp, area_id_col = AREA_ID_COL,
+    area_shp = area_shp, area_id_col = AREA_ID_COL, deep_ranges = AQUAMAPS_DEEP_RANGES,
     cache_path = file.path(csv_out_dir, "strata_area_by_area_aquamaps_extended.csv"))
   
   ## Kept specifically to compute net_density_multiplier below - the
@@ -1352,24 +1408,39 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
   ## MEDITS STRATA (10-800 m), the same A_model used by 01b, 02 (F) and
   ## Ecopath. Dividing by the extended area instead (575,489 km2 with the
   ## 1000-2850 m band) made every density ~3.3x too low for A_model.
-  ## ASSUMPTION: biomass in 0-10 m and 800-1000 m is attributed to the
-  ## 10-800 m model area (the catch of those depths is in C as well).
+  ## Since 2026-10-14 (MODEL_AREA_BASIS = "whole_gsa", default) all bands
+  ## are kept and the denominator is the whole GSA area (see below); the
+  ## 10-800 m denominator is kept only for MODEL_AREA_BASIS = "medits_10_800".
   .aq_keep <- aq$strata_def[depth_min < AQUAMAPS_B_MAX_DEPTH, stratum_num]
   .aq_pg_fg <- aq$per_group_fg[Stratum %in% .aq_keep]
   .aq_pg_sp <- aq$per_group_sp[Stratum %in% .aq_keep]
   .aq_ns    <- aq$n_samples_by_stratum[Stratum %in% .aq_keep]
   .aq_sa    <- aq$strata_area[Stratum %in% .aq_keep]
-  .model_area_den <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
+  ## Denominator. whole_gsa: the whole area (all kept strata, coast to
+  ## bottom) of the GSAs sampled that year. medits_10_800: the 10-800 m
+  ## MEDITS cells of those GSAs.
+  if (identical(MODEL_AREA_BASIS, "whole_gsa")) {
+    .den_cells <- unique(as.data.table(.aq_sa)[!is.na(area_km2), .(AreaID, Stratum, area_km2)])   # surveyed GSAs (density = t per km2 of the surveyed area)
+    MODEL_AREA_STRATA_DEF <- as.data.table(aq$strata_def)[stratum_num %in% .aq_keep]
+    MODEL_AREA_CELLS <- unique(as.data.table(.aq_sa)[!is.na(area_km2) & (is.null(FILTER_AREAS) | AreaID %in% FILTER_AREAS)])
+    MODEL_AREA_CELLS <- .add_unsurveyed_gsas(MODEL_AREA_CELLS, MODEL_AREA_STRATA_DEF, "strata_area_by_area_aquamaps_extended_unsurveyed_gsas.csv")
+    MODEL_AREA_KM2 <- MODEL_AREA_CELLS[, sum(area_km2)]
+    .gsa_yr <- unique(n_samples_by_stratum[!is.na(n_samples) & n_samples > 0, .(AreaID, Year)])
+    .model_area_den <- merge(.gsa_yr, .den_cells[, .(A = sum(area_km2)), by = AreaID], by = "AreaID")[, .(sampled_area_km2 = sum(A)), by = Year]
+  } else {
+    .den_cells <- MODEL_SURVEY_CELLS
+    .model_area_den <- sampled_area_by_year(n_samples_by_stratum, strata_area_by_area)
+  }
   fg_index <- weight_by_strata(.aq_pg_fg, .aq_ns, .aq_sa)
   attr(fg_index, "sampled_area_by_year") <- .model_area_den
   fg_index_regional <- weight_by_area(fg_index, impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
-                                      denominator_cells = MODEL_SURVEY_CELLS)
+                                      denominator_cells = .den_cells)
   species_density_regional <- weight_species_by_area(.aq_pg_sp, .aq_ns, .aq_sa, denominator_area = .model_area_den,
                                                      impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
-                                                     denominator_cells = MODEL_SURVEY_CELLS)
+                                                     denominator_cells = .den_cells)
   message("[AquaMaps] Strata kept for biomass (depth_min < ", AQUAMAPS_B_MAX_DEPTH, " m): ",
           paste(aq$strata_def[stratum_num %in% .aq_keep, paste0(depth_min, "-", round(depth_max), " m")], collapse = ", "),
-          "; densities per km2 of the sampled 10-800 m model area.")
+          "; densities per km2 of the model area (", MODEL_AREA_BASIS, ", ", round(MODEL_AREA_KM2), " km2).")
   aquamaps_depth_adjustment_audit <- aq$audit
   
   ## fg_index's own per_stratum attribute now spans all 8 strata (the
@@ -1407,6 +1478,15 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
           " AFTER divided by BEFORE this adjustment - the actual real-world 'x1.2'/'x0.3' figure,",
           " which can differ from depth_extrapolation_multiplier - see that column's own comment).")
 }
+
+## --- Model area A_model, written for 01b, 02, 03 and 05 ----------------
+## A_model = sum of MODEL_AREA_CELLS (MODEL_AREA_BASIS above). Every
+## t/km2 in the pipeline is per km2 of this area.
+fwrite(MODEL_AREA_CELLS, file.path(csv_out_dir, "model_area_cells.csv"))
+fwrite(MODEL_AREA_CELLS[, .(area_km2 = sum(area_km2)), by = .(GSA = AreaID)][order(GSA)][, basis := MODEL_AREA_BASIS],
+       file.path(csv_out_dir, "model_area_by_gsa.csv"))
+message("[Model area] A_model = ", round(MODEL_AREA_KM2), " km2 (", MODEL_AREA_BASIS, ", GSAs ", paste(sort(unique(MODEL_AREA_CELLS$AreaID)), collapse = ", "), "; MEDITS 10-800 m strata of the surveyed GSAs = ",
+        round(sum(as.data.table(strata_area_by_area)$area_km2, na.rm = TRUE)), " km2) - model_area_by_gsa.csv written.")
 
 ## =================================================================
 ## STEP 7c: Ecosim trend hygiene for the MEDITS FG index
@@ -1815,16 +1895,24 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## shelf density x (shelf area / model area). Without this, MEDIAS
   ## densities were ~1.9x too high relative to everything else.
   .sa <- as.data.table(strata_area_by_area)
+  ## depth bounds from MEDITS_STRATA when the strata-area table lacks them
+  ## (older cached strata_area_by_area.csv; 2026-10-13)
+  if (!"Depth_max_m" %in% names(.sa))
+    .sa <- merge(.sa, as.data.table(MEDITS_STRATA)[, .(Stratum = stratum_num, Depth_min_m = depth_min, Depth_max_m = depth_max)],
+                 by = "Stratum", all.x = TRUE)
   .gcol <- intersect(c("AreaID", "GSA"), names(.sa))[1]
   if (!is.na(.gcol) && exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa <- .sa[get(.gcol) %in% FILTER_AREAS]
-  MEDIAS_SHELF_TO_MODEL_AREA <- .sa[Depth_max_m <= 200, sum(area_km2, na.rm = TRUE)] / .sa[, sum(area_km2, na.rm = TRUE)]
+  ## shelf (10-200 m) of ALL model GSAs (unsurveyed ones included: the
+  ## MEDIAS shelf density is assumed to hold there) / A_model
+  .shelf_model_km2 <- MODEL_AREA_CELLS[Depth_min_m >= 10 & Depth_max_m <= 200, sum(area_km2, na.rm = TRUE)]
+  MEDIAS_SHELF_TO_MODEL_AREA <- .shelf_model_km2 / MODEL_AREA_KM2
   if (!is.finite(MEDIAS_SHELF_TO_MODEL_AREA) || MEDIAS_SHELF_TO_MODEL_AREA <= 0 || MEDIAS_SHELF_TO_MODEL_AREA > 1)
     stop("[MEDIAS] Could not compute the shelf (10-200 m) / model-area ratio from strata_area_by_area.")
   medias_fg_index_regional[, mean_density_shelf_t_km2 := mean_density_biomass_t_km2]
   medias_fg_index_regional[, mean_density_biomass_t_km2 := mean_density_shelf_t_km2 * MEDIAS_SHELF_TO_MODEL_AREA]
   message("[MEDIAS] Shelf density rescaled to model-area density: x ", signif(MEDIAS_SHELF_TO_MODEL_AREA, 3),
-          " (10-200 m shelf ", round(.sa[Depth_max_m <= 200, sum(area_km2)]), " km2 / model area ",
-          round(.sa[, sum(area_km2)]), " km2). mean_density_biomass_t_km2 is now model-area based;",
+          " (10-200 m shelf of the model GSAs ", round(.shelf_model_km2), " km2 / model area ",
+          round(MODEL_AREA_KM2), " km2, ", MODEL_AREA_BASIS, "). mean_density_biomass_t_km2 is now model-area based;",
           " the original shelf value is kept in mean_density_shelf_t_km2.")
   
   ## Label the area column as GSA (MEDIAS only ever runs under AREA_MODE
@@ -2091,8 +2179,14 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
       ## Project rule: surveys first - MEDIAS, then MEDITS.
       ## A stock assessment is used for a single-species FG only when
       ## neither survey has a value (bluefin tuna, swordfish...).
-      !is.na(medias_density), medias_density,
-      !is.na(medits_density), medits_density,
+      ## A survey ZERO is not a value here (2026-10-14): since unsampled
+      ## strata are imputed (SURVEY_IMPUTE_UNSAMPLED_CELLS) the index has
+      ## explicit 0 rows for years without a catch, and a 0 was overriding
+      ## the cited value (Detritus became 0, swordfish lost its ICCAT
+      ## biomass). With no cited value the row still ends at 0 through the
+      ## avg_density backfill below.
+      !is.na(medias_density) & medias_density > 0, medias_density,
+      !is.na(medits_density) & medits_density > 0, medits_density,
       FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2), stock_assessment_density_t_km2,
       ## Fallback for a "mixed" (multi-species) stock-assessment/megafauna
       ## FG - e.g. a cetacean or seabird FG that lumps several species.
@@ -2111,8 +2205,8 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
       FG_ECOLOGY_TYPE == "survey_exempt", NA_character_,  # left genuinely missing on purpose - see mean_density comment above
       FG_ECOLOGY_TYPE == "literature_first" & !is.na(stock_assessment_density_t_km2),
       paste0(stock_assessment_source, " - literature density preferred over MEDITS (trawl undersamples this FG)"),
-      !is.na(medias_density), "MEDIAS (preferred over MEDITS)",
-      !is.na(medits_density), "MEDITS (MEDIAS unavailable this Year)",
+      !is.na(medias_density) & medias_density > 0, "MEDIAS (preferred over MEDITS)",
+      !is.na(medits_density) & medits_density > 0, "MEDITS (MEDIAS unavailable this Year)",
       FG_ECOLOGY_TYPE == "single_species_assessed" & !is.na(stock_assessment_density_t_km2),
       paste0(stock_assessment_source, " - single-species FG with no survey biomass"),
       !is.na(stock_assessment_density_t_km2),
@@ -2125,9 +2219,20 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   ## this guard, a survey_exempt row deliberately left NA just above
   ## would get silently refilled with that same bycatch-noise average
   ## right here, undoing the fix.
-  fg_index_regional_combined[is.na(mean_density) & FG_ECOLOGY_TYPE != "survey_exempt", mean_density := avg_density]
-  fg_index_regional_combined[is.na(biomass_source) & FG_ECOLOGY_TYPE != "survey_exempt",
+  ## FGs with a cited / stock-assessment value in at least one year (e.g.
+  ## swordfish: ICCAT for 1995 only) are not filled with a survey average
+  ## of 0 in the other years (2026-10-15): the zero came from MEDITS hauls
+  ## that never catch the species and pulled Ecopath_B to a third of the
+  ## cited value (0 + 0.0205 + 0) / 3. Those years stay blank, so
+  ## Ecopath_B is the mean of the cited years. A positive survey average
+  ## is still used.
+  .fg_with_sa <- fg_index_regional_combined[!is.na(stock_assessment_density_t_km2), unique(FG_num)]
+  fg_index_regional_combined[is.na(mean_density) & FG_ECOLOGY_TYPE != "survey_exempt" &
+                               !(FG_num %in% .fg_with_sa & (is.na(avg_density) | avg_density <= 0)), mean_density := avg_density]
+  fg_index_regional_combined[is.na(biomass_source) & !is.na(mean_density) & FG_ECOLOGY_TYPE != "survey_exempt",
                              biomass_source := "MEDITS+MEDIAS average (neither MEDIAS nor MEDITS alone had a value this Year)"]
+  fg_index_regional_combined[is.na(biomass_source) & is.na(mean_density) & FG_num %in% .fg_with_sa,
+                             biomass_source := "no value this year (cited/stock-assessment FG; survey average 0 not used)"]
   fg_index_regional_combined[FG_ECOLOGY_TYPE == "survey_exempt" & is.na(biomass_source),
                              biomass_source := "MISSING - survey-exempt FG with no stock-assessment/EcoBase/literature source either (see EXEMPT_FG_NAMES) - genuinely no usable biomass yet, not filled with survey noise"]
   fg_index_regional_combined <- fg_index_regional_combined[, .(Year, FG_num, FG_name, mean_density, biomass_source, FG_ECOLOGY_TYPE)]
@@ -2176,8 +2281,8 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
     .sa_bc <- as.data.table(strata_area_by_area)
     .gc <- intersect(c("AreaID", "GSA"), names(.sa_bc))[1]
     if (exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa_bc <- .sa_bc[get(.gc) %in% FILTER_AREAS]
-    shelf_by_gsa <- .sa_bc[Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(get(.gc)))]
-    model_area_km2 <- .sa_bc[, sum(area_km2, na.rm = TRUE)]
+    shelf_by_gsa <- MODEL_AREA_CELLS[Depth_min_m >= 10 & Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]   # all model GSAs; unsurveyed ones get the fill below
+    model_area_km2 <- MODEL_AREA_KM2
     med_gsa <- acoustic_fg_by_gsa[, .(GSA = as.character(AreaID), Year, FG_num,
                                       dens = total_biomass_t / (area_nm2 * KM2_PER_NM2))]
     .sa_trend <- function(stk, anchor_years) {
@@ -2283,8 +2388,8 @@ if (!exists("SMALL_PELAGIC_POOLED_TREND")) SMALL_PELAGIC_POOLED_TREND <- FALSE
 if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic_fg_by_gsa") && nrow(acoustic_fg_by_gsa) > 0) {
   .sa_sp <- as.data.table(strata_area_by_area); .gsp <- intersect(c("AreaID", "GSA"), names(.sa_sp))[1]
   if (exists("FILTER_AREAS") && length(FILTER_AREAS) > 0) .sa_sp <- .sa_sp[get(.gsp) %in% FILTER_AREAS]
-  shelf_g <- .sa_sp[Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(get(.gsp)))]
-  model_km2 <- .sa_sp[, sum(area_km2, na.rm = TRUE)]
+  shelf_g <- MODEL_AREA_CELLS[Depth_min_m >= 10 & Depth_max_m <= 200, .(shelf_km2 = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]   # all model GSAs; unsurveyed ones = median below
+  model_km2 <- MODEL_AREA_KM2
   surv_area <- acoustic_fg_by_gsa[, .(survey_km2 = mean(area_nm2 * KM2_PER_NM2, na.rm = TRUE)), by = .(GSA = as.character(AreaID))]
   surv_area <- merge(shelf_g, surv_area, by = "GSA", all.x = TRUE)[, survey_km2 := fcoalesce(survey_km2, shelf_km2)]
   obs <- acoustic_fg_by_gsa[total_biomass_t > 0, .(GSA = as.character(AreaID), Year, FG_num, biomass_t = total_biomass_t, src = "MEDIAS")]
@@ -2581,7 +2686,7 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
     fg_j <- hp$FG_num_juv; fg_a <- hp$FG_num_adult
     r_ssb <- 0.42
     if (file.exists(HAKE_PARAM_PATH)) { .pp <- fread(HAKE_PARAM_PATH); if ("SSB_over_TB" %in% .pp$parameter) r_ssb <- as.numeric(.pp[parameter == "SSB_over_TB", value][1]) }
-    .sah <- as.data.table(strata_area_by_area); .gch <- intersect(c("AreaID", "GSA"), names(.sah))[1]
+    .sah <- copy(MODEL_AREA_CELLS); .gch <- intersect(c("AreaID", "GSA"), names(.sah))[1]   # model area per GSA (MODEL_AREA_BASIS)
     area_g <- .sah[as.numeric(get(.gch)) %in% FILTER_AREAS, .(A = sum(area_km2, na.rm = TRUE)), by = .(GSA = as.numeric(get(.gch)))]
     sa_h <- fread(HAKE_SA_PATH)[species == "Merluccius merluccius" & stock_key %in% names(HAKE_STOCK_GSAS) & is.finite(biomass)]
     sa_h[, A_k := vapply(stock_key, function(k) area_g[GSA %in% HAKE_STOCK_GSAS[[k]], sum(A)], numeric(1))]
@@ -3771,7 +3876,7 @@ if (nrow(fg_missing_biomass_eligible) > 0 &&
     ## reviews the candidate by hand.
     if (!is.null(ecobase_missing_fill) && nrow(ecobase_missing_fill) > 0) {
       ecobase_missing_fill[, FG_num := as.integer(TargetGroup)]
-      ecobase_missing_fill[, Biomass_t := Biomass_t_km2 * sum(strata_area_by_area$area_km2, na.rm = TRUE)]
+      ecobase_missing_fill[, Biomass_t := Biomass_t_km2 * MODEL_AREA_KM2]
       
       if (!exists("PLAUSIBILITY_MAX_DENSITY_MULTIPLE", envir = .GlobalEnv, inherits = FALSE)) PLAUSIBILITY_MAX_DENSITY_MULTIPLE <- 8
       max_known_density <- suppressWarnings(max(fg_biomass_base_year[!is.na(mean_density) & mean_density > 0, mean_density], na.rm = TRUE))

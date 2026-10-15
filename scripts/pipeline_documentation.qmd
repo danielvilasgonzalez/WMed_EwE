@@ -116,7 +116,7 @@ Because of this design, the numbered pipeline scripts are **order-independent wi
 Before anything else, this is what a viewer needs to see to know **what was actually modeled**: which region, which years, and which top-level settings.
 
 - **Region — `AREA_MODE`** (set at the top of `01_biomass.R`):
-  - `"westmed"` (the default, and what this worked example uses) — GSA-based selection via `FILTER_AREAS <- 1:11`, i.e. **GSA 1–11, the Western Mediterranean**. Any other GSA or set of GSAs anywhere in the GFCM area can be modeled by changing this one line.
+  - `"westmed"` (the default, and what this worked example uses) — GSA-based selection via `MODEL_GSAS <- 1:11` in `run_pipeline_demo.R`, i.e. **GSA 1–11, the whole Western Mediterranean** (default). A subset (e.g. `c(6, 7)`) filters the model area, the survey data and the catch countries together; any other GSA or set of GSAs in the GFCM area can be modeled the same way. `MODEL_AREA_BASIS` ("whole_gsa" default, or "medits_10_800") is set next to it.
   - `"custom"` — a fully custom, non-GSA study area: a bounding box (`CUSTOM_BBOX`, e.g. `WESTMED_BBOX`), an arbitrary shapefile (`CUSTOM_SHAPEFILE_PATH`), or a custom grouping of GSAs (`CUSTOM_GSA_IDS`), set via `CUSTOM_AREA_TYPE`. Useful for a bay, an MPA, or a footprint spanning parts of several GSAs that don't line up with GSA boundaries. See \[`AREA_MODE == "custom"`\] below for the full mechanism.
 - **Time window:**
   - `YEAR_ECOPATH <- 1994:1996` — the Ecopath baseline snapshot years (the single 3-year average that `Ecopath_B`, PB, QB, Landings and Discards are all computed against).
@@ -193,7 +193,7 @@ flowchart LR
 | 4 | `04_diets.R` (+ `lib_fishbase_diet_matrix.R`, `lib_worms_taxonomy_lookup.R`) | `Ecopath_diet`, `FG_References`; `output/diet/` | 1 (`biomass_proportion_by_species_fg.csv`, `Ecopath_B`) |
 | 5 | `05_validation.R` | `output/validation/`, `plots/validation/` | 1–4 |
 
-Every t/km² in every sheet uses the same model area, $A_{model}$ = sum of `strata_area_by_area.csv` = 175,660 km² (MEDITS 10–800 m strata of GSAs 1, 2, 5–11). Each script writes a time-stamped log, `output/YYYYMMDD_HHMMSS_<script>_log.txt`.
+Every t/km² in every sheet uses the same model area, $A_{model}$ = the whole sea area of GSAs 1–11, coast to bottom (`model_area_by_gsa.csv`, written by 01; GSA polygons ≈ 805,000 km²). MEDITS covers 10–800 m of GSAs 1, 2, 5–11; the other depths come from AquaMaps pseudo-strata, and the survey density per km² is assumed to hold for the unsurveyed GSAs 3 and 4 (`MODEL_GSAS`); catch of all their coastal states (incl. Morocco and Algeria) is kept. The model area is set in `run_pipeline_demo.R` together with the years: `MODEL_GSAS` (default 1:11, the whole Western Med; any subset filters the model area, the survey data and the catch countries) and `MODEL_AREA_BASIS` (default "whole_gsa") (since 2026-10-14; `MODEL_AREA_BASIS = "medits_10_800"` restores the 175,660 km² basis). Each script writes a dated log, `output/YYYYMMDD_<script>_log.txt` (a rerun on the same day overwrites it).
 
 Library files (no driver code): `lib_survey_fg_density_functions.R` (survey density, workbook writing, `safe_fwrite()`/`csv_has_nul()` for the pCloud drive, `compute_stanza_catch_split_from_length()`), `lib_worms_taxonomy_lookup.R`, `lib_fishbase_diet_matrix.R`, `lib_aquamaps_depth_extension.R`, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R`. Helper scripts: `combine_STAR_RAMlegacy.R` (builds `combined_medbs_star_ramlegacy.csv`), `export_gsa_boundaries.R`; standalone exploration scripts not called by the pipeline: `posidonia.R`, `coral_gorgonian.R`, `phyto.R`, `emodnet_benthic_habitat_biomass_extraction.R`.
 
@@ -206,7 +206,7 @@ Full equations with references are in `medbs_pipeline_methodology.qmd` (sections
 | Block | What it is | Primary source(s) | Key caveat |
 |----|----|----|----|
 | **B** — Biomass | `Ecopath_B` (1994–1996 mean, t/km²) and the B series in `Ecosim_ts` | MEDITS / q, MEDIAS (+ per-GSA small-pelagic series), stock assessments (hake stanzas, BFT, SWO), literature × habitat maps, ISIMIP3a COBALT plankton | groups the surveys cannot sample come from cited literature and models, each with its own assumptions (see `01b`) |
-| **C** — Catches | FG × year catch of the target countries | GFCM capture production, STECF FDI, Sea Around Us, FishMIP discard ratios, ICCAT Task I | only the coastal states of the model GSAs (Spain, France, Italy); ICCAT scaled to the model GSAs by FDI landings share |
+| **C** — Catches | FG × year catch of the target countries | GFCM capture production, STECF FDI, Sea Around Us, FishMIP discard ratios, ICCAT Task I | only the coastal states of the model GSAs (GSAs 1–11: Spain, France, Italy, Morocco, Algeria); ICCAT scaled to the model GSAs by FDI landings share |
 | **L** — Landings | `Ecopath_L`: FG × fleet | C split by FDI / SAU fleet shares, ICCAT gear field for BFT/SWO/ALB | unresolved fleet → "Target countries - fleet not resolved" column |
 | **Di** — Discards | `Ecopath_Di`: FG × fleet | FDI per-fleet discard ratio, else FishMIP | no source → discards 0 |
 | **M** — Natural mortality | fish $M$ inside $P/B = M + F$ | FishBase/SeaLifeBase, TropFishR, FishLife | priority Then \> Pauly \> Hoenig \> Alverson & Carney \> FishLife \> Gascuel |
@@ -232,17 +232,20 @@ The 1994–1996 (`YEAR_ECOPATH`) mean biomass density per FG in t/km² of $A_{mo
 
 ### 3. Computation method
 
-1.  Haul density → catchability → outlier screen → stratified mean per GSA → model-area mean → FG sum (equations 1–7 in the 01 header).
-2.  MEDIAS shelf density rescaled to $A_{model}$; sardine and anchovy from the per-GSA acoustic series with stock-assessment-trend gap filling (`small_pelagics_per_gsa_series_REVIEW.csv`).
-3.  Priority per FG × year: single-species stock assessment (FGs the surveys don't measure) \> MEDIAS \> MEDITS; survey-exempt FGs take only the `01b` value (never survey bycatch).
-4.  Hake stanzas from the assessment (`HAKE_STOCK_GSAS`): $B_{adult} \approx SSB$, $B_{juv} = B_{adult}(1-r)/r$, $r = 0.42$, back-cast with the MEDITS index (adult 0.0746, juvenile 0.103 t/km²).
-5.  `01b_biomass_unsurveyed.R` (see its own section below) adds megafauna, BFT/SWO, benthic habitats, plankton, suprabenthos and detritus.
-6.  `Ecopath_B` = mean over `YEAR_ECOPATH`; `FG_spp` = species share of FG biomass (`prop_sp_fg`); EcoBase biomass is evaluated only (`ecobase_biomass_evaluation_NOT_INCORPORATED.csv`).
+1.  Haul density → catchability → outlier screen → stratified mean per GSA → model-area mean → FG sum (equations 1–7 in the 01 header). The index is zero-inclusive: every sampled haul counts, also where the FG was not caught. A GSA not sampled in a year is left out of both the biomass and the area for that year (no borrowing from other GSAs). A stratum not sampled inside a sampled GSA is filled as stratum effect × GSA-year effect (`impute_unsampled_cells()`, Yates 1933).
+2.  AquaMaps depth extension: biomass of the 0–10 m and 800–1000 m pseudo-strata, where MEDITS does not sample, is added from AquaMaps depth suitability (`AQUAMAPS_B_MAX_DEPTH = 1000`; trawling is banned below 1000 m, GFCM Rec. 2005/1). Genus-median depth envelope when a species has no AquaMaps record. The same extension is applied to literature densities that come from a restricted depth range: $D_k = D \cdot S_k / S_{band}$ (`LIT_AQUAMAPS_EXTEND`; currently Suprabenthos, +35.1 t).
+3.  MEDIAS shelf density rescaled to $A_{model}$; sardine and anchovy from the per-GSA acoustic series with stock-assessment-trend gap filling (`small_pelagics_per_gsa_series_REVIEW.csv`).
+4.  Priority per FG × year: survey-exempt FGs → only the `01b` value (never survey bycatch); literature-first FGs → literature; then MEDIAS \> MEDITS (each used only when \> 0, fix of 2026-10-14) \> single-species stock assessment / cited value \> survey-wide average.
+5.  Hake stanzas from the assessment (`HAKE_STOCK_GSAS`): $B_{adult} \approx SSB$, $B_{juv} = B_{adult}(1-r)/r$, $r = 0.42$, back-cast with the MEDITS index (× 0.84; adult 0.0918, juvenile 0.127 t/km² in the 2026-10-13 run).
+6.  `01b_biomass_unsurveyed.R` (see its own section below) adds megafauna, BFT/SWO, benthic habitats, plankton, macrozooplankton, suprabenthos and detritus. Benthic mollusc, other macro-benthos, suprabenthos, jellyfish and salps are left for Ecopath to estimate (EE = 0.95, `ECOPATH_B_FROM_EE`).
+7.  Ecosim series hygiene (shape only, the 1994–1996 baseline is kept): haul density capped at the 95th percentile per FG × GSA × stratum (`ECOSIM_HAUL_CAP_Q`), isolated upward spikes blanked by a one-sided Hampel filter (`ECOSIM_SPIKE_FILTER`), years without data left blank (not 0).
+8.  `Ecopath_B` = mean over `YEAR_ECOPATH`; `FG_spp` = species share of FG biomass (`prop_sp_fg`); EcoBase biomass is evaluated only (`ecobase_biomass_evaluation_NOT_INCORPORATED.csv`).
 
 ### 4. Known caveats / limitations
 
-- 5 FGs have no Ecopath_B (3 Expanding FGs, Salps — left for Ecopath — and Discards).
-- 123 species in 7 FGs use an even within-FG split.
+- No Ecopath_B for the 3 Expanding FGs (real baseline zero), Discards, and the 5 FGs left for Ecopath (EE = 0.95).
+- 4 FGs still use an even within-FG species split.
+- In the 2026-10-13 run Detritus came out 0 and Swordfish 0.0154 because survey zeros overrode the cited values; fixed on 2026-10-14 (rerun 01 → 05).
 - `FG_WMed_2026.csv` has no `survey_exempt` column; the hard-coded `EXEMPT_FG_NAMES` list is used (log message).
 - Assumptions in the unsurveyed groups are listed in the `01b` section and in each row's `Source_citation`.
 
@@ -281,7 +284,7 @@ Predator FG × prey FG diet composition $DC_{f,j}$ (each predator column sums to
 - The metaweb has no rows yet, so every diet comes from MAISHA, FishBase/SeaLifeBase or nothing.
 - Category shares split by prey biomass is an assumption (prey eaten in proportion to availability).
 - EcoBase's web service exposes no diet matrices, so tier 4 finds nothing.
-- No diet for corals and gorgonians, meso and micro zooplankton, suprabenthos (2026-10-07 run).
+- No diet for corals and gorgonians, meso and micro zooplankton, suprabenthos (2026-10-13 run).
 
 ### 5. Code location
 
@@ -383,7 +386,7 @@ Runs two independent surveys over the same GSAs/FG scheme (MEDITS bottom trawl +
 | GFCM GSA shapefile | auto-downloaded zip from `gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip` | Study-area polygons (`area_shp`); `SMU_CODE` 111/112 (W/E Sardinia) merged into GSA 11 |
 | NOAA bathymetry | auto-downloaded via `marmap::getNOAA.bathy()` inside `compute_strata_area_by_area()` | Depth-stratum area calculation |
 
-`FILTER_AREAS <- 1:11` (this example's Western Med GSAs — set to any GSA number or set of GSA numbers, anywhere in the GFCM area, to retarget the whole script to a different region), `YEAR_ECOPATH <- 1994:1996`, `TS_YEARS <- 1995:2023`, `STRATA <- TRUE`, `DROP_OUTLIERS <- FALSE`, `NORMALIZE_TS <- TRUE`, `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- FALSE` (opt-in — see Step 7b below).
+`MODEL_GSAS <- 1:11` (set in `run_pipeline_demo.R`; `FILTER_AREAS` follows it — any GSA or set of GSAs in the GFCM area retargets the whole pipeline), `YEAR_ECOPATH <- 1994:1996`, `TS_YEARS <- 1995:2023`, `STRATA <- TRUE`, `DROP_OUTLIERS <- FALSE`, `NORMALIZE_TS <- TRUE`, `APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- FALSE` (opt-in — see Step 7b below).
 
 ### Step 7b — AquaMaps shallow/deep depth adjustment (opt-in)
 
@@ -525,28 +528,29 @@ safe_include_graphics(
 | A. Stock assessment | Bluefin tuna, swordfish; marine megafauna | ICCAT density (GBYP aerial survey for BFT; $0.72\,B_{MSY}$ for SWO); megafauna density or count × body mass | `marine_megafauna_biomass.csv`; ICCAT reports |
 | B. Literature density × depth band | Benthic mollusc, other macro-benthos (literature first, MEDITS fallback), sea pens, suprabenthos | $B = D \times A(z_{min}, z_{max}) / A_{model}$, $A$ from the strata/bathymetry | `literature_density_biomass.csv` |
 | C. Habitat map × density × occupancy | Posidonia, Cymodocea, macroalgae, coralligenous corals and gorgonians | $B = D \times c_{WW} \times A_{map} \times occ / A_{model}$ | `habitat_shapefile_biomass.csv`, `density_unit_to_wet_g_m2.csv`, EUSeaMap 2025, EMODnet macroalgae |
-| D. Plankton models | Large and small phytoplankton, meso + micro zooplankton, detritus | ISIMIP3a GFDL-MOM6-COBALT2 obsclim (CMEMS MedBFM/PISCES/satellite as cross-check); macrozooplankton = krill field minimum (`MACROZOO_SOURCE`) | ISIMIP cache, `lib_cmems_phytoplankton_biomass.R`, `lib_satellite_phytoplankton_biomass.R` |
+| D. Plankton models and field datasets | Large and small phytoplankton, meso + micro zooplankton, detritus; macrozooplankton, jellyfish, salps | ISIMIP3a GFDL-MOM6-COBALT2 obsclim for phytoplankton, detritus and meso + micro zooplankton (level and trend; the Western Med net value is a reference only); macrozooplankton from MAREDAT (Moriarty et al. 2013), median 0–350 m × $z_{eff}$ 214.5 m / C:WW 0.04; jellyfish and salps from Luo et al. 2020 for review only (`GEL_MACRO_SOURCE`, `lib_gelatinous_macrozoo_biomass.R`) | ISIMIP cache, MAREDAT netCDF, Luo et al. 2020 csv |
 
 B and C are added together per FG × year.
 
 ## Habitat areas (EUSeaMap 2025)
 
-`compute_euseamap_habitat_area()` reads living Posidonia (EUNIS2019C MB252, MB2522; dead matte MB2523 excluded), coralligenous (MC151, MC251) and tries two Cymodocea codes (MB5521, MB5534 — not present in the 2025 map) from the geodatabase, clips them to the model GSAs, dissolves per GSA and measures them in an equal-area Albers projection. Only habitat deeper than the shallowest MEDITS stratum (`EUSEAMAP_MIN_DEPTH_M` = 10 m) is counted: `.frac_deeper_than()` samples up to 5,000 points per GSA polygon and reads NOAA ETOPO depth via `marmap` (15 arc-sec, 1 arc-min fallback; coarse for the 0–10 m band). Result cached in `euseamap2025_seagrass_area_by_gsa_ge10m.csv` (delete to recompute). 2026-10-07 run: Posidonia 3,111.9 km² (4,351.2 km² at all depths), coralligenous 1,375.3 km².
+`compute_euseamap_habitat_area()` reads living Posidonia (EUNIS2019C MB252, MB2522; dead matte MB2523 excluded), coralligenous (MC151, MC251) and tries two Cymodocea codes (MB5521, MB5534 — not present in the 2025 map) from the geodatabase, clips them to the model GSAs, dissolves per GSA and measures them in an equal-area Albers projection. Only habitat deeper than the shallowest MEDITS stratum (`EUSEAMAP_MIN_DEPTH_M` = 10 m) is counted: `.frac_deeper_than()` samples up to 5,000 points per GSA polygon and reads NOAA ETOPO depth via `marmap` (15 arc-sec, 1 arc-min fallback; coarse for the 0–10 m band). Result cached in `euseamap2025_seagrass_area_by_gsa_ge10m.csv` (delete to recompute). 2026-10-13 run: Posidonia 3,111.9 km² (4,351.2 km² at all depths), coralligenous 1,375.3 km².
 
-## Values and assumptions (2026-10-07 run)
+## Values and assumptions (2026-10-13 run)
 
 | FG | Density / method | Ecopath_B (t/km²) | Assumptions |
 |----|----|----|----|
 | Posidonia | 168 g DW/m² leaf (280 at 2–4 m × depth factor 0.6) × 4.17 × 3,111.9 km² × 0.7 | 8.68 | depth factor, no seasonal correction, occupancy |
-| Cymodocea | 410.4 g DW/m² × 4.17 × (10–15 m band) × 0.6 | 14.70 | no map; may include below-ground biomass |
+| Cymodocea | density × mapped area deeper than 10 m × occupancy 0.47 | 0.0805 | small mapped area; occupancy ASSUMPTION |
 | Macroalgae | 1,650 g DW/m² × 7 × 325.05 km² × 0.4 | 8.55 | DW→WW × 7, occupancy, ICES-ecoregion area |
 | Corals and gorgonians | 37.3 g DW/m² × 2.5 × 1,375.3 km² | 0.729 | DW→WW × 2.5 |
 | Large / small phytoplankton | COBALT, C:WW 0.16 | 5.70 / 6.30 | model value |
-| Meso and micro zooplankton | COBALT zmicro + zmeso, C:WW 0.07 / 0.09 | 29.6 | above the field range (05, block 11) |
-| Macro zooplankton | krill field minimum | 0.124 | lower bound |
-| Suprabenthos | literature density, 10–388 m + 389–1,255 m | 0.022 | hand-read figure |
-| Detritus | Pauly et al. 1993 equation | 288 | — |
-| Salps | none (Ecopath EE) | — | — |
+| Meso and micro zooplankton | COBALT level and trend, whole water column (since 2026-10-14; field net value kept as reference only) | 29.6 | C:WW 0.07 / 0.09 (cited) |
+| Macro zooplankton | MAREDAT median × 214.5 m / 0.04 | 3.15 | C:WW 0.04; sparse cells |
+| Suprabenthos | literature density, 10–388 m + 389–1,255 m, + AquaMaps extension | 0.0205 (reference; Ecopath estimates B) | hand-read figure |
+| Detritus | Pauly et al. 1993 equation | ≈ 288 (0 in the 2026-10-13 run; fixed) | — |
+| Swordfish | $0.72\,B_{MSY}$ (ICCAT 2020) | 0.0205 (0.0154 in the 2026-10-13 run; fixed) | 2018 ≠ 1995 |
+| Jellyfish, salps | none (Ecopath EE = 0.95); Luo et al. 2020 values written for review | — | Luo data patchy, bloom-biased |
 
 Full citations are in the script header (`REFERENCES`) and in each row's `Source_citation`, which is copied to `FG_References`.
 
@@ -592,22 +596,23 @@ Same file set and workbook sheets as `AREA_MODE == "westmed"` (see above), writt
 
 ## Configuration and domain
 
-- `FILTER_AREAS` = the GSAs of `strata_area_by_area.csv` (1, 2, 5–11); `Total_Area_km2` = its sum (175,660 km²), the same $A_{model}$ as the biomass.
-- `GSA_COASTAL_STATE` (GFCM Res. GFCM/33/2009/2) → `TARGET_COUNTRIES` = coastal states of the model GSAs = Spain, France, Italy (`TARGET_COUNTRIES_OVERRIDE` to change). Catch of other countries in GFCM divisions 37.1.1–37.1.3 is excluded and reported (2026-10-07 run: Algeria 3.25 Mt, Morocco 0.86 Mt, Tunisia 0.64 Mt over all years).
+- `FILTER_AREAS` = the GSAs of `model_area_by_gsa.csv` (1–11; `TARGET_COUNTRIES` = Spain, France, Italy, Morocco, Algeria); `Total_Area_km2` = the sum of `model_area_by_gsa.csv` (whole GSA area), the same $A_{model}$ as the biomass.
+- "Marine molluscs nei" is split over the mollusc FGs by the identified mollusc catch of the same country and year (`MOLLUSC_NEI_SPLIT`; `mollusc_nei_split_by_country_year.csv`).
+- `GSA_COASTAL_STATE` (GFCM Res. GFCM/33/2009/2) → `TARGET_COUNTRIES` = coastal states of the model GSAs = Spain, France, Italy, Morocco (GSA 3) and Algeria (GSA 4) since 2026-10-14 (`TARGET_COUNTRIES_OVERRIDE` to change). Catch of other countries in GFCM divisions 37.1.1–37.1.3 (Tunisia, GSA 12) is excluded and reported. Morocco and Algeria have no STECF FDI data: their effort comes from FishMIP, discards from FishMIP ratios, and their fleet split is coarser.
 - `FLEET_REGISTER`, `GEAR_TO_FLEETTYPE` and FishMIP effort are filtered to `TARGET_COUNTRIES`; STECF FDI is filtered to the model GSAs.
 - `STAR_STOCK_GSA_OVERRIDE` corrects stock-unit labels (e.g. HAKEMEDGSA1-7 = GSAs 1, 5, 6, 7).
 - `YEAR_ECOPATH` = 1994–1996; `START_YEAR`–`END_YEAR` = 1994–2023; `DATASET_VERSION` = GFCM_2025.
 
 ## Processing steps
 
-1.  **GFCM catch → FG.** Species matched to FGs by scientific name, common name, the FAO `Name_En` → `Scientific_Name` bridge (ASFIS), genus, taxonomic rank (`match_bare_rank_to_fg()`) and NEI keywords (`nei_keyword_to_rank.csv`). Every match goes through `resolve_matches_safely()` (non-commercial rule below).
-2.  **Magnitude calibration** to STECF FDI for EU countries: $k_{c,f} = \sum C^{FDI}/\sum C^{GFCM}$ (2014–2023), not applied when \> 10 (`catch_calibration_factor_capped_REVIEW.csv`).
+1.  **GFCM catch → FG.** Species matched to FGs by scientific name, common name, the FAO `Name_En` → `Scientific_Name` bridge (ASFIS), genus, taxonomic rank (`match_bare_rank_to_fg()`) and NEI keywords (`nei_keyword_to_rank.csv`). "Marine molluscs nei" is split by each country's identified mollusc catch of the same year (cephalopods vs bivalves/gastropods); the `rank_alias_to_order.csv` route (Mollusca → Bivalvia) is only the fallback. Every match goes through `resolve_matches_safely()` (non-commercial rule below).
+2.  **Catch source:** EU countries (Spain, France, Italy) use STECF FDI landings directly wherever FDI reports them (2014+, `CATCH_FDI_FIRST`); GFCM fills the earlier years and the non-EU countries (Morocco and Algeria also use the Sea Around Us reconstructions up to 2010). Pre-FDI GFCM years are scaled to the FDI level, $k_{c,f} = \sum C^{FDI}/\sum C^{GFCM}$ (2014–2023), not applied when \> 10 (`catch_calibration_factor_capped_REVIEW.csv`), so there is no step at 2014.
 3.  **Excluded gears** (`FleetType = EXCLUDED` in `gear_to_fleettype.csv`) removed by their FDI (2014+) or SAU share.
 4.  **Discards** $Di = C \times r$ (FDI per-fleet ratio, else FishMIP ratio); $L = C - Di$.
 5.  **ICCAT** (BFT, SWO, ALB): Task I nominal catch of `TARGET_COUNTRIES`, Mediterranean rows only, × `fdi_model_gsa_share` (each country's FDI landings share inside the model GSAs, 2014+); replaces the GFCM value for these cells and gives a real gear split (`resolve_iccat_fleet_type()`, checked against ICCAT ST01 vessel length).
 6.  **Hake stanzas.** `compute_stanza_catch_split_from_length()` (library) uses MEDITS TC length frequencies of 1994–1996 in the model GSAs, VBGF ($L_\infty$ 110 cm, $K$ 0.178, $t_0$ 0; Mellon-Duval et al. 2010), $W = aL^{3.035}$, juvenile = age \< 2 (L \< 32.9 cm), MCRS 20 cm: 55.9 % of landings and 100 % of discards → FG 26, the rest → FG 27; applied at FG and fleet level (`multistanza_juv_adult_age_split.csv`).
 7.  **Fleet split** $C_l = C_{c,f,y}\,p_{l,c,f,y}$ (FDI → SAU hindcast → FDI multi-year mean → country mix → equal share, each flagged). Residual target-country catch with no fleet → column "Target countries - fleet not resolved".
-8.  **Effort.** $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$ (Rousseau nominal effort calibrated to FDI); fleet shares from FDI since 2014 and, before, the catch × days-per-tonne share rescaled per fleet to the 2014–2016 FDI mean (no jump at 2014; boundary check printed in the log). Technology creep below.
+8.  **Effort.** $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$ (Rousseau nominal effort calibrated once to the FDI level) for every year (`EFFORT_PRIMARY_SOURCE = "rousseau"`); fleet share = catch × days-per-tonne share rescaled per fleet to the 2014–2016 FDI mean; after Rousseau's last year the FDI trend carries the series. FDI's own effort is kept as a check column. Technology creep below.
 9.  **Ecopath sheets.** `Ecopath_L`, `Ecopath_Di`: 1994–1996 mean / $A_{model}$ by FG × fleet.
 10. **Fishing mortality.** `F_by_fg.csv`: $F_f = (\bar C_f/A_{model})/B_f$ with $B_f$ = the final `Ecopath_B` read from the workbook (helper `.use_ecopath_b()`; survey density only for FGs with no Ecopath_B; column `B_source`). `F_by_species_fg.csv` repeats the FG value per species. Changed on 2026-10-07 (before: survey density for every FG).
 11. **Ecosim.** Catch $C_{f,y}/A_{model}$ and effort relative to 1995 in `Ecosim_ts`.
@@ -683,13 +688,12 @@ The FishMIP forward-fill for Morocco/Algeria/Tunisia (effort held flat after Fis
 | `multistanza_juv_adult_age_split.csv` | hake juvenile/adult catch shares |
 | `plots/fisheries/fisheries_validation_plots.pdf` and PNGs `01`–`08` | catch, discards, fleets, effort, data-source coverage |
 
-## Log values of the 2026-10-07 run
+## Log values of the 2026-10-13 run
 
 - ICCAT model-GSA shares: France 1 (all); Italy ALB 0.23, BFT 0.57, SWO 0.59; Spain ALB 1, BFT 0.95, SWO 0.89.
-- Excluded gears, 1994–1996 mean: France 1,158 t/yr, Italy 15,188 t/yr, Spain 9,855 t/yr.
-- Effort 2013 → 2014 ratio: 0.53–3.26 (5 cells above ±50 %).
+- Excluded gears, 1994–1996 mean: France 1,141 t/yr, Italy 15,767 t/yr, Spain 9,051 t/yr.
 - Rousseau vs FDI effort correlation, 2014–2017: France 0.96, Spain 0.95, Italy −0.24.
-- Highest F (before the Ecopath_B change): deep-water rose shrimp 5.86; suprabenthos and macro zooplankton 1.0 (capped against survey biomass — fixed by the change); coastal benthic cephalopods 0.85.
+- F > 1 (7 FGs): caramote prawn 7.8, deep-water rose shrimp 3.4, groupers 1.95, mackerels 1.37, common dentex 1.19, coastal benthic cephalopods 1.15, salema 1.07.
 
 ------------------------------------------------------------------------
 
@@ -1000,7 +1004,7 @@ Every native/intermediate CSV a block writes now lands in that block's own subfo
 
 ## Final target sheet order (11 sheets) {#final-target-sheet-order-11-sheets}
 
-`target_order`, used by `trim_workbook_to_final_sheets()` / `finalize_workbook_sheet_order()` at the end of every numbered script (order confirmed by the 2026-10-07 logs):
+`target_order`, used by `trim_workbook_to_final_sheets()` / `finalize_workbook_sheet_order()` at the end of every numbered script (order confirmed by the 2026-10-13 logs):
 
 1.  `info` — run metadata (areas, countries, YEAR_ECOPATH, TS_YEARS, …)
 2.  `FG_spp` — FG × species × taxonomy and biomass share, written by `01_biomass.R`
@@ -1069,6 +1073,8 @@ Each column is a best-effort summary (distinct values `" | "`-joined when a FG d
 
 ## Method
 
+**Main and reference diet matrices (2026-10-14).** Main matrix (`Ecopath_diet`), decided per predator FG: an FG with records in the metaweb xlsx (`data_entry_metaweb_empty.xlsx`, DATA_ENTRY) takes its diet only from it; an FG without records takes it from MAISHA + FishBase/SeaLifeBase, then EcoBase. Reference matrix: MAISHA + FishBase/SeaLifeBase for every predator FG. Both are written side by side in `diet/diet_matrix_main_vs_reference.xlsx` (Main, Reference, Main_minus_Reference, Source) to tune the main matrix by hand. Metaweb rows use one metric per study (IRI > %W > %Vol > isotope mixing model > %N > %F > presence) and the same prey → FG rules as the other sources; generic metaweb groups are mapped by the rules at the top of `fishbase_food_category_to_fg.csv`.
+
 See [DIET — Ecopath_diet sheet / diet matrix](#diet-ecopath_diet-sheet-diet-matrix) above and `medbs_pipeline_methodology.qmd` (Diet Matrix) for the equations. In short: tier per predator FG (metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase); study proportions by the first available metric; prey → FG by species, then taxonomic rank (equal split), then food category (biomass split), then a WoRMS second pass (`worms_diet_prey_cache.rds`); eggs and larvae → zooplankton; detritus dropped for TL ≥ 3; studies averaged; species weighted by biomass share; columns renormalised to 1.
 
 ## Outputs (in `output/diet/`)
@@ -1076,8 +1082,9 @@ See [DIET — Ecopath_diet sheet / diet matrix](#diet-ecopath_diet-sheet-diet-ma
 | File | Content |
 |----|----|
 | `MAISHA/`, `FishBase/` | each source alone: species-level diets, FG matrix (long/wide), item mapping and unassigned items (REVIEW) |
-| `external_diet_matrix_fg_long.csv`, `external_diet_matrix_fg_wide.csv` | MAISHA + FishBase combined (used in `Ecopath_diet`) |
-| `external_diet_item_mapping_REVIEW.csv`, `external_diet_unassigned_items_REVIEW.csv` | how each prey item was assigned / not assigned |
+| `reference_diet_matrix_fg_long.csv`, `reference_diet_matrix_fg_wide.csv` | reference matrix: MAISHA + FishBase for every predator FG (feeds `Ecopath_diet` for FGs without metaweb records) |
+| `diet_matrix_main_vs_reference.xlsx`, `diet_main_vs_reference_REVIEW.csv` | main vs reference matrix, side by side, for hand-tuning |
+| `reference_diet_item_mapping_REVIEW.csv`, `reference_diet_unassigned_items_REVIEW.csv` (and `Metaweb/metaweb_*`) | how each prey item was assigned / not assigned |
 | `diet_provenance_by_predator_fg.csv`, `diet_references_by_fg.csv` | tier and studies per FG |
 | `diet_still_missing_REVIEW.csv`, `diet_cannibalism_REVIEW.csv`, `diet_matrix_column_sum_REVIEW.csv` (only written when a column ≠ 1) | checks |
 | `diet_composition_ewe.csv` | EwE import format |
@@ -1112,32 +1119,24 @@ Outputs in `output/validation/`: `comparison_with_old_westmed_estimates_REVIEW.c
 
 ------------------------------------------------------------------------
 
-# Status of the 2026-10-07 run and open issues
+# Status of the 2026-10-13 run and open issues
 
-All five scripts completed without errors (logs `20261007_094022_01_biomass_log.txt` to `20261007_100250_05_validation_log.txt`). Changes made after this run — **rerun 02 → 03 → 05**:
-
-1.  `02_fisheries.R` — F and the NEI F ≤ 1 cap use the final `Ecopath_B` (adult hake FG 27 now gets an F; macrozooplankton and suprabenthos are no longer capped against survey bycatch). Residual fleet column renamed "Target countries - fleet not resolved". "6 target countries" wording removed from messages.
-2.  `03_pbqb-traits.R` — FG-level F from `F_by_fg.csv` added to P/B of non-fish FGs with catch (cephalopods, shrimps, lobsters, molluscs, macrobenthos); invertebrate Q/B recomputed as 3 × P/B. Previously this step only ran with a retired catch file, so these FGs had P/B without fishing mortality.
-3.  `05_validation.R`, `01b_biomass_unsurveyed.R` — comments and the residual column name brought up to date.
-
-Open issues, by block:
+All five scripts completed without errors, with identical results on both laptops (logs `20261013_01_biomass_log.txt` to `20261013_05_validation_log.txt`). One bug found in the review and fixed on 2026-10-14 in `01_biomass.R`: a MEDIAS/MEDITS density of exactly 0 overrode the cited value, giving Detritus = 0 and Swordfish 0.0154 instead of ≈ 288 and 0.0205. **Rerun 01 → 05.**
 
 | Block | Issue | Where to look |
 |----|----|----|
-| F | Deep-water rose shrimp F = 5.86 (catch 3,713 t/yr, B 0.0036 t/km²) | `F_by_fg.csv`; MEDITS q; NEI decapod split |
-| F | Benthic mollusc F ≈ 5 once Ecopath_B (0.022 t/km²) is used — catch 20,414 t/yr, probably largely from \< 10 m and lagoons | `F_by_fg.csv`; decide whether this catch belongs to the model area |
-| C/L | 9 FGs with \< 50 % of landings in a named fleet; 24 FGs with species but zero catch; 564 zero-tonne rows with no fleet share | `ecopath_L_fg_coverage_check.csv`, `fg_missing_ecopath_L_Di_REVIEW.csv` |
+| B | Detritus / Swordfish survey-zero override (fixed in code, rerun needed) | `biomass_by_fg_ecopath_detail.csv` |
+| F | F > 1 for 7 FGs (caramote prawn 7.8, deep-water rose shrimp 3.4, groupers 1.95, mackerels 1.37, common dentex 1.19, coastal benthic cephalopods 1.15, salema 1.07); caramote prawn catch is mainly lagoon/coastal (< 10 m) | `F_by_fg.csv` |
+| C/L | 9 FGs with \< 50 % of landings in a named fleet; 562 zero-tonne rows with no fleet share | `ecopath_L_fg_coverage_check.csv`, `fg_missing_ecopath_L_Di_REVIEW.csv` |
 | Effort | Italy Rousseau vs FDI r = −0.24 | 02 log |
-| B | Cymodocea 14.7 \> Posidonia 8.7 t/km² (no map, density may include rhizomes) | `habitat_shapefile_biomass.csv` |
-| B | Meso + micro zooplankton 29.6 t/km², 2× the field maximum | `zooplankton_total_field_check_REVIEW.csv` |
-| B | Macrozooplankton 0.124 (krill minimum) vs 30 in the old model; salps without B | Ecopath_B; `MACROZOO_SOURCE` |
-| B | Hake assessments in RAM end in 2014; old adult hake 1.81 vs new 0.075 t/km² (same area) | `hake_stanza_stock_assessment_REVIEW.csv` |
-| B | 123 species on an even within-FG split; pre-MEDIAS acoustic values to check against the PDFs | `fg_species_biomass_needs_review.csv`, `small_pelagics_per_gsa_series_REVIEW.csv` |
-| PB/QB | 8 FGs without P/B or Q/B; 28 FGs outside P/Q 0.05–0.3; 23 FGs \> 2× from EcoBase | `plausibility_flag_REVIEW.csv`, 03 log |
+| B | Hake assessments in RAM end in 2014 | `hake_stanza_stock_assessment_REVIEW.csv` |
+| B | 5 FGs left to Ecopath (EE = 0.95): check the B Ecopath returns | `fg_missing_ecopath_B_REVIEW.csv`, `gelatinous_macrozoo_biomass_REVIEW.csv` |
+| PB/QB | 8 FGs without P/B or Q/B; 30 of 68 FGs outside P/Q 0.05–0.3 | `plausibility_flag_REVIEW.csv`, 03 log |
+| PB/QB vs F | FGs where F > 1, F alone pushes P/Q above 0.3, or E = F/Z > 0.5 (new check, 2026-10-14) | `F_vs_PQ_diagnostic_REVIEW.csv`, 03 log `[F vs P/Q]` |
 | DIET | No diet: corals and gorgonians, meso and micro zooplankton, suprabenthos | `diet_still_missing_REVIEW.csv` |
-| DIET | Cannibalism: other macro-benthos 0.286, non-commercial decapods 0.101 | `diet_cannibalism_REVIEW.csv` |
+| DIET | Cannibalism > 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114 | `diet_cannibalism_REVIEW.csv` |
 | Data | `FG_WMed_2026.csv` lacks a `survey_exempt` column | 01 log |
-| Output | `plots/pbqb-traits/` still holds copies of validation plots from an older layout (05 now writes to `plots/validation/`) | delete the old copies by hand |
+| Code | `config.R` is tracked by git; untrack it (`git rm --cached config.R`) | — |
 
 ------------------------------------------------------------------------
 
@@ -1192,8 +1191,8 @@ Everything below applies whether the target region is a single GSA, an arbitrary
 
 `run_pipeline_demo.R` is a driver script demonstrating this: it sets `out_dir`/`pcloud_dir`/`git_dir` once, then `source()`s `01_biomass.R` → `02_fisheries.R` → `03_pbqb-traits.R` → `04_diets.R` in that dependency order (01 must run first — see [Adapting this pipeline to a different region] below and each script's own header comment for why; 04 specifically needs 01's `FG_spp_Ecopath` sheet in the shared workbook for its species' share-of-FG-biomass values, and is otherwise optional — diet composition isn't needed for every run). It includes two ready-to-run examples, switched via a `RUN_MODE` flag at the top:
 
-- `RUN_MODE <- "westmed_default"` — sets nothing beyond the three paths; every script uses its built-in West Med default.
-- `RUN_MODE <- "custom_example"` — sets `FILTER_AREAS <- 17:18`, `TARGET_COUNTRIES <- c("Italy", "Croatia", "Slovenia")`, `YEAR_ECOPATH <- 2005:2007`, `TS_YEARS <- 2000:2020`, and `START_YEAR`/`END_YEAR <- 2000`/`2020` as a worked Adriatic-GSA example — copy and adapt this block for any other region/year range, setting only the variables that need to differ from the West Med default.
+- `RUN_MODE <- "westmed_default"` — sets the model area and years explicitly: `MODEL_GSAS <- 1:11`, `MODEL_AREA_BASIS <- "whole_gsa"`, `YEAR_ECOPATH <- 1994:1996`, `TS_YEARS <- 1995:2023`, `START_YEAR <- 1994`, `END_YEAR <- 2023`; change them there to filter the area or period.
+- `RUN_MODE <- "custom_example"` — sets `MODEL_GSAS <- 17:18`, `TARGET_COUNTRIES_OVERRIDE <- c("Italy", "Croatia", "Slovenia")`, `YEAR_ECOPATH <- 2005:2007`, `TS_YEARS <- 2000:2020`, and `START_YEAR`/`END_YEAR <- 2000`/`2020` as a worked Adriatic-GSA example — copy and adapt this block for any other region/year range, setting only the variables that need to differ from the West Med default.
 
 `YEAR_ECOPATH` in particular is read by all three scripts and must stay consistent across them (it defines the single Biomass snapshot the PB/QB weights are computed against) — setting it once in the driver script before any of the three are sourced keeps them in sync automatically, which is easy to forget when editing each script's hardcoded copy by hand.
 

@@ -959,7 +959,8 @@ if (!used_fisheries_R_f) {
 }
 
 if (!used_fisheries_R_f && FG_YIELD_SOURCE == "fg_catch_csv") {
-  area_lookup_path <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")
+  area_lookup_path <- file.path(BIOMASS_CSV_DIR, "model_area_cells.csv")   # A_model cells (MODEL_AREA_BASIS, 01_biomass.R)
+  if (!file.exists(area_lookup_path)) area_lookup_path <- file.path(BIOMASS_CSV_DIR, "strata_area_by_area.csv")
   
   if (!file.exists(FG_CATCH_CSV_PATH)) {
     message("FG_YIELD_SOURCE = 'fg_catch_csv' but no file found at '", FG_CATCH_CSV_PATH,
@@ -3630,6 +3631,79 @@ if (!is.null(pq_dt)) {
           " P/Q range - not necessarily wrong, but worth a second look (see PQ_ratio_by_fg_REVIEW.csv,",
           " plotted in 05_validation.R's PQ_ratio_by_fg.png).")
   fwrite(pq_dt, file.path(csv_out_dir, "PQ_ratio_by_fg_REVIEW.csv"))
+}
+
+## --- F vs P/Q diagnostic ---------------------------------------------
+## Why this check: P/B = M + F (Allen 1971), so a large F (from 02:
+## F = (C/A_model)/B) inflates P/B and with it P/Q = (P/B)/(Q/B). A P/Q
+## outside 0.05-0.3 can be acceptable for a few groups, but when it is
+## F that pushes it out, the cause is usually upstream: catch assigned
+## to the FG is too high (wrong species/NEI split, catch taken outside
+## the model area, e.g. lagoons) or B is too low (survey
+## catchability, wrong FG membership). This table separates the two
+## parts of P/B for every FG with an F:
+##   M_part   = PB_FG - F_FG          (P/B without fishing)
+##   F_share  = F_FG / PB_FG
+##   PQ       = PB_FG / QB_FG
+##   PQ_noF   = M_part / QB_ref, QB_ref = Q/B before the F top-up
+##              (invertebrates: Q/B is recomputed as 3 P/B after F,
+##              so their P/Q is always 1/3 and only PQ_noF is informative)
+## Flags (a review prompt, not a rule):
+##   F > 1                    - F_FG > 1 yr^-1
+##   F pushes P/Q above 0.3   - PQ > 0.3 but PQ_noF <= 0.3 (fishing alone
+##                              takes the group out of the range)
+##   E = F/Z > 0.5            - exploitation rate above the Gulland (1971)
+##                              reference E_opt = 0.5 (F_share; Z = P/B).
+##                              Common for Mediterranean stocks, but with
+##                              a P/Q problem it points to catch or B.
+## Note: invertebrates get Q/B = 3 P/B (Q/P = 3), so their P/Q is 0.33 by
+## construction, just above 0.3 - that alone is not an F problem.
+## Output: F_vs_PQ_diagnostic_REVIEW.csv (pbqb-traits folder) and a
+## one-line summary per flagged FG in the log.
+fpq_dt <- tryCatch({
+  if (!"F_FG" %in% names(fg_weighted)) stop("no F_FG column (F_by_fg.csv from 02_fisheries.R not read)")
+  d <- fg_weighted[is.finite(F_FG) & F_FG > 0 & is.finite(PB_FG) & PB_FG > 0, .(FG, FG_name, F_FG, PB_FG, QB_FG,
+        QB_ref = if ("QB_FG_before_F" %in% names(fg_weighted)) fcoalesce(QB_FG_before_F, QB_FG) else QB_FG)]
+  if (!nrow(d)) stop("no FG with F > 0 and a P/B")
+  fpath <- file.path(FISHERIES_CSV_DIR, "F_by_fg.csv")
+  if (file.exists(fpath)) {
+    fx <- fread(fpath)
+    keep <- intersect(c("FG_num", "Catch_t_avg", "Catch_density_avg", "Biomass_density_avg", "B_source"), names(fx))
+    if ("FG_num" %in% keep) d <- merge(d, unique(fx[, ..keep], by = "FG_num")[, FG := as.integer(FG_num)][, FG_num := NULL], by = "FG", all.x = TRUE)
+  }
+  d[, M_part := PB_FG - F_FG]
+  d[, F_share := F_FG / PB_FG]
+  d[, PQ := fifelse(is.finite(QB_FG) & QB_FG > 0, PB_FG / QB_FG, NA_real_)]
+  d[, PQ_noF := fifelse(is.finite(QB_ref) & QB_ref > 0, pmax(M_part, 0) / QB_ref, NA_real_)]
+  .out <- function(x) is.finite(x) & (x < 0.05 | x > 0.3)
+  d[, flag_F_gt_1 := F_FG > 1]
+  d[, flag_F_drives_PQ := is.finite(PQ) & PQ > 0.3 & is.finite(PQ_noF) & PQ_noF <= 0.3]
+  d[, flag_F_dominates_PB := F_share > 0.5]
+  d[, flags := mapply(function(a, b, c) paste(c(if (a) "F > 1", if (b) "F pushes P/Q above 0.3", if (c) "E = F/Z > 0.5"), collapse = "; "),
+                      flag_F_gt_1, flag_F_drives_PQ, flag_F_dominates_PB)]
+  d[, check := fifelse(flags == "", "",
+                       "check catch assigned to this FG (species/NEI split, catch from lagoons or inland waters outside the GSA sea area) and Ecopath_B (survey catchability, FG membership)")]
+  setorder(d, -flag_F_gt_1, -flag_F_drives_PQ, -F_share)
+  d
+}, error = function(e) { message("[F vs P/Q] skipped - ", conditionMessage(e)); NULL })
+if (!is.null(fpq_dt)) {
+  fwrite(fpq_dt, file.path(csv_out_dir, "F_vs_PQ_diagnostic_REVIEW.csv"))
+  fl <- fpq_dt[flags != ""]
+  message("\n[F vs P/Q] ", nrow(fpq_dt), " FG(s) with F > 0; ", nrow(fl), " flagged (F > 1: ", fpq_dt[flag_F_gt_1 == TRUE, .N],
+          "; F pushes P/Q above 0.3: ", fpq_dt[flag_F_drives_PQ == TRUE, .N], "; E = F/Z > 0.5: ",
+          fpq_dt[flag_F_dominates_PB == TRUE, .N], "). F_vs_PQ_diagnostic_REVIEW.csv written.")
+  if (nrow(fl)) {
+    message("[F vs P/Q] Flagged FG(s) - P/Q outside the range can be fine for a few groups; here the cause is fishing,",
+            " so look at catch (too high?) or B (too low?):")
+    for (i in seq_len(nrow(fl))) {
+      r <- fl[i]
+      message(sprintf("  FG %s %s: F = %.2f, P/B = %.2f (M part %.2f), P/Q = %s (without F %s)%s - %s",
+                      r$FG, r$FG_name, r$F_FG, r$PB_FG, r$M_part,
+                      ifelse(is.finite(r$PQ), sprintf("%.2f", r$PQ), "NA"), ifelse(is.finite(r$PQ_noF), sprintf("%.2f", r$PQ_noF), "NA"),
+                      if ("Catch_t_avg" %in% names(r) && is.finite(r$Catch_t_avg)) sprintf(", catch %.0f t/yr, B %.4g t/km2", r$Catch_t_avg, r$Biomass_density_avg) else "",
+                      r$flags))
+    }
+  }
 }
 
 ## =================================================================

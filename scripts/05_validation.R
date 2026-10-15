@@ -597,8 +597,10 @@ setorder(comparison_dt, metric, -ratio, na.last = TRUE)
 ## old_value_on_new_area = old_value x OLD_MODEL_AREA_KM2 / NEW_MODEL_AREA_KM2.
 if (!exists("OLD_MODEL_AREA_KM2")) OLD_MODEL_AREA_KM2 <- 846002
 if (!exists("NEW_MODEL_AREA_KM2")) {
+  ma_path <- file.path(out_dir, "biomass", "model_area_by_gsa.csv")   # A_model (MODEL_AREA_BASIS, 01_biomass.R)
   sa_path <- file.path(out_dir, "biomass", "strata_area_by_area.csv")
-  NEW_MODEL_AREA_KM2 <- if (file.exists(sa_path)) sum(fread(sa_path)$area_km2, na.rm = TRUE) else NA_real_
+  NEW_MODEL_AREA_KM2 <- if (file.exists(ma_path)) sum(fread(ma_path)$area_km2, na.rm = TRUE) else
+    if (file.exists(sa_path)) sum(fread(sa_path)$area_km2, na.rm = TRUE) else NA_real_
 }
 comparison_dt[metric %in% c("Biomass", "Landings", "Discards"),
               `:=`(old_value_on_new_area = old_value * OLD_MODEL_AREA_KM2 / NEW_MODEL_AREA_KM2,
