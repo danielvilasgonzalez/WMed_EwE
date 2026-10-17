@@ -1,3 +1,7 @@
+## PNG resolution of every plot (dots per inch). 300 keeps small labels
+## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -821,7 +825,7 @@ map_land_on_top <- (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "bbox")
 p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                 title = "MEDITS sample coverage by GSA", selected_areas = FILTER_AREAS,
                                 land_on_top = map_land_on_top)
-ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = 150, bg = "white")
+ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = PLOT_DPI, bg = "white")
 
 ## same coverage map, faceted by year - useful for spotting a specific
 ## year with a coverage gap that the all-years-combined map above would
@@ -831,7 +835,7 @@ p_sample_map_byyear <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_
                                        title = "MEDITS sample coverage by GSA and year", by_year = TRUE,
                                        selected_areas = FILTER_AREAS, land_on_top = map_land_on_top)
 ggsave(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"), p_sample_map_byyear,
-       width = 16, height = 12, dpi = 150, bg = "white")
+       width = 16, height = 12, dpi = PLOT_DPI, bg = "white")
 
 ## =================================================================
 ## STEP 3: Scientific name -> FG (direct match)
@@ -1218,7 +1222,7 @@ if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
   ## header comment).
   p_outliers <- plot_outlier_diagnostic(dt_before_outliers, flagged_outliers)
   ggsave(file.path(plot_dir, "survey_outlier_diagnostic.png"), p_outliers,
-         width = 10, height = 7, dpi = 150, bg = "white")
+         width = 10, height = 7, dpi = PLOT_DPI, bg = "white")
 }
 rm(dt_before_outliers)
 
@@ -1576,12 +1580,12 @@ if (isTRUE(STRATA) && (!is.na(ECOSIM_HAUL_CAP_Q) || ECOSIM_MIN_AREA_COVERAGE > 0
 ## =================================================================
 p_by_area <- plot_fg_timeseries_by_area(
   fg_index, title = "MEDITS trawl survey by FG and area (strata-weighted)", y_lab = "Density (t/km^2)")
-ggsave(file.path(plot_dir, "survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = 150, bg = "white")
+ggsave(file.path(plot_dir, "survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
 regional_title_area <- if (AREA_MODE == "westmed") "Western Med" else AREA_NAME
 p_regional <- plot_fg_timeseries_regional(fg_index_regional,
                                           title = paste0("MEDITS trawl survey by FG, ", regional_title_area, " (area-weighted)"), y_lab = "Area-weighted density (t/km^2)")
-ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = 150, bg = "white")
+ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
 ## Same data as above, normalized so each FG's own series starts at 1
 ## (relative to its first non-zero value) - makes relative CHANGE over
@@ -1591,7 +1595,7 @@ p_regional_normalized <- plot_fg_timeseries_regional(
   fg_index_regional, title = paste0("MEDITS trawl survey by FG, ", regional_title_area, " (normalized)"),
   y_lab = "Area-weighted density (t/km^2)", normalize = TRUE)
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional_normalized.png"), p_regional_normalized,
-       width = 14, height = 10, dpi = 150, bg = "white")
+       width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
 fg_density_by_stratum <- NULL  # only built below when STRATA - see the Excel-write step further down
 if (STRATA) {
@@ -1602,7 +1606,7 @@ if (STRATA) {
   ## was actually used to build it, so this just keeps the plot's stratum
   ## labels in sync with it instead of merging against the wrong table.
   p_profile <- plot_strata_profile(fg_index, strata_def_for_plotting)
-  ggsave(file.path(plot_dir, "survey_fg_depth_strata_profile.png"), p_profile, width = 16, height = 12, dpi = 150, bg = "white")
+  ggsave(file.path(plot_dir, "survey_fg_depth_strata_profile.png"), p_profile, width = 16, height = 12, dpi = PLOT_DPI, bg = "white")
   
   ## Same "density by depth stratum" information as the plot above, but
   ## as an Excel sheet: one row per FG, one column per stratum (region-
@@ -1632,7 +1636,7 @@ if (STRATA) {
     strata_area_by_area_for_plotting, strata_def_for_plotting,
     area_id_label = if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa")) "GSA" else "AreaID")
   ggsave(file.path(plot_dir, "survey_area_weight_donut.png"), p_area_weights,
-         width = 14, height = 10, dpi = 150, bg = "white")
+         width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 }
 
 ## =================================================================
@@ -1930,13 +1934,13 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
     medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_biomass_t_nm2)],
     title = "MEDIAS acoustic survey - biomass density by FG, Western Med", y_lab = "Density (t/nm^2)")
   ggsave(file.path(plot_dir, "medias_fg_biomass_density_timeseries_regional.png"), p_medias_biom,
-         width = 14, height = 10, dpi = 150, bg = "white")
+         width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
   
   p_medias_abund <- plot_fg_timeseries_regional(
     medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_abundance_n_nm2)],
     title = "MEDIAS acoustic survey - abundance density by FG, Western Med", y_lab = "Density (n/nm^2)")
   ggsave(file.path(plot_dir, "medias_fg_abundance_density_timeseries_regional.png"), p_medias_abund,
-         width = 14, height = 10, dpi = 150, bg = "white")
+         width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
   
   ## The two plots above are region-wide (every GSA already pooled into
   ## one line per FG) - this is the complementary per-GSA view, faceted
@@ -1962,7 +1966,7 @@ if (AREA_MODE == "westmed" || (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "gsa
   }, error = function(e) { message("[MEDIAS by-GSA plot] skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_medias_biom_by_gsa)) {
     ggsave(file.path(plot_dir, "medias_fg_biomass_density_timeseries_by_gsa.png"), p_medias_biom_by_gsa,
-           width = 14, height = 10, dpi = 150, bg = "white")
+           width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
   }
   
   ## --- 9f. Species-level MEDIAS density (mirrors species_density_regional
@@ -2797,7 +2801,7 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   if (!is.null(p_biomass_by_fg_source)) {
     n_fg_plotted <- length(unique(fg_index_regional_combined[Year %in% YEAR_ECOPATH]$FG_num))
     ggsave(file.path(plot_dir, "biomass_by_fg_source.png"), p_biomass_by_fg_source,
-           width = 10, height = max(8, 0.16 * n_fg_plotted), dpi = 150, bg = "white", limitsize = FALSE)
+           width = 10, height = max(8, 0.16 * n_fg_plotted), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
   }
   
   sp_index_combined_raw <- rbindlist(list(

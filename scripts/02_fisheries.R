@@ -1,3 +1,7 @@
+## PNG resolution of every plot (dots per inch). 300 keeps small labels
+## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -7741,7 +7745,7 @@ if (length(validation_plots) == 0) {
   for (p in validation_plots) print(p)  # draw each figure onto its own PDF page
   dev.off()  # close the PDF device
   for (nm in names(validation_plots)) {
-    ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = 150)  # also save each figure as its own PNG
+    ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = PLOT_DPI)  # also save each figure as its own PNG
   }
   message("\n[Validation plots] ", length(validation_plots), " figure(s) written to '", VALIDATION_PLOTS_PDF,
           "' (one PDF, all figures) and as individual PNGs under '", fisheries_plot_dir, "'. Any figure not",

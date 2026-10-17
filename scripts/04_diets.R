@@ -1,3 +1,7 @@
+## PNG resolution of every plot (dots per inch). 300 keeps small labels
+## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -1463,10 +1467,10 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
             " will be blank until it is.")
   }
   
-  ## Diet-matrix heatmap - predator FG (x) x prey FG (y),
+  ## Diet-matrix heatmap - predator FG (rows) x prey FG (columns),
   ## fill = proportion of predator's diet - the standard EwE diet-check
   ## figure, and the single most useful "does this diet matrix look
-  ## sane" view (columns should each sum to ~1, since fg_diet's own
+  ## sane" view (rows should each sum to ~1, since fg_diet's own
   ## weight is already normalized per predator_fg - see the `weight :=
   ## weight / sum(weight), by = predator_fg` line in build_fg_diet()).
   ## This script's own plots go in its own
@@ -1478,21 +1482,38 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   ## diet-matrix figure.
   diets_plot_dir <- file.path(out_dir, "plots", "diets")
   if (!dir.exists(diets_plot_dir)) dir.create(diets_plot_dir, recursive = TRUE, showWarnings = FALSE)
+  ## Axes in FG-number order from FG_WMed_2026.csv (FG_REFERENCE_CSV_PATH):
+  ## predators as rows (FG 1 at the top, down), prey as columns along the
+  ## top (FG 1 at the left) - the same layout as the EwE diet matrix, but
+  ## transposed (EwE has prey as rows). Labels are "FG_number - FG_name".
+  ## A name not in the csv (e.g. an import column) goes last.
   p_diet_matrix <- tryCatch({
     if (nrow(fg_diet) == 0) stop("fg_diet is empty")
-    ggplot(fg_diet, aes(x = predator_fg, y = prey_fg, fill = weight)) +
+    fg_order <- unique(fread(FG_REFERENCE_CSV_PATH)[!is.na(FG_number) & !is.na(FG_name), .(FG_number = as.numeric(FG_number), FG_name)])
+    setorder(fg_order, FG_number)
+    fg_order <- fg_order[!duplicated(FG_name)]
+    extra <- setdiff(unique(c(fg_diet$predator_fg, fg_diet$prey_fg)), fg_order$FG_name)
+    lev_names <- c(fg_order$FG_name, sort(extra))
+    lev_labels <- c(paste(fg_order$FG_number, "-", fg_order$FG_name), sort(extra))
+    hm <- copy(fg_diet)[, .(weight = sum(weight, na.rm = TRUE)), by = .(predator_fg, prey_fg)]
+    hm[, predator := factor(predator_fg, levels = rev(lev_names), labels = rev(lev_labels))]   # rev: FG 1 at the top
+    hm[, prey := factor(prey_fg, levels = lev_names, labels = lev_labels)]
+    ggplot(hm, aes(x = prey, y = predator, fill = weight)) +
       geom_tile(color = "white", linewidth = 0.1) +
+      scale_x_discrete(position = "top", drop = FALSE) +
+      scale_y_discrete(drop = FALSE) +
       scale_fill_viridis_c(option = "magma", direction = -1, na.value = "grey95", limits = c(0, NA)) +
-      labs(title = "Diet composition matrix (Ecopath_diet)", subtitle = "Each predator FG's column sums to ~1 (its full diet); color = proportion contributed by that prey FG",
-           x = "Predator FG", y = "Prey FG", fill = "Diet\nproportion") +
+      labs(title = "Diet composition matrix (Ecopath_diet)",
+           subtitle = "Rows = predator FG, columns = prey FG, both in FG-number order (FG_WMed_2026.csv). Each row sums to ~1; colour = share of that prey in the predator's diet",
+           x = "Prey FG", y = "Predator FG", fill = "Diet\nproportion") +
       theme_minimal(base_size = 6) +
-      theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 5),
-            axis.text.y = element_text(size = 5), legend.position = "right")
+      theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 5),
+            axis.text.y = element_text(size = 5), panel.grid = element_blank(), legend.position = "right")
   }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_diet_matrix)) {
-    n_fg_side <- length(unique(c(fg_diet$predator_fg, fg_diet$prey_fg)))
+    n_fg_side <- nlevels(p_diet_matrix$data$prey)   # every FG of FG_WMed_2026.csv, also those with no diet rows
     ggsave(file.path(diets_plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
-           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = 150, bg = "white", limitsize = FALSE)
+           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
     message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis, in ", diets_plot_dir, ").")
   }
   

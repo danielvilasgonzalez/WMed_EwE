@@ -1,3 +1,7 @@
+## PNG resolution of every plot (dots per inch). 300 keeps small labels
+## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -650,9 +654,9 @@ p_bio <- tryCatch(.bio_pair_plot("old_B_t_km2_on_new_area", "Ecopath B: new pipe
 p_bio_pub <- tryCatch(.bio_pair_plot("old_B_t_km2_old_area", "Ecopath B as published: each model on its own area",
                                      "Old model t/km2 of 846,002 km2; new pipeline t/km2 of the new model area."),
                       error = function(e) NULL)
-if (!is.null(p_bio_pub)) ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg_as_published.png"), p_bio_pub, width = 10, height = 14, dpi = 150, bg = "white")
+if (!is.null(p_bio_pub)) ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg_as_published.png"), p_bio_pub, width = 10, height = 14, dpi = PLOT_DPI, bg = "white")
 if (!is.null(p_bio)) {
-  ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg.png"), p_bio, width = 10, height = 14, dpi = 150, bg = "white")
+  ggsave(file.path(plot_dir, "biomass_vs_old_model_by_fg.png"), p_bio, width = 10, height = 14, dpi = PLOT_DPI, bg = "white")
   message("[05_validation.R] Saved: biomass_vs_old_model_by_fg.png and biomass_vs_old_model_REVIEW.csv")
 }
 
@@ -681,7 +685,7 @@ p_comparison <- tryCatch({
 }, error = function(e) { message("[05_validation.R] comparison plot skipped - ", conditionMessage(e)); NULL })
 if (!is.null(p_comparison)) {
   ggsave(file.path(plot_dir, "comparison_with_old_westmed_estimates.png"), p_comparison,
-         width = 10, height = 8, dpi = 150, bg = "white", limitsize = FALSE)
+         width = 10, height = 8, dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
   message("[05_validation.R] Saved: comparison_with_old_westmed_estimates.png (in ", plot_dir, ")")
 }
 
@@ -1114,7 +1118,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
            x = "PB_FG (/year)", y = "QB_FG (/year)", color = NULL) +
       theme_minimal(base_size = 8) + theme(legend.position = "bottom")
   }, error = function(e) { message("[05_validation.R plot] FG PB/QB scatter skipped - ", conditionMessage(e)); NULL })
-  if (!is.null(p_fg_pb_qb)) ggsave(file.path(plot_dir, "fg_pb_qb_scatter.png"), p_fg_pb_qb, width = 11, height = 9, dpi = 150, bg = "white")
+  if (!is.null(p_fg_pb_qb)) ggsave(file.path(plot_dir, "fg_pb_qb_scatter.png"), p_fg_pb_qb, width = 11, height = 9, dpi = PLOT_DPI, bg = "white")
   
   ## --- Fishing mortality (F) by FG (F_by_fg.png). F isn't one single ---
   ## --- column: a fish FG with at least one species carrying a real -----
@@ -1144,7 +1148,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
   }, error = function(e) { message("[05_validation.R plot] F by FG skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_f_by_fg)) {
     ggsave(file.path(plot_dir, "F_by_fg.png"), p_f_by_fg,
-           width = 10, height = max(8, 0.16 * nrow(p_f_by_fg$data)), dpi = 150, bg = "white", limitsize = FALSE)
+           width = 10, height = max(8, 0.16 * nrow(p_f_by_fg$data)), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
   }
   
   ## --- P/Q ratio (PQ_ratio_by_fg.png), from the REVIEW csv -------------
@@ -1169,7 +1173,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
   }, error = function(e) { message("[05_validation.R plot] P/Q ratio skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_pq_ratio)) {
     ggsave(file.path(plot_dir, "PQ_ratio_by_fg.png"), p_pq_ratio,
-           width = 10, height = max(8, 0.16 * nrow(p_pq_ratio$data)), dpi = 150, bg = "white", limitsize = FALSE)
+           width = 10, height = max(8, 0.16 * nrow(p_pq_ratio$data)), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
   }
   
   ## --- Fish PB/QB method-comparison plots (fish only - the group with --
@@ -1204,7 +1208,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
       labs(title = "P/B method comparison - fish, by functional group",
            subtitle = "Each point is one species x method; panels are FGs (not individual species)",
            x = NULL, y = expression(P/B~(year^-1)))
-    ggsave(file.path(plot_dir, "fish_PB_methods_comparison_by_FG.png"), p_pb_methods, width = 14, height = 11, dpi = 150)
+    ggsave(file.path(plot_dir, "fish_PB_methods_comparison_by_FG.png"), p_pb_methods, width = 14, height = 11, dpi = PLOT_DPI)
     
     qb_cols <- intersect(c("QB_PalomaresPauly_1998Z", "QB_PalomaresPauly_1998noZ", "QB_ChristensenPauly_1992", "QB_ChristensenEtAl_2008"), names(fish_results))
     fish_qb_long <- melt(fish_results[, c("Species", "FG_label", "QB_method", ..qb_cols)],
@@ -1227,7 +1231,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
       labs(title = "Q/B method comparison - fish, by functional group",
            subtitle = "Each point is one species x method; panels are FGs (not individual species)",
            x = NULL, y = expression(Q/B~(year^-1)))
-    ggsave(file.path(plot_dir, "fish_QB_methods_comparison_by_FG.png"), p_qb_methods, width = 14, height = 11, dpi = 150)
+    ggsave(file.path(plot_dir, "fish_QB_methods_comparison_by_FG.png"), p_qb_methods, width = 14, height = 11, dpi = PLOT_DPI)
   }
   
   ## --- FG_PB_QB_comparison*.png - the final, chosen PB/QB-by-FG figure -
@@ -1236,7 +1240,7 @@ if (!file.exists(species_pb_qb_path) || !(file.exists(fg_pb_qb_with_f_path) || f
   ## --- ggsave has a 50in hard limit. -------------------------------------
   save_paginated_pb_qb_plot <- function(pb_mean, pb_long, qb_mean, qb_long, label_order,
                                         pb_x_lab, qb_x_lab, file_prefix, plot_dir,
-                                        height_per_row = 0.35, width_in = 16, dpi = 150,
+                                        height_per_row = 0.35, width_in = 16, dpi = PLOT_DPI,
                                         max_height_in = 40) {
     n_per_page <- max(10, floor(max_height_in / height_per_row))
     pages <- if (length(label_order) <= n_per_page) list(label_order) else split(label_order, ceiling(seq_along(label_order) / n_per_page))
@@ -1398,7 +1402,7 @@ if (length(validation_plots) == 0) {
     ## exists at its own original path, so just skip it.
     if (nm %in% names(embedded_png_pages)) next
     ht <- if (nm %in% c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published")) 14 else 7
-    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = 150, bg = "white", limitsize = FALSE),
+    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = PLOT_DPI, bg = "white", limitsize = FALSE),
              error = function(e) NULL)
   }
   message("\n[05_validation.R] STEP C - ", length(validation_plots), " page(s) written to '", VALIDATION_PLOTS_PDF,

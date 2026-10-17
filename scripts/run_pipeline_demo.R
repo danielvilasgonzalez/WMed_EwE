@@ -26,10 +26,14 @@
 ## Set CLEAN_START <- FALSE before sourcing this file to keep your
 ## workspace (e.g. to pass your own overrides from the console).
 if (!exists("CLEAN_START", envir = .GlobalEnv, inherits = FALSE) || isTRUE(CLEAN_START)) {
-  rm(list = setdiff(ls(envir = .GlobalEnv, all.names = TRUE), "CLEAN_START"), envir = .GlobalEnv)
+  rm(list = setdiff(ls(envir = .GlobalEnv, all.names = TRUE), c("CLEAN_START", "RUN_STEPS")), envir = .GlobalEnv)
   invisible(gc())
 }
 options(warn = 1)
+## RUN_STEPS: which scripts to run (1 = 01_biomass ... 5 = 05_validation).
+## Default all; e.g. RUN_STEPS <- 5 redraws the validation plots from the
+## outputs already on disk (used by medbs_pipeline_methodology.qmd).
+if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
 
 RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
 
@@ -100,15 +104,21 @@ if (RUN_MODE == "westmed_default") {
   ## MODEL_AREA_BASIS: "whole_gsa" = A_model is the whole sea area of
   ##   MODEL_GSAS, coast to bottom (depths outside 10-800 m filled with
   ##   AquaMaps); "medits_10_800" = only the 10-800 m MEDITS strata.
-  MODEL_GSAS       <- 1:11
-  MODEL_AREA_BASIS <- "whole_gsa"
-  YEAR_ECOPATH     <- 1994:1996     # Ecopath baseline (01, 02, 03)
-  TS_YEARS         <- 1995:2023     # Ecosim biomass series (01)
-  START_YEAR       <- 1994          # catch / effort series (02)
-  END_YEAR         <- 2023
+  ## A value already set before this file is sourced wins (e.g. from
+  ## medbs_pipeline_methodology.qmd's params, with CLEAN_START <- FALSE).
+  .set_default <- function(name, value) if (!exists(name, envir = .GlobalEnv, inherits = FALSE)) assign(name, value, envir = .GlobalEnv)
+  .set_default("MODEL_GSAS",       1:11)
+  .set_default("MODEL_AREA_BASIS", "whole_gsa")
+  .set_default("YEAR_ECOPATH",     1994:1996)   # Ecopath baseline (01, 02, 03)
+  .set_default("TS_YEARS",         1995:2023)   # Ecosim biomass series (01)
+  .set_default("START_YEAR",       1994)        # catch / effort series (02)
+  .set_default("END_YEAR",         2023)
   ##
   ## Other settings, with their current default values - uncomment a line
   ## to change it for this run only:
+  ##
+  ## All scripts
+  # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed
   ##
   ## Biomass (01)
   # DROP_OUTLIERS                 <- TRUE   # remove flagged outlier hauls (haul-level rule)
@@ -157,8 +167,15 @@ FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the 
 ## objects and settings of earlier ones). A failing step stops the run
 ## and names the step and its log. 05 is optional and never stops the run.
 .t0 <- Sys.time()
+## Progress file (set WMED_PROGRESS_FILE, as the Run button of
+## medbs_pipeline_methodology.qmd does): one line when a step starts and
+## one when it ends, written with base::cat so the scripts' own logging
+## cannot redirect it.
+.progress_file <- Sys.getenv("WMED_PROGRESS_FILE", "")
+.progress <- function(txt) if (nzchar(.progress_file)) base::cat(txt, "\n", sep = "", file = .progress_file, append = TRUE)
 .run_step <- function(i, script, note = "") {
   message(sprintf("\n--- Step %d/5: %s %s---", i, script, note))
+  .progress(sprintf("--- Step %d/5: %s", i, script))
   t <- Sys.time()
   tryCatch(source(file.path(git_dir, "scripts", script), local = globalenv()),
            error = function(e) {
@@ -169,15 +186,16 @@ FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the 
            })
   while (sink.number() > 0) sink()
   message(sprintf("--- Step %d/5 done in %.1f min ---", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
+  .progress(sprintf("--- Step %d/5 done in %.1f min", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
 }
 
-.run_step(1, "01_biomass.R", "[MEDITS/MEDIAS + unsurveyed groups; the first run after a strata change rebuilds the strata areas from NOAA bathymetry - needs internet] ")
-.run_step(2, "02_fisheries.R", "[catch, landings, discards, effort, F] ")
-.run_step(3, "03_pbqb-traits.R", "[P/B, Q/B, traits; includes the EcoBase query] ")
-.run_step(4, "04_diets.R", "[diet matrix] ")
+if (1 %in% RUN_STEPS) .run_step(1, "01_biomass.R", "[MEDITS/MEDIAS + unsurveyed groups; the first run after a strata change rebuilds the strata areas from NOAA bathymetry - needs internet] ")
+if (2 %in% RUN_STEPS) .run_step(2, "02_fisheries.R", "[catch, landings, discards, effort, F] ")
+if (3 %in% RUN_STEPS) .run_step(3, "03_pbqb-traits.R", "[P/B, Q/B, traits; includes the EcoBase query] ")
+if (4 %in% RUN_STEPS) .run_step(4, "04_diets.R", "[diet matrix] ")
 
 if (!exists("RUN_VALIDATION", envir = .GlobalEnv, inherits = FALSE)) RUN_VALIDATION <- TRUE
-if (isTRUE(RUN_VALIDATION)) {
+if (isTRUE(RUN_VALIDATION) && 5 %in% RUN_STEPS) {
   tryCatch(.run_step(5, "05_validation.R", "[comparison with the 1995 model + all checks] "),
            error = function(e) message("05_validation.R failed (steps 1-4 are complete): ", conditionMessage(e)))
 } else {
