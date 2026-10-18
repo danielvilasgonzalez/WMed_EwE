@@ -344,6 +344,7 @@ FAO_2020_DATA_SUBDIR  <- "data/Capture_2020"              # UNCONFIRMED - only u
 ## -> FG matching, so this script - which only ever needed the species/FG
 ## reference, never traits - has no reason to touch the xlsx file at all.
 FG_REFERENCE_SUBPATH  <- "data/FG_WMed_2026.csv"          # relative to pcloud_dir
+FG_FILE_02 <- if (exists("FG_SPECIES_FILE", envir = .GlobalEnv, inherits = FALSE)) FG_SPECIES_FILE else file.path(pcloud_dir, FG_REFERENCE_SUBPATH)   # FG_SPECIES_FILE overrides
 
 FISHMIP_EFFORT_PARQUET <- file.path(pcloud_dir, "data/fisheries/FishMIP/effort_histsoc_1841_2017_western-mediterranean-sea.parquet")  # FishMIP effort parquet path
 FISHMIP_CATCH_PARQUET  <- file.path(pcloud_dir, "data/fisheries/FishMIP/calibration_catch_histsoc_1850_2017_western-mediterranean-sea.parquet")  # FishMIP catch parquet path
@@ -544,11 +545,11 @@ DATASETS <- list(
     capture_file = "GFCM_Capture_Quantity.csv", species_file = "CL_FI_SPECIES_GROUPS.csv",
     countries_file = "CL_FI_COUNTRY_GROUPS.csv", area_file = "CL_FI_WATERAREA_DIVISION.csv",
     area_code_col = "DIVISION.CODE", area_join_col = "Code",
-    area_filter_values = c("37.1.1", "37.1.2", "37.1.3"), fg_file = file.path(pcloud_dir, FG_REFERENCE_SUBPATH)
+    area_filter_values = c("37.1.1", "37.1.2", "37.1.3"), fg_file = FG_FILE_02
   ),
   FAO_2020 = list(
     format = "legacy_excel", catch_file = file.path(pcloud_dir, FAO_2020_DATA_SUBDIR, "FAO-GFCM-CapturepProduction-1970_2023.xlsx"),
-    fg_file = file.path(pcloud_dir, FG_REFERENCE_SUBPATH)
+    fg_file = FG_FILE_02
   )
 )
 cfg <- DATASETS[[DATASET_VERSION]]  # select the active dataset config block

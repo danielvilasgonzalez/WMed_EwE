@@ -118,6 +118,7 @@ if (RUN_MODE == "westmed_default") {
   ## to change it for this run only:
   ##
   ## All scripts
+  # FG_SPECIES_FILE               <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # species -> FG table (FG_number, FG_name, species; optional FG_group)
   # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed
   ##
   ## Biomass (01)

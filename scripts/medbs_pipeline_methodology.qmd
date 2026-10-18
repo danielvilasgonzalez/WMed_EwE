@@ -208,9 +208,12 @@ copy_figures(list(
 ## Wraps knitr::include_graphics() with an existence check, so a figure
 ## whose source script hasn't run yet shows a placeholder instead of
 ## hard-failing the entire render.
+## The image is embedded in the page (base64 data URI): with server: shiny
+## the page is served by Shiny, which does not serve the figures/ folder,
+## so a plain file link shows a broken-image icon.
 safe_include_graphics <- function(path, script_hint) {
   if (file.exists(path)) {
-    knitr::include_graphics(path)
+    suppressWarnings(knitr::include_graphics(knitr::image_uri(path), error = FALSE))   # long data URI: knitr warns about the path length
   } else {
     knitr::asis_output(paste0(
       "> **Figure not yet available** - `", path, "` doesn't exist yet. Run `",
@@ -324,6 +327,9 @@ tagList(
     .wm-switch .form-check-input { width: 2.4em; height: 1.25em; cursor: pointer; }
     .wm-switch .form-check-label { font-weight: 600; margin-left: .35rem; cursor: pointer; }
     #run { font-size: 1.1rem; padding: .65rem 1.6rem; border-radius: 30px; box-shadow: 0 3px 10px rgba(13,110,253,.3); }
+    .wm-fg-table { max-height: 340px; overflow-y: auto; border: 1px solid #e3e9ee; border-radius: 8px; }
+    .wm-fg-table table { font-size: .8rem; margin: 0; }
+    .wm-fg-table thead th { position: sticky; top: 0; background: #f3f8fb; }
     .wm-config { background: #1e1e2e; color: #cdd6f4; padding: .9rem 1.1rem; border-radius: 10px;
                  font-size: .8rem; white-space: pre; overflow-x: auto; margin: 0; border: 0; }
     .wm-results .nav-link { font-weight: 600; }
@@ -368,7 +374,8 @@ tagList(
           radioButtons("basis", "Area basis (A_model)",
                        choices = c("Whole GSA, coast to bottom" = "whole_gsa", "MEDITS strata 10-800 m only" = "medits_10_800"),
                        selected = "whole_gsa"),
-          tags$div(class = "wm-help", "Every t/km\u00b2 is per km\u00b2 of this area. Whole GSA: depths outside 10-800 m filled with AquaMaps.")),
+          tags$div(class = "wm-help", "Every t/km\u00b2 is per km\u00b2 of this area. Whole GSA: depths outside 10-800 m filled with AquaMaps."),
+          tags$div(class = "wm-help", tags$strong("Note: "), "groups the surveys cannot measure (plankton, seagrass, megafauna...) were estimated for the whole Western Med (GSAs 1-11). With a filtered area their biomass can change and may not represent the smaller area well.")),
         conditionalPanel("input.area_mode == 'custom'",
           textInput("area_name", "Area name (AREA_NAME)", "custom_region"),
           tags$div(class = "wm-help", "Used for the output subfolder, so runs for different regions do not overwrite each other."),
@@ -378,6 +385,14 @@ tagList(
                    "A custom box runs 01_biomass.R only (02-05 work on GSAs). Use the settings block below; the Run button is for GSA runs.")))),
     tags$hr(),
     uiOutput("area_summary")),
+
+  ## Functional groups ----------------------------------------------------
+  .card("FG", "Functional groups (species \u2192 FG table)", "\U0001F41F",
+    fluidRow(
+      column(6, selectInput("fg_file", "FG file in the pCloud data folder (FG_SPECIES_FILE)", choices = NULL, width = "100%")),
+      column(6, fileInput("fg_upload", "or upload a csv", accept = ".csv", width = "100%",
+                          placeholder = "columns FG_number, FG_name, species (FG_group optional)"))),
+    uiOutput("fg_summary")),
 
   ## 2. Years and options --------------------------------------------------
   fluidRow(
@@ -593,6 +608,65 @@ model_cells <- reactive({
   x <- tryCatch(utils::read.csv(f), error = function(e) NULL)
   if (is.null(x) || !all(c("AreaID", "Depth_min_m", "Depth_max_m", "area_km2") %in% names(x))) NULL else x
 })
+## --- Functional groups: the species -> FG csv the run uses -------------------
+.pcloud_dir <- if (exists("pcloud_dir", envir = .cfg)) path.expand(get("pcloud_dir", envir = .cfg)) else NA_character_
+.fg_default <- if (!is.na(.pcloud_dir)) file.path(.pcloud_dir, "data", "FG_WMed_2026.csv") else NA_character_
+.fg_choices <- if (!is.na(.pcloud_dir) && dir.exists(file.path(.pcloud_dir, "data")))
+  list.files(file.path(.pcloud_dir, "data"), "^FG.*\\.csv$", full.names = TRUE, ignore.case = TRUE) else character(0)
+updateSelectInput(session, "fg_file", choices = setNames(.fg_choices, basename(.fg_choices)),
+                  selected = if (.fg_default %in% .fg_choices) .fg_default else .fg_choices[1])
+fg_path <- reactiveVal(.fg_default)
+observeEvent(input$fg_file, if (nzchar(input$fg_file)) fg_path(input$fg_file))
+observeEvent(input$fg_upload, {   # an uploaded csv is kept next to the run files so the run can read it
+  dest <- file.path(.run_dir, paste0("uploaded_", gsub("[^A-Za-z0-9_.-]", "_", input$fg_upload$name)))
+  file.copy(input$fg_upload$datapath, dest, overwrite = TRUE)
+  fg_path(dest)
+})
+fg_table <- reactive({
+  f <- fg_path()
+  if (is.na(f) || !file.exists(f)) return(list(error = paste("File not found:", f)))
+  x <- tryCatch(data.table::fread(f, encoding = "UTF-8"), error = function(e) NULL)
+  if (is.null(x)) return(list(error = paste("Could not read", basename(f))))
+  need <- c("FG_number", "FG_name", "species")
+  if (!all(need %in% names(x))) return(list(error = paste0(basename(f), " is missing column(s): ", paste(setdiff(need, names(x)), collapse = ", "),
+                                                         ". Columns found: ", paste(names(x), collapse = ", "))))
+  list(data = x, path = f)
+})
+output$fg_summary <- renderUI({
+  ft <- fg_table()
+  if (!is.null(ft$error)) return(tags$div(class = "alert alert-danger py-2 small mb-0", ft$error))
+  x <- data.table::copy(ft$data)
+  has_group <- "FG_group" %in% names(x)
+  x[, FG_number := suppressWarnings(as.numeric(FG_number))]
+  fg <- x[!is.na(FG_number), .(FG_name = paste(unique(FG_name), collapse = " / "),
+                               FG_group = if (has_group) paste(unique(stats::na.omit(FG_group)), collapse = " / ") else NA_character_,
+                               n_species = data.table::uniqueN(species)), by = FG_number][order(FG_number)]
+  ## Checks: one name per FG number, each species in one FG only, no gaps in the numbers
+  multi_name <- fg[grepl(" / ", FG_name), FG_number]
+  sp2 <- x[!is.na(species) & nzchar(species), .(n = data.table::uniqueN(FG_number)), by = species][n > 1, species]
+  gaps <- setdiff(seq(min(fg$FG_number), max(fg$FG_number)), fg$FG_number)
+  warn <- c(if (length(multi_name)) paste("FG number(s) with more than one FG_name:", paste(multi_name, collapse = ", ")),
+            if (length(sp2)) paste0(length(sp2), " species in more than one FG (", paste(head(sp2, 3), collapse = ", "),
+                                    if (length(sp2) > 3) ", ...", ") - expected only for multistanza groups such as hake juv./adult"),
+            if (length(gaps)) paste("Missing FG number(s):", paste(gaps, collapse = ", ")),
+            if (!has_group) "No FG_group column - add one to group the FGs (the diet heatmap then shows the groups as blocks).")
+  stat <- function(label, value, note = NULL)
+    column(3, tags$div(class = "wm-stat", tags$div(class = "l", label), tags$div(class = "v", value), if (!is.null(note)) tags$div(class = "n", note)))
+  rows <- lapply(seq_len(nrow(fg)), function(i)
+    tags$tr(tags$td(fg$FG_number[i]), tags$td(fg$FG_name[i]), if (has_group) tags$td(fg$FG_group[i]), tags$td(fg$n_species[i])))
+  tagList(
+    fluidRow(
+      stat("File", basename(ft$path), format(file.mtime(ft$path), "edited %d %b %Y, %H:%M")),
+      stat("Functional groups", nrow(fg), paste0("FG ", min(fg$FG_number), "-", max(fg$FG_number))),
+      stat("Species", data.table::uniqueN(x$species)),
+      stat("FG groups", if (has_group) data.table::uniqueN(stats::na.omit(x$FG_group)) else "-", if (!has_group) "no FG_group column")),
+    if (length(warn)) tags$div(class = "alert alert-warning py-2 small mt-2 mb-2", lapply(warn, function(w) tags$div(w))),
+    tags$div(class = "wm-fg-table mt-2",
+      tags$table(class = "table table-sm table-striped",
+        tags$thead(tags$tr(tags$th("FG_number"), tags$th("FG_name"), if (has_group) tags$th("FG_group"), tags$th("N species"))),
+        tags$tbody(rows))))
+})
+
 ## Coastal state of each GSA - the same table as GSA_COASTAL_STATE in 02_fisheries.R
 .gsa_state <- c("1" = "Spain", "2" = "Spain", "3" = "Morocco", "4" = "Algeria", "5" = "Spain", "6" = "Spain",
                 "7" = "France", "8" = "France", "9" = "Italy", "10" = "Italy", "11" = "Italy")
@@ -655,7 +729,8 @@ config_code <- reactive({
     sprintf("TS_YEARS         <- %s   # Ecosim biomass series", yr(input$ts_years)),
     sprintf("STRATA           <- %s", tf(input$strata)),
     sprintf("DROP_OUTLIERS    <- %s", tf(input$drop_outliers)),
-    sprintf("NORMALIZE_TS     <- %s", tf(input$normalize_ts)))
+    sprintf("NORMALIZE_TS     <- %s", tf(input$normalize_ts)),
+    if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", fg_path()))
   head <- c(sprintf("## WMed EwE pipeline settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
             "## Run from the scripts/ folder of the repo (paths come from config.R).",
             "CLEAN_START      <- FALSE   # keep the settings below")
@@ -816,7 +891,17 @@ output$run_status <- renderText({
 ## The PNGs are served straight from out_dir/plots (no copy); "?v=<time>"
 ## makes the browser fetch a plot again after a run rewrites it.
 .plot_dir <- if (!is.na(.out_dir)) file.path(.out_dir, "plots") else NA_character_
-if (!is.na(.plot_dir) && dir.exists(.plot_dir)) addResourcePath("wmplots", .plot_dir)
+## Served through the session (registerDataObj), which works inside Quarto;
+## only files under out_dir/plots can be read this way.
+.plot_url <- session$registerDataObj("wmplot", .plot_dir, function(data, req) {
+  q <- shiny::parseQueryString(req$QUERY_STRING)
+  root <- normalizePath(data, mustWork = FALSE)
+  f <- normalizePath(file.path(data, if (is.null(q$f)) "" else q$f), mustWork = FALSE)
+  if (is.null(q$f) || !startsWith(f, root) || !file.exists(f) || dir.exists(f))
+    return(list(status = 404L, headers = list("Content-Type" = "text/plain"), body = "not found"))
+  list(status = 200L, headers = list("Content-Type" = "image/png", "Cache-Control" = "max-age=3600"),
+       body = readBin(f, "raw", file.info(f)$size))
+})
 .key_plots <- c("Biomass by source" = "biomass/biomass_by_fg_source.png",
                 "Biomass series"    = "biomass/survey_fg_density_timeseries_regional.png",
                 "Catch by FG"       = "fisheries/01_catches_per_FG.png",
@@ -830,7 +915,7 @@ output$results <- renderUI({
   files <- if (!is.na(.plot_dir)) list.files(.plot_dir, "\\.png$", recursive = TRUE) else character(0)
   if (!length(files)) return(tags$div(class = "alert alert-secondary py-2 small mb-0", "No plots yet - click Run pipeline."))
   mt <- file.mtime(file.path(.plot_dir, files)); names(mt) <- files
-  src <- function(f) paste0("wmplots/", utils::URLencode(f), "?v=", as.integer(mt[[f]]))
+  src <- function(f) paste0(.plot_url, "&f=", utils::URLencode(f, reserved = TRUE), "&v=", as.integer(mt[[f]]))
   fmt <- function(t) format(t, "%d %b %Y, %H:%M")
 
   ## Where these plots come from
@@ -1016,9 +1101,9 @@ Every file the pipeline actually reads, traced directly from `01_biomass.R` (bot
 | NOAA bathymetry raster | downloaded via `marmap::getNOAA.bathy()` | Stratum area computation (@sec-strata-weighted) | Both scripts - downloaded automatically |
 | Custom shapefile / bounding box | `CUSTOM_BBOX` or a user-supplied shapefile path | Study area definition (@sec-area-definition, Approach B) | custom script only |
 
-::: {.callout-important}
-### Note: `fg_file` is the current CSV, not the retired xlsx
-`fg_file` is `FG_WMed_2026.csv` (a flat, reviewed CSV - species/FG_number/FG_name/Genus/Family/Order/Class/Phylum), not `FG_WMed.xlsx`. The old `FG_WMed.xlsx` workbook (sheet 4 for the species→FG master, plus its own `traits_ewe` sheet) is retired - `01_biomass.R`/`02_fisheries.R`/`03_pbqb-traits.R`/`04_diets.R` all read `FG_WMed_2026.csv` directly via `fread()`, never `readxl::read_excel()`. The `traits_ewe` **sheet**-parsing mechanism described in the callout below (@sec-configure) is correspondingly retired too - `03_pbqb-traits.R` now builds `traits_ewe` from FishBase/SeaLifeBase life-history data instead of parsing an xlsx sheet; see @sec-pbqb-traits below for the current method.
+::: {.callout-note}
+### Species → FG table: `FG_WMed_2026.csv`
+The species → functional group assignment comes from `FG_WMed_2026.csv` (pCloud `data` folder), built and reviewed for the EwE Western Mediterranean model. One row per species, with its `FG_number` and `FG_name` (plus `Genus`, `Family`, `Order`, `Class`, `Phylum`, `source` and `status`). Scripts 01-04 all read it. Another file with the same columns can be chosen or uploaded in the *Functional groups* card (@sec-configure), which sets `FG_SPECIES_FILE` for the run.
 :::
 
 All the pCloud-hosted files above share one root, `pcloud_dir` (@sec-configure resolves this the same portable way it resolves `git_dir` - hardcoded on your machine, an interactive picker for anyone else) - so moving or renaming the `Medits_Medias_JRC2026` folder structure itself would break every path in the table above, not just one.
@@ -1574,6 +1659,11 @@ $$
 back-cast to 1994–1996 with the MEDITS hake index (× 0.84 in the 2026-10-13 run). Result: adult (FG 27) 0.0918 t/km², juvenile (FG 26) 0.127 t/km². Ecosim: adult = the 17 assessment years (1998–2014), other years blank; juvenile = MEDITS index scaled to $B_{juv}$. Written to `hake_stanza_stock_assessment_REVIEW.csv`; parameters in `multistanza_reference_tables/hake_multistanza_parameters.csv`.
 
 ### Groups the surveys cannot measure (`01b_biomass_unsurveyed.R`)
+
+::: {.callout-warning}
+### These values are for the whole Western Mediterranean
+The biomass of the groups below was estimated for the full Western Mediterranean model area (GSAs 1-11, coast to bottom). The sources (literature densities, habitat maps, ocean-model plankton fields, stock assessments of large pelagics and megafauna) describe the whole region, not single GSAs. If you filter the model area (fewer GSAs, or the 10-800 m basis), these values can change and may no longer represent the smaller area well: check them before using a filtered run.
+:::
 
 Values are the Ecopath_B of the 2026-10-13 run (t WW/km² of $A_{model}$), except Swordfish and Detritus, which show the value expected after the survey-zero fix of 2026-10-14 (see the note below the table).
 

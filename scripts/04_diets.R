@@ -194,6 +194,7 @@ if (!exists("METAWEB_XLSX_PATH",        envir = .GlobalEnv, inherits = FALSE)) M
 ## 02_fisheries.R's fg_file both read (species/FG_number/FG_name/
 ## taxonomy/source/status), NOT the old FG_WMed.xlsx sheet 4. No sheet
 ## parameter needed anymore - a CSV has no sheets.
+if (exists("FG_SPECIES_FILE", envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH <- FG_SPECIES_FILE   # FG_SPECIES_FILE overrides
 if (!exists("FG_REFERENCE_CSV_PATH",    envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH    <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 if (!exists("SPECIES_TO_FG_MISSING_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_TO_FG_MISSING_CSV_PATH <- file.path(pcloud_dir, "data/species_to_fg_missing.csv")   # species, fg_name, proportion - ONLY for species not found in FG_REFERENCE_CSV_PATH; ok if the file doesn't exist (treated as empty)
 if (!exists("SPECIES_BIOMASS_IN_FG_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) SPECIES_BIOMASS_IN_FG_CSV_PATH <- file.path(pcloud_dir, "data/species_biomass_in_fg_missing.csv")   # species, fg_name, biomass_proportion - ONLY for species x FG pairs not covered by ECOPATH_WORKBOOK_PATH's own FG_spp_Ecopath sheet; ok if the file doesn't exist
@@ -1489,26 +1490,44 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   ## A name not in the csv (e.g. an import column) goes last.
   p_diet_matrix <- tryCatch({
     if (nrow(fg_diet) == 0) stop("fg_diet is empty")
-    fg_order <- unique(fread(FG_REFERENCE_CSV_PATH)[!is.na(FG_number) & !is.na(FG_name), .(FG_number = as.numeric(FG_number), FG_name)])
+    fg_csv <- fread(FG_REFERENCE_CSV_PATH)
+    has_group <- "FG_group" %in% names(fg_csv)
+    fg_order <- unique(fg_csv[!is.na(FG_number) & !is.na(FG_name),
+                              .(FG_number = as.numeric(FG_number), FG_name, FG_group = if (has_group) as.character(FG_group) else NA_character_)])
     setorder(fg_order, FG_number)
     fg_order <- fg_order[!duplicated(FG_name)]
     extra <- setdiff(unique(c(fg_diet$predator_fg, fg_diet$prey_fg)), fg_order$FG_name)
     lev_names <- c(fg_order$FG_name, sort(extra))
     lev_labels <- c(paste(fg_order$FG_number, "-", fg_order$FG_name), sort(extra))
     hm <- copy(fg_diet)[, .(weight = sum(weight, na.rm = TRUE)), by = .(predator_fg, prey_fg)]
+    ## every predator x prey cell, so each FG shows on both axes even without diet rows
+    hm <- merge(CJ(predator_fg = lev_names, prey_fg = lev_names), hm, by = c("predator_fg", "prey_fg"), all.x = TRUE)
     hm[, predator := factor(predator_fg, levels = rev(lev_names), labels = rev(lev_labels))]   # rev: FG 1 at the top
     hm[, prey := factor(prey_fg, levels = lev_names, labels = lev_labels)]
+    ## FG_group column (optional): blocks of the matrix per group, groups in
+    ## the order of their first FG number, group names as strip labels
+    if (has_group) {
+      grp <- setNames(fg_order$FG_group, fg_order$FG_name)
+      grp_lev <- unique(fg_order$FG_group[!is.na(fg_order$FG_group)])
+      if (any(!lev_names %in% names(grp)[!is.na(grp)])) grp_lev <- c(grp_lev, "Other")
+      grp <- setNames(ifelse(is.na(grp[lev_names]), "Other", grp[lev_names]), lev_names)
+      hm[, pred_group := factor(grp[predator_fg], levels = grp_lev)]
+      hm[, prey_group := factor(grp[prey_fg], levels = grp_lev)]
+    }
     ggplot(hm, aes(x = prey, y = predator, fill = weight)) +
+      (if (has_group) facet_grid(pred_group ~ prey_group, scales = "free", space = "free", switch = "y") else NULL) +
       geom_tile(color = "white", linewidth = 0.1) +
-      scale_x_discrete(position = "top", drop = FALSE) +
-      scale_y_discrete(drop = FALSE) +
+      scale_x_discrete(position = "top", drop = has_group) +   # with groups each panel keeps only its own FGs
+      scale_y_discrete(drop = has_group) +
       scale_fill_viridis_c(option = "magma", direction = -1, na.value = "grey95", limits = c(0, NA)) +
       labs(title = "Diet composition matrix (Ecopath_diet)",
            subtitle = "Rows = predator FG, columns = prey FG, both in FG-number order (FG_WMed_2026.csv). Each row sums to ~1; colour = share of that prey in the predator's diet",
            x = "Prey FG", y = "Predator FG", fill = "Diet\nproportion") +
       theme_minimal(base_size = 6) +
       theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 5),
-            axis.text.y = element_text(size = 5), panel.grid = element_blank(), legend.position = "right")
+            axis.text.y = element_text(size = 5), panel.grid = element_blank(), legend.position = "right",
+            strip.text.x = element_text(size = 5, angle = 90, hjust = 0), strip.text.y.left = element_text(size = 5, angle = 0, hjust = 1),
+            strip.placement = "outside", panel.spacing = grid::unit(1, "pt"))
   }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_diet_matrix)) {
     n_fg_side <- nlevels(p_diet_matrix$data$prey)   # every FG of FG_WMed_2026.csv, also those with no diet rows

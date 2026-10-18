@@ -540,6 +540,7 @@ ECOPATH_WORKBOOK_PATH <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
 ## in sync automatically.
 if (!exists("YEAR_ECOPATH", envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH <- 1994:1996
 
+if (exists("FG_SPECIES_FILE", envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH <- FG_SPECIES_FILE   # FG_SPECIES_FILE overrides
 if (!exists("FG_REFERENCE_CSV_PATH", envir = .GlobalEnv, inherits = FALSE)) FG_REFERENCE_CSV_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # same file 01_biomass.R's fg_species_file / 02_fisheries.R's fg_file / 04_diets.R's FG_REFERENCE_CSV_PATH all read
 FG_INDEX_COMBINED_CSV  <- file.path(BIOMASS_CSV_DIR, "survey_fg_annual_index_regional_combined.csv")   # 01_biomass.R's FG-level table, includes stock-assessment/megafauna-only FGs the survey never samples at all, not just survey-caught ones
 BIOMASS_PROPORTION_CSV <- file.path(BIOMASS_CSV_DIR, "biomass_proportion_by_species_fg.csv")   # same file 04_diets.R reads for the identical "species' share of its FG's biomass" purpose
@@ -3301,7 +3302,7 @@ write_native_sheets_csv(list(PBQB_Method_References = METHOD_REFERENCES), csv_ou
 ## the old xlsx had (it used to carry a SECOND, unrelated "fg_ebro
 ## delta_21" sheet and duplicate FG_name-like columns within the
 ## fg_wmed_95 sheet itself - none of that exists in the CSV).
-FG_REFERENCE_PATH <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")
+FG_REFERENCE_PATH <- if (exists("FG_SPECIES_FILE", envir = .GlobalEnv, inherits = FALSE)) FG_SPECIES_FILE else file.path(pcloud_dir, "data/FG_WMed_2026.csv")
 
 fg_ref_unique <- NULL
 ## fg_species_all: the FULL species-level table -

@@ -325,7 +325,11 @@ source(paste0(git_dir,"/scripts/lib_worms_taxonomy_lookup.R"))
 ## reviewed from), not the old FG_WMed.xlsx sheet 4. Point this at wherever the
 ## current reviewed CSV lives; the code below (STEP 2) reads it with fread(),
 ## not readxl::read_excel().
-fg_species_file  <- resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed_2026.csv"), pcloud_dir)
+## FG_SPECIES_FILE (full path, e.g. set by medbs_pipeline_methodology.qmd)
+## overrides the default FG_WMed_2026.csv for every script (01-04).
+fg_species_file  <- if (exists("FG_SPECIES_FILE", envir = .GlobalEnv, inherits = FALSE)) FG_SPECIES_FILE else
+  resolve_pcloud_file(paste0(pcloud_dir,"/data/FG_WMed_2026.csv"), pcloud_dir)
+message("[01_biomass.R] Species -> FG file: ", fg_species_file)
 #taxonomy list of MEDITS and MEDIAS species and code species
 #downloaded from MEDITS website
 tm_list_file     <- resolve_pcloud_file(paste0(pcloud_dir,"/data/Medits_Medias_JRC2026/2024_MEDBSsurvey/TM_list_(April_2019).xlsx"), pcloud_dir)
