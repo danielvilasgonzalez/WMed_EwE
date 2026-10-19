@@ -38,51 +38,35 @@ if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
 RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
 
 ## ---- 1. Paths ------------------------------------------------------
-## out_dir    = writable output folder
-## pcloud_dir = local "pCloud Drive/EwE Western Med 2026" folder
-## git_dir    = local clone of the WMed_EwE repo (folder with scripts/)
-## Read from config.R next to this script (copy config.R.example and edit
-## it; config.R is git-ignored). Without config.R, RStudio opens a folder
-## picker for each path and offers to save them to config.R.
+## out_dir    = writable output folder (local to each laptop)
+## pcloud_dir = the pCloud Drive folder "EwE Western Med 2026"
+## git_dir    = the WMed_EwE repo (folder with scripts/)
+## Found by wmed_paths.R on any laptop with the repo and pCloud Drive:
+## config.local.R (this computer, git-ignored), then config.R, then the
+## standard pCloud Drive location; out_dir defaults to ~/WMed_EwE_output.
+## If the pCloud folder is not found, RStudio asks for it once and saves
+## it to config.local.R.
 .this_dir <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) getwd())
-.config <- c(file.path(.this_dir, "config.R"), file.path(dirname(.this_dir), "config.R"), "config.R")
-.config <- .config[file.exists(.config)][1]
-
-if (!is.na(.config)) {
-  message("[run_pipeline_demo.R] Using paths from ", .config)
-  source(.config)
-} else if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
-  pick_dir <- function(title, message_text) {
-    rstudioapi::showQuestion(title = title, message = message_text)
-    picked <- rstudioapi::selectDirectory()
-    if (is.null(picked) || picked == "" || !dir.exists(picked)) {
-      stop("[run_pipeline_demo.R] No valid folder selected for '", title, "' - run again.", call. = FALSE)
-    }
-    picked
+if (!file.exists(file.path(.this_dir, "wmed_paths.R")) && file.exists(file.path(.this_dir, "scripts", "wmed_paths.R")))
+  .this_dir <- file.path(.this_dir, "scripts")
+source(file.path(.this_dir, "wmed_paths.R"))
+.wp <- wmed_set_paths(git_dir = dirname(.this_dir))
+if (!isTRUE(.wp$ok) && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+  rstudioapi::showDialog("pCloud folder", paste0("Select your pCloud folder '", .wmed_pcloud_name,
+                                                 "'. It is saved in config.local.R for this computer only."))
+  .picked <- rstudioapi::selectDirectory()
+  if (!is.null(.picked) && dir.exists(.picked)) {
+    wmed_save_local_config(dirname(.this_dir), pcloud_dir = .picked)
+    .wp <- wmed_set_paths(git_dir = dirname(.this_dir))
   }
-  out_dir    <- pick_dir("Output folder", "Select the folder where the pipeline outputs are written.")
-  pcloud_dir <- pick_dir("pCloud data folder", "Select your 'pCloud Drive/EwE Western Med 2026' folder.")
-  git_dir    <- pick_dir("WMed_EwE repo", "Select your local clone of the WMed_EwE repo (the folder with 'scripts/').")
-  if (isTRUE(tryCatch(rstudioapi::showQuestion("Save paths?", "Save these paths to config.R so you are not asked again?",
-                                               ok = "Yes", cancel = "No"), error = function(e) TRUE))) {
-    writeLines(c("## config.R - written by run_pipeline_demo.R. Not committed (.gitignore).",
-                 sprintf('out_dir    <- "%s"', out_dir),
-                 sprintf('pcloud_dir <- "%s"', pcloud_dir),
-                 sprintf('git_dir    <- "%s"', git_dir)),
-               file.path(.this_dir, "config.R"))
-    message("[run_pipeline_demo.R] Paths saved to ", file.path(.this_dir, "config.R"))
-  }
-} else {
-  stop("[run_pipeline_demo.R] No config.R found and RStudio is not available for a folder picker.\n",
-       "Copy config.R.example to config.R (next to this script), set out_dir, pcloud_dir and git_dir, and run again.",
-       call. = FALSE)
 }
+if (!isTRUE(.wp$ok)) stop("[run_pipeline_demo.R] ", .wp$problem, "Nothing was run.", call. = FALSE)
 
 .missing <- c(if (!dir.exists(out_dir)) paste0("out_dir = ", out_dir),
               if (!dir.exists(pcloud_dir)) paste0("pcloud_dir = ", pcloud_dir),
               if (!dir.exists(git_dir)) paste0("git_dir = ", git_dir))
 if (length(.missing)) stop("[run_pipeline_demo.R] These folders do not exist on this machine:\n  ",
-                           paste(.missing, collapse = "\n  "), "\nFix config.R and run again. Nothing was run.",
+                           paste(.missing, collapse = "\n  "), "\nFix config.local.R (this computer) and run again. Nothing was run.",
                            call. = FALSE)
 .scripts <- file.path(git_dir, "scripts", c("01_biomass.R", "02_fisheries.R", "03_pbqb-traits.R",
                                             "04_diets.R", "05_validation.R"))
@@ -95,24 +79,27 @@ if (RUN_MODE == "westmed_default") {
   ## read them); change them to filter the area or the period.
   ##
   ## MODEL_GSAS: GSAs that make up the model area. Default = the whole
-  ##   Western Med (GSAs 1-11). Filter with e.g. c(6, 7) (Northern Spain +
+  ##   Western Med (GSAs 1-11) plus GSA 12 (Northern Tunisia, part of the
+  ##   MSFD Western Mediterranean subregion). Filter with e.g. c(6, 7) (Northern Spain +
   ##   Gulf of Lion). Survey data are used only for these GSAs; a GSA the
-  ##   surveys do not cover (3 Southern Alboran, 4 Algeria) takes the survey
+  ##   surveys do not cover (3 Southern Alboran, 4 Algeria, 12 Northern Tunisia) takes the survey
   ##   density per km2 of the others (ASSUMPTION). Catch is kept for every
   ##   coastal state of these GSAs (GSA 3 Morocco, 4 Algeria, 1-2 and 5-6
-  ##   Spain, 7-8 France, 9-11 Italy).
+  ##   Spain, 7-8 France, 9-11 Italy, 12 Tunisia).
   ## MODEL_AREA_BASIS: "whole_gsa" = A_model is the whole sea area of
   ##   MODEL_GSAS, coast to bottom (depths outside 10-800 m filled with
   ##   AquaMaps); "medits_10_800" = only the 10-800 m MEDITS strata.
   ## A value already set before this file is sourced wins (e.g. from
   ## medbs_pipeline_methodology.qmd's params, with CLEAN_START <- FALSE).
   .set_default <- function(name, value) if (!exists(name, envir = .GlobalEnv, inherits = FALSE)) assign(name, value, envir = .GlobalEnv)
-  .set_default("MODEL_GSAS",       1:11)
+  .set_default("MODEL_GSAS",       1:12)
   .set_default("MODEL_AREA_BASIS", "whole_gsa")
   .set_default("YEAR_ECOPATH",     1994:1996)   # Ecopath baseline (01, 02, 03)
   .set_default("TS_YEARS",         1995:2023)   # Ecosim biomass series (01)
-  .set_default("START_YEAR",       1994)        # catch / effort series (02)
-  .set_default("END_YEAR",         2023)
+  ## Catch / effort series (02): follow the Ecopath and Ecosim years -
+  ## from the first Ecopath or Ecosim year to the last Ecosim year.
+  .set_default("START_YEAR",       min(c(YEAR_ECOPATH, TS_YEARS)))
+  .set_default("END_YEAR",         max(TS_YEARS))
   ##
   ## Other settings, with their current default values - uncomment a line
   ## to change it for this run only:
@@ -122,6 +109,9 @@ if (RUN_MODE == "westmed_default") {
   # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed
   ##
   ## Biomass (01)
+  # ECOPATH_B_FILL_MODE           <- "window_mean"  # FG with no biomass in YEAR_ECOPATH: mean over ECOPATH_B_FILL_YEARS (else nearest year); "nearest" = nearest year only
+  # ECOPATH_B_FILL_YEARS          <- 1995:2000
+  # ECOPATH_B_EXPANDING_MIN       <- 0.00001  # Ecopath_B of the "Expanding" FGs (t/km2); NA = leave missing
   # DROP_OUTLIERS                 <- TRUE   # remove flagged outlier hauls (haul-level rule)
   # SURVEY_IMPUTE_UNSAMPLED_CELLS <- TRUE   # unsampled GSA left out of that year; unsampled strata of a sampled GSA filled from the same GSA
   # AQUAMAPS_B_MAX_DEPTH          <- Inf    # AquaMaps pseudo-strata biomass counted down to this depth (whole_gsa: all depths; medits_10_800: 1000)

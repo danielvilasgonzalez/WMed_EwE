@@ -2,6 +2,16 @@
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
+## --- Folders on any laptop (wmed_paths.R) ----------------------------------
+## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
+## run_pipeline_demo.R), find the folders on this computer: config.local.R,
+## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
+if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
+  d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
+  if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")
+  if (file.exists(file.path(d, "wmed_paths.R"))) { source(file.path(d, "wmed_paths.R"), local = TRUE); wmed_set_paths(git_dir = dirname(d)) }
+})
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -261,6 +271,15 @@ if (exists("out_dir", envir = .GlobalEnv, inherits = FALSE) &&
   }
 }
 
+## A custom region writes to its own subfolder out_dir/AREA_NAME, so it
+## never overwrites the Western Med outputs (also when out_dir was found
+## by wmed_paths.R or set by a driver script).
+if (AREA_MODE == "custom" && basename(sub("/+$", "", out_dir)) != AREA_NAME) {
+  out_dir <- file.path(sub("/+$", "", out_dir), AREA_NAME)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  message("[01_biomass.R] Custom region '", AREA_NAME, "': outputs in ", out_dir)
+}
+
 ## --- Run log (plain text, for sharing/debugging) ------------------------
 ## Captures this run's console output (cat/print/message/warning) into a
 ## timestamped .txt file under out_dir, in addition to the normal console,
@@ -385,7 +404,7 @@ message("This script will write its outputs to:\n  out_dir  = ", out_dir, "\n  p
 ## model area; FILTER_AREAS (the survey filter) follows it. Default: the
 ## whole Western Med, GSAs 1-11.
 if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) FILTER_AREAS <- MODEL_GSAS
-if (!exists("FILTER_AREAS",  envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS  <- if (AREA_MODE == "custom") NULL else 1:11        # GSA
+if (!exists("FILTER_AREAS",  envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS  <- if (AREA_MODE == "custom") NULL else 1:12        # GSA (1-11 Western Med + 12 Northern Tunisia)
 if (!exists("STRATA",        envir = .GlobalEnv, inherits = FALSE)) STRATA        <- TRUE         # function attribute: strata
 if (!exists("YEAR_ECOPATH",  envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH  <- 1994:1996     # function attribute: year_ecopath
 ## TS_YEARS' default last year used to be the hardcoded literal 2023,
@@ -397,6 +416,16 @@ TS_YEARS_WAS_PRESET <- exists("TS_YEARS", envir = .GlobalEnv, inherits = FALSE)
 if (!exists("TS_YEARS",      envir = .GlobalEnv, inherits = FALSE)) TS_YEARS      <- 1995:2023     # function attribute: ts_years (NULL -> min:max of data); last year corrected below to the real MEDITS data once TA.csv is read, if not pre-set
 if (!exists("DROP_OUTLIERS", envir = .GlobalEnv, inherits = FALSE)) DROP_OUTLIERS <- TRUE         # function attribute: whether remove_sample_outliers() actually
 if (!exists("NORMALIZE_TS",  envir = .GlobalEnv, inherits = FALSE)) NORMALIZE_TS  <- TRUE         # TRUE = Ecosim series rescaled to reference index (first value = 1); FALSE = raw density
+## Ecopath_B of an FG with no biomass in YEAR_ECOPATH (1994-1996):
+##   ECOPATH_B_FILL_MODE "window_mean" = mean over ECOPATH_B_FILL_YEARS
+##     (default 1995-2000) when that mean is > 0, else the nearest single
+##     year with data; "nearest" = nearest single year only (old rule).
+##   ECOPATH_B_EXPANDING_MIN: Ecopath_B of the "Expanding" FGs (range-
+##     expanding species, rare or absent at the baseline) = 0.00001 t/km2,
+##     so Ecopath keeps them; NA = leave missing.
+if (!exists("ECOPATH_B_FILL_MODE",     envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_FILL_MODE     <- "window_mean"
+if (!exists("ECOPATH_B_FILL_YEARS",    envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_FILL_YEARS    <- 1995:2000
+if (!exists("ECOPATH_B_EXPANDING_MIN", envir = .GlobalEnv, inherits = FALSE)) ECOPATH_B_EXPANDING_MIN <- 0.00001
 ## Ecosim_ts trend hygiene (2026-10-07), applied to the MEDITS FG index
 ## used for Ecosim trends; the 1994-1996 mean of each FG (Ecopath_B) is
 ## kept unchanged (see STEP 7c):
@@ -3759,9 +3788,13 @@ build_full_fg_species_catalog(csv_out_dir)
 ## deliberately excluded from the fallback).
 fg_biomass_base_year_fallback <- resolve_baseline_with_nearest_year_fallback(
   fg_index_regional_combined[, .(Year, FG_num, FG_name, mean_density)],
-  id_cols = c("FG_num", "FG_name"), value_col = "mean_density", baseline_years = YEAR_ECOPATH)
+  id_cols = c("FG_num", "FG_name"), value_col = "mean_density", baseline_years = YEAR_ECOPATH,
+  fill_mode = ECOPATH_B_FILL_MODE, fill_years = ECOPATH_B_FILL_YEARS)
 fg_biomass_base_year <- fg_biomass_base_year_fallback[, .(FG_num, FG_name, mean_density = final_value)]
 fg_missing_biomass <- merge(full_fg_list, fg_biomass_base_year, by = c("FG_num", "FG_name"), all.x = TRUE)
+if (is.finite(ECOPATH_B_EXPANDING_MIN))   # same minimal biomass as Ecopath_B (export_ecopath_ecosim_excel)
+  fg_missing_biomass[grepl("Expanding", FG_name, ignore.case = TRUE) & (is.na(mean_density) | mean_density == 0),
+                     mean_density := ECOPATH_B_EXPANDING_MIN]
 fg_missing_biomass <- fg_missing_biomass[is.na(mean_density) | mean_density == 0]
 
 ## =================================================================

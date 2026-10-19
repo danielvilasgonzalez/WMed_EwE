@@ -67,3 +67,7 @@ tmp.tif
 
 # machine-specific output path used by the qmd setup chunk
 scripts/qmd_out_dir.txt
+
+# folders on each computer (written by wmed_paths.R / the qmd page)
+config.local.R
+scripts/config.local.R

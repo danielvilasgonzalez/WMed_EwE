@@ -251,7 +251,7 @@ if (nrow(star_ram_combined) > 0) {
     v <- suppressWarnings(as.numeric(floor(as.numeric(trimws(unlist(strsplit(g, "[,;]")))))))
     length(v) > 0 && !anyNA(v) && all(v %in% areas)
   }
-  target_gsas <- if (exists("FILTER_AREAS") && !is.null(FILTER_AREAS)) as.numeric(FILTER_AREAS) else 1:11
+  target_gsas <- if (exists("FILTER_AREAS") && !is.null(FILTER_AREAS)) as.numeric(FILTER_AREAS) else 1:12
   star_ram_combined[, gsa := as.character(gsa)]
   star_wm <- star_ram_combined[!is.na(gsa) & nzchar(gsa)][vapply(gsa, .gsa_in_scope, logical(1), areas = target_gsas)]
   star_wm <- star_wm[!is.na(biomass)]

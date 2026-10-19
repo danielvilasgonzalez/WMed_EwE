@@ -1,3 +1,13 @@
+## --- Folders on any laptop (wmed_paths.R) ----------------------------------
+## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
+## run_pipeline_demo.R), find the folders on this computer: config.local.R,
+## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
+if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
+  d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
+  if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")
+  if (file.exists(file.path(d, "wmed_paths.R"))) { source(file.path(d, "wmed_paths.R"), local = TRUE); wmed_set_paths(git_dir = dirname(d)) }
+})
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run

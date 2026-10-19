@@ -3991,10 +3991,17 @@ read_existing_ts_years <- function(out_path, sheet_name, csv_dir = NULL) {
 ## one row per id_cols group: id_cols, final_value, borrowed (logical),
 ## borrowed_from_year (NA unless borrowed).
 ## =================================================================
+## Option (FG level, Ecopath_B): fill_mode = "window_mean" first uses the
+## MEAN of the group's values over fill_years (default 1995-2000, every
+## available year in that window, zeros included) when the baseline is
+## missing/0 and that mean is > 0; only if the window has no positive
+## mean does it fall back to the nearest single year. borrowed_how says
+## which rule filled the value.
 resolve_baseline_with_nearest_year_fallback <- function(dt, id_cols, value_col = "mean_density",
                                                         fg_name_col = "FG_name",
                                                         baseline_years,
-                                                        exclude_pattern = "Expanding") {
+                                                        exclude_pattern = "Expanding",
+                                                        fill_mode = "nearest", fill_years = NULL) {
   if (!fg_name_col %in% id_cols) {
     stop("resolve_baseline_with_nearest_year_fallback(): fg_name_col ('", fg_name_col,
          "') must be one of id_cols so the 'Expanding' exclusion can be checked - got id_cols = ",
@@ -4036,12 +4043,22 @@ resolve_baseline_with_nearest_year_fallback <- function(dt, id_cols, value_col =
     nearest[, `:=`(borrowed_from_year = NA_integer_, nearest_value = NA_real_)]
   }
   
+  ## every group, also one with no row at all in the baseline years
+  baseline_dt <- merge(unique(dt[, id_cols, with = FALSE]), baseline_dt, by = id_cols, all.x = TRUE)
   out <- merge(baseline_dt, nearest, by = id_cols, all.x = TRUE)
+  .win_label <- if (length(fill_years)) paste0("mean ", min(fill_years), "-", max(fill_years)) else NA_character_
+  if (identical(fill_mode, "window_mean") && length(fill_years)) {
+    win <- dt[Year %in% fill_years & !is.na(get(value_col)), .(window_value = mean(get(value_col))), by = id_cols]
+    out <- merge(out, win, by = id_cols, all.x = TRUE)
+  } else out[, window_value := NA_real_]
   out[, .is_expanding := grepl(exclude_pattern, get(fg_name_col), ignore.case = TRUE)]
-  out[, borrowed := (is.na(baseline_value) | baseline_value == 0) & !.is_expanding & !is.na(nearest_value)]
-  out[, final_value := fifelse(borrowed, nearest_value, baseline_value)]
-  out[borrowed == FALSE, borrowed_from_year := NA_integer_]
-  out[, c(id_cols, "final_value", "borrowed", "borrowed_from_year"), with = FALSE]
+  out[, .missing := is.na(baseline_value) | baseline_value == 0]
+  out[, use_window := .missing & !.is_expanding & is.finite(window_value) & window_value > 0]
+  out[, borrowed := .missing & !.is_expanding & (use_window | !is.na(nearest_value))]
+  out[, final_value := fifelse(use_window, window_value, fifelse(borrowed, nearest_value, baseline_value))]
+  out[, borrowed_how := fifelse(use_window, .win_label, fifelse(borrowed, "nearest year", NA_character_))]
+  out[borrowed == FALSE | use_window == TRUE, borrowed_from_year := NA_integer_]
+  out[, c(id_cols, "final_value", "borrowed", "borrowed_from_year", "borrowed_how"), with = FALSE]
 }
 
 ## Generalized from the MEDITS pipeline's 3-sheet workbook (FG_spp,
@@ -4230,19 +4247,34 @@ export_ecopath_ecosim_excel <- function(fg_index_regional, species_density_regio
   ## where a real baseline zero is the correct signal and must stay).
   fg_baseline_fallback <- resolve_baseline_with_nearest_year_fallback(
     fg_index_regional, id_cols = c("FG_num", "FG_name"), value_col = "mean_density",
-    baseline_years = year_ecopath)
+    baseline_years = year_ecopath,
+    fill_mode = if (exists("ECOPATH_B_FILL_MODE")) ECOPATH_B_FILL_MODE else "nearest",
+    fill_years = if (exists("ECOPATH_B_FILL_YEARS")) ECOPATH_B_FILL_YEARS else NULL)
   n_fg_borrowed <- sum(fg_baseline_fallback$borrowed, na.rm = TRUE)
   if (n_fg_borrowed > 0) {
     fwrite(fg_baseline_fallback[borrowed == TRUE], file.path(out_dir, "ecopath_B_baseline_year_borrowed_REVIEW.csv"))
     message(n_fg_borrowed, " FG(s) had a zero/no-data ", min(year_ecopath), "-", max(year_ecopath),
-            " biomass baseline but a real nonzero density in another survey year - borrowed the",
-            " nearest such year's value for Ecopath_B instead of reporting a false zero (skipped for",
-            " any FG whose name contains \"Expanding\"). See ecopath_B_baseline_year_borrowed_REVIEW.csv.")
+            " biomass baseline - Ecopath_B filled with ",
+            paste(fg_baseline_fallback[borrowed == TRUE, .N, by = borrowed_how][, paste0(N, " x ", borrowed_how)], collapse = ", "),
+            " (never for \"Expanding\" FGs). See ecopath_B_baseline_year_borrowed_REVIEW.csv.")
   }
   ecopath_avg <- fg_baseline_fallback[, .(FG_num, Biomass_avg = final_value)]
   
   ecopath_detail <- merge(full_fg_list, ecopath_base, by = "FG_num", all.x = TRUE)
   ecopath_detail <- merge(ecopath_detail, ecopath_avg, by = "FG_num", all.x = TRUE)
+  ## Expanding FGs (range-expanding species, absent or rare at the
+  ## baseline): a minimal biomass so Ecopath keeps the group
+  ## (ECOPATH_B_EXPANDING_MIN, default 0.00001 t/km2; NA = leave missing)
+  .exp_min <- if (exists("ECOPATH_B_EXPANDING_MIN")) ECOPATH_B_EXPANDING_MIN else NA_real_
+  if (is.finite(.exp_min) && "FG_name" %in% names(ecopath_detail)) {
+    .exp_rows <- grepl("Expanding", ecopath_detail$FG_name, ignore.case = TRUE) &
+                 (is.na(ecopath_detail$Biomass_avg) | ecopath_detail$Biomass_avg == 0)
+    if (any(.exp_rows)) {
+      ecopath_detail[.exp_rows, Biomass_avg := .exp_min]
+      message("Expanding FG(s) given the minimal Ecopath_B ", .exp_min, " t/km2: ",
+              paste(ecopath_detail[.exp_rows, FG_name], collapse = ", "), ".")
+    }
+  }
   setnames(ecopath_detail, c("Biomass_baseyear", "Biomass_avg"),
            c(paste0("Biomass_", base_year), paste0("Biomass_", min(year_ecopath), "_", max(year_ecopath))))
   ## Biomass in the first Ecosim year (ts_years[1], normally 1995), so the

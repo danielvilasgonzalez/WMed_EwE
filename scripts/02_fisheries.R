@@ -2,6 +2,16 @@
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
+## --- Folders on any laptop (wmed_paths.R) ----------------------------------
+## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
+## run_pipeline_demo.R), find the folders on this computer: config.local.R,
+## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
+if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
+  d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
+  if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")
+  if (file.exists(file.path(d, "wmed_paths.R"))) { source(file.path(d, "wmed_paths.R"), local = TRUE); wmed_set_paths(git_dir = dirname(d)) }
+})
+
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
@@ -260,7 +270,7 @@ if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_G
 } else if (!is.null(.sa_dom)) {
   .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
   FILTER_AREAS <- sort(unique(as.numeric(.sa_dom[[.gc_dom]])))
-} else if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- 1:11
+} else if (!exists("FILTER_AREAS", envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS <- 1:12
 ## Coastal state(s) of each GSA (GFCM Geographical Sub-Areas, Resolution
 ## GFCM/33/2009/2). Countries with no coast in the model GSAs are not
 ## model fleets: their catch (e.g. Tunisia GSA 12) is outside the domain.
@@ -592,7 +602,14 @@ build_westmed_timeseries <- function(cfg) {
     westmed <- capture[AreaCode %in% cfg$area_filter_values & MEASURE == "Q_tlw" & PERIOD >= START_YEAR]  # keep only West Med divisions, live-weight quantity, from START_YEAR
     species_ts <- westmed[, .(Catch = sum(VALUE, na.rm = TRUE)), by = .(Year = PERIOD, Species, Division)]  # sum catch by year x species x division
     country_species_ts <- westmed[, .(Catch = sum(VALUE, na.rm = TRUE)), by = .(Year = PERIOD, Country, Species, Division)]  # sum catch by year x country x species x division
-    list(westmed = westmed, species_ts = species_ts, country_species_ts = country_species_ts,
+    ## Share of each country's Mediterranean (area 37) catch taken in the
+    ## Western Med divisions - used to cut national effort down to the
+    ## model area for countries with coasts on both sides (Tunisia).
+    div_share <- capture[MEASURE == "Q_tlw" & grepl("^37\\.", AreaCode) & PERIOD >= START_YEAR,
+                         .(catch_westmed = sum(VALUE[AreaCode %in% cfg$area_filter_values], na.rm = TRUE),
+                           catch_med = sum(VALUE, na.rm = TRUE)), by = .(Country, Year = PERIOD)]
+    div_share[, share_westmed := fifelse(catch_med > 0, catch_westmed / catch_med, NA_real_)]
+    list(westmed = westmed, species_ts = species_ts, country_species_ts = country_species_ts, div_share = div_share,
          value_col = "VALUE", species_col = "Species")
   } else if (cfg$format == "legacy_excel") {
     catch_data <- load_legacy_excel(cfg)  # load the legacy Excel catch table
@@ -2026,7 +2043,7 @@ message("\n[Fleet split] fleet_prop: ", nrow(fleet_prop), " Country x FG x Fleet
 ## data rows, then a blank row before the next country's block.
 GFCM_FLEET_REGISTER_XLSX <- file.path(pcloud_dir, "data/Complementary data/GFCM-FleetRegister.xlsx")
 GFCM_FLEET_REGISTER_SHEET <- "FleetRegister"
-GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- intersect(c("Morocco", "Algeria"), TARGET_COUNTRIES)  # empty when GSAs 3-4 are outside the model domain
+GFCM_FLEET_REGISTER_OVERRIDE_COUNTRIES <- intersect(c("Morocco", "Algeria", "Tunisia"), TARGET_COUNTRIES)  # empty when GSAs 3, 4 and 12 are outside the model domain
 GFCM_FLEET_REGISTER_SOURCE_LABEL <- "GFCM Fleet Register (real registered-vessel count by gear, Complementary data/GFCM-FleetRegister.xlsx) - assumes roughly equal catch-per-vessel across gears, no FG/year variation"
 
 parse_gfcm_fleet_register <- function(path, sheet) {
@@ -5413,6 +5430,10 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
   fg_avg[is.na(FG_name), FG_name := FG_name_b]
   fg_avg[, B_source := fifelse(!is.na(B_ecopath), "Ecopath_B (01_biomass.R)", "survey species density")]
   fg_avg[!is.na(B_ecopath) & B_ecopath < 0, `:=`(B_source = "estimated by Ecopath (EE) - no F", B_ecopath = NA_real_, Biomass_density_avg = NA_real_)]
+  ## Expanding FGs carry a placeholder Ecopath_B (ECOPATH_B_EXPANDING_MIN,
+  ## 0.00001 t/km2): catch / placeholder B is not a real F, so no F.
+  fg_avg[!is.na(B_ecopath) & grepl("Expanding", FG_name, ignore.case = TRUE) & B_ecopath <= 1e-4,
+         `:=`(B_source = "Expanding FG, placeholder Ecopath_B - no F", B_ecopath = NA_real_, Biomass_density_avg = NA_real_)]
   fg_avg[!is.na(B_ecopath), Biomass_density_avg := B_ecopath]
   fg_avg[, c("B_ecopath", "FG_name_b") := NULL]
   message("[", label, "] B for F: Ecopath_B for ", fg_avg[B_source != "survey species density", .N], " FG(s); survey density for ",
@@ -7040,6 +7061,30 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   effort_by_fleet <- effort[, .(nom_active_kWdays = sum(nom_active, na.rm = TRUE)),
                             by = .(Fleet, Country = country, gear = gear_grp, Sector = sector, Year = year)]  # sum effort by fleet x year
   effort_by_fleet[, effort_data_status := "real"]  # every row built above is a real FishMIP year - forward-filled rows added below get their own flag
+  ## FishMIP effort is national. For a country with coasts both inside and
+  ## outside the model area (Tunisia: GSA 12 in the Western Med, GSAs 13-14
+  ## in the Ionian/Gulf of Gabes), effort is scaled by the share of that
+  ## country's Mediterranean catch taken in the Western Med divisions
+  ## (GFCM 37.1.1-37.1.3), same year; years without catch use the mean
+  ## share. ASSUMPTION: effort is proportional to catch across divisions.
+  if (!exists("EFFORT_SCALE_BY_WESTMED_SHARE", envir = .GlobalEnv, inherits = FALSE)) EFFORT_SCALE_BY_WESTMED_SHARE <- c("Tunisia")
+  .esc <- intersect(EFFORT_SCALE_BY_WESTMED_SHARE, unique(effort_by_fleet$Country))
+  if (length(.esc) && !is.null(ts_data$div_share) && nrow(ts_data$div_share) > 0) {
+    .sh <- ts_data$div_share[Country %in% .esc, .(Country, Year, share_westmed)]
+    .sh_mean <- .sh[is.finite(share_westmed), .(share_mean = mean(share_westmed)), by = Country]
+    effort_by_fleet <- merge(effort_by_fleet, .sh, by = c("Country", "Year"), all.x = TRUE)
+    effort_by_fleet <- merge(effort_by_fleet, .sh_mean, by = "Country", all.x = TRUE)
+    effort_by_fleet[Country %in% .esc, share_westmed := fifelse(is.finite(share_westmed), share_westmed, share_mean)]
+    effort_by_fleet[Country %in% .esc & is.finite(share_westmed), nom_active_kWdays := nom_active_kWdays * share_westmed]
+    fwrite(unique(effort_by_fleet[Country %in% .esc, .(Country, Year, share_westmed)])[order(Country, Year)],
+           file.path(csv_out_dir, "effort_westmed_share_REVIEW.csv"))
+    message("\n[Effort] National FishMIP effort scaled to the Western Med by the country's GFCM catch share in",
+            " divisions 37.1.1-37.1.3: ", paste(.sh_mean[, paste0(Country, " mean ", round(100 * share_mean), "%")], collapse = "; "),
+            " - see effort_westmed_share_REVIEW.csv.")
+    effort_by_fleet[, c("share_westmed", "share_mean") := NULL]
+  } else if (length(.esc)) {
+    message("\n[Effort] No GFCM division shares available - ", paste(.esc, collapse = ", "), " effort left national (overestimate).")
+  }
   setorder(effort_by_fleet, Country, Sector, gear, Year)  # sort for readability
   
   ## =================================================================
