@@ -23,7 +23,10 @@ cran_pkgs <- c(
   ## optional but recommended - each gated behind its own
   ## requireNamespace() check in the scripts, with a graceful
   ## skip-with-message if you choose not to install them:
-  "TropFishR", "ggrepel", "remotes", "devtools"
+  "TropFishR", "ggrepel", "remotes", "devtools",
+  ## used by 01b, 04, the interactive page and the helpers
+  "ncdf4", "png", "xml2", "zip", "tibble", "rlang", "worrms", "emodnet.wfs",
+  "rmapshaper", "getPass", "rstudioapi", "shiny", "knitr", "rmarkdown"
 )
 new_cran <- cran_pkgs[!cran_pkgs %in% installed.packages()[, "Package"]]
 if (length(new_cran) > 0) {
@@ -66,6 +69,24 @@ if (!requireNamespace("FishLife", quietly = TRUE)) {
   message("  devtools::install_github('james-thorson/FishLife', dep = TRUE)")
 } else {
   message("FishLife already installed (OK).")
+}
+
+## aquamapsdata - AquaMaps depth envelopes (01 pseudo-strata, 01b habitat
+## depth factor). GitHub only. The ~2 GB database itself is downloaded the
+## first time 01_biomass.R uses it.
+if (!requireNamespace("aquamapsdata", quietly = TRUE)) {
+  message("Installing aquamapsdata from GitHub (raquamaps/aquamapsdata)...")
+  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+  remotes::install_github("raquamaps/aquamapsdata", dependencies = TRUE)
+} else {
+  message("aquamapsdata already installed (OK).")
+}
+
+## ramlegacy - only needed to rebuild the stock-assessment table
+## (combine_STAR_RAMlegacy.R); the pipeline reads the CSV it wrote.
+if (!requireNamespace("ramlegacy", quietly = TRUE)) {
+  ok <- tryCatch({ install.packages("ramlegacy"); requireNamespace("ramlegacy", quietly = TRUE) }, error = function(e) FALSE)
+  if (!isTRUE(ok)) { if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes"); remotes::install_github("ropensci/ramlegacy") }
 }
 
 ## --- 3) Restart reminder ----------------------------------------------
