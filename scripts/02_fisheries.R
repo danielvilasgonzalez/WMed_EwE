@@ -4282,8 +4282,16 @@ message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Y
 ## convention as every other optional source in this script (e.g.
 ## MOROCCO_ALGERIA_DIR above).
 ## =================================================================
-STAR_RAMLEGACY_DIR <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")  # folder for combine_STAR_RAMlegacy.R's own output CSV
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+## Stock assessments. Default "RAM": combined_medbs_star_ramlegacy.csv
+## (built by combine_STAR_RAMlegacy.R; today every row comes from RAM
+## Legacy, whose Mediterranean stocks are the STECF/GFCM assessments).
+## "GFCM" reads data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv,
+## transcribed by hand from GFCM Stock Assessment Forms (one row per stock
+## x year, with reference + url).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
+STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) file.path(pcloud_dir, "data/fisheries/GFCM_SAF") else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- file.path(STAR_RAMLEGACY_DIR, if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "gfcm_saf_stock_assessments.csv" else "combined_medbs_star_ramlegacy.csv")
+message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
   fread(star_ram_path, encoding = "UTF-8")
 } else {
@@ -7061,13 +7069,14 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   effort_by_fleet <- effort[, .(nom_active_kWdays = sum(nom_active, na.rm = TRUE)),
                             by = .(Fleet, Country = country, gear = gear_grp, Sector = sector, Year = year)]  # sum effort by fleet x year
   effort_by_fleet[, effort_data_status := "real"]  # every row built above is a real FishMIP year - forward-filled rows added below get their own flag
-  ## FishMIP effort is national. For a country with coasts both inside and
-  ## outside the model area (Tunisia: GSA 12 in the Western Med, GSAs 13-14
-  ## in the Ionian/Gulf of Gabes), effort is scaled by the share of that
-  ## country's Mediterranean catch taken in the Western Med divisions
-  ## (GFCM 37.1.1-37.1.3), same year; years without catch use the mean
-  ## share. ASSUMPTION: effort is proportional to catch across divisions.
-  if (!exists("EFFORT_SCALE_BY_WESTMED_SHARE", envir = .GlobalEnv, inherits = FALSE)) EFFORT_SCALE_BY_WESTMED_SHARE <- c("Tunisia")
+  ## The FishMIP effort file is already clipped to the FishMIP "Western
+  ## Mediterranean Sea" region (effort_histsoc_..._western-mediterranean-sea),
+  ## so every country's effort, Tunisia's included, is the effort inside
+  ## that region and is NOT scaled again (default: no country).
+  ## EFFORT_SCALE_BY_WESTMED_SHARE (optional, e.g. c("Tunisia")) scales a
+  ## country's effort by its GFCM catch share in divisions 37.1.1-37.1.3,
+  ## for use with a national (not regional) effort file.
+  if (!exists("EFFORT_SCALE_BY_WESTMED_SHARE", envir = .GlobalEnv, inherits = FALSE)) EFFORT_SCALE_BY_WESTMED_SHARE <- character(0)
   .esc <- intersect(EFFORT_SCALE_BY_WESTMED_SHARE, unique(effort_by_fleet$Country))
   if (length(.esc) && !is.null(ts_data$div_share) && nrow(ts_data$div_share) > 0) {
     .sh <- ts_data$div_share[Country %in% .esc, .(Country, Year, share_westmed)]

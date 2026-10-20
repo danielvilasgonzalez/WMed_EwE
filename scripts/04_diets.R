@@ -1410,6 +1410,27 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     message("[04_diets.R] DIET_FALLBACK_ENABLE_ECOBASE is FALSE - skipping the EcoBase diet-matrix fallback tier.")
   }
   predator_fg_still_missing <- setdiff(predator_fg_missing, unique(ecobase_diet_rows$predator_fg))
+
+  ## --- Fallback tier 3: literature diets entered by hand -----------------
+  ## diet_literature_fallback.csv (pCloud diet_reference_tables): columns
+  ## predator_fg, prey_fg, proportion, reference. Used only for predator FGs
+  ## that still have no diet; each predator's proportions are rescaled to
+  ## sum to 1. A predator left out of the file keeps an empty column and is
+  ## listed in diet_still_missing_REVIEW.csv.
+  DIET_LITERATURE_FALLBACK_CSV <- file.path(DIET_REFERENCE_DIR, "diet_literature_fallback.csv")
+  literature_diet_rows <- data.table(predator_fg = character(), prey_fg = character(), weight = numeric(), diet_ref = character())
+  if (length(predator_fg_still_missing) > 0 && file.exists(DIET_LITERATURE_FALLBACK_CSV)) {
+    .lit <- fread(DIET_LITERATURE_FALLBACK_CSV)
+    .lit <- .lit[predator_fg %in% predator_fg_still_missing & is.finite(as.numeric(proportion)) & as.numeric(proportion) > 0]
+    if (nrow(.lit) > 0) {
+      .lit[, weight := as.numeric(proportion) / sum(as.numeric(proportion)), by = predator_fg]
+      literature_diet_rows <- .lit[, .(predator_fg, prey_fg, weight, diet_ref = reference)]
+      fg_diet <- rbind(fg_diet, literature_diet_rows[, .(predator_fg, prey_fg, weight)], fill = TRUE)
+      message("[04_diets.R] Literature diet (diet_literature_fallback.csv) used for: ",
+              paste(unique(literature_diet_rows$predator_fg), collapse = ", "), ".")
+    }
+    predator_fg_still_missing <- setdiff(predator_fg_still_missing, unique(literature_diet_rows$predator_fg))
+  }
   
   ## --- Provenance ("diet_ref") per predator FG, and the still-missing -
   ## REVIEW list (per the task: proceed with a clearly flagged partial
@@ -1426,6 +1447,10 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
                              diet_source = paste(sort(unique(source)), collapse = "+")), by = fg_name]
   } else data.table(fg_name = character(), diet_ref = character(), diet_source = character())
   if (nrow(fb_fg_tags) > 0) fg_source_tags <- rbind(fg_source_tags, fb_fg_tags[!fg_name %in% fg_source_tags$fg_name], fill = TRUE)
+  if (nrow(literature_diet_rows) > 0) {
+    lit_tags <- literature_diet_rows[, .(diet_ref = paste(unique(diet_ref), collapse = "; "), diet_source = "literature_by_hand"), by = .(fg_name = predator_fg)]
+    fg_source_tags <- rbind(fg_source_tags, lit_tags, fill = TRUE)
+  }
   if (nrow(ecobase_diet_rows) > 0) {
     ecobase_tags <- unique(ecobase_diet_rows[, .(fg_name = predator_fg, diet_ref = diet_ref, diet_source = "ecobase_model")])
     fg_source_tags <- rbind(fg_source_tags, ecobase_tags, fill = TRUE)

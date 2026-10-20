@@ -2244,6 +2244,15 @@ compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 
   bathy_df <- merge(bathy_df, area_df, by = c("x", "y"))
   bathy_df <- bathy_df[complete.cases(bathy_df[, c("layer", "cell_area_km2")]), ]
   bathy_df$depth <- bathy_df$layer * -1
+  ## A strata set that reaches the seafloor (deepest bound >= 3500 m, e.g.
+  ## the 2850-3785 m AquaMaps band): a grid cell a little deeper than the
+  ## bound (bathymetry rounding) goes into the deepest band, not dropped.
+  .dmax <- max(strata_def$depth_max)
+  if (.dmax >= 3500 && any(bathy_df$depth > .dmax, na.rm = TRUE)) {
+    message("  ", sum(bathy_df$depth > .dmax, na.rm = TRUE), " bathymetry cell(s) deeper than ", .dmax,
+            " m (max ", round(max(bathy_df$depth, na.rm = TRUE)), " m) counted in the deepest band.")
+    bathy_df$depth <- pmin(bathy_df$depth, .dmax)
+  }
   bathy_df <- bathy_df[bathy_df$depth >= min(strata_def$depth_min) &
                          bathy_df$depth <= max(strata_def$depth_max), ]
   if (nrow(bathy_df) == 0) return(NULL)

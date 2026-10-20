@@ -109,6 +109,7 @@ if (RUN_MODE == "westmed_default") {
   # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed
   ##
   ## Biomass (01)
+  # STOCK_ASSESSMENT_SOURCE       <- "RAM"    # stock assessments: "RAM" = combined_medbs_star_ramlegacy.csv (default); "GFCM" = hand-transcribed GFCM SAFs (data/fisheries/GFCM_SAF/)
   # ECOPATH_B_FILL_MODE           <- "window_mean"  # FG with no biomass in YEAR_ECOPATH: mean over ECOPATH_B_FILL_YEARS (else nearest year); "nearest" = nearest year only
   # ECOPATH_B_FILL_YEARS          <- 1995:2000
   # ECOPATH_B_EXPANDING_MIN       <- 0.00001  # Ecopath_B of the "Expanding" FGs (t/km2); NA = leave missing

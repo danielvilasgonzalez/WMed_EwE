@@ -573,7 +573,7 @@ WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
 
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
-## covers 10-800m; this adds two DERIVED pseudo-strata (0-10m, 800-6000m)
+## covers 10-800m; this adds DERIVED pseudo-strata (0-10m and the deep bands 800-1000, 1000-2850, 2850-3785m)
 ## using AquaMaps depth-envelope ratios scaled against each species' own
 ## real MEDITS-measured density, folded into the SAME weight_by_strata()/
 ## weight_species_by_area() calculation as the 5 real strata. Left FALSE,
@@ -611,9 +611,13 @@ if (identical(MODEL_AREA_BASIS, "whole_gsa") && !isTRUE(APPLY_AQUAMAPS_DEPTH_ADJ
 if (!exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE)) MODEL_GSAS <- FILTER_AREAS
 
 ## Deep AquaMaps bands (pseudo-strata below the deepest MEDITS stratum).
-## whole_gsa: down to 6000 m so the bands cover the whole GSA area.
+## whole_gsa: down to the seafloor so the bands cover the whole GSA area.
+## The deepest point of the Western Med is 3,785 m (Vavilov Basin,
+## Tyrrhenian Sea), so the last band is 2850-3785 m; a bathymetry cell a
+## little deeper than that (grid rounding) is counted in that band too
+## (see compute_strata_area_for_polygon()).
 if (!exists("AQUAMAPS_DEEP_RANGES", envir = .GlobalEnv, inherits = FALSE))
-  AQUAMAPS_DEEP_RANGES <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) list(c(800, 1000), c(1000, 2850), c(2850, 6000)) else
+  AQUAMAPS_DEEP_RANGES <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) list(c(800, 1000), c(1000, 2850), c(2850, 3785)) else
     list(c(800, 1000), c(1000, 2850))
 ## Deepest depth whose AquaMaps pseudo-stratum biomass is counted (see
 ## STEP 7b). whole_gsa: all depths (Inf). medits_10_800: 1000 m = limit
@@ -1410,7 +1414,7 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
          " unstratified simple_area_density() path.")
   }
   message("\n[AquaMaps] APPLY_AQUAMAPS_DEPTH_ADJUSTMENT is TRUE - extending fg_index/",
-          "fg_index_regional/species_density_regional with AquaMaps-derived 0-10m/800-6000m",
+          "fg_index_regional/species_density_regional with AquaMaps-derived 0-10m/800-3785m",
           " pseudo-strata on top of the real MEDITS strata above...")
   source(file.path(git_dir, "scripts/lib_aquamaps_depth_extension.R"))
   aq <- apply_aquamaps_depth_adjustment(
@@ -2715,9 +2719,22 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   ##     anyway; this value is the cross-check;
   ##   juvenile Ecosim: B_juv,y = I_MEDITS,y x B_juv / I_MEDITS(YEAR_ECOPATH).
   if (!exists("HAKE_STANZA_FROM_ASSESSMENT")) HAKE_STANZA_FROM_ASSESSMENT <- TRUE
-  HAKE_SA_PATH <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")
+  ## Source follows STOCK_ASSESSMENT_SOURCE ("RAM" = RAM Legacy STECF XSA,
+  ## default; "GFCM" = hand-transcribed GFCM SAFs). Stock keys: GSA 1-5-6-7 unit, GSA 9-11, GSA 7.
+  if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
+  .hk_gfcm <- identical(STOCK_ASSESSMENT_SOURCE, "GFCM")
+  HAKE_SA_PATH <- if (.hk_gfcm) file.path(pcloud_dir, "data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv") else
+    file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")
+  .hk_keys <- if (.hk_gfcm) c(k1567 = "HKE_1_5_6_7", k911 = "HKE_9_10_11", k7 = "HKE_7") else c(k1567 = "HAKEMEDGSA1-7", k911 = "HAKEMEDGSA9-11", k7 = "HAKEMEDGSA7")
+  .hk_lab <- if (.hk_gfcm) "GFCM SAF SSB" else "STECF XSA SSB, RAM Legacy v4.44"
   HAKE_PARAM_PATH <- file.path(pcloud_dir, "data/Complementary data/multistanza_reference_tables/hake_multistanza_parameters.csv")
-  HAKE_STOCK_GSAS <- list("HAKEMEDGSA1-7" = c(1, 5, 6, 7), "HAKEMEDGSA9-11" = c(9, 10, 11), "HAKEMEDGSA7" = 7)
+  HAKE_STOCK_GSAS <- setNames(list(c(1, 5, 6, 7), c(9, 10, 11), 7), .hk_keys)
+  if (isTRUE(HAKE_STANZA_FROM_ASSESSMENT) && file.exists(HAKE_SA_PATH) &&
+      !all(.hk_keys[c("k1567", "k911")] %in% fread(HAKE_SA_PATH)[species == "Merluccius merluccius", unique(stock_key)])) {
+    message("[Hake stanzas] ", basename(HAKE_SA_PATH), " has no hake rows for ", paste(.hk_keys[c("k1567", "k911")], collapse = " and "),
+            " - hake stanzas keep the survey (MEDITS maturity) split. Add the GFCM SAF SSB series to use the assessment.")
+    HAKE_STANZA_FROM_ASSESSMENT <- FALSE
+  }
   hp <- if (exists("multistanza_fg_pairs")) multistanza_fg_pairs[ScientificName == "Merluccius merluccius"] else data.table()
   if (isTRUE(HAKE_STANZA_FROM_ASSESSMENT) && nrow(hp) == 1 && file.exists(HAKE_SA_PATH)) {
     fg_j <- hp$FG_num_juv; fg_a <- hp$FG_num_adult
@@ -2728,10 +2745,10 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
     sa_h <- fread(HAKE_SA_PATH)[species == "Merluccius merluccius" & stock_key %in% names(HAKE_STOCK_GSAS) & is.finite(biomass)]
     sa_h[, A_k := vapply(stock_key, function(k) area_g[GSA %in% HAKE_STOCK_GSAS[[k]], sum(A)], numeric(1))]
     sa_h[, d := biomass / A_k]
-    A1567 <- area_g[GSA %in% HAKE_STOCK_GSAS[["HAKEMEDGSA1-7"]], sum(A)]; A911 <- area_g[GSA %in% HAKE_STOCK_GSAS[["HAKEMEDGSA9-11"]], sum(A)]
-    s1567 <- sa_h[stock_key == "HAKEMEDGSA1-7", .(Year = year, d1567 = d, how1567 = "STECF XSA GSA 1-5-6-7")]
-    s7    <- sa_h[stock_key == "HAKEMEDGSA7", .(Year = year, d7 = d)]
-    s911  <- sa_h[stock_key == "HAKEMEDGSA9-11", .(Year = year, d911 = d, how911 = "STECF XSA GSA 9-11")]
+    A1567 <- area_g[GSA %in% HAKE_STOCK_GSAS[[.hk_keys[["k1567"]]]], sum(A)]; A911 <- area_g[GSA %in% HAKE_STOCK_GSAS[[.hk_keys[["k911"]]]], sum(A)]
+    s1567 <- sa_h[stock_key == .hk_keys[["k1567"]], .(Year = year, d1567 = d, how1567 = paste(.hk_lab, "GSA 1-5-6-7"))]
+    s7    <- sa_h[stock_key == .hk_keys[["k7"]], .(Year = year, d7 = d)]
+    s911  <- sa_h[stock_key == .hk_keys[["k911"]], .(Year = year, d911 = d, how911 = paste(.hk_lab, "GSA 9-11"))]
     ser <- Reduce(function(a, b) merge(a, b, by = "Year", all = TRUE), list(s1567, s7, s911))
     k7 <- ser[is.finite(d1567) & is.finite(d7), mean(d1567 / d7)]
     ser[!is.finite(d1567) & is.finite(d7) & is.finite(k7), `:=`(d1567 = d7 * k7, how1567 = paste0("GSA 7 XSA x ", round(k7, 2), " (joint/GSA 7 overlap ratio)"))]
@@ -2753,10 +2770,10 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
                                FG_ECOLOGY_TYPE = if ("FG_ECOLOGY_TYPE" %in% names(fg_index_regional_combined)) tmpl$FG_ECOLOGY_TYPE else NA)
       adult_rows[, mean_density := fifelse(Year %in% YEAR_ECOPATH, B_adult0, ser$B_adult[match(Year, ser$Year)])]
       adult_rows[, biomass_source := fifelse(Year %in% YEAR_ECOPATH,
-        paste0("Stock assessment (STECF XSA SSB, RAM Legacy v4.44): adult hake = SSB, GSA 1-5-6-7 + 9-11, back-cast to ",
+        paste0("Stock assessment (", .hk_lab, "): adult hake = SSB, GSA 1-5-6-7 + 9-11, back-cast to ",
                paste(range(YEAR_ECOPATH), collapse = "-"), " with the MEDITS hake index (x", round(bc, 2), " vs ", paste(range(anchor_y), collapse = "-"),
                ") - see hake_stanza_stock_assessment_REVIEW.csv"),
-        "Stock assessment (STECF XSA SSB, RAM Legacy v4.44) - see hake_stanza_stock_assessment_REVIEW.csv")]
+        paste0("Stock assessment (", .hk_lab, ") - see hake_stanza_stock_assessment_REVIEW.csv"))]
       juv_rows <- I_med[Year %in% yrs_all_h, .(Year, FG_num = fg_j, FG_name = hp$FG_name_juv, mean_density = I * B_juv0 / I_med[Year %in% YEAR_ECOPATH, mean(I)])]
       juv_rows[Year %in% YEAR_ECOPATH, mean_density := B_juv0]
       juv_rows[, biomass_source := paste0("Stock assessment: juvenile hake = adult SSB x (1-r)/r, r = SSB/TB = ", r_ssb,
