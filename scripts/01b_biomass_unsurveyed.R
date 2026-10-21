@@ -2996,19 +2996,25 @@ GORGONIAN_WHOLE_HABITAT <- data.table(
   density_col_m2 = c(mean(c(0.423, 1.000)), mean(c(1.737, 6.631))),
   afdm_g_per_colony = c(3.9, 0.50))
 GORGONIAN_AFDM_TO_DW <- mean(c(0.11, 0.1513))
-gorg_dw_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)] / GORGONIAN_AFDM_TO_DW
+gorg_dw_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)] / GORGONIAN_AFDM_TO_DW  # kept for reference
+## Living tissue only (project decision 2026-10-21): organic mass (AFDM)
+## straight to wet weight, WW = AFDM / 0.143 (unit g_afdm_m2_cnidaria =
+## 6.99; Actiniaria, the closest cnidarian in Ricciardi & Bourget 1998,
+## MEPS 163:245-251). The calcified/proteinaceous axis is not counted -
+## it is not eaten. Before: AFDM -> DW (/0.13) -> WW (x2.5, assumption).
+gorg_afdm_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)]
 coral_row <- data.table(
-  Group = "GorgoniansCorals", Year = round(mean(YEAR_ECOPATH)), Density_value = gorg_dw_g_m2,
-  Density_unit = "g_dw_m2_gorgonian_whole", Habitat_area_km2 = 1468.575618, Occupancy_fraction = NA_real_,
-  Source_citation = paste0("B_dw = sum(D_whole x AFDM_colony) / AFDM:DW = (", paste(sprintf("%.3f x %.2f", GORGONIAN_WHOLE_HABITAT$density_col_m2,
-    GORGONIAN_WHOLE_HABITAT$afdm_g_per_colony), collapse = " + "), ") / ", signif(GORGONIAN_AFDM_TO_DW, 3), " = ", signif(gorg_dw_g_m2, 3),
-    " g DW per m2 of coralligenous. Whole-habitat densities and per-colony AFDM: Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550",
-    " (Tables 1 and 3, Cap de Creus; P. clavata + E. singularis). AFDM:DW: Ponti et al. 2014 (PLoS ONE 9:e102782) and Palma et al.",
-    " 2018 (Remote Sens. 10:1154). DW->WW x2.5 = ASSUMPTION (no sourced whole-colony factor). Area: EUSeaMap coralligenous",
+  Group = "GorgoniansCorals", Year = round(mean(YEAR_ECOPATH)), Density_value = gorg_afdm_g_m2,
+  Density_unit = "g_afdm_m2_cnidaria", Habitat_area_km2 = 1468.575618, Occupancy_fraction = NA_real_,
+  Source_citation = paste0("B_afdm = sum(D_whole x AFDM_colony) = ", paste(sprintf("%.3f x %.2f", GORGONIAN_WHOLE_HABITAT$density_col_m2,
+    GORGONIAN_WHOLE_HABITAT$afdm_g_per_colony), collapse = " + "), " = ", signif(gorg_afdm_g_m2, 3),
+    " g AFDM per m2 of coralligenous (living tissue). Whole-habitat densities and per-colony AFDM: Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550",
+    " (Tables 1 and 3, Cap de Creus; P. clavata + E. singularis). AFDM -> WW: WW = AFDM / 0.143 (x6.99; Actiniaria, Ricciardi & Bourget 1998,",
+    " MEPS 163:245-251, closest cnidarian - ASSUMPTION for gorgonians); skeleton/axis not counted. Area: EUSeaMap coralligenous",
     " MC151/MC251 (2025 when available, else 2023 1468.6 km2). Excludes red coral and deep shelf-edge gardens."),
-  Notes = "01b FG70 section - computed in code, not in the CSV.")
-message("[Corals/gorgonians] ", signif(gorg_dw_g_m2, 3), " g DW/m2 coralligenous (x2.5 WW = ", signif(gorg_dw_g_m2 * 2.5, 3),
-        " t WW/km2 habitat) - whole-habitat densities, Coppari et al. 2019.")
+  Notes = "01b FG70 section - computed in code, not in the CSV. 2026-10-21: organic mass to WW (living tissue), was AFDM -> DW -> x2.5.")
+message("[Corals/gorgonians] ", signif(gorg_afdm_g_m2, 3), " g AFDM/m2 coralligenous (x6.99 WW = ", signif(gorg_afdm_g_m2 * 6.99, 3),
+        " t WW/km2 habitat, living tissue) - whole-habitat densities, Coppari et al. 2019.")
 
 habitat_csv_for_loader <- HABITAT_SHAPEFILE_BIOMASS_PATH
 if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
