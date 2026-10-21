@@ -1167,6 +1167,26 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
               paste(unique(raw$Group[hit_mad]), collapse = ", "))
     }
   }
+  ## Optional Count_GSAs: a COUNT row (Biomass_t is a regional total, not a
+  ## density) for the GSAs listed here, e.g. "6,7,8,9". Only the share of
+  ## those GSAs inside the model area is kept (share by GSA polygon area),
+  ## so the total follows a filtered model area.
+  col_cg <- resolve_iccat_col(names(raw), c("Count_GSAs"))
+  if (!is.na(col_cg) && exists("area_shp") && exists("AREA_ID_COL") && AREA_ID_COL %in% names(area_shp)) {
+    .ga <- tryCatch({ old <- sf::sf_use_s2(); suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(old)), add = TRUE)
+      data.table(id = as.character(area_shp[[AREA_ID_COL]]), a = as.numeric(sf::st_area(sf::st_make_valid(area_shp))))[, .(a = sum(a)), by = id] },
+      error = function(e) NULL)
+    .mids <- as.character(if (exists(".model_area_ids", mode = "function")) .model_area_ids() else if (exists("MODEL_GSAS")) MODEL_GSAS else FILTER_AREAS)
+    for (i in which(nzchar(trimws(as.character(raw[[col_cg]]))) & is.finite(raw$group_biomass_t))) {
+      gs <- trimws(unlist(strsplit(as.character(raw[[col_cg]][i]), "[,;]")))
+      share <- if (!is.null(.ga) && all(gs %in% .ga$id)) .ga[id %in% intersect(gs, .mids), sum(a)] / .ga[id %in% gs, sum(a)]
+               else mean(gs %in% .mids)
+      if (is.finite(share) && share < 1) {
+        message("[", label, "] ", raw$Group[i], ": count for GSAs ", paste(gs, collapse = ","), " x share inside the model area ", signif(share, 3), ".")
+        set(raw, i, "group_biomass_t", raw$group_biomass_t[i] * share)
+      }
+    }
+  }
   ## Optional Scale_to_1995: multiplier from the survey year to the
   ## Ecopath baseline (e.g. a population-trend ratio). Blank = 1 (the
   ## survey value is used as is; the temporal mismatch stays flagged).
@@ -2927,6 +2947,7 @@ EUSEAMAP_DEPTH_CACHE <- sub("\\.csv$", "_depth_hist.csv", EUSEAMAP_AREA_CACHE)
 .gdb_available <- any(file.exists(EUSEAMAP_2025_GDB))
 if (file.exists(EUSEAMAP_AREA_CACHE) && !csv_has_nul(EUSEAMAP_AREA_CACHE) &&
     all(names(EUSEAMAP_HABITAT_CODES) %in% unique(fread(EUSEAMAP_AREA_CACHE)$Group)) &&
+    (all(as.character(.model_area_ids()) %in% as.character(fread(EUSEAMAP_AREA_CACHE)$AreaID)) || !.gdb_available) &&   # a cache built for fewer GSAs is rebuilt (when the geodatabase is there)
     (file.exists(EUSEAMAP_DEPTH_CACHE) || !.gdb_available)) {
   if (file.exists(EUSEAMAP_DEPTH_CACHE)) { .dc <- fread(EUSEAMAP_DEPTH_CACHE); for (k in unique(paste(.dc$Group, .dc$AreaID, sep = "_"))) assign(k, .dc[paste(Group, AreaID, sep = "_") == k], envir = .hab_depth_acc) }
   euseamap_area <- fread(EUSEAMAP_AREA_CACHE)
@@ -2946,6 +2967,7 @@ if (file.exists(EUSEAMAP_AREA_CACHE) && !csv_has_nul(EUSEAMAP_AREA_CACHE) &&
 if (identical(POSIDONIA_MAP_SOURCE, "MEDISEH") && file.exists(POSIDONIA_MEDISEH_TIF) && exists("area_shp")) {
   .med_cache <- file.path(BENTHIC_REF_DIR, paste0("mediseh_posidonia_area_by_gsa_p", POSIDONIA_MEDISEH_P_MIN, "_ge", EUSEAMAP_MIN_DEPTH_M, "m.csv"))
   .med_dcache <- sub("\\.csv$", "_depth_hist.csv", .med_cache)
+  if (file.exists(.med_cache) && !all(as.character(.model_area_ids()) %in% as.character(fread(.med_cache)$AreaID))) file.remove(.med_cache)   # built for fewer GSAs
   if (file.exists(.med_cache) && file.exists(.med_dcache)) {
     for (k in ls(.hab_depth_acc, pattern = "^Posidonia_")) rm(list = k, envir = .hab_depth_acc)
     .dm <- fread(.med_dcache); for (k in unique(paste(.dm$Group, .dm$AreaID, sep = "_"))) assign(k, .dm[paste(Group, AreaID, sep = "_") == k], envir = .hab_depth_acc)
@@ -3035,6 +3057,37 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
       }
     }
   }
+  ## ---- Areas that are not mapped per GSA follow the model GSAs ----------
+  ## Cymodocea: A = ratio x Posidonia mapped area of THIS run (Balearic
+  ## Cymodocea/Posidonia area 16.12 / 569.8 km2, Informe Mar Balear 2020 /
+  ## EUSeaMap GSA 5), so it shrinks with the model GSAs like Posidonia.
+  ## Macroalgae: the EMODnet macroalgae area (325.05 km2) is for the whole
+  ## Western Med (ICES ecoregion); it is scaled by the share of the
+  ## coralligenous map that lies in the model GSAs:
+  ##   A = 325.05 x A_coral(model GSAs) / A_coral(GSAs 1-12).
+  if (!exists("CYMODOCEA_POSIDONIA_AREA_RATIO")) CYMODOCEA_POSIDONIA_AREA_RATIO <- 16.12 / 569.8
+  if (!exists("MACROALGAE_AREA_WMED_KM2")) MACROALGAE_AREA_WMED_KM2 <- 325.0518
+  .hitg <- function(g) tolower(trimws(hab_tab$Group)) == tolower(g)
+  if (any(.hitg("cymodocea")) && any(.hitg("posidonia"))) {
+    .pa <- as.numeric(hab_tab$Habitat_area_km2[.hitg("posidonia")][1])
+    if (is.finite(.pa)) {
+      hab_tab[.hitg("cymodocea"), Habitat_area_km2 := .pa * CYMODOCEA_POSIDONIA_AREA_RATIO]
+      message("[Habitat area] Cymodocea = ", signif(CYMODOCEA_POSIDONIA_AREA_RATIO, 4), " x Posidonia ", round(.pa, 1), " km2 = ",
+              round(.pa * CYMODOCEA_POSIDONIA_AREA_RATIO, 1), " km2 (model GSAs).")
+    }
+  }
+  if (any(.hitg("macroalgae")) && !is.null(euseamap_area) && "GorgoniansCorals" %in% euseamap_area$Group) {
+    .cm <- euseamap_area[Group == "GorgoniansCorals" & as.character(AreaID) %in% as.character(.model_area_ids()), sum(area_km2)]
+    .cw <- euseamap_area[Group == "GorgoniansCorals" & as.character(AreaID) %in% as.character(1:12), sum(area_km2)]
+    .sh <- if (is.finite(.cw) && .cw > 0 && all(as.character(1:12) %in% as.character(euseamap_area$AreaID))) min(1, .cm / .cw) else NA_real_
+    if (is.finite(.sh)) {
+      hab_tab[.hitg("macroalgae"), Habitat_area_km2 := MACROALGAE_AREA_WMED_KM2 * .sh]
+      message("[Habitat area] Macroalgae = ", round(MACROALGAE_AREA_WMED_KM2, 1), " km2 x coralligenous share of the model GSAs ",
+              signif(.sh, 3), " = ", round(MACROALGAE_AREA_WMED_KM2 * .sh, 1), " km2.")
+    } else message("[Habitat area] Macroalgae: coralligenous area for GSAs 1-12 not available - whole-Western-Med area ",
+                   round(MACROALGAE_AREA_WMED_KM2, 1), " km2 kept (too large if the model area is a subset).")
+  }
+
   ## ---- Cymodocea, macroalgae, gorgonians from several sites ------------
   ## habitat_biomass_sites.csv: one row per site (Group, site, GSA, protected,
   ## habitat, depth_m, value, unit, source, weight). Density_value of each
