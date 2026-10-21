@@ -3035,6 +3035,45 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
       }
     }
   }
+  ## ---- Posidonia leaf biomass from several Western Med meadows --------
+  ## posidonia_leaf_biomass_sites.csv: one row per site x depth (site, GSA,
+  ## protected, depth_m, leaf_biomass_g_dw_m2, sampled, source, weight).
+  ## Weighted fit ln B = a + b z (weight 0 = left out; meadows inside a
+  ## marine reserve at sampling get weight POSIDONIA_MPA_WEIGHT, default 0:
+  ## reserves are a tiny share of the meadow area and denser, so they would
+  ## bias the regional mean upwards). The fit is averaged over the depth
+  ## distribution of the mapped meadow (model GSAs, deeper than
+  ## EUSEAMAP_MIN_DEPTH_M):  D = sum_b A_b exp(a + b z_b) / sum_b A_b.
+  ## D replaces the single-site Density_value and the depth factor (set to 1,
+  ## the depth is now in the fit). Without a depth histogram the fit at the
+  ## median mapped depth is not available, so the CSV values are kept.
+  if (!exists("POSIDONIA_SITE_TABLE")) POSIDONIA_SITE_TABLE <- file.path(BENTHIC_REF_DIR, "posidonia_leaf_biomass_sites.csv")
+  if (!exists("POSIDONIA_MPA_WEIGHT")) POSIDONIA_MPA_WEIGHT <- 0
+  if (file.exists(POSIDONIA_SITE_TABLE) && any(tolower(hab_tab$Group) == "posidonia")) {
+    ps <- fread(POSIDONIA_SITE_TABLE)
+    ps[, w := as.numeric(weight)]
+    ps[grepl("^yes", protected, ignore.case = TRUE), w := POSIDONIA_MPA_WEIGHT]
+    psf <- ps[is.finite(w) & w > 0 & is.finite(depth_m) & leaf_biomass_g_dw_m2 > 0]
+    hP <- .hab_depth_table()[Group == "Posidonia" & as.character(AreaID) %in% as.character(.model_area_ids()) &
+                               depth_bin_mid >= EUSEAMAP_MIN_DEPTH_M, .(area_km2 = sum(area_km2)), by = depth_bin_mid]
+    if (nrow(psf) >= 3 && uniqueN(psf$depth_m) >= 2 && nrow(hP) > 0) {
+      fit <- lm(log(leaf_biomass_g_dw_m2) ~ depth_m, data = psf, weights = w)
+      hP[, B_pred := exp(predict(fit, newdata = data.frame(depth_m = depth_bin_mid)))]
+      D_pos <- hP[, sum(area_km2 * B_pred) / sum(area_km2)]
+      cf <- coef(fit)
+      hit <- tolower(hab_tab$Group) == "posidonia"
+      message("[Posidonia sites] ", nrow(psf), " site x depth values (", nrow(ps) - nrow(psf), " left out, protected weight ", POSIDONIA_MPA_WEIGHT,
+              "): ln B = ", signif(cf[1], 4), " ", sprintf("%+.4f", cf[2]), " z; mean over the mapped meadow depths = ", signif(D_pos, 4),
+              " g DW/m2 (replaces ", hab_tab$Density_value[hit][1], " x Depth_factor ", hab_tab$Depth_factor[hit][1], ").")
+      hab_tab[hit, `:=`(Density_value = D_pos, Depth_factor = 1)]
+      hab_tab[hit, Source_citation := paste0("D_DW = ", signif(D_pos, 4), " g DW/m2 = mean over the mapped meadow depths of ln B = ", signif(cf[1], 4), " ",
+        sprintf("%+.4f", cf[2]), " x depth, fitted to ", nrow(psf), " Western Med leaf-biomass values (", basename(POSIDONIA_SITE_TABLE),
+        ": Azcarate-Garcia et al. 2023; Pergent, Rico-Raimondino & Pergent-Martini 1997, Aquat. Bot. 59:307-321; marine-reserve values ",
+        if (POSIDONIA_MPA_WEIGHT == 0) "left out" else paste0("weighted ", POSIDONIA_MPA_WEIGHT), ", Romero et al. 1998). Depth factor included in the fit (= 1). ", Source_citation)]
+      fwrite(cbind(hP, fit_a = cf[1], fit_b = cf[2]), file.path(csv_out_dir, "posidonia_depth_fit_REVIEW.csv"))
+    } else message("[Posidonia sites] site table or depth histogram not usable - CSV Density_value and Depth_factor kept.")
+  }
+
   ## ---- AquaMaps depth factor for the habitat FGs ----------------------
   ## The literature density was measured at one site depth; the mapped
   ## habitat spans a range of depths. Depth factor =
