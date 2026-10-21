@@ -1743,6 +1743,8 @@ Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12, who
 
 **Depth factor from AquaMaps.** For the habitat FGs without a depth factor in the CSV (currently Corals and gorgonians; Posidonia uses 0.6, Cymodocea and Macroalgae 1), $f_z = \sum_b A_b S(d_b) / \sum_b A_b \,/\, \bar S_{site}$: the mean AquaMaps depth suitability $S$ (0–1; Kaschner et al. 2019) of the FG's species over the mapped area in 5 m depth bins $b$, divided by the suitability at the depth where the density was measured. When that depth is not known, $\bar S_{site}$ = 1 (ASSUMPTION: the literature density is the density at the species' preferred depths). A literature factor in the CSV wins (Posidonia 0.6); the AquaMaps value is then written to `habitat_depth_factor_aquamaps_REVIEW.csv` only.
 
+**Other FG files.** The estimates above are attached to FGs by name (the `FG_WMed_2026.csv` names). With another FG file, an estimate whose FG name is not found is not used. `unsurveyed_fg_not_matched_REVIEW.csv` lists every expected unsurveyed FG, whether it is in the FG file, whether it received a value, its method and the output file that holds the estimate, so it can be added by hand; the 01 log prints a warning when any is missing.
+
 **B left for Ecopath (`ECOPATH_B_FROM_EE`).** Benthic mollusc, Other macro-benthos, Suprabenthos, Jellyfish and Salps get no B in `Ecopath_B`; their EE is set to 0.95 (`ECOPATH_B_EE_VALUE`) and Ecopath solves for B. The gelatinous / macrozooplankton FGs are added to this list automatically only when their dataset estimate is missing.
 
 Small pelagics in 1994–1996 (eq. 9): sardine 1.448 t/km², anchovy 0.744 t/km² (`small_pelagics_per_gsa_series_REVIEW.csv`).

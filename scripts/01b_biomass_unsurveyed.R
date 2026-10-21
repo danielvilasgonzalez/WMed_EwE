@@ -3362,3 +3362,41 @@ stock_assessment_fg_year_fisheries_only <- copy(stock_assessment_fg_year)
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, megafauna_biomass_fg_year, "marine megafauna / uncertain-FG field reference")
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, primary_producer_biomass_fg_year, "primary producer/plankton")
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, benthic_habitat_biomass_fg_year, "benthic habitat (seagrass/macroalgae/coralligenous)")
+## =================================================================
+## Check: unsurveyed FGs with no match in the FG file
+## -----------------------------------------------------------------
+## The estimates above are attached to FGs by FG NAME (FG_WMed_2026.csv
+## names and keywords). With a different FG file some of them may find
+## no FG and are then simply not used. This lists, for every expected
+## unsurveyed FG: whether that name is in the FG file of this run and
+## whether it received a value, with where the estimate is written, so
+## the user can add it by hand (or rename the FG). Written to
+## unsurveyed_fg_not_matched_REVIEW.csv; a warning is printed if any.
+## =================================================================
+UNSURVEYED_EXPECTED_FG <- data.table(
+  FG_name = c("Posidonia", "Cymodocea", "Macroalgae", "Corals and gorgonians",
+              "Large phytoplankton", "Small phytoplankton", "Meso and micro zooplankton", "Macro zooplankton", "Detritus",
+              "Bottlenose dolphins", "Other dolphins", "Fin whale", "Sperm whale", "Deep sea-cetacean feeders", "Monk seals",
+              "Pelagic/Offshore seabirds", "Coastal/inshore seabirds", "Loggerhead turtles", "Bluefin tuna", "Swordfish",
+              "Suprabenthos", "Jellyfish", "Salps and other gelatinous zooplankton", "Benthic mollusc", "Other macro-benthos"),
+  method = c(rep("density x mapped area x occupancy", 4), rep("COBALT model, whole water column", 3), "MAREDAT", "Pauly et al. 1993 from COBALT PP",
+             "survey density x body mass", "survey density x body mass", "1991 count x body mass", "survey density x body mass",
+             "survey density x body mass", "population count x body mass", rep("survey density x body mass", 3),
+             "ICCAT aerial survey", "ICCAT stock assessment", rep("left for Ecopath (EE = 0.95)", 5)),
+  estimate_file = c(rep("habitat_shapefile_biomass_by_fg.csv", 4), rep("isimip3a_cobalt2_plankton_detritus_*.csv", 3),
+                    "gelatinous_macrozoo_biomass_REVIEW.csv", "isimip3a_cobalt2_plankton_detritus_*.csv",
+                    rep("marine_megafauna_biomass_by_fg.csv", 9), rep("iccat_biomass_by_fg.csv", 2),
+                    rep("(no value: EE_input = 0.95 in Ecopath_B)", 5)))
+.fg_names_run <- if (exists("dataframe2")) unique(dataframe2$FG_name) else character(0)
+.fg_with_value <- if (exists("stock_assessment_fg_year") && nrow(stock_assessment_fg_year)) unique(stock_assessment_fg_year$FG_name) else character(0)
+UNSURVEYED_EXPECTED_FG[, in_FG_file := FG_name %in% .fg_names_run]
+UNSURVEYED_EXPECTED_FG[, got_value := FG_name %in% .fg_with_value | grepl("^left for Ecopath", method)]
+UNSURVEYED_EXPECTED_FG[, status := fifelse(!in_FG_file, "NOT IN FG FILE - estimate not used; add it by hand or rename the FG",
+                                    fifelse(!got_value, "in FG file but no value - check the source table / log", "ok"))]
+fwrite(UNSURVEYED_EXPECTED_FG, file.path(csv_out_dir, "unsurveyed_fg_not_matched_REVIEW.csv"))
+.nm <- UNSURVEYED_EXPECTED_FG[status != "ok"]
+if (nrow(.nm) > 0) {
+  message("\n[Unsurveyed FGs] WARNING: ", nrow(.nm), " unsurveyed FG estimate(s) not used in this run:\n  ",
+          paste(sprintf("%s (%s)", .nm$FG_name, sub(" -.*$", "", .nm$status)), collapse = "\n  "),
+          "\n  See unsurveyed_fg_not_matched_REVIEW.csv for the method and the file holding each estimate.")
+} else message("\n[Unsurveyed FGs] All ", nrow(UNSURVEYED_EXPECTED_FG), " expected unsurveyed FGs found in the FG file and handled.")
