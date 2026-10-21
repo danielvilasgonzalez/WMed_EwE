@@ -255,7 +255,7 @@ The 1994–1996 (`YEAR_ECOPATH`) mean biomass density per FG in t/km² of $A_{mo
 
 ### 6. References
 
-See the 01 and 01b headers; main ones: MEDITS Working Group 2017; Leonori et al. 2021; Ricard et al. 2012; Cochran 1977; Pante & Simon-Bouhet 2013; Stock et al. 2020; Bernardeau-Esteller et al. 2023; Coppari et al. 2019; Ballesteros 2006; Colléter et al. 2015.
+See the 01 and 01b headers; main ones: MEDITS Working Group 2017; Leonori et al. 2021; Ricard et al. 2012; Cochran 1977; Pante & Simon-Bouhet 2013; Stock et al. 2020; Azcárate-García, Beca-Carretero & Brun 2023; Coppari et al. 2019; Ballesteros 2006; Colléter et al. 2015.
 
 ## DIET — Ecopath_diet sheet / diet matrix {#diet-ecopath_diet-sheet-diet-matrix}
 

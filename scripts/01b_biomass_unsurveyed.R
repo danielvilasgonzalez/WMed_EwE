@@ -79,7 +79,9 @@
 ##     Oceanogr. 34:1545-1562.
 ##   - Phyto size split 0.45 <20 um / 0.55 >20 um: Delgado, Latasa &
 ##     Estrada 1992, J. Plankton Res. 14:753-771 (one February cruise).
-##   - Phyto C:WW 0.16 +/- 0.03: Yacobi & Zohary 2010.
+##   - Phyto C:WW 1:9 (0.111; Pauly & Christensen 1995, Nature 374:255-257,
+##     the same conversion as detritus). Was 0.16 cited to Yacobi & Zohary
+##     2010, a Lake Kinneret carbon:chlorophyll study (wrong source; fixed 2026-10-21).
 ##   - Zooplankton: meso+micro 0.70 of total (Fernandez de Puelles et al.
 ##     2014); micro/meso 0.35/0.65 and C:WW micro 0.07 (Fenchel & Finlay
 ##     1983), meso/macro 0.09 (Kiorboe 2013) - as in zoo_phyto.R.
@@ -92,7 +94,7 @@
 ##     Alternative "ecopath_EE": no B, Ecopath estimates it from EE
 ##     (Christensen & Walters 2004, Ecol. Model. 172:109-139).
 ##   - Posidonia (current): 168 g DW/m2 leaf = 280 g DW/m2 at 2-4 m
-##     (Bernardeau-Esteller et al. 2023, Diversity 15(1):101; lowest cited
+##     (Azcarate-Garcia, Beca-Carretero & Brun 2023, Diversity 15(1):101; lowest cited
 ##     value, on purpose) x 0.6 depth factor for meadow deeper than 10 m
 ##     (15 m / 5 m shoot density x leaf area ratio, Greek WFD reference
 ##     conditions, EEA OURCOAST case 349 GR; leaf biomass 5-7x lower from
@@ -218,10 +220,35 @@
 
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
-STAR_RAMLEGACY_DIR <- file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")  # folder for combine_STAR_RAMlegacy.R's own output CSV
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+## Stock assessments (STOCK_ASSESSMENT_SOURCE):
+## "GFCM" (default since 2026-10-21): the newest GFCM Stock Assessment
+##   Forms, listed and downloaded from the GFCM website on every run and
+##   read automatically (lib_gfcm_saf_online.R; PDFs cached in
+##   data/fisheries/GFCM_SAF/pdf/). Result:
+##   data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv (only rows
+##   with use_for_biomass = TRUE are used: non-overlapping stocks); what was
+##   read per stock: gfcm_saf_parse_REVIEW.csv. Stocks with no readable SAF
+##   table take the hand-transcribed gfcm_saf_stock_assessments.csv and then
+##   RAM Legacy (GFCM_SAF_FILL_FROM_RAM). GFCM_SAF_UPDATE = FALSE reuses the
+##   last download. Offline with no earlier download: falls back to "RAM".
+## "RAM": combined_medbs_star_ramlegacy.csv (built by
+##   combine_STAR_RAMlegacy.R; RAM Legacy, whose Mediterranean stocks are
+##   the STECF/GFCM assessments, usually a few years behind GFCM).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+if (!exists("GFCM_SAF_UPDATE", envir = .GlobalEnv, inherits = FALSE)) GFCM_SAF_UPDATE <- TRUE
+if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) {
+  source(file.path(git_dir, "scripts/lib_gfcm_saf_online.R"), local = TRUE)
+  .gfcm_all <- update_gfcm_saf_assessments(pcloud_dir, csv_out_dir, FILTER_AREAS,
+                                           asfis_file = if (exists("asfis_file")) asfis_file else NULL, update = GFCM_SAF_UPDATE)
+  if (is.null(.gfcm_all)) STOCK_ASSESSMENT_SOURCE <- "RAM"
+}
+STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
-  fread(star_ram_path, encoding = "UTF-8")
+  .sa <- fread(star_ram_path, encoding = "UTF-8")
+  if ("use_for_biomass" %in% names(.sa)) .sa <- .sa[use_for_biomass %in% TRUE]   # GFCM: non-overlapping stocks only
+  .sa
 } else {
   message("\n[Stock-assessment biomass] '", star_ram_path, "' not found - skipping (run",
           " combine_STAR_RAMlegacy.R first and place its output under STAR_RAMLEGACY_DIR",
@@ -391,7 +418,7 @@ if (nrow(star_ram_combined) > 0) {
   ## star_ram_combined's own "source" column (which GFCM/STAR/RAM Legacy
   ## assessment) - embed it instead of a generic label with no way to
   ## trace which specific assessment it came from.
-  stock_assessment_fg_year[, stock_assessment_source := paste0("stock assessment (STAR/RAM Legacy Database): ", star_sources)]
+  stock_assessment_fg_year[, stock_assessment_source := paste0(if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "stock assessment (GFCM SAF, read from the GFCM website): " else "stock assessment (RAM Legacy Database): ", star_sources)]
   fwrite(stock_assessment_fg_year, file.path(csv_out_dir, "stock_assessment_biomass_by_fg.csv"))
   message("[Stock-assessment biomass] stock_assessment_fg_year: ", nrow(stock_assessment_fg_year),
           " FG x Year row(s) (", uniqueN(stock_assessment_fg_year$FG_num), " FG(s)) - written to",
@@ -847,7 +874,7 @@ if (nrow(iccat_biomass_fg_year) > 0) {
 ##    WEIGHT to wet weight (Posidonia, Cymodocea, macroalgae). NOT a
 ##    single pinned citation - no Mediterranean-specific seagrass
 ##    DW:WW study was found with the actual ratio disclosed (several
-##    papers were checked directly: Bernardeau-Esteller et al. 2023,
+##    papers were checked directly: Azcarate-Garcia, Beca-Carretero & Brun 2023,
 ##    the MDPI Water 2025 P. oceanica leaf-biomass paper, and a
 ##    ScienceDirect NE-Pacific seagrass/macroalgae wet-dry calibration
 ##    study - none publish the actual ratio in an openly accessible
@@ -1143,6 +1170,54 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
   setnames(raw, col_grp, "Group")
   if (!is.na(col_src)) setnames(raw, col_src, "Source_citation") else raw[, Source_citation := NA_character_]
   raw[, `:=`(Year = as.integer(Year), group_biomass_t = as.numeric(group_biomass_t))]
+  ## Optional Model_area_density_t_km2: a survey DENSITY (t/km2, e.g.
+  ## ACCOBAMS individuals/km2 x mean body mass) that holds for the whole
+  ## model area. Biomass_t = density x A_model of THIS run, so the value
+  ## no longer depends on the area assumed when the row was written
+  ## (rows written with 175,599 km2 were diluted ~4.6x once A_model
+  ## became the whole GSA area).
+  col_mad <- resolve_iccat_col(names(raw), c("Model_area_density_t_km2"))
+  if (!is.na(col_mad)) {
+    raw[, Model_area_density_t_km2 := as.numeric(get(col_mad))]
+    hit_mad <- is.finite(raw$Model_area_density_t_km2)
+    if (any(hit_mad)) {
+      raw[hit_mad, group_biomass_t := Model_area_density_t_km2 * .A_model()]
+      message("[", label, "] Biomass_t = Model_area_density_t_km2 x A_model (", round(.A_model()), " km2) for: ",
+              paste(unique(raw$Group[hit_mad]), collapse = ", "))
+    }
+  }
+  ## Optional Count_GSAs: a COUNT row (Biomass_t is a regional total, not a
+  ## density) for the GSAs listed here, e.g. "6,7,8,9". Only the share of
+  ## those GSAs inside the model area is kept (share by GSA polygon area),
+  ## so the total follows a filtered model area.
+  col_cg <- resolve_iccat_col(names(raw), c("Count_GSAs"))
+  if (!is.na(col_cg) && exists("area_shp") && exists("AREA_ID_COL") && AREA_ID_COL %in% names(area_shp)) {
+    .ga <- tryCatch({ old <- sf::sf_use_s2(); suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(old)), add = TRUE)
+      data.table(id = as.character(area_shp[[AREA_ID_COL]]), a = as.numeric(sf::st_area(sf::st_make_valid(area_shp))))[, .(a = sum(a)), by = id] },
+      error = function(e) NULL)
+    .mids <- as.character(if (exists(".model_area_ids", mode = "function")) .model_area_ids() else if (exists("MODEL_GSAS")) MODEL_GSAS else FILTER_AREAS)
+    for (i in which(nzchar(trimws(as.character(raw[[col_cg]]))) & is.finite(raw$group_biomass_t))) {
+      gs <- trimws(unlist(strsplit(as.character(raw[[col_cg]][i]), "[,;]")))
+      share <- if (!is.null(.ga) && all(gs %in% .ga$id)) .ga[id %in% intersect(gs, .mids), sum(a)] / .ga[id %in% gs, sum(a)]
+               else mean(gs %in% .mids)
+      if (is.finite(share) && share < 1) {
+        message("[", label, "] ", raw$Group[i], ": count for GSAs ", paste(gs, collapse = ","), " x share inside the model area ", signif(share, 3), ".")
+        set(raw, i, "group_biomass_t", raw$group_biomass_t[i] * share)
+      }
+    }
+  }
+  ## Optional Scale_to_1995: multiplier from the survey year to the
+  ## Ecopath baseline (e.g. a population-trend ratio). Blank = 1 (the
+  ## survey value is used as is; the temporal mismatch stays flagged).
+  col_s95 <- resolve_iccat_col(names(raw), c("Scale_to_1995", "Scale_to_baseline"))
+  if (!is.na(col_s95)) {
+    raw[, Scale_to_1995 := as.numeric(get(col_s95))]
+    hit_s95 <- is.finite(raw$Scale_to_1995) & raw$Scale_to_1995 != 1 & is.finite(raw$group_biomass_t)
+    if (any(hit_s95)) {
+      raw[hit_s95, group_biomass_t := group_biomass_t * Scale_to_1995]
+      message("[", label, "] Scale_to_1995 applied: ", paste(paste0(raw$Group[hit_s95], " x", signif(raw$Scale_to_1995[hit_s95], 3)), collapse = ", "))
+    }
+  }
   
   ## An optional Species column, distinct from Group (Group can still be
   ## an FG-level keyword like "OtherDolphins" or "PelagicSeabirds" -
@@ -1228,6 +1303,22 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
     ## assumption stay separately visible and separately adjustable.
     ## FLAGGED ASSUMPTION: occupancy is a model assumption, not a
     ## measurement; a blank value means 1 (polygon fully occupied).
+    ## Optional Depth_factor: density scaling for depth (meadows deeper
+    ## than the sampled site hold less biomass per m2). Applied to
+    ## Density_value; blank = 1. Kept separate from the mapped area and
+    ## from the occupancy so the three choices stay visible:
+    ##   B (t WW) = D_DW x f_depth / (DW:WW) x A_map x occupancy.
+    col_dfac <- resolve_iccat_col(names(raw), c("Depth_factor", "depth_factor"))
+    if (!is.na(col_dfac)) {
+      setnames(raw, col_dfac, "Depth_factor")
+      raw[, Depth_factor := as.numeric(Depth_factor)]
+      has_dfac <- !is.na(raw$Depth_factor) & !is.na(raw$Density_value)
+      if (any(has_dfac)) {
+        message("[", label, "] Depth_factor applied to Density_value for: ",
+                paste(paste0(raw$Group[has_dfac], " (x", raw$Depth_factor[has_dfac], ")"), collapse = ", "))
+        raw[has_dfac, Density_value := Density_value * Depth_factor]
+      }
+    }
     no_area_occ <- rep(FALSE, nrow(raw))
     col_occ <- resolve_iccat_col(names(raw), c("Occupancy_fraction", "occupancy_fraction", "Occupancy"))
     if (!is.na(col_occ)) {
@@ -1949,8 +2040,8 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
 ##   phytoplankton: small (<20 um) 0.45 / large (>20 um) 0.55 (Delgado,
 ##     Latasa & Estrada 1992, J Plankton Res 14:753-771, Catalan front,
 ##     Feb 1990 - FLAGGED: a single winter cruise; the stratified-season
-##     community is more pico/nano-dominated); C:WW 0.16 +/- 0.03
-##     (Yacobi & Zohary 2010)
+##     community is more pico/nano-dominated); C:WW 1:9 = 0.111
+##     (Pauly & Christensen 1995)
 ##   zooplankton: meso+micro 0.70 / macro 0.30 (Fernandez de Puelles et al. 2014);
 ##     within meso+micro: micro 0.35 (C:WW 0.07, Fenchel & Finlay 1983),
 ##     meso 0.65 (C:WW 0.09, Kiorboe 2013); macro C:WW 0.09 (Kiorboe 2013)
@@ -1959,7 +2050,7 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
 ##   row yet). Cached as csv_out_dir/cmems_plankton_biomass_by_fg.csv.
 ## =================================================================
 PLANKTON_ALLOCATION <- list(
-  small_phyto_fraction = 0.45, large_phyto_fraction = 0.55, phyto_C_per_WW = 0.16,
+  small_phyto_fraction = 0.45, large_phyto_fraction = 0.55, phyto_C_per_WW = 1 / 9,
   meso_micro_fraction = 0.70, macro_zoo_fraction = 0.30,
   micro_within_meso_micro = 0.35, meso_within_meso_micro = 0.65,
   microzoo_C_per_WW = 0.07, mesozoo_C_per_WW = 0.09, macrozoo_C_per_WW = 0.09
@@ -2231,7 +2322,7 @@ fetch_cmems_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                                                            ": ", signif(phyto_check_tC_km2, 3), " t C/km2 vs ", signif(phyto_tC_km2, 3), "]") else "",
                  "; PROVISIONAL ",
                  a$small_phyto_fraction, "/", a$large_phyto_fraction, " small(<20 um)/large(>20 um) split (Delgado, Latasa & Estrada 1992); C:WW ",
-                 a$phyto_C_per_WW, " +/- 0.03 (Yacobi & Zohary 2010)"), 2),
+                 round(a$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"), 2),
       paste0("Copernicus GLOBAL_MULTIYEAR_BGC_001_033 (SEAPODYM LMTL), ", zoo_dataset_id, ", zooc, ",
              paste(range(zoo_proxy_years), collapse = "-"), " mean as proxy for the 1994-1996 baseline (product starts",
              " 1998); PROVISIONAL ", a$meso_micro_fraction, " of total zooplankton (Fernandez de Puelles et al. 2014),",
@@ -2337,7 +2428,7 @@ fetch_cmems_detritus_biomass <- function(out_dir, force_refresh = FALSE,
 ##   (mol C m-2 s-1, -> primary production for the detritus equation).
 ##   x 12.011 g C/mol -> g C m-2 (= t C km-2), 1995 mean, area-weighted
 ##   over the model domain (.model_domain_mask). C:WW as PLANKTON_ALLOCATION
-##   (phyto 0.16 Yacobi & Zohary 2010; micro 0.07 Fenchel & Finlay 1983;
+##   (phyto 1:9 Pauly & Christensen 1995; micro 0.07 Fenchel & Finlay 1983;
 ##   meso 0.09 Kiorboe 2013).
 ##   Macrozooplankton: COBALT's large zooplankton is inside zmeso and not
 ##   published separately -> no Ecopath_B (estimated by Ecopath from EE)
@@ -2455,9 +2546,9 @@ fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                 " annual mean of that year, vertically integrated, mean over the model domain (model GSAs x MEDITS strata depth range)")
   out <- rbindlist(list(
     w[, .(Year, TargetGroup = "LargePhytoplankton", Biomass_tC_km2 = diat, Biomass_t_km2 = diat / alloc$phyto_C_per_WW,
-          Source_citation = paste0(src, "; phydiat-vint (diatoms); C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+          Source_citation = paste0(src, "; phydiat-vint (diatoms); C:WW ", round(alloc$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"))],
     w[, .(Year, TargetGroup = "SmallPhytoplankton", Biomass_tC_km2 = picodiaz, Biomass_t_km2 = picodiaz / alloc$phyto_C_per_WW,
-          Source_citation = paste0(src, "; phypico-vint + phydiaz-vint; C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+          Source_citation = paste0(src, "; phypico-vint + phydiaz-vint; C:WW ", round(alloc$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"))],
     w[, .(Year, TargetGroup = "MesoMicroZooplankton", Biomass_tC_km2 = micro + meso * (1 - f_macro),
           Biomass_t_km2 = micro / alloc$microzoo_C_per_WW + meso * (1 - f_macro) / alloc$mesozoo_C_per_WW,
           Source_citation = paste0(src, "; zmicro-vint (C:WW ", alloc$microzoo_C_per_WW, ", Fenchel & Finlay 1983) + zmeso-vint",
@@ -2772,7 +2863,26 @@ EUSEAMAP_AREA_CACHE <- file.path(BENTHIC_REF_DIR, paste0("euseamap2025_seagrass_
   ix <- pmax(1, pmin(length(blon), round(approx(blon, seq_along(blon), xy[, 1], rule = 2)$y)))
   iy <- pmax(1, pmin(length(blat), round(approx(blat, seq_along(blat), xy[, 2], rule = 2)$y)))
   depth <- -as.numeric(bathy)[ix + (iy - 1) * length(blon)]
-  mean(is.finite(depth) & depth >= min_depth)
+  ## depths of the sampled points are kept (attribute) for the AquaMaps
+  ## habitat depth factor below
+  structure(mean(is.finite(depth) & depth >= min_depth), depths = depth[is.finite(depth)])
+}
+
+## Area-weighted depth histogram (5 m bins) of each habitat's mapped
+## extent, filled while the habitat areas are computed (EUSeaMap / MEDISEH)
+## and cached in EUSEAMAP_DEPTH_CACHE. Used for the AquaMaps depth factor.
+.hab_depth_acc <- new.env()
+.hab_depth_add <- function(group, area_id, depths, area_km2) {
+  depths <- depths[is.finite(depths) & depths > 0]
+  if (length(depths) == 0 || !is.finite(area_km2) || area_km2 <= 0) return(invisible(NULL))
+  h <- data.table(depth_bin_mid = floor(depths / 5) * 5 + 2.5)[, .(n = .N), by = depth_bin_mid]
+  h[, `:=`(Group = group, AreaID = area_id, area_km2 = n / sum(n) * area_km2)]
+  assign(paste(group, area_id, sep = "_"), h[, .(Group, AreaID, depth_bin_mid, area_km2)], envir = .hab_depth_acc)
+  invisible(NULL)
+}
+.hab_depth_table <- function() {
+  x <- mget(ls(.hab_depth_acc), envir = .hab_depth_acc)
+  if (length(x) == 0) data.table(Group = character(0), AreaID = character(0), depth_bin_mid = numeric(0), area_km2 = numeric(0)) else rbindlist(x, use.names = TRUE)
 }
 
 compute_euseamap_habitat_area <- function(gdb, codes, area_shp, area_id_col, areas,
@@ -2799,6 +2909,8 @@ compute_euseamap_habitat_area <- function(gdb, codes, area_shp, area_id_col, are
       u <- if (length(cut) == 0) NULL else sf::st_union(cut)
       a <- if (is.null(u)) 0 else as.numeric(sf::st_area(u)) / 1e6
       f <- if (!is.null(u) && a > 0 && !is.null(min_depth)) .frac_deeper_than(u, min_depth) else NA_real_
+      if (!is.null(attr(f, "depths"))) .hab_depth_add(grp, gsa_ea[[area_id_col]][i], attr(f, "depths"), a)
+      f <- as.numeric(f)
       data.table(Group = grp, AreaID = gsa_ea[[area_id_col]][i], area_km2_all_depths = a, frac_deeper_than_min = f,
                  codes = paste(codes[[grp]], collapse = "/"))
     }))[, .(area_km2_all_depths = sum(area_km2_all_depths),
@@ -2808,9 +2920,55 @@ compute_euseamap_habitat_area <- function(gdb, codes, area_shp, area_id_col, are
   }), use.names = TRUE)
 }
 
+## ---- Optional Posidonia map: MEDISEH occurrence probability ---------
+## Scardi M. (2013) Modelled occurrence probability for Posidonia oceanica
+## meadows across the Mediterranean Sea (Random Forest, 0.004166 deg),
+## in Giannoulaki M. et al. (Eds) 2013, Mediterranean Sensitive Habitats
+## (MEDISEH) final report, DG MARE SI2.600741, HCMR, 557 p. CC BY 3.0;
+## ICES/EMODnet record c690ac1c-015b-43e2-8aa1-0aff72eec50e.
+## Download the GeoTIFF and place it at POSIDONIA_MEDISEH_TIF. When it is
+## there, POSIDONIA_MAP_SOURCE = "MEDISEH" (default when the file exists)
+## replaces the EUSeaMap Posidonia area with the area of cells whose
+## probability is >= POSIDONIA_MEDISEH_P_MIN (0.5, ASSUMPTION) and whose
+## seafloor is >= EUSEAMAP_MIN_DEPTH_M deep (NOAA ETOPO via marmap).
+## The mapped area is the habitat extent; Occupancy_fraction (share of
+## that extent actually covered by meadow) is applied on top, separately.
+if (!exists("POSIDONIA_MEDISEH_TIF")) POSIDONIA_MEDISEH_TIF <- file.path(pcloud_dir, "data/Complementary data/habitat_maps/MEDISEH_Posidonia_oceanica_probability.tif")
+if (!exists("POSIDONIA_MEDISEH_P_MIN")) POSIDONIA_MEDISEH_P_MIN <- 0.5
+if (!exists("POSIDONIA_MAP_SOURCE")) POSIDONIA_MAP_SOURCE <- if (file.exists(POSIDONIA_MEDISEH_TIF)) "MEDISEH" else "EUSeaMap"
+compute_mediseh_posidonia_area <- function(tif, area_shp, area_id_col, areas, p_min, min_depth) {
+  r <- raster::raster(tif)
+  gsa <- sf::st_transform(sf::st_make_valid(area_shp[area_shp[[area_id_col]] %in% areas, ]), 4326)
+  rbindlist(lapply(seq_len(nrow(gsa)), function(i) {
+    bb <- sf::st_bbox(gsa[i, ])
+    rc <- tryCatch(raster::crop(r, raster::extent(bb[["xmin"]], bb[["xmax"]], bb[["ymin"]], bb[["ymax"]])), error = function(e) NULL)
+    if (is.null(rc)) return(data.table(Group = "Posidonia", AreaID = gsa[[area_id_col]][i], area_km2_all_depths = 0, frac_deeper_than_min = NA_real_, area_km2 = 0))
+    rm <- raster::mask(rc, as(gsa[i, ], "Spatial"))
+    pv <- raster::values(rm); av <- raster::values(raster::area(rm))
+    hit <- is.finite(pv) & pv >= p_min
+    a_all <- sum(av[hit])
+    dv <- rep(Inf, length(pv))
+    bathy <- tryCatch(marmap::getNOAA.bathy(bb[["xmin"]], bb[["xmax"]], bb[["ymin"]], bb[["ymax"]], resolution = 0.25, keep = FALSE), error = function(e) NULL)
+    if (!is.null(bathy)) dv <- -raster::values(raster::resample(marmap::as.raster(bathy), rm, method = "ngb"))
+    a_deep <- sum(av[hit & is.finite(dv) & dv >= min_depth])
+    hh <- hit & is.finite(dv) & dv > 0
+    if (any(hh)) {
+      h <- data.table(depth_bin_mid = floor(dv[hh] / 5) * 5 + 2.5, a = av[hh])[, .(area_km2 = sum(a)), by = depth_bin_mid]
+      assign(paste("Posidonia", gsa[[area_id_col]][i], sep = "_"), h[, .(Group = "Posidonia", AreaID = gsa[[area_id_col]][i], depth_bin_mid, area_km2)], envir = .hab_depth_acc)
+    }
+    data.table(Group = "Posidonia", AreaID = gsa[[area_id_col]][i], area_km2_all_depths = a_all,
+               frac_deeper_than_min = if (a_all > 0) a_deep / a_all else NA_real_, area_km2 = a_deep)
+  }))
+}
+
 euseamap_area <- NULL
+EUSEAMAP_DEPTH_CACHE <- sub("\\.csv$", "_depth_hist.csv", EUSEAMAP_AREA_CACHE)
+.gdb_available <- any(file.exists(EUSEAMAP_2025_GDB))
 if (file.exists(EUSEAMAP_AREA_CACHE) && !csv_has_nul(EUSEAMAP_AREA_CACHE) &&
-    all(names(EUSEAMAP_HABITAT_CODES) %in% unique(fread(EUSEAMAP_AREA_CACHE)$Group))) {
+    all(names(EUSEAMAP_HABITAT_CODES) %in% unique(fread(EUSEAMAP_AREA_CACHE)$Group)) &&
+    (all(as.character(.model_area_ids()) %in% as.character(fread(EUSEAMAP_AREA_CACHE)$AreaID)) || !.gdb_available) &&   # a cache built for fewer GSAs is rebuilt (when the geodatabase is there)
+    (file.exists(EUSEAMAP_DEPTH_CACHE) || !.gdb_available)) {
+  if (file.exists(EUSEAMAP_DEPTH_CACHE)) { .dc <- fread(EUSEAMAP_DEPTH_CACHE); for (k in unique(paste(.dc$Group, .dc$AreaID, sep = "_"))) assign(k, .dc[paste(Group, AreaID, sep = "_") == k], envir = .hab_depth_acc) }
   euseamap_area <- fread(EUSEAMAP_AREA_CACHE)
   message("[EUSeaMap] Using cached seagrass areas: ", EUSEAMAP_AREA_CACHE, " (delete it to recompute from the geodatabase).")
 } else {
@@ -2819,10 +2977,29 @@ if (file.exists(EUSEAMAP_AREA_CACHE) && !csv_has_nul(EUSEAMAP_AREA_CACHE) &&
     message("[EUSeaMap] Computing seagrass areas from ", gdb_hit, " (one-off, can take several minutes)...")
     euseamap_area <- tryCatch(compute_euseamap_habitat_area(gdb_hit, EUSEAMAP_HABITAT_CODES, area_shp, AREA_ID_COL, FILTER_AREAS, min_depth = EUSEAMAP_MIN_DEPTH_M),  # cached per GSA; summed over the model GSAs below
                               error = function(e) { message("[EUSeaMap] FAILED: ", conditionMessage(e)); NULL })
-    if (!is.null(euseamap_area)) safe_fwrite(euseamap_area, EUSEAMAP_AREA_CACHE)
+    if (!is.null(euseamap_area)) { safe_fwrite(euseamap_area, EUSEAMAP_AREA_CACHE); safe_fwrite(.hab_depth_table(), EUSEAMAP_DEPTH_CACHE) }
   } else {
     message("[EUSeaMap] Geodatabase not found (looked in: ", paste(EUSEAMAP_2025_GDB, collapse = "; "),
             ") - seagrass rows keep the Habitat_area_km2 written in ", basename(HABITAT_SHAPEFILE_BIOMASS_PATH), ".")
+  }
+}
+if (identical(POSIDONIA_MAP_SOURCE, "MEDISEH") && file.exists(POSIDONIA_MEDISEH_TIF) && exists("area_shp")) {
+  .med_cache <- file.path(BENTHIC_REF_DIR, paste0("mediseh_posidonia_area_by_gsa_p", POSIDONIA_MEDISEH_P_MIN, "_ge", EUSEAMAP_MIN_DEPTH_M, "m.csv"))
+  .med_dcache <- sub("\\.csv$", "_depth_hist.csv", .med_cache)
+  if (file.exists(.med_cache) && !all(as.character(.model_area_ids()) %in% as.character(fread(.med_cache)$AreaID))) file.remove(.med_cache)   # built for fewer GSAs
+  if (file.exists(.med_cache) && file.exists(.med_dcache)) {
+    for (k in ls(.hab_depth_acc, pattern = "^Posidonia_")) rm(list = k, envir = .hab_depth_acc)
+    .dm <- fread(.med_dcache); for (k in unique(paste(.dm$Group, .dm$AreaID, sep = "_"))) assign(k, .dm[paste(Group, AreaID, sep = "_") == k], envir = .hab_depth_acc)
+  } else if (file.exists(.med_cache)) file.remove(.med_cache)
+  med_area <- if (file.exists(.med_cache)) fread(.med_cache) else tryCatch({
+    for (k in ls(.hab_depth_acc, pattern = "^Posidonia_")) rm(list = k, envir = .hab_depth_acc)
+    x <- compute_mediseh_posidonia_area(POSIDONIA_MEDISEH_TIF, area_shp, AREA_ID_COL, FILTER_AREAS, POSIDONIA_MEDISEH_P_MIN, EUSEAMAP_MIN_DEPTH_M)
+    safe_fwrite(x, .med_cache); safe_fwrite(.hab_depth_table()[Group == "Posidonia"], sub("\\.csv$", "_depth_hist.csv", .med_cache)); x }, error = function(e) { message("[MEDISEH] FAILED: ", conditionMessage(e)); NULL })
+  if (!is.null(med_area) && nrow(med_area) > 0) {
+    med_area[, codes := paste0("MEDISEH p>=", POSIDONIA_MEDISEH_P_MIN)]
+    euseamap_area <- rbindlist(list(if (!is.null(euseamap_area)) euseamap_area[Group != "Posidonia"], med_area), use.names = TRUE, fill = TRUE)
+    message("[MEDISEH] Posidonia map area (p >= ", POSIDONIA_MEDISEH_P_MIN, ", deeper than ", EUSEAMAP_MIN_DEPTH_M, " m): ",
+            round(med_area[, sum(area_km2)], 1), " km2 over GSAs ", paste(FILTER_AREAS, collapse = ","), " (replaces EUSeaMap).")
   }
 }
 ## ---- FG 70 Corals and gorgonians ---------------------------
@@ -2860,19 +3037,25 @@ GORGONIAN_WHOLE_HABITAT <- data.table(
   density_col_m2 = c(mean(c(0.423, 1.000)), mean(c(1.737, 6.631))),
   afdm_g_per_colony = c(3.9, 0.50))
 GORGONIAN_AFDM_TO_DW <- mean(c(0.11, 0.1513))
-gorg_dw_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)] / GORGONIAN_AFDM_TO_DW
+gorg_dw_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)] / GORGONIAN_AFDM_TO_DW  # kept for reference
+## Living tissue only (project decision 2026-10-21): organic mass (AFDM)
+## straight to wet weight, WW = AFDM / 0.143 (unit g_afdm_m2_cnidaria =
+## 6.99; Actiniaria, the closest cnidarian in Ricciardi & Bourget 1998,
+## MEPS 163:245-251). The calcified/proteinaceous axis is not counted -
+## it is not eaten. Before: AFDM -> DW (/0.13) -> WW (x2.5, assumption).
+gorg_afdm_g_m2 <- GORGONIAN_WHOLE_HABITAT[, sum(density_col_m2 * afdm_g_per_colony)]
 coral_row <- data.table(
-  Group = "GorgoniansCorals", Year = round(mean(YEAR_ECOPATH)), Density_value = gorg_dw_g_m2,
-  Density_unit = "g_dw_m2_gorgonian_whole", Habitat_area_km2 = 1468.575618, Occupancy_fraction = NA_real_,
-  Source_citation = paste0("B_dw = sum(D_whole x AFDM_colony) / AFDM:DW = (", paste(sprintf("%.3f x %.2f", GORGONIAN_WHOLE_HABITAT$density_col_m2,
-    GORGONIAN_WHOLE_HABITAT$afdm_g_per_colony), collapse = " + "), ") / ", signif(GORGONIAN_AFDM_TO_DW, 3), " = ", signif(gorg_dw_g_m2, 3),
-    " g DW per m2 of coralligenous. Whole-habitat densities and per-colony AFDM: Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550",
-    " (Tables 1 and 3, Cap de Creus; P. clavata + E. singularis). AFDM:DW: Ponti et al. 2014 (PLoS ONE 9:e102782) and Palma et al.",
-    " 2018 (Remote Sens. 10:1154). DW->WW x2.5 = ASSUMPTION (no sourced whole-colony factor). Area: EUSeaMap coralligenous",
+  Group = "GorgoniansCorals", Year = round(mean(YEAR_ECOPATH)), Density_value = gorg_afdm_g_m2,
+  Density_unit = "g_afdm_m2_cnidaria", Habitat_area_km2 = 1468.575618, Occupancy_fraction = NA_real_,
+  Source_citation = paste0("B_afdm = sum(D_whole x AFDM_colony) = ", paste(sprintf("%.3f x %.2f", GORGONIAN_WHOLE_HABITAT$density_col_m2,
+    GORGONIAN_WHOLE_HABITAT$afdm_g_per_colony), collapse = " + "), " = ", signif(gorg_afdm_g_m2, 3),
+    " g AFDM per m2 of coralligenous (living tissue). Whole-habitat densities and per-colony AFDM: Coppari, Zanella & Rossi 2019, Sci. Rep. 9:13550",
+    " (Tables 1 and 3, Cap de Creus; P. clavata + E. singularis). AFDM -> WW: WW = AFDM / 0.143 (x6.99; Actiniaria, Ricciardi & Bourget 1998,",
+    " MEPS 163:245-251, closest cnidarian - ASSUMPTION for gorgonians); skeleton/axis not counted. Area: EUSeaMap coralligenous",
     " MC151/MC251 (2025 when available, else 2023 1468.6 km2). Excludes red coral and deep shelf-edge gardens."),
-  Notes = "01b FG70 section - computed in code, not in the CSV.")
-message("[Corals/gorgonians] ", signif(gorg_dw_g_m2, 3), " g DW/m2 coralligenous (x2.5 WW = ", signif(gorg_dw_g_m2 * 2.5, 3),
-        " t WW/km2 habitat) - whole-habitat densities, Coppari et al. 2019.")
+  Notes = "01b FG70 section - computed in code, not in the CSV. 2026-10-21: organic mass to WW (living tissue), was AFDM -> DW -> x2.5.")
+message("[Corals/gorgonians] ", signif(gorg_afdm_g_m2, 3), " g AFDM/m2 coralligenous (x6.99 WW = ", signif(gorg_afdm_g_m2 * 6.99, 3),
+        " t WW/km2 habitat, living tissue) - whole-habitat densities, Coppari et al. 2019.")
 
 habitat_csv_for_loader <- HABITAT_SHAPEFILE_BIOMASS_PATH
 if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
@@ -2892,6 +3075,176 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
                 " m; all depths: ", round(euseamap_area[Group == area_tot$Group[i] & AreaID %in% model_ids, sum(area_km2_all_depths)], 1), " km2).")
       }
     }
+  }
+  ## ---- Areas that are not mapped per GSA follow the model GSAs ----------
+  ## Cymodocea: A = ratio x Posidonia mapped area of THIS run (Balearic
+  ## Cymodocea/Posidonia area 16.12 / 569.8 km2, Informe Mar Balear 2020 /
+  ## EUSeaMap GSA 5), so it shrinks with the model GSAs like Posidonia.
+  ## Macroalgae: the EMODnet macroalgae area (325.05 km2) is for the whole
+  ## Western Med (ICES ecoregion); it is scaled by the share of the
+  ## coralligenous map that lies in the model GSAs:
+  ##   A = 325.05 x A_coral(model GSAs) / A_coral(GSAs 1-12).
+  if (!exists("CYMODOCEA_POSIDONIA_AREA_RATIO")) CYMODOCEA_POSIDONIA_AREA_RATIO <- 16.12 / 569.8
+  if (!exists("MACROALGAE_AREA_WMED_KM2")) MACROALGAE_AREA_WMED_KM2 <- 325.0518
+  .hitg <- function(g) tolower(trimws(hab_tab$Group)) == tolower(g)
+  if (any(.hitg("cymodocea")) && any(.hitg("posidonia"))) {
+    .pa <- as.numeric(hab_tab$Habitat_area_km2[.hitg("posidonia")][1])
+    if (is.finite(.pa)) {
+      hab_tab[.hitg("cymodocea"), Habitat_area_km2 := .pa * CYMODOCEA_POSIDONIA_AREA_RATIO]
+      message("[Habitat area] Cymodocea = ", signif(CYMODOCEA_POSIDONIA_AREA_RATIO, 4), " x Posidonia ", round(.pa, 1), " km2 = ",
+              round(.pa * CYMODOCEA_POSIDONIA_AREA_RATIO, 1), " km2 (model GSAs).")
+    }
+  }
+  if (any(.hitg("macroalgae")) && !is.null(euseamap_area) && "GorgoniansCorals" %in% euseamap_area$Group) {
+    .cm <- euseamap_area[Group == "GorgoniansCorals" & as.character(AreaID) %in% as.character(.model_area_ids()), sum(area_km2)]
+    .cw <- euseamap_area[Group == "GorgoniansCorals" & as.character(AreaID) %in% as.character(1:12), sum(area_km2)]
+    .sh <- if (is.finite(.cw) && .cw > 0 && all(as.character(1:12) %in% as.character(euseamap_area$AreaID))) min(1, .cm / .cw) else NA_real_
+    if (is.finite(.sh)) {
+      hab_tab[.hitg("macroalgae"), Habitat_area_km2 := MACROALGAE_AREA_WMED_KM2 * .sh]
+      message("[Habitat area] Macroalgae = ", round(MACROALGAE_AREA_WMED_KM2, 1), " km2 x coralligenous share of the model GSAs ",
+              signif(.sh, 3), " = ", round(MACROALGAE_AREA_WMED_KM2 * .sh, 1), " km2.")
+    } else message("[Habitat area] Macroalgae: coralligenous area for GSAs 1-12 not available - whole-Western-Med area ",
+                   round(MACROALGAE_AREA_WMED_KM2, 1), " km2 kept (too large if the model area is a subset).")
+  }
+
+  ## ---- Cymodocea, macroalgae, gorgonians from several sites ------------
+  ## habitat_biomass_sites.csv: one row per site (Group, site, GSA, protected,
+  ## habitat, depth_m, value, unit, source, weight). Density_value of each
+  ## group = weighted mean of its sites, D = sum(w_i x value_i) / sum(w_i),
+  ## in the unit of that group's row (Cymodocea and macroalgae g DW/m2,
+  ## gorgonians g AFDM/m2). Weight 0 = left out (e.g. a coastal lagoon).
+  if (!exists("HABITAT_SITE_TABLE")) HABITAT_SITE_TABLE <- file.path(BENTHIC_REF_DIR, "habitat_biomass_sites.csv")
+  if (file.exists(HABITAT_SITE_TABLE)) {
+    hs <- fread(HABITAT_SITE_TABLE)[, `:=`(w = as.numeric(weight), v = as.numeric(value))][is.finite(w) & w > 0 & is.finite(v)]
+    for (g in unique(hs$Group)) {
+      hit <- tolower(trimws(hab_tab$Group)) == tolower(g)
+      if (!any(hit)) next
+      hg <- hs[Group == g]; D <- hg[, sum(w * v) / sum(w)]
+      message("[Habitat sites] ", g, ": ", nrow(hg), " site(s), weighted mean ", signif(D, 4), " ", hg$unit[1],
+              " (replaces ", signif(hab_tab$Density_value[hit][1], 4), ").")
+      hab_tab[hit, Density_value := D]
+      hab_tab[hit, Source_citation := paste0("Density_value = weighted mean of ", nrow(hg), " site value(s) in ", basename(HABITAT_SITE_TABLE),
+        " (", paste(sprintf("%s %s", hg$site, signif(hg$v, 4)), collapse = "; "), "). ", Source_citation)]
+    }
+  }
+
+  ## ---- Posidonia leaf biomass from several Western Med meadows --------
+  ## posidonia_leaf_biomass_sites.csv: one row per site x depth (site, GSA,
+  ## protected, depth_m, leaf_biomass_g_dw_m2, sampled, source, weight).
+  ## Weighted fit ln B = a + b z (weight 0 = left out; meadows inside a
+  ## marine reserve at sampling get weight POSIDONIA_MPA_WEIGHT, default 0:
+  ## reserves are a tiny share of the meadow area and denser, so they would
+  ## bias the regional mean upwards). The fit is averaged over the depth
+  ## distribution of the mapped meadow (model GSAs, deeper than
+  ## EUSEAMAP_MIN_DEPTH_M):  D = sum_b A_b exp(a + b z_b) / sum_b A_b.
+  ## D replaces the single-site Density_value and the depth factor (set to 1,
+  ## the depth is now in the fit). Without a depth histogram the fit at the
+  ## median mapped depth is not available, so the CSV values are kept.
+  if (!exists("POSIDONIA_SITE_TABLE")) POSIDONIA_SITE_TABLE <- file.path(BENTHIC_REF_DIR, "posidonia_leaf_biomass_sites.csv")
+  if (!exists("POSIDONIA_MPA_WEIGHT")) POSIDONIA_MPA_WEIGHT <- 0
+  if (file.exists(POSIDONIA_SITE_TABLE) && any(tolower(hab_tab$Group) == "posidonia")) {
+    ps <- fread(POSIDONIA_SITE_TABLE)
+    ps[, w := as.numeric(weight)]
+    ps[grepl("^yes", protected, ignore.case = TRUE), w := POSIDONIA_MPA_WEIGHT]
+    psf <- ps[is.finite(w) & w > 0 & is.finite(depth_m) & leaf_biomass_g_dw_m2 > 0]
+    hP <- .hab_depth_table()[Group == "Posidonia" & as.character(AreaID) %in% as.character(.model_area_ids()) &
+                               depth_bin_mid >= EUSEAMAP_MIN_DEPTH_M, .(area_km2 = sum(area_km2)), by = depth_bin_mid]
+    if (nrow(psf) >= 3 && uniqueN(psf$depth_m) >= 2 && nrow(hP) > 0) {
+      fit <- lm(log(leaf_biomass_g_dw_m2) ~ depth_m, data = psf, weights = w)
+      hP[, B_pred := exp(predict(fit, newdata = data.frame(depth_m = depth_bin_mid)))]
+      D_pos <- hP[, sum(area_km2 * B_pred) / sum(area_km2)]
+      cf <- coef(fit)
+      hit <- tolower(hab_tab$Group) == "posidonia"
+      message("[Posidonia sites] ", nrow(psf), " site x depth values (", nrow(ps) - nrow(psf), " left out, protected weight ", POSIDONIA_MPA_WEIGHT,
+              "): ln B = ", signif(cf[1], 4), " ", sprintf("%+.4f", cf[2]), " z; mean over the mapped meadow depths = ", signif(D_pos, 4),
+              " g DW/m2 (replaces ", hab_tab$Density_value[hit][1], " x Depth_factor ", hab_tab$Depth_factor[hit][1], ").")
+      hab_tab[hit, `:=`(Density_value = D_pos, Depth_factor = 1)]
+      hab_tab[hit, Source_citation := paste0("D_DW = ", signif(D_pos, 4), " g DW/m2 = mean over the mapped meadow depths of ln B = ", signif(cf[1], 4), " ",
+        sprintf("%+.4f", cf[2]), " x depth, fitted to ", nrow(psf), " Western Med leaf-biomass values (", basename(POSIDONIA_SITE_TABLE),
+        ": Azcarate-Garcia et al. 2023; Pergent, Rico-Raimondino & Pergent-Martini 1997, Aquat. Bot. 59:307-321; marine-reserve values ",
+        if (POSIDONIA_MPA_WEIGHT == 0) "left out" else paste0("weighted ", POSIDONIA_MPA_WEIGHT), ", Romero et al. 1998). Depth factor included in the fit (= 1). ", Source_citation)]
+      fwrite(cbind(hP, fit_a = cf[1], fit_b = cf[2]), file.path(csv_out_dir, "posidonia_depth_fit_REVIEW.csv"))
+    } else message("[Posidonia sites] site table or depth histogram not usable - CSV Density_value and Depth_factor kept.")
+  }
+
+  ## ---- AquaMaps depth factor for the habitat FGs ----------------------
+  ## The literature density was measured at one site depth; the mapped
+  ## habitat spans a range of depths. Depth factor =
+  ##   f_depth = sum_b A_b S(d_b) / sum_b A_b  /  mean S(d) over the site depths,
+  ## S = AquaMaps trapezoidal depth suitability of the species
+  ## (DepthMin/PrefMin/PrefMax/Max; Kaschner et al. 2019), A_b = mapped
+  ## area in 5 m depth bin b (EUSeaMap or MEDISEH, model GSAs, deeper than
+  ## EUSEAMAP_MIN_DEPTH_M). ASSUMPTION: density is proportional to AquaMaps
+  ## suitability (as for the AquaMaps pseudo-strata in 01). Replaces the CSV
+  ## Depth_factor when it can be computed (species found in AquaMaps, site
+  ## depth given in Site_depth_min_m/Site_depth_max_m, depth histogram
+  ## available); otherwise the CSV value is kept. Cymodocea uses the
+  ## Posidonia histogram because its area is scaled from the Posidonia map.
+  if (!exists("HABITAT_AQUAMAPS_DEPTH_FACTOR")) HABITAT_AQUAMAPS_DEPTH_FACTOR <- TRUE
+  ## A literature Depth_factor in the CSV wins (project decision 2026-10-20:
+  ## Posidonia 0.6, Greek WFD reference conditions / Olesen et al. 2002); the AquaMaps factor
+  ## is then written to the REVIEW csv only. TRUE = AquaMaps overrides it.
+  if (!exists("HABITAT_AQUAMAPS_OVERRIDE_CSV")) HABITAT_AQUAMAPS_OVERRIDE_CSV <- FALSE
+  ## Species whose AquaMaps envelopes are used (median over species):
+  ## Posidonia / Cymodocea the FG's single species; gorgonians the two
+  ## species the density comes from; macroalgae every species of the
+  ## Macroalgae FG in the FG table (genus fallback in AquaMaps).
+  .fg_sp <- function(pattern) { d <- get0("dataframe2", ifnotfound = NULL)
+    if (is.null(d)) character(0) else unique(d[grepl(pattern, FG_name, ignore.case = TRUE) & grepl(" ", ScientificName) & !grepl(" spp\\.?$", ScientificName), ScientificName]) }
+  if (!exists("HABITAT_AQUAMAPS_SPECIES")) HABITAT_AQUAMAPS_SPECIES <- list(
+    Posidonia = "Posidonia oceanica", Cymodocea = "Cymodocea nodosa",
+    GorgoniansCorals = c("Paramuricea clavata", "Eunicella singularis"),
+    Macroalgae = .fg_sp("^Macroalgae"))
+  ## Depth distribution used for each group: its own map; Cymodocea the
+  ## Posidonia map (its area is scaled from it); macroalgae the
+  ## coralligenous map (its density is the coralligenous algal layer,
+  ## Ballesteros 2006; the EMODnet macroalgae polygons are not read here).
+  HABITAT_DEPTH_HIST_GROUP <- c(Posidonia = "Posidonia", Cymodocea = "Posidonia", GorgoniansCorals = "GorgoniansCorals", Macroalgae = "GorgoniansCorals")
+  dhist <- .hab_depth_table()
+  if (isTRUE(HABITAT_AQUAMAPS_DEPTH_FACTOR) && nrow(dhist) > 0) {
+    if (!exists("aquamaps_envelope_value", mode = "function")) source(file.path(git_dir, "scripts/lib_aquamaps_depth_extension.R"))
+    for (cc in c("Site_depth_min_m", "Site_depth_max_m", "Depth_factor")) if (!cc %in% names(hab_tab)) hab_tab[, (cc) := NA_real_]
+    hab_tab[, `:=`(Site_depth_min_m = as.numeric(Site_depth_min_m), Site_depth_max_m = as.numeric(Site_depth_max_m), Depth_factor = as.numeric(Depth_factor))]
+    model_ids_d <- .model_area_ids()
+    dfac_rev <- rbindlist(lapply(names(HABITAT_AQUAMAPS_SPECIES), function(g) {
+      hit <- tolower(trimws(hab_tab$Group)) == tolower(g)
+      if (!any(hit)) return(NULL)
+      s_min <- hab_tab$Site_depth_min_m[hit][1]; s_max <- hab_tab$Site_depth_max_m[hit][1]
+      h <- dhist[Group == HABITAT_DEPTH_HIST_GROUP[[g]] & as.character(AreaID) %in% as.character(model_ids_d) & depth_bin_mid >= EUSEAMAP_MIN_DEPTH_M,
+                 .(area_km2 = sum(area_km2)), by = depth_bin_mid]
+      env <- tryCatch(fetch_aquamaps_depth_envelope(resolve_aquamaps_species_ids(HABITAT_AQUAMAPS_SPECIES[[g]])), error = function(e) NULL)
+      env <- if (is.null(env)) NULL else env[is.finite(DepthMin) & is.finite(DepthPrefMin) & is.finite(DepthPrefMax) & is.finite(DepthMax)]
+      f <- NA_real_; s_map <- NA_real_; s_site <- NA_real_
+      ## Without a site depth, the literature density is taken as the density
+      ## at the species' preferred depths (S = 1, ASSUMPTION), so the factor
+      ## is the mean AquaMaps suitability over the mapped area.
+      if (!is.null(env) && nrow(env) > 0 && nrow(h) > 0) {
+        S <- function(d) rowMeans(vapply(seq_len(nrow(env)), function(k) aquamaps_envelope_value(d, env$DepthMin[k], env$DepthPrefMin[k], env$DepthPrefMax[k], env$DepthMax[k]), numeric(length(d))), na.rm = TRUE)
+        s_map <- sum(h$area_km2 * S(h$depth_bin_mid)) / sum(h$area_km2)
+        s_site <- if (is.finite(s_min) && is.finite(s_max)) mean(S(seq(s_min, s_max, by = 0.5))) else 1
+        if (is.finite(s_site) && s_site > 0) f <- s_map / s_site
+      }
+      csv_f <- hab_tab$Depth_factor[hit][1]
+      if (is.finite(f) && is.finite(csv_f) && !isTRUE(HABITAT_AQUAMAPS_OVERRIDE_CSV)) {
+        message("[Habitat depth factor] ", g, ": literature Depth_factor ", csv_f, " kept; AquaMaps would give ", signif(f, 3),
+                " (review only, HABITAT_AQUAMAPS_OVERRIDE_CSV = FALSE).")
+      } else if (is.finite(f)) {
+        message("[Habitat depth factor] ", g, ": AquaMaps suitability mapped area ", signif(s_map, 3), " / site ", s_min, "-", s_max, " m ",
+                signif(s_site, 3), " = ", signif(f, 3), " (replaces the CSV value ", hab_tab$Depth_factor[hit][1], ").")
+        hab_tab[hit, Depth_factor := f]
+        hab_tab[hit, Source_citation := paste0(Source_citation, " Depth_factor ", signif(f, 3), " computed in 01b from AquaMaps depth suitability (",
+          if (length(HABITAT_AQUAMAPS_SPECIES[[g]]) > 3) paste0(length(HABITAT_AQUAMAPS_SPECIES[[g]]), " species of the FG") else paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = ", "),
+          "; Kaschner et al. 2019): mean suitability over the mapped area's depths (", HABITAT_DEPTH_HIST_GROUP[[g]], " map)",
+          if (is.finite(s_min)) paste0(" / suitability at the site depth ", s_min, "-", s_max, " m.") else " (site density taken as the density at the preferred depths, S = 1 - ASSUMPTION).")]
+      } else {
+        message("[Habitat depth factor] ", g, ": AquaMaps factor not computed (species envelope, site depth or depth histogram missing) - CSV Depth_factor kept (",
+                hab_tab$Depth_factor[hit][1], ").")
+      }
+      data.table(Group = g, species = paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = "; "), site_depth_m = if (is.finite(s_min)) paste(s_min, s_max, sep = "-") else "not given (S_site = 1)",
+                 mapped_area_km2 = sum(h$area_km2), S_mapped_area = s_map, S_site = s_site, depth_factor_aquamaps = f,
+                 depth_factor_used = hab_tab$Depth_factor[hit][1])
+    }), fill = TRUE)
+    if (nrow(dfac_rev) > 0) fwrite(dfac_rev, file.path(csv_out_dir, "habitat_depth_factor_aquamaps_REVIEW.csv"))
   }
   habitat_csv_for_loader <- file.path(csv_out_dir, "habitat_shapefile_biomass_with_euseamap2025_area.csv")
   fwrite(hab_tab, habitat_csv_for_loader)
@@ -2968,7 +3321,7 @@ PRIMARY_PRODUCER_TEMPORAL_BASELINE_NOTE <- list(
     " regression in Posidonia oceanica meadow AREA over the last ~50 years across sites with historical",
     " data (Spain, France/Monaco, Italy, Albania, Tunisia, Egypt, Turkey) - a basin-wide DECLINING",
     " trend, not a Western-Med-specific or 1994-1996-anchored figure. If this FG's standing-biomass",
-    " density comes from a present-day/2010s+ field measurement (e.g. Bernardeau-Esteller et al. 2023,",
+    " density comes from a present-day/2010s+ field measurement (e.g. Azcarate-Garcia, Beca-Carretero & Brun 2023,",
     " Cadiz), the 1994-1996 Ecopath baseline biomass was very likely HIGHER than that measurement",
     " implies. No numeric correction factor applied - the 34%-over-50-years figure is basin-wide areal",
     " extent, not a per-site biomass-density trend, so it is not safely convertible into a multiplier",
@@ -3028,3 +3381,41 @@ stock_assessment_fg_year_fisheries_only <- copy(stock_assessment_fg_year)
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, megafauna_biomass_fg_year, "marine megafauna / uncertain-FG field reference")
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, primary_producer_biomass_fg_year, "primary producer/plankton")
 stock_assessment_fg_year <- merge_manual_cited_biomass(stock_assessment_fg_year, benthic_habitat_biomass_fg_year, "benthic habitat (seagrass/macroalgae/coralligenous)")
+## =================================================================
+## Check: unsurveyed FGs with no match in the FG file
+## -----------------------------------------------------------------
+## The estimates above are attached to FGs by FG NAME (FG_WMed_2026.csv
+## names and keywords). With a different FG file some of them may find
+## no FG and are then simply not used. This lists, for every expected
+## unsurveyed FG: whether that name is in the FG file of this run and
+## whether it received a value, with where the estimate is written, so
+## the user can add it by hand (or rename the FG). Written to
+## unsurveyed_fg_not_matched_REVIEW.csv; a warning is printed if any.
+## =================================================================
+UNSURVEYED_EXPECTED_FG <- data.table(
+  FG_name = c("Posidonia", "Cymodocea", "Macroalgae", "Corals and gorgonians",
+              "Large phytoplankton", "Small phytoplankton", "Meso and micro zooplankton", "Macro zooplankton", "Detritus",
+              "Bottlenose dolphins", "Other dolphins", "Fin whale", "Sperm whale", "Deep sea-cetacean feeders", "Monk seals",
+              "Pelagic/Offshore seabirds", "Coastal/inshore seabirds", "Loggerhead turtles", "Bluefin tuna", "Swordfish",
+              "Suprabenthos", "Jellyfish", "Salps and other gelatinous zooplankton", "Benthic mollusc", "Other macro-benthos"),
+  method = c(rep("density x mapped area x occupancy", 4), rep("COBALT model, whole water column", 3), "MAREDAT", "Pauly et al. 1993 from COBALT PP",
+             "survey density x body mass", "survey density x body mass", "1991 count x body mass", "survey density x body mass",
+             "survey density x body mass", "population count x body mass", rep("survey density x body mass", 3),
+             "ICCAT aerial survey", "ICCAT stock assessment", rep("left for Ecopath (EE = 0.95)", 5)),
+  estimate_file = c(rep("habitat_shapefile_biomass_by_fg.csv", 4), rep("isimip3a_cobalt2_plankton_detritus_*.csv", 3),
+                    "gelatinous_macrozoo_biomass_REVIEW.csv", "isimip3a_cobalt2_plankton_detritus_*.csv",
+                    rep("marine_megafauna_biomass_by_fg.csv", 9), rep("iccat_biomass_by_fg.csv", 2),
+                    rep("(no value: EE_input = 0.95 in Ecopath_B)", 5)))
+.fg_names_run <- if (exists("dataframe2")) unique(dataframe2$FG_name) else character(0)
+.fg_with_value <- if (exists("stock_assessment_fg_year") && nrow(stock_assessment_fg_year)) unique(stock_assessment_fg_year$FG_name) else character(0)
+UNSURVEYED_EXPECTED_FG[, in_FG_file := FG_name %in% .fg_names_run]
+UNSURVEYED_EXPECTED_FG[, got_value := FG_name %in% .fg_with_value | grepl("^left for Ecopath", method)]
+UNSURVEYED_EXPECTED_FG[, status := fifelse(!in_FG_file, "NOT IN FG FILE - estimate not used; add it by hand or rename the FG",
+                                    fifelse(!got_value, "in FG file but no value - check the source table / log", "ok"))]
+fwrite(UNSURVEYED_EXPECTED_FG, file.path(csv_out_dir, "unsurveyed_fg_not_matched_REVIEW.csv"))
+.nm <- UNSURVEYED_EXPECTED_FG[status != "ok"]
+if (nrow(.nm) > 0) {
+  message("\n[Unsurveyed FGs] WARNING: ", nrow(.nm), " unsurveyed FG estimate(s) not used in this run:\n  ",
+          paste(sprintf("%s (%s)", .nm$FG_name, sub(" -.*$", "", .nm$status)), collapse = "\n  "),
+          "\n  See unsurveyed_fg_not_matched_REVIEW.csv for the method and the file holding each estimate.")
+} else message("\n[Unsurveyed FGs] All ", nrow(UNSURVEYED_EXPECTED_FG), " expected unsurveyed FGs found in the FG file and handled.")

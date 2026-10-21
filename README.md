@@ -1,99 +1,152 @@
-# WMed EwE Pipeline
+# Inputs for Western Mediterranean EwE models
 
-R pipeline that turns survey, fisheries, and literature data into Ecopath-with-Ecosim (EwE) input tables for the Western Mediterranean model (GSA 1-11). Produces the shared `ecopath_ecosim_inputs.xlsx` workbook, per-step CSVs, and QA/validation plots.
+R pipeline that turns survey, fisheries and literature data into Ecopath with Ecosim (EwE) inputs for the Western Mediterranean (GSAs 1–12: GSAs 1–11 plus GSA 12, Northern Tunisia, as in the MSFD Western Mediterranean subregion). It writes one workbook, `ecopath_ecosim_inputs.xlsx`, plus a CSV and plot for every step, and a validation report.
+
+Created by: Daniel Vilas
+
+## What you need
+
+- **This repository** (GitHub): the code.
+- **The shared pCloud folder "EwE Western Med 2026"**: the data. Ask Daniel Vilas for access. Install pCloud Drive so the folder appears as a drive on your computer.
+- **R** (≥ 4.3) and **RStudio**.
+- **Quarto** (only for the interactive page; it comes with recent RStudio versions).
+- **Internet on the first run**: several sources are downloaded once and cached (see [First run](#first-run)).
+
+## Quick start
+
+1. Clone the repo and open `WMed_EwE.Rproj` in RStudio.
+2. Install the packages (once, then restart R):
+   ```r
+   source("scripts/install_packages.R")
+   ```
+3. Run the whole pipeline:
+   ```r
+   source("scripts/run_pipeline_demo.R")
+   ```
+
+You don't need to edit any paths. `scripts/wmed_paths.R` finds the three folders on each computer:
+
+| Folder | What it is | How it is found (first one that exists wins) |
+|---|---|---|
+| `git_dir` | this repo | the folder the scripts are in |
+| `pcloud_dir` | the shared data folder | `config.local.R` → `config.R` → environment variable `WMED_PCLOUD_DIR` → the standard pCloud Drive place (macOS `~/pCloud Drive/EwE Western Med 2026`, Windows `P:/EwE Western Med 2026`, Linux `~/pCloudDrive/EwE Western Med 2026`) |
+| `out_dir` | where the outputs go (your own computer) | `config.local.R` → `config.R` → `WMED_OUT_DIR` → `~/WMed_EwE_output` (created if missing) |
+
+If the pCloud folder is somewhere else, RStudio asks you to pick it once and saves your answer to `config.local.R`. That file is git-ignored, so your paths never reach other users. `config.R` in the repo holds Daniel's paths; they are skipped on any computer where they don't exist.
+
+## Interactive page
+
+`scripts/medbs_pipeline_methodology.qmd` is a Quarto/Shiny page. From it you can set the folders, model area and years, run the pipeline, watch its progress, and download the outputs. It also documents every method, equation and source.
+
+```bash
+quarto serve scripts/medbs_pipeline_methodology.qmd
+```
+
+In RStudio, you can instead open the file and click **Run Document**.
+
+On the page you can:
+
+- **Model area**: choose Western Med GSAs on a map, or a custom region (upload a shapefile or draw a bounding box).
+- **Functional groups**: upload your own FG table (`FG_number`, `FG_name`, `species`; optional `FG_group`). The default is `FG_WMed_2026.csv`, built for the EwE Western Med model.
+- **Years**: Ecopath and Ecosim years. Catch and effort years follow the Ecosim years.
+- **Options**: outlier removal, Ecosim normalisation, and filling missing Ecopath biomass with the 1995–2000 mean.
+- **Results**: download the workbook, the diet matrix, the review tables, or everything as one zip.
 
 ## Pipeline steps
 
-Run in order - each later step depends on files the earlier ones write:
+Run in this order; each step reads files the earlier ones wrote. `run_pipeline_demo.R` runs them all (`RUN_STEPS <- 1:5`; e.g. `RUN_STEPS <- 5` redraws only the validation).
 
-| Step | Script | Produces |
+| Step | Script | What it does |
 |---|---|---|
-| 1 | `01_biomass.R` | Species/FG biomass density from MEDITS/MEDIAS survey data + stock-assessment/ICCAT/megafauna/EcoBase fallbacks for FGs the survey doesn't sample. Sources `03b_ecobase.R` and `lib_worms_taxonomy_lookup.R`. |
-| 2 | `02_fisheries.R` | Catch/landings/discards/effort by country, fleet, and FG - GFCM, STECF FDI, Sea Around Us, FishMIP, ICCAT, STAR/RAM, Belhabib et al. (Morocco/Algeria), Rousseau et al. (effort), blended by an explicit source-priority cascade per FG x Year. |
-| 3 | `03_pbqb-traits.R` | P/B (production/biomass) and Q/B (consumption/biomass) per FG, from FishBase growth/consumption parameters, TropFishR/FishLife estimators, and EcoBase literature values. Sources `03b_ecobase.R`. |
-| 4 | `04_diets.R` (optional) | Diet composition matrix (predator x prey), from EcoBase's diet-matrix fallback plus manual metaweb entries. |
-| 5 | `05_validation.R` (optional) | Cross-cutting validation plots across all of the above. |
+| 1 | `01_biomass.R` (sources `01b_biomass_unsurveyed.R`) | **Biomass** from the MEDITS bottom-trawl and MEDIAS acoustic surveys. AquaMaps depth pseudo-strata cover 0–10 m, 800–1000 m and 1000 m to the seafloor (3,785 m). Stock assessments are used for assessed single-species FGs and hake stanzas. Small pelagics are back-cast to 1994–96. Ecopath_B, Ecosim biomass series, FG_spp. |
+| 1b | `01b_biomass_unsurveyed.R` | **Groups the surveys can't measure.** Seagrass, macroalgae and corals: density × mapped area × occupancy. Plankton: COBALT model. Detritus: Pauly et al. 1993. Macrozooplankton: MAREDAT. Cetaceans, seabirds, turtles and monk seal: survey density × body mass. Bluefin tuna and swordfish: ICCAT. Some FGs are left for Ecopath to estimate (EE = 0.95). |
+| 2 | `02_fisheries.R` | **Catch, landings, discards, effort and F** by country, fleet and FG. Catch from GFCM, STECF FDI and Sea Around Us; effort from FishMIP; plus ICCAT; technology creep applied to effort. |
+| 3 | `03_pbqb-traits.R` | **P/B and Q/B** per FG from FishBase/SeaLifeBase traits and empirical equations. |
+| 4 | `04_diets.R` | **Diet matrix.** Sources in order: Mediterranean metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase → literature fallback (`diet_literature_fallback.csv`). FG order follows the FG table. |
+| 5 | `05_validation.R` | **Validation.** Compares with the 1995 Western Med model and runs the EwE plausibility checks (P/Q, diet sums, cannibalism). Writes one summary table and one PDF of all plots. |
 
-`scripts/run_pipeline_demo.R` sources all four (1-4) in order, with example config for both the West Med default region and a custom region.
+Every method, equation, assumption and reference is in `scripts/medbs_pipeline_methodology.qmd`.
 
-## Setup
+## Main options
 
-### 1. Get the data
+Set these at the top of `scripts/run_pipeline_demo.R`, or on the interactive page. Every option has a comment next to it in the script.
 
-You need read access to the shared external data folder (pCloud: "EwE Western Med 2026") - `FG_WMed_2026.csv` and the `fisheries/` subfolders (GFCM, FDI, SAU, Morocco_Algeria, RousseauEtAl2023, FishMIP, STAR_RAMLegacy, ICCAT). This data isn't part of the repo - request access from whoever administers the shared pCloud folder.
+| Option | Default | Meaning |
+|---|---|---|
+| `MODEL_GSAS` | `1:12` | GSAs in the model area. A subset filters area, survey data and catch countries together. |
+| `MODEL_AREA_BASIS` | `"whole_gsa"` | `"whole_gsa"` = coast to bottom; `"medits_10_800"` = MEDITS 10–800 m strata only. |
+| `YEAR_ECOPATH` / `TS_YEARS` | `1994:1996` / `1995:2023` | Ecopath baseline / Ecosim years. |
+| `ECOPATH_B_FILL_MODE`, `ECOPATH_B_FILL_YEARS` | `"window_mean"`, `1995:2000` | FGs with no biomass in the Ecopath years take this mean; "Expanding" FGs get 0.00001. |
+| `STOCK_ASSESSMENT_SOURCE` | `"GFCM"` | `"GFCM"` = the newest GFCM Stock Assessment Forms, downloaded from the GFCM website and read automatically (check `biomass/gfcm_saf_parse_REVIEW.csv`); `"RAM"` = RAM Legacy. `GFCM_SAF_UPDATE = FALSE` reuses the last download. |
+| `DROP_OUTLIERS` | `TRUE` | Remove flagged outlier hauls. |
+| `FG_SPECIES_FILE` | `data/FG_WMed_2026.csv` | Species → FG table. |
+| `AREA_MODE` (custom region) | `"westmed"` | `"custom"` with `CUSTOM_AREA_TYPE = "shapefile"` or `"bbox"`. Runs step 1 only; outputs go to `out_dir/<AREA_NAME>/`. |
+| `PLOT_DPI` | `300` | Resolution of every PNG. |
 
-`ewe_group_table.csv` is NOT needed - `04_diets.R` builds that table itself automatically (group_number/group_name from the FG reference `01_biomass.R` already writes; is_predator defaults to TRUE for every FG except Detritus/Discards and primary producers - phytoplankton, Posidonia/seagrass, macroalgae, Cymodocea). It only matters as an optional override if you ever want to manually correct `is_predator` for a specific FG.
+## First run
 
-### 2. Install R packages
+Some sources are downloaded once and cached; later runs reuse the cache.
 
-```r
-source("scripts/install_packages.R")
+| What | Size | Used by | Notes |
+|---|---|---|---|
+| AquaMaps database (`aquamapsdata`) | ~2 GB download, ~10 GB unpacked | 01, 01b | depth suitability for the pseudo-strata and habitat depth |
+| NOAA ETOPO bathymetry (`marmap`) | small, per area | 01, 01b | stratum and habitat depths; needs internet |
+| FishBase / SeaLifeBase (`rfishbase`) | small | 01, 03, 04 | taxonomy, traits, diets |
+| ISIMIP3a COBALT plankton fields | hundreds of MB | 01b | plankton and primary production |
+| EUSeaMap 2025 geodatabase | > 1 GB | 01b | put it in `data/Complementary data/EUSeaMap_2025/`; areas are cached after the first read |
+| GFCM Stock Assessment Forms (PDF) | ~1 MB each, ~70 stocks | 01b, 02 | newest SAF per stock, cached in `data/fisheries/GFCM_SAF/pdf/`; needs `pdftools` |
+| Copernicus Marine (optional) | – | 01b | needs a free account; you are prompted for your own login. Credentials are never stored in the code. |
+
+The packages that must come from GitHub (`rfishbase`, `duckdbfs`, `FishLife`) are installed by `install_packages.R`.
+
+## Data in the pCloud folder
+
+The main inputs, under `EwE Western Med 2026/data/`:
+
+- `FG_WMed_2026.csv`: species → functional groups (80 FGs).
+- `Medits_Medias_JRC2026/`: MEDITS and MEDIAS survey data.
+- `fisheries/`: GFCM, FDI, Sea Around Us, FishMIP, ICCAT, RousseauEtAl2023, STAR_RAMLegacy, GFCM_SAF.
+- `Complementary data/`: reference tables with a citation on every row. Includes habitat biomass, megafauna, unit conversions, diet tables and literature fallbacks.
+- `diet/`: metaweb and MAISHA files.
+- `WMed_EwE.xlsx`: the 1995 Western Med model, used for validation.
+
+## Outputs (under `out_dir`)
+
 ```
-
-This installs every plain CRAN package the scripts use, plus three packages that **must** come from GitHub rather than CRAN (`rfishbase`, `duckdbfs`, `FishLife`) - the CRAN releases of the first two are missing exports `03_pbqb-traits.R` requires and it will `stop()` with an install command if it detects the wrong build. Restart R after this script runs.
-
-### 3. Configure your paths
-
+ecopath_ecosim_inputs.xlsx   # the EwE workbook
+biomass/ fisheries/ pbqb-traits/ diet/ validation/   # CSVs of each step, incl. *_REVIEW.csv tables to check
+plots/                       # PNGs by step
+validation_summary_ALL.csv   # every check in one table
+validation_plots_ALL.pdf     # every plot in one file
+logs/                        # one log per script run
 ```
-cp config.R.example config.R
-```
-
-Edit `config.R` to point at your own:
-- `out_dir` - any writable empty folder (the pipeline creates every subfolder it needs)
-- `pcloud_dir` - your local copy/sync of the shared data folder from step 1
-- `git_dir` - this repo's own local clone
-
-`config.R` is gitignored - it's personal, never committed, so everyone running this keeps their own paths without colliding in git history.
-
-### 4. Run
-
-Open `scripts/run_pipeline_demo.R` in RStudio (with the `WMed_EwE.Rproj` project open, so the working directory is the repo root where `config.R` lives) and hit Source, or:
-
-```r
-source("scripts/run_pipeline_demo.R")
-```
-
-It automatically picks up `config.R` if present (warns and falls back to Daniel's own hardcoded paths if not - create your `config.R` first). `RUN_MODE` at the top switches between the West Med default region/years and a custom-region example (edit that block for e.g. a different set of GSAs).
-
-Every step fails fast with a clear message if `out_dir`/`pcloud_dir`/`git_dir` don't exist, or if `git_dir/scripts/` is missing one of the required files - see below.
 
 ## Repository structure
 
 ```
 scripts/
-  01_biomass.R
-  02_fisheries.R
-  03_pbqb-traits.R
-  04_diets.R
-  05_validation.R
-  03b_ecobase.R                          # sourced by 01/03/04 - EcoBase literature PB/QB, biomass, and diet-matrix fallbacks
-  lib_survey_fg_density_functions.R      # shared workbook-writing helpers
-  lib_worms_taxonomy_lookup.R            # sourced by 01 - WoRMS taxonomy lookup
-  lib_aquamaps_depth_extension.R         # optional - only if APPLY_AQUAMAPS_DEPTH_ADJUSTMENT <- TRUE
-  lib_cmems_phytoplankton_biomass.R      # copernicusmarine CLI/credential helpers + MedBFM phytoplankton fallback
-  lib_satellite_phytoplankton_biomass.R  # optional - phytoplankton biomass fallback
-  run_pipeline_demo.R
+  run_pipeline_demo.R              # runs steps 1-5; all options
+  wmed_paths.R                     # finds git_dir, pcloud_dir, out_dir on any computer
   install_packages.R
-  additional/                            # one-off helper scripts, not part of the pipeline run
-config.R.example
-config.R          # your own, gitignored - not in the repo
-.gitignore
+  01_biomass.R  01b_biomass_unsurveyed.R  02_fisheries.R  03_pbqb-traits.R  04_diets.R  05_validation.R
+  03b_ecobase.R                    # EcoBase fallbacks
+  lib_*.R                          # shared functions (survey density, AquaMaps, FishBase diets, plankton, taxonomy)
+  medbs_pipeline_methodology.qmd   # interactive page + full method documentation
+  references.bib, ieee.csl        # every reference of the pipeline; the page numbers them [1], [2]... in order of citation
+  gsa_boundaries_westmed.geojson   # GSA 1-12 polygons for the page map
+  additional/                      # one-off helpers and backups, not run by the pipeline
+config.R            # Daniel's paths (skipped where they don't exist)
+config.local.R      # your paths, written for you, git-ignored
+ewe_infography.jpg  # workflow figure
+ewe_infography_references.md     # references by block of the workflow figure
 ```
 
-All six required `scripts/` files above (`03b_ecobase.R`, `lib_worms_taxonomy_lookup.R`, `05_validation.R` included) need to exist in `git_dir/scripts/` before running - `01_biomass.R`, `03_pbqb-traits.R`, and `04_diets.R` `source()` the first two unconditionally, so a missing file crashes the run the moment that step starts, even if the feature it enables is turned off.
+## Known limitations
 
-## Output layout (under `out_dir`)
+- The survey density of GSAs 1, 2 and 5–11 is applied to the unsurveyed GSAs 3, 4 and 12.
+- Several groups rest on literature values from one site or on surveys from 2011–2019 (flagged as temporal mismatches in the review tables).
+- The GFCM fleet register file is not parsed correctly yet. The vessel-based fleet split for Morocco, Algeria and Tunisia falls back to the GFCM fleet taxonomy or Sea Around Us.
+- The literature diet fallback for corals and gorgonians, meso- and microzooplankton and suprabenthos has no proportions yet, so those three FGs have no diet until it is filled.
+- Package versions are not pinned (no `renv` lockfile yet).
 
-```
-ecopath_ecosim_inputs.xlsx     # shared workbook - every step writes/trims its own sheets into this
-biomass/                       # Step 1's CSVs (species density, biomass proportions, taxonomy)
-fisheries/                     # Step 2's CSVs
-plots/
-  biomass/                     # Step 1's diagnostic plots
-  fisheries/                   # Step 2's diagnostic plots
-  pbqb-traits/                 # Step 3's final PB/QB-by-FG figures (FG_PB_QB_comparison*, F_by_fg, PQ_ratio_by_fg)
-  validation/                  # Cross-script QA/methods-comparison plots (Steps 1-3's own validation figures, plus Step 5 if run)
-  diets/                       # Step 4's diet-matrix heatmap
-fishbase_taxonomy_cache.rds    # auto-generated cache - delete to force a refresh
-worms_taxonomy_cache.rds       # auto-generated cache - delete to force a refresh
-```
+See the "Known limitations" section of the interactive page for the full list.

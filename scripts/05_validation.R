@@ -1072,6 +1072,97 @@ for (.k in c("Biomass", "Catch")) {
   }, error = function(e) { message("[05_validation.R plot] Ecosim ", .k, " vs old skipped - ", conditionMessage(e)); NULL })
 }
 
+## =================================================================
+## Extra checks (2026-10-21): F > 1, Ecosim time-series assessment,
+## unsurveyed FGs vs other models. Each writes a REVIEW csv, adds a row to
+## validation_summary_ALL.csv and, where useful, a page to the PDF.
+## =================================================================
+.add_summary_row <- function(check, file, n) {
+  validation_summary <<- rbindlist(list(validation_summary[check != ..check],
+    data.table(check = check, file = file, status = if (is.na(n)) "not found" else if (n == 0) "found, 0 rows (clean)" else paste0("found, ", n, " row(s) flagged"), n_rows = n)), fill = TRUE)
+}
+
+## (a) Fishing mortality above 1 (per year): F_f = (mean catch / A_model) / B_f,
+## Ecopath years (02_fisheries.R F_by_fg.csv). F > 1 means the catch is larger
+## than the biomass in a year - usually B too low or catch too high/assigned
+## to the wrong FG. Review, not an error.
+f_hi <- tryCatch({
+  fp <- file.path(out_dir, "fisheries", "F_by_fg.csv"); if (!file.exists(fp)) stop("F_by_fg.csv not found")
+  x <- fread(fp)[is.finite(F) & F > 1][order(-F)]
+  fwrite(x, file.path(csv_out_dir, "F_above_1_REVIEW.csv")); x
+}, error = function(e) { message("[05_validation.R] F > 1 check skipped - ", conditionMessage(e)); NULL })
+.add_summary_row("Fishing mortality above 1 (F_above_1_REVIEW.csv)", file.path(csv_out_dir, "F_above_1_REVIEW.csv"), if (is.null(f_hi)) NA_integer_ else nrow(f_hi))
+if (!is.null(f_hi) && nrow(f_hi)) message("[05_validation.R] F > 1 for ", nrow(f_hi), " FG(s): ", paste(sprintf("%s (%.2f)", f_hi$FG_name, f_hi$F), collapse = ", "))
+
+## (b) Time series assessment: every Ecosim_ts series (biomass B_, catch L_,
+## effort...) described by years with data, first/last year, longest gap,
+## coefficient of variation CV = sd/mean, and the largest year-to-year jump
+## max(x_t / x_t-1, x_t-1 / x_t). Flags: fewer than 5 years; gap > 5 years;
+## CV > 1; jump > 5x (possible spike or source change).
+ts_assess <- tryCatch({
+  if (!"Ecosim_ts" %in% wb_sheets) stop("new workbook has no Ecosim_ts sheet")
+  ts <- .read_ts_sheet(ECOPATH_WORKBOOK_PATH, "Ecosim_ts")[is.finite(value) & value > 0]
+  if (!nrow(ts)) stop("Ecosim_ts has no values")
+  a <- ts[order(Year), {
+    yrs <- Year; gaps <- diff(yrs) - 1
+    jump <- if (.N > 1) max(pmax(value[-1] / value[-.N], value[-.N] / value[-1])) else NA_real_
+    .(n_years = .N, first = min(yrs), last = max(yrs), longest_gap = if (.N > 1) max(gaps) else NA_real_,
+      CV = if (.N > 1) sd(value) / mean(value) else NA_real_, max_jump = jump)
+  }, by = .(type, target)]
+  a[, flag := trimws(paste(fifelse(n_years < 5, "few years;", ""), fifelse(!is.na(longest_gap) & longest_gap > 5, "long gap;", ""),
+                           fifelse(!is.na(CV) & CV > 1, "very variable (CV > 1);", ""), fifelse(!is.na(max_jump) & max_jump > 5, "jump > 5x;", "")))]
+  a[flag == "", flag := "ok"]
+  fwrite(a[order(flag == "ok", type, target)], file.path(csv_out_dir, "ecosim_ts_assessment_REVIEW.csv"))
+  list(a = a, ts = ts)
+}, error = function(e) { message("[05_validation.R] Time series assessment skipped - ", conditionMessage(e)); NULL })
+.add_summary_row("Ecosim time series assessment (ecosim_ts_assessment_REVIEW.csv)", file.path(csv_out_dir, "ecosim_ts_assessment_REVIEW.csv"),
+                 if (is.null(ts_assess)) NA_integer_ else ts_assess$a[flag != "ok", .N])
+validation_plots[["13_ecosim_ts_assessment"]] <- tryCatch({
+  if (is.null(ts_assess)) stop("no assessment")
+  d <- merge(ts_assess$ts, ts_assess$a[, .(type, target, flag)], by = c("type", "target"))
+  d[, series := paste(type, target)]
+  d[, series := factor(series, levels = rev(sort(unique(series))))]
+  ggplot(d, aes(Year, series, fill = flag != "ok")) + geom_tile() +
+    scale_fill_manual(values = c(`FALSE` = "grey55", `TRUE` = "firebrick"), labels = c("ok", "flagged")) +
+    labs(title = "Ecosim time series: years with data", subtitle = "Red = flagged (few years, gap > 5 years, CV > 1 or jump > 5x) - see ecosim_ts_assessment_REVIEW.csv",
+         x = NULL, y = NULL, fill = NULL) + theme_minimal(base_size = 6) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R plot] Time series assessment skipped - ", conditionMessage(e)); NULL })
+
+## (c) Unsurveyed FGs vs other models: this model's Ecopath_B (t WW/km2 of
+## model area) next to the old 1995 Western Med model and other
+## Mediterranean EwE models (validation_reference_tables/
+## unsurveyed_fg_other_models.csv - add rows as you find them). Values per
+## km2 depend on each model's area (a small coastal model has more seagrass
+## per km2), so the model area is shown with every value.
+other_cmp <- tryCatch({
+  ref_path <- file.path(VALIDATION_REFERENCE_DIR, "unsurveyed_fg_other_models.csv")
+  ref <- if (file.exists(ref_path)) fread(ref_path) else data.table()
+  ours <- comparison_dt[metric == "Biomass", .(FG_name, ours = new_value, old_1995 = old_value)]
+  ## Unsurveyed FG list: the one 01b writes (follows the FG file), else ref table FGs
+  ul <- file.path(out_dir, "biomass", "unsurveyed_fg_not_matched_REVIEW.csv")
+  unsurv <- unique(c(if (file.exists(ul)) fread(ul)[in_FG_file == TRUE & !grepl("^left for Ecopath", method), FG_name], ref$FG_name))
+  ours <- ours[FG_name %in% unsurv]
+  long <- rbindlist(list(
+    ours[, .(FG_name, model = "This model (GSAs 1-12)", B = ours, area_km2 = if (exists("NEW_MODEL_AREA_KM2")) NEW_MODEL_AREA_KM2 else NA_real_)],
+    ours[is.finite(old_1995), .(FG_name, model = "Old WMed 1995 model", B = old_1995, area_km2 = if (exists("OLD_MODEL_AREA_KM2")) OLD_MODEL_AREA_KM2 else 846002)],
+    if (nrow(ref)) ref[, .(FG_name, model = model, B = as.numeric(B_t_WW_km2), area_km2 = as.numeric(area_km2))]), fill = TRUE)
+  long <- long[is.finite(B) & B > 0]
+  long[, ratio_to_ours := B / long[model == "This model (GSAs 1-12)"][match(long$FG_name, FG_name), B]]
+  fwrite(long[order(FG_name, model)], file.path(csv_out_dir, "unsurveyed_fg_vs_other_models_REVIEW.csv")); long
+}, error = function(e) { message("[05_validation.R] Unsurveyed FGs vs other models skipped - ", conditionMessage(e)); NULL })
+.add_summary_row("Unsurveyed FGs vs other models (unsurveyed_fg_vs_other_models_REVIEW.csv)", file.path(csv_out_dir, "unsurveyed_fg_vs_other_models_REVIEW.csv"),
+                 if (is.null(other_cmp)) NA_integer_ else other_cmp[model != "This model (GSAs 1-12)" & (ratio_to_ours > 10 | ratio_to_ours < 0.1), .N])
+validation_plots[["14_unsurveyed_fg_vs_other_models"]] <- tryCatch({
+  if (is.null(other_cmp) || !nrow(other_cmp)) stop("no values")
+  d <- copy(other_cmp)[, lab := paste0(model, fifelse(is.finite(area_km2), paste0(" (", format(round(area_km2), big.mark = ","), " km2)"), ""))]
+  ggplot(d, aes(B, FG_name, colour = lab)) + geom_point(size = 2) + scale_x_log10() +
+    labs(title = "Unsurveyed FGs: this model vs other Mediterranean EwE models",
+         subtitle = "t WW/km2 of each model's own area (log scale) - a small coastal model has more seagrass/coastal FGs per km2; see unsurveyed_fg_vs_other_models_REVIEW.csv",
+         x = "Biomass (t WW/km2, log)", y = NULL, colour = NULL) + theme_minimal(base_size = 7) + theme(legend.position = "bottom")
+}, error = function(e) { message("[05_validation.R plot] Unsurveyed vs other models skipped - ", conditionMessage(e)); NULL })
+
+fwrite(validation_summary, file.path(csv_out_dir, "validation_summary_ALL.csv"))
+
 validation_plots[["01b_biomass_vs_old_model_by_fg"]] <- p_bio          # values side by side, same total tonnes (see .bio_pair_plot above)
 validation_plots[["01c_biomass_vs_old_model_as_published"]] <- p_bio_pub
 
