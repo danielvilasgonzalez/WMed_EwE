@@ -1988,6 +1988,12 @@ Because $P/B = M + F$, a large $F$ raises P/B and P/Q. For every FG with $F > 0$
 
 `validation_summary_ALL.csv` indexes every REVIEW file of 01–04: P/B, Q/B and GE plausibility; P/Q outside 0.05–0.3; diet column sums ≠ 1; cannibalism > 0.1 (EwE User Guide); missing diets; EcoBase evaluations; FGs without Ecopath_B; even species splits; temporal mismatches; fleet coverage; zero-catch FGs; unmatched old FG names.
 
+Three more checks are written by `05_validation.R` itself and added to the same summary:
+
+- **Fishing mortality above 1** (`F_above_1_REVIEW.csv`): FGs with $F = (C/A_{model})/B > 1$ in the Ecopath years, from `F_by_fg.csv`.
+- **Time series assessment** (`ecosim_ts_assessment_REVIEW.csv`, plot 13): for each Ecosim_ts series, the years with data, first and last year, longest gap, $CV = sd/\bar{x}$ and the largest year-to-year jump $\max(x_t/x_{t-1},\ x_{t-1}/x_t)$. Flags: fewer than 5 years, gap > 5 years, CV > 1, jump > 5×.
+- **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to the 1995 Western Med model [@wmed1995model] and other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv`, so far the Gulf of Lion model [@seyer2023] and the Port-Cros model [@valls2009; @valls2012], each with its own area (a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
+
 ### Zooplankton field check (block 11)
 
 Field reference: [@fernandez2023] — RADMED, Alborán to Balearic Sea, 2007–2017, Bongo 250 µm, daytime oblique tows 0–100 m: total zooplankton 2–17 mg DM/m³ (mean ≈ 10).
