@@ -3035,6 +3035,27 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
       }
     }
   }
+  ## ---- Cymodocea, macroalgae, gorgonians from several sites ------------
+  ## habitat_biomass_sites.csv: one row per site (Group, site, GSA, protected,
+  ## habitat, depth_m, value, unit, source, weight). Density_value of each
+  ## group = weighted mean of its sites, D = sum(w_i x value_i) / sum(w_i),
+  ## in the unit of that group's row (Cymodocea and macroalgae g DW/m2,
+  ## gorgonians g AFDM/m2). Weight 0 = left out (e.g. a coastal lagoon).
+  if (!exists("HABITAT_SITE_TABLE")) HABITAT_SITE_TABLE <- file.path(BENTHIC_REF_DIR, "habitat_biomass_sites.csv")
+  if (file.exists(HABITAT_SITE_TABLE)) {
+    hs <- fread(HABITAT_SITE_TABLE)[, `:=`(w = as.numeric(weight), v = as.numeric(value))][is.finite(w) & w > 0 & is.finite(v)]
+    for (g in unique(hs$Group)) {
+      hit <- tolower(trimws(hab_tab$Group)) == tolower(g)
+      if (!any(hit)) next
+      hg <- hs[Group == g]; D <- hg[, sum(w * v) / sum(w)]
+      message("[Habitat sites] ", g, ": ", nrow(hg), " site(s), weighted mean ", signif(D, 4), " ", hg$unit[1],
+              " (replaces ", signif(hab_tab$Density_value[hit][1], 4), ").")
+      hab_tab[hit, Density_value := D]
+      hab_tab[hit, Source_citation := paste0("Density_value = weighted mean of ", nrow(hg), " site value(s) in ", basename(HABITAT_SITE_TABLE),
+        " (", paste(sprintf("%s %s", hg$site, signif(hg$v, 4)), collapse = "; "), "). ", Source_citation)]
+    }
+  }
+
   ## ---- Posidonia leaf biomass from several Western Med meadows --------
   ## posidonia_leaf_biomass_sites.csv: one row per site x depth (site, GSA,
   ## protected, depth_m, leaf_biomass_g_dw_m2, sampled, source, weight).
