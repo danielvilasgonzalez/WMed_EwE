@@ -3484,17 +3484,41 @@ MEGAFAUNA_FG_SPECIES_WEIGHTS <- list(
     "Grampus griseus"     = 26006 * 400,
     "Ziphius cavirostris" = 2929 * 1200
   ),
-  ## Fallback only (see header comment) - species_lit_biomass drives this
-  ## FG directly in normal operation. Zotier/Thibault/Guyot 1992
-  ## Mediterranean-wide breeding-pair counts x 2 (breeding adults only)
-  ## x typical adult body mass; Puffinus yelkouan deliberately uses the
-  ## lower "known" floor, not a higher at-sea-count-based estimate
-  ## (Bourgeois & Vidal warn some such estimates are overestimated 5-10x).
+  ## Seabirds (2026-10-21): the SAME source as the FG totals, Pettex et al.
+  ## 2017 (Deep-Sea Res. II 141:74-85, Table 3, SAMM aerial survey, NW
+  ## Mediterranean), individuals per seabird group, mean of winter 2011/12
+  ## and summer 2012; Scopoli's shearwater x 3.89 detection correction
+  ## (Lambert et al. 2024), as for the FG total. A group holding several
+  ## FG species is split equally among them (ASSUMPTION: e.g. Yelkouan vs
+  ## Balearic shearwater, yellow-legged vs Audouin's gull). Weight =
+  ## individuals x body mass (kg); body masses are approximate typical adult
+  ## masses, NOT from a cited source - replace with Dunning (2008) values.
+  ## Replaces the Zotier, Thibault & Guyot 1992 breeding-pair weights
+  ## (breeding adults only, Mediterranean-wide, and no value for Balearic
+  ## shearwater, which therefore got 0 %).
   "Pelagic/Offshore seabirds" = c(
-    "Calonectris diomedea" = 66500 * 2 * 0.650,  # Zotier/Thibault/Guyot 1992 midpoint pairs x 2 x typical adult mass (kg)
-    "Puffinus yelkouan"    = 18000 * 2 * 0.400,  # "known" floor, deliberately not the high end (Bourgeois & Vidal overestimate warning)
-    "Hydrobates pelagicus" = 11750 * 2 * 0.028   # Zotier/Thibault/Guyot 1992 midpoint pairs x 2 x typical adult mass (kg)
+    "Calonectris diomedea"  = (111 + 13074) / 2 * 3.89 * 0.560,     # large shearwaters, Lambert-corrected
+    "Puffinus yelkouan"     = (17316 + 19031) / 2 / 2 * 0.400,      # small shearwaters, half
+    "Puffinus mauretanicus" = (17316 + 19031) / 2 / 2 * 0.520,      # small shearwaters, half
+    "Hydrobates pelagicus"  = (552 + 2590) / 2 * 0.028              # storm petrels
+  ),
+  "Coastal/inshore seabirds" = c(
+    "Larus michahellis"         = (51944 + 31845) / 2 / 2 * 1.100,  # all large-sized gulls (grey-backed + immature/unidentified), half
+    "Larus audouinii"           = (51944 + 31845) / 2 / 2 * 0.650,  # all large-sized gulls, half
+    "Larus ridibundus"          = (42693 + 983) / 2 / 3 * 0.280,    # hooded gulls, one third
+    "Larus melanocephalus"      = (42693 + 983) / 2 / 3 * 0.260,
+    "Larus genei"               = (42693 + 983) / 2 / 3 * 0.280,
+    "Sterna hirundo"            = (2149 + 4571) / 2 / 4 * 0.125,    # terns, one quarter
+    "Sterna sandvicensis"       = (2149 + 4571) / 2 / 4 * 0.240,
+    "Sterna albifrons"          = (2149 + 4571) / 2 / 4 * 0.055,
+    "Sterna nilotica"           = (2149 + 4571) / 2 / 4 * 0.230,
+    "Phalacrocorax aristotelis" = (1110 + 1001) / 2 / 2 * 1.800,    # cormorants, half
+    "Phalacrocorax carbo"       = (1110 + 1001) / 2 / 2 * 2.300
   )
+)
+MEGAFAUNA_FG_SPECIES_BASIS <- c(
+  "Pelagic/Offshore seabirds" = "at-sea abundance by seabird group (Pettex et al. 2017, Table 3; Scopoli's x 3.89, Lambert et al. 2024) x approximate body mass; species sharing a group split equally",
+  "Coastal/inshore seabirds"  = "at-sea abundance by seabird group (Pettex et al. 2017, Table 3) x approximate body mass; species sharing a group split equally"
 )
 for (fg_nm in names(MEGAFAUNA_FG_SPECIES_WEIGHTS)) {
   weights <- MEGAFAUNA_FG_SPECIES_WEIGHTS[[fg_nm]]
@@ -3527,7 +3551,7 @@ for (fg_nm in names(MEGAFAUNA_FG_SPECIES_WEIGHTS)) {
   }
   total_weight <- sum(weights[matched_species])
   is_single_target <- length(matched_species) > 0 && all(weights[matched_species] %in% c(0, 1)) && total_weight == 1
-  basis_label <- if (is_single_target) {
+  basis_label <- if (fg_nm %in% names(MEGAFAUNA_FG_SPECIES_BASIS)) MEGAFAUNA_FG_SPECIES_BASIS[[fg_nm]] else if (is_single_target) {
     "literature-targeted species (this FG's cited biomass figure is documented as specifically measuring this species - not a combined-species average)"
   } else {
     "relative-abundance-weighted (basin-wide ACCOBAMS Survey Initiative abundance x typical body mass - a documented approximation, not a Western-Med-specific measurement; see code comment for citation/caveats)"
