@@ -4282,18 +4282,21 @@ message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Y
 ## convention as every other optional source in this script (e.g.
 ## MOROCCO_ALGERIA_DIR above).
 ## =================================================================
-## Stock assessments. Default "RAM": combined_medbs_star_ramlegacy.csv
-## (built by combine_STAR_RAMlegacy.R; today every row comes from RAM
-## Legacy, whose Mediterranean stocks are the STECF/GFCM assessments).
-## "GFCM" reads data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv,
-## transcribed by hand from GFCM Stock Assessment Forms (one row per stock
-## x year, with reference + url).
-if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
-STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) file.path(pcloud_dir, "data/fisheries/GFCM_SAF") else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "gfcm_saf_stock_assessments.csv" else "combined_medbs_star_ramlegacy.csv")
-message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
+## Stock assessments (STOCK_ASSESSMENT_SOURCE, see 01b_biomass_unsurveyed.R):
+## "GFCM" (default) reads gfcm_saf_stock_assessments_ALL.csv, written by
+## 01b from the newest GFCM SAFs on the GFCM website (stocks in use only);
+## if 01 has not built it yet, RAM Legacy is used. "RAM":
+## combined_medbs_star_ramlegacy.csv (RAM Legacy).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+.gfcm_all <- file.path(pcloud_dir, "data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv")
+.sa_gfcm <- identical(STOCK_ASSESSMENT_SOURCE, "GFCM") && file.exists(.gfcm_all)
+STAR_RAMLEGACY_DIR <- if (.sa_gfcm) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- if (.sa_gfcm) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+message("[Stock assessments] source = ", if (.sa_gfcm) "GFCM" else "RAM", " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
-  fread(star_ram_path, encoding = "UTF-8")
+  .sa <- fread(star_ram_path, encoding = "UTF-8")
+  if ("use_for_biomass" %in% names(.sa)) .sa <- .sa[use_for_biomass %in% TRUE]
+  .sa
 } else {
   message("\n[STAR/RAM cross-check] '", star_ram_path, "' not found - skipping (run combine_STAR_RAMlegacy.R",
           " first and place its output under STAR_RAMLEGACY_DIR if you want this cross-check).")
@@ -7657,7 +7660,10 @@ validation_plots[["04_fleet_proportions"]] <- tryCatch({
 ## Algeria/Tunisia (effort_by_fleet, own "Country - gear" naming).
 validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
   eu3 <- if (nrow(effort_by_fleettype_eu3) > 0) {
-    effort_by_fleettype_eu3[, .(Country, Fleet = FleetType, Year, Effort = Effort_days, Source = effort_source)]  # standardize columns for the EU-3 effort source
+    ## days (FDI 2014+, hindcast before) x technology creep, so the plot shows effective effort
+    effort_by_fleettype_eu3[, .(Country, Fleet = FleetType, Year,
+                                Effort = Effort_days * tech_creep_multiplier(Country, Year, if ("Sector" %in% names(effort_by_fleettype_eu3)) Sector else NULL),
+                                Source = effort_source)]  # standardize columns for the EU-3 effort source
   } else data.table()
   mat <- if (nrow(effort_by_fleet) > 0) {
     ## effort_by_fleet has one row per Country x gear x
@@ -7677,8 +7683,8 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     ## still keeps Sector as its own column everywhere else in the
     ## pipeline, nothing upstream of this plot is touched.
     effort_by_fleet[!Country %in% c("Spain", "France", "Italy"),
-                    .(Effort = sum(nom_active_kWdays, na.rm = TRUE)),
-                    by = .(Country, Fleet = gear, Year)][, Source := "FishMIP nom_active"]
+                    .(Effort = sum(if ("nom_active_kWdays_effective" %in% names(effort_by_fleet)) nom_active_kWdays_effective else nom_active_kWdays, na.rm = TRUE)),
+                    by = .(Country, Fleet = gear, Year)][, Source := "FishMIP nom_active x technology creep"]  # the effort sent to Ecosim (creep applied; flat nominal effort after 2017 still rises)
   } else data.table()
   d <- rbindlist(list(eu3, mat), use.names = TRUE, fill = TRUE)  # combine both effort sources into one plotting table
   if (nrow(d) == 0) stop("no effort data available from either source")
@@ -7700,7 +7706,7 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     geom_line(linewidth = 0.4) +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey60", linewidth = 0.3) +
     facet_wrap(~ Country, scales = "free_y") +
-    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Each series divided by its own first available year (= 1). EU-3: FDI days (2014+) / SAU-hindcasted days (pre-2014). Morocco/Algeria/Tunisia: FishMIP nom_active",
+    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Effective effort (technology creep applied), each series divided by its first year (= 1). EU-3: FDI days (2014+) / hindcast (pre-2014) x creep. Morocco/Algeria/Tunisia: FishMIP kW x days (held flat after 2017, creep still applied)",
          x = NULL, y = "Effort (index, first year = 1)", color = "Fleet") +
     theme_minimal(base_size = 8) + theme(legend.position = "bottom")
 }, error = function(e) { message("[Validation plot 5] skipped - ", conditionMessage(e)); NULL })

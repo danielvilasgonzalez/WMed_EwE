@@ -58,7 +58,7 @@ Run in this order; each step reads files the earlier ones wrote. `run_pipeline_d
 
 | Step | Script | What it does |
 |---|---|---|
-| 1 | `01_biomass.R` (sources `01b_biomass_unsurveyed.R`) | **Biomass** from the MEDITS bottom-trawl and MEDIAS acoustic surveys. AquaMaps depth pseudo-strata cover 0–10 m and 800–3,785 m. Stock assessments are used for assessed single-species FGs and hake stanzas. Small pelagics are back-cast to 1994–96. Ecopath_B, Ecosim biomass series, FG_spp. |
+| 1 | `01_biomass.R` (sources `01b_biomass_unsurveyed.R`) | **Biomass** from the MEDITS bottom-trawl and MEDIAS acoustic surveys. AquaMaps depth pseudo-strata cover 0–10 m, 800–1000 m and 1000 m to the seafloor (3,785 m). Stock assessments are used for assessed single-species FGs and hake stanzas. Small pelagics are back-cast to 1994–96. Ecopath_B, Ecosim biomass series, FG_spp. |
 | 1b | `01b_biomass_unsurveyed.R` | **Groups the surveys can't measure.** Seagrass, macroalgae and corals: density × mapped area × occupancy. Plankton: COBALT model. Detritus: Pauly et al. 1993. Macrozooplankton: MAREDAT. Cetaceans, seabirds, turtles and monk seal: survey density × body mass. Bluefin tuna and swordfish: ICCAT. Some FGs are left for Ecopath to estimate (EE = 0.95). |
 | 2 | `02_fisheries.R` | **Catch, landings, discards, effort and F** by country, fleet and FG. Catch from GFCM, STECF FDI and Sea Around Us; effort from FishMIP; plus ICCAT; technology creep applied to effort. |
 | 3 | `03_pbqb-traits.R` | **P/B and Q/B** per FG from FishBase/SeaLifeBase traits and empirical equations. |
@@ -77,7 +77,7 @@ Set these at the top of `scripts/run_pipeline_demo.R`, or on the interactive pag
 | `MODEL_AREA_BASIS` | `"whole_gsa"` | `"whole_gsa"` = coast to bottom; `"medits_10_800"` = MEDITS 10–800 m strata only. |
 | `YEAR_ECOPATH` / `TS_YEARS` | `1994:1996` / `1995:2023` | Ecopath baseline / Ecosim years. |
 | `ECOPATH_B_FILL_MODE`, `ECOPATH_B_FILL_YEARS` | `"window_mean"`, `1995:2000` | FGs with no biomass in the Ecopath years take this mean; "Expanding" FGs get 0.00001. |
-| `STOCK_ASSESSMENT_SOURCE` | `"RAM"` | `"RAM"` = GFCM/STECF assessments via RAM Legacy; `"GFCM"` = hand-transcribed GFCM assessment forms (`data/fisheries/GFCM_SAF/`). |
+| `STOCK_ASSESSMENT_SOURCE` | `"GFCM"` | `"GFCM"` = the newest GFCM Stock Assessment Forms, downloaded from the GFCM website and read automatically (check `biomass/gfcm_saf_parse_REVIEW.csv`); `"RAM"` = RAM Legacy. `GFCM_SAF_UPDATE = FALSE` reuses the last download. |
 | `DROP_OUTLIERS` | `TRUE` | Remove flagged outlier hauls. |
 | `FG_SPECIES_FILE` | `data/FG_WMed_2026.csv` | Species → FG table. |
 | `AREA_MODE` (custom region) | `"westmed"` | `"custom"` with `CUSTOM_AREA_TYPE = "shapefile"` or `"bbox"`. Runs step 1 only; outputs go to `out_dir/<AREA_NAME>/`. |
@@ -94,6 +94,7 @@ Some sources are downloaded once and cached; later runs reuse the cache.
 | FishBase / SeaLifeBase (`rfishbase`) | small | 01, 03, 04 | taxonomy, traits, diets |
 | ISIMIP3a COBALT plankton fields | hundreds of MB | 01b | plankton and primary production |
 | EUSeaMap 2025 geodatabase | > 1 GB | 01b | put it in `data/Complementary data/EUSeaMap_2025/`; areas are cached after the first read |
+| GFCM Stock Assessment Forms (PDF) | ~1 MB each, ~70 stocks | 01b, 02 | newest SAF per stock, cached in `data/fisheries/GFCM_SAF/pdf/`; needs `pdftools` |
 | Copernicus Marine (optional) | – | 01b | needs a free account; you are prompted for your own login. Credentials are never stored in the code. |
 
 The packages that must come from GitHub (`rfishbase`, `duckdbfs`, `FishLife`) are installed by `install_packages.R`.
@@ -131,6 +132,7 @@ scripts/
   03b_ecobase.R                    # EcoBase fallbacks
   lib_*.R                          # shared functions (survey density, AquaMaps, FishBase diets, plankton, taxonomy)
   medbs_pipeline_methodology.qmd   # interactive page + full method documentation
+  references.bib, ieee.csl        # every reference of the pipeline; the page numbers them [1], [2]... in order of citation
   gsa_boundaries_westmed.geojson   # GSA 1-12 polygons for the page map
   additional/                      # one-off helpers and backups, not run by the pipeline
 config.R            # Daniel's paths (skipped where they don't exist)

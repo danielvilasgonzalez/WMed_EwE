@@ -25,7 +25,7 @@ cran_pkgs <- c(
   ## skip-with-message if you choose not to install them:
   "TropFishR", "ggrepel", "remotes", "devtools",
   ## used by 01b, 04, the interactive page and the helpers
-  "ncdf4", "png", "xml2", "zip", "tibble", "rlang", "worrms", "emodnet.wfs",
+  "ncdf4", "png", "xml2", "pdftools", "zip", "tibble", "rlang", "worrms", "emodnet.wfs",
   "rmapshaper", "getPass", "rstudioapi", "shiny", "knitr", "rmarkdown"
 )
 new_cran <- cran_pkgs[!cran_pkgs %in% installed.packages()[, "Package"]]

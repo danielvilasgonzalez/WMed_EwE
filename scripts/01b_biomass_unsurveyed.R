@@ -79,7 +79,9 @@
 ##     Oceanogr. 34:1545-1562.
 ##   - Phyto size split 0.45 <20 um / 0.55 >20 um: Delgado, Latasa &
 ##     Estrada 1992, J. Plankton Res. 14:753-771 (one February cruise).
-##   - Phyto C:WW 0.16 +/- 0.03: Yacobi & Zohary 2010.
+##   - Phyto C:WW 1:9 (0.111; Pauly & Christensen 1995, Nature 374:255-257,
+##     the same conversion as detritus). Was 0.16 cited to Yacobi & Zohary
+##     2010, a Lake Kinneret carbon:chlorophyll study (wrong source; fixed 2026-10-21).
 ##   - Zooplankton: meso+micro 0.70 of total (Fernandez de Puelles et al.
 ##     2014); micro/meso 0.35/0.65 and C:WW micro 0.07 (Fenchel & Finlay
 ##     1983), meso/macro 0.09 (Kiorboe 2013) - as in zoo_phyto.R.
@@ -218,18 +220,35 @@
 
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
-## Stock assessments. Default "RAM": combined_medbs_star_ramlegacy.csv
-## (built by combine_STAR_RAMlegacy.R; today every row comes from RAM
-## Legacy, whose Mediterranean stocks are the STECF/GFCM assessments).
-## "GFCM" reads data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv,
-## transcribed by hand from GFCM Stock Assessment Forms (one row per stock
-## x year, with reference + url).
-if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
-STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) file.path(pcloud_dir, "data/fisheries/GFCM_SAF") else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "gfcm_saf_stock_assessments.csv" else "combined_medbs_star_ramlegacy.csv")
+## Stock assessments (STOCK_ASSESSMENT_SOURCE):
+## "GFCM" (default since 2026-10-21): the newest GFCM Stock Assessment
+##   Forms, listed and downloaded from the GFCM website on every run and
+##   read automatically (lib_gfcm_saf_online.R; PDFs cached in
+##   data/fisheries/GFCM_SAF/pdf/). Result:
+##   data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv (only rows
+##   with use_for_biomass = TRUE are used: non-overlapping stocks); what was
+##   read per stock: gfcm_saf_parse_REVIEW.csv. Stocks with no readable SAF
+##   table take the hand-transcribed gfcm_saf_stock_assessments.csv and then
+##   RAM Legacy (GFCM_SAF_FILL_FROM_RAM). GFCM_SAF_UPDATE = FALSE reuses the
+##   last download. Offline with no earlier download: falls back to "RAM".
+## "RAM": combined_medbs_star_ramlegacy.csv (built by
+##   combine_STAR_RAMlegacy.R; RAM Legacy, whose Mediterranean stocks are
+##   the STECF/GFCM assessments, usually a few years behind GFCM).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+if (!exists("GFCM_SAF_UPDATE", envir = .GlobalEnv, inherits = FALSE)) GFCM_SAF_UPDATE <- TRUE
+if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) {
+  source(file.path(git_dir, "scripts/lib_gfcm_saf_online.R"), local = TRUE)
+  .gfcm_all <- update_gfcm_saf_assessments(pcloud_dir, csv_out_dir, FILTER_AREAS,
+                                           asfis_file = if (exists("asfis_file")) asfis_file else NULL, update = GFCM_SAF_UPDATE)
+  if (is.null(.gfcm_all)) STOCK_ASSESSMENT_SOURCE <- "RAM"
+}
+STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
 message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
-  fread(star_ram_path, encoding = "UTF-8")
+  .sa <- fread(star_ram_path, encoding = "UTF-8")
+  if ("use_for_biomass" %in% names(.sa)) .sa <- .sa[use_for_biomass %in% TRUE]   # GFCM: non-overlapping stocks only
+  .sa
 } else {
   message("\n[Stock-assessment biomass] '", star_ram_path, "' not found - skipping (run",
           " combine_STAR_RAMlegacy.R first and place its output under STAR_RAMLEGACY_DIR",
@@ -399,7 +418,7 @@ if (nrow(star_ram_combined) > 0) {
   ## star_ram_combined's own "source" column (which GFCM/STAR/RAM Legacy
   ## assessment) - embed it instead of a generic label with no way to
   ## trace which specific assessment it came from.
-  stock_assessment_fg_year[, stock_assessment_source := paste0(if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "stock assessment (GFCM SAF): " else "stock assessment (RAM Legacy Database): ", star_sources)]
+  stock_assessment_fg_year[, stock_assessment_source := paste0(if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "stock assessment (GFCM SAF, read from the GFCM website): " else "stock assessment (RAM Legacy Database): ", star_sources)]
   fwrite(stock_assessment_fg_year, file.path(csv_out_dir, "stock_assessment_biomass_by_fg.csv"))
   message("[Stock-assessment biomass] stock_assessment_fg_year: ", nrow(stock_assessment_fg_year),
           " FG x Year row(s) (", uniqueN(stock_assessment_fg_year$FG_num), " FG(s)) - written to",
@@ -2021,8 +2040,8 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
 ##   phytoplankton: small (<20 um) 0.45 / large (>20 um) 0.55 (Delgado,
 ##     Latasa & Estrada 1992, J Plankton Res 14:753-771, Catalan front,
 ##     Feb 1990 - FLAGGED: a single winter cruise; the stratified-season
-##     community is more pico/nano-dominated); C:WW 0.16 +/- 0.03
-##     (Yacobi & Zohary 2010)
+##     community is more pico/nano-dominated); C:WW 1:9 = 0.111
+##     (Pauly & Christensen 1995)
 ##   zooplankton: meso+micro 0.70 / macro 0.30 (Fernandez de Puelles et al. 2014);
 ##     within meso+micro: micro 0.35 (C:WW 0.07, Fenchel & Finlay 1983),
 ##     meso 0.65 (C:WW 0.09, Kiorboe 2013); macro C:WW 0.09 (Kiorboe 2013)
@@ -2031,7 +2050,7 @@ if (length(ECOBASE_LOWTROPHIC_KEYWORDS) > 0 && ENABLE_ECOBASE_BIOMASS_QUERY) {
 ##   row yet). Cached as csv_out_dir/cmems_plankton_biomass_by_fg.csv.
 ## =================================================================
 PLANKTON_ALLOCATION <- list(
-  small_phyto_fraction = 0.45, large_phyto_fraction = 0.55, phyto_C_per_WW = 0.16,
+  small_phyto_fraction = 0.45, large_phyto_fraction = 0.55, phyto_C_per_WW = 1 / 9,
   meso_micro_fraction = 0.70, macro_zoo_fraction = 0.30,
   micro_within_meso_micro = 0.35, meso_within_meso_micro = 0.65,
   microzoo_C_per_WW = 0.07, mesozoo_C_per_WW = 0.09, macrozoo_C_per_WW = 0.09
@@ -2303,7 +2322,7 @@ fetch_cmems_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                                                            ": ", signif(phyto_check_tC_km2, 3), " t C/km2 vs ", signif(phyto_tC_km2, 3), "]") else "",
                  "; PROVISIONAL ",
                  a$small_phyto_fraction, "/", a$large_phyto_fraction, " small(<20 um)/large(>20 um) split (Delgado, Latasa & Estrada 1992); C:WW ",
-                 a$phyto_C_per_WW, " +/- 0.03 (Yacobi & Zohary 2010)"), 2),
+                 round(a$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"), 2),
       paste0("Copernicus GLOBAL_MULTIYEAR_BGC_001_033 (SEAPODYM LMTL), ", zoo_dataset_id, ", zooc, ",
              paste(range(zoo_proxy_years), collapse = "-"), " mean as proxy for the 1994-1996 baseline (product starts",
              " 1998); PROVISIONAL ", a$meso_micro_fraction, " of total zooplankton (Fernandez de Puelles et al. 2014),",
@@ -2409,7 +2428,7 @@ fetch_cmems_detritus_biomass <- function(out_dir, force_refresh = FALSE,
 ##   (mol C m-2 s-1, -> primary production for the detritus equation).
 ##   x 12.011 g C/mol -> g C m-2 (= t C km-2), 1995 mean, area-weighted
 ##   over the model domain (.model_domain_mask). C:WW as PLANKTON_ALLOCATION
-##   (phyto 0.16 Yacobi & Zohary 2010; micro 0.07 Fenchel & Finlay 1983;
+##   (phyto 1:9 Pauly & Christensen 1995; micro 0.07 Fenchel & Finlay 1983;
 ##   meso 0.09 Kiorboe 2013).
 ##   Macrozooplankton: COBALT's large zooplankton is inside zmeso and not
 ##   published separately -> no Ecopath_B (estimated by Ecopath from EE)
@@ -2527,9 +2546,9 @@ fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
                 " annual mean of that year, vertically integrated, mean over the model domain (model GSAs x MEDITS strata depth range)")
   out <- rbindlist(list(
     w[, .(Year, TargetGroup = "LargePhytoplankton", Biomass_tC_km2 = diat, Biomass_t_km2 = diat / alloc$phyto_C_per_WW,
-          Source_citation = paste0(src, "; phydiat-vint (diatoms); C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+          Source_citation = paste0(src, "; phydiat-vint (diatoms); C:WW ", round(alloc$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"))],
     w[, .(Year, TargetGroup = "SmallPhytoplankton", Biomass_tC_km2 = picodiaz, Biomass_t_km2 = picodiaz / alloc$phyto_C_per_WW,
-          Source_citation = paste0(src, "; phypico-vint + phydiaz-vint; C:WW ", alloc$phyto_C_per_WW, " (Yacobi & Zohary 2010)"))],
+          Source_citation = paste0(src, "; phypico-vint + phydiaz-vint; C:WW ", round(alloc$phyto_C_per_WW, 3), " (1:9, Pauly & Christensen 1995)"))],
     w[, .(Year, TargetGroup = "MesoMicroZooplankton", Biomass_tC_km2 = micro + meso * (1 - f_macro),
           Biomass_t_km2 = micro / alloc$microzoo_C_per_WW + meso * (1 - f_macro) / alloc$mesozoo_C_per_WW,
           Source_citation = paste0(src, "; zmicro-vint (C:WW ", alloc$microzoo_C_per_WW, ", Fenchel & Finlay 1983) + zmeso-vint",
