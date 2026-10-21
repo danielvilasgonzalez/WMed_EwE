@@ -2583,6 +2583,19 @@ siler_pb <- function(longevity, surrogate_type) {
 MAMMAL_SURROGATE_DEFAULT <- read_pbqb_reference("mammal_pb_surrogate_type.csv",
                                                 required_cols = c("Family", "surrogate_type"))
 
+## Body mass for the homeotherm Q/B equations (Innes et al. 1987 / Trites
+## et al. 1997; Nilsson & Nilsson 1976). Both want the MEAN individual
+## mass; FishBase/SeaLifeBase only give the maximum (MaxWeight), which
+## lowers Q/B (W^-0.2 and W^-0.15: twice the mass, Q/B 13% and 10% lower).
+## pbqb_reference_tables/homeotherm_mean_body_mass.csv (Species,
+## MeanWeight_g, Source) gives mean masses from the literature; species
+## not in it keep MaxWeight, flagged in QB_method. Fill it from Trites &
+## Pauly 1998 (marine mammals) and Dunning 2008 (birds).
+.mean_w_tab <- tryCatch(fread(file.path(PBQB_REFERENCE_DIR, "homeotherm_mean_body_mass.csv"))[!is.na(MeanWeight_g)],
+                        error = function(e) data.table(Species = character(0), MeanWeight_g = numeric(0)))
+.body_w_g <- function(species, max_w) { m <- .mean_w_tab$MeanWeight_g[match(species, .mean_w_tab$Species)]; fifelse(is.finite(m), m, max_w) }
+.body_w_lab <- function(species) fifelse(species %in% .mean_w_tab$Species, " (mean body mass)", " (MAX body mass - Q/B too low; add mean mass to homeotherm_mean_body_mass.csv)")
+
 calc_mammal <- function(out) {
   out <- merge(out, MAMMAL_SURROGATE_DEFAULT, by = "Family", all.x = TRUE)
   out[is.na(surrogate_type), surrogate_type := 2]
@@ -2607,8 +2620,8 @@ calc_mammal <- function(out) {
   out[, PB := select_chosen(out, names(mammal_pb_labels))]
   out[, PB_method := describe_chosen(out, mammal_pb_labels)]
   
-  ## Method 1: Innes/Trites (Eq.31) - needs MaxWeight
-  out[, W_kg := MaxWeight / 1000]
+  ## Method 1: Innes/Trites (Eq.31) - mean body mass (else MaxWeight, flagged)
+  out[, W_kg := .body_w_g(Species, MaxWeight) / 1000]
   out[, QB_InnesTrites_1997 := (0.1 * W_kg^0.8 / W_kg) * 365]
   out <- fill_by_taxonomic_proximity(out, "QB_InnesTrites_1997")
   ## Method 2: Q/P=3 fallback, using chosen PB
@@ -2618,6 +2631,7 @@ calc_mammal <- function(out) {
                         QB_ChristensenEtAl_2008 = "Q/P=3 (Christensen et al. 2008)")
   out[, QB := select_chosen(out, names(mammal_qb_labels))]
   out[, QB_method := describe_chosen(out, mammal_qb_labels)]
+  out[grepl("^Innes", QB_method), QB_method := paste0(QB_method, .body_w_lab(Species))]
   
   out[, .(Species, FG, FG_name, Biomass, dispatch_group,
           PB_BarlowBoveng_1991, PB_Gascuel_2008, PB, PB_method,
@@ -2640,8 +2654,9 @@ calc_seabird <- function(out) {
   out[, PB_method := fifelse(!is.na(PB), "Gascuel 2008 general (Eq.23) - no dedicated seabird PB method in protocol", NA_character_)]
   
   ## Method 1: Nilsson & Nilsson (1976) - needs MaxWeight
-  out[, logDR := -0.293 + 0.85 * log10(MaxWeight)]
-  out[, QB_NilssonNilsson_1976 := (10^logDR / MaxWeight) * 365]
+  out[, W_g := .body_w_g(Species, MaxWeight)]                      # mean body mass, else MaxWeight (flagged)
+  out[, logDR := -0.293 + 0.85 * log10(W_g)]
+  out[, QB_NilssonNilsson_1976 := (10^logDR / W_g) * 365]
   out <- fill_by_taxonomic_proximity(out, "QB_NilssonNilsson_1976")
   
   ## NOTE: deliberately NO Q/P=3 fallback here. That heuristic is
@@ -2651,7 +2666,7 @@ calc_seabird <- function(out) {
   ## fallback. If Nilsson & Nilsson fails (missing MaxWeight even after
   ## gap-filling), QB stays NA for that species rather than guessing.
   out[, QB := QB_NilssonNilsson_1976]
-  out[, QB_method := fifelse(!is.na(QB_NilssonNilsson_1976), "Nilsson & Nilsson 1976 (Eq.30)", NA_character_)]
+  out[, QB_method := fifelse(!is.na(QB_NilssonNilsson_1976), paste0("Nilsson & Nilsson 1976 (Eq.30)", .body_w_lab(Species)), NA_character_)]
   
   out[, .(Species, FG, FG_name, Biomass, dispatch_group, PB_Gascuel_2008, PB, PB_method,
           QB_NilssonNilsson_1976, QB, QB_method)]
@@ -3095,6 +3110,23 @@ message("\nSaved: species_pb_qb_by_taxon_group.csv, fg_pb_qb_weighted.csv,",
 ## built) - the same double-count guard below detects that
 ## (n_species_with_F > 0 for those FGs) and correctly SKIPS them here,
 ## so nothing is added twice.
+## P/B = M + F (Allen 1971) holds for every group, fish or not, as long
+## as the empirical P/B is natural mortality only:
+##  - fish: M estimators (Then, Pauly, Hoenig...), F added per species in calc_fish();
+##  - mammals: Barlow & Boveng 1991 Siler survivorship = natural mortality -> add F;
+##  - invertebrates: Tumbiolo & Downing 1994 / Brey 1999 production of
+##    (mostly unfished) field populations, treated as M (ASSUMPTION) -> add F;
+##  - Gascuel et al. 2008 general equation (seabirds, and the fallback for
+##    mammals and invertebrates): fitted to P/B of published EwE models,
+##    i.e. TOTAL mortality, which already includes fishing -> F NOT added.
+## pb_total_share = biomass share of the FG whose P/B comes from Gascuel;
+## F is added to the rest: P/B_f = P/B_emp,f + F_f x (1 - pb_total_share).
+.pb_total_share <- function() {
+  r <- results[!is.na(PB) & !is.na(FG)]
+  r[, w := fifelse(is.finite(Biomass) & Biomass > 0, Biomass, NA_real_)]
+  r[, w := if (all(is.na(w))) 1 else fifelse(is.na(w), 0, w), by = FG]
+  r[, .(pb_total_share = sum(w[grepl("^Gascuel", PB_method)]) / sum(w)), by = FG][is.finite(pb_total_share)]
+}
 if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
   fg_yield_for_merge <- copy(fg_yield_density)
   setnames(fg_yield_for_merge, "FG_num", "FG")
@@ -3111,7 +3143,8 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
   }
   
   fg_weighted[, PB_FG_before_F := PB_FG]
-  fg_weighted[n_species_with_F == 0 & !is.na(F_FG), PB_FG := PB_FG_before_F + F_FG]
+  fg_weighted <- merge(fg_weighted, .pb_total_share(), by = "FG", all.x = TRUE)[is.na(pb_total_share), pb_total_share := 0]
+  fg_weighted[n_species_with_F == 0 & !is.na(F_FG), PB_FG := PB_FG_before_F + F_FG * (1 - pb_total_share)]
   
   n_fg_with_F <- fg_weighted[n_species_with_F == 0 & !is.na(F_FG), .N]
   message(n_fg_with_F, " of ", nrow(fg_weighted), " FG(s) had FG-level F added here",
@@ -3136,7 +3169,8 @@ if (FG_YIELD_SOURCE == "fg_catch_csv" && exists("fg_yield_density")) {
     f_fg_02 <- unique(f_fg_02[!is.na(F), .(FG = as.integer(FG_num), F_FG = as.numeric(F))], by = "FG")
     fg_weighted <- merge(fg_weighted, f_fg_02, by = "FG", all.x = TRUE)
     fg_weighted[, PB_FG_before_F := PB_FG]
-    fg_weighted[n_species_with_F == 0 & !is.na(F_FG) & !is.na(PB_FG), PB_FG := PB_FG_before_F + F_FG]
+    fg_weighted <- merge(fg_weighted, .pb_total_share(), by = "FG", all.x = TRUE)[is.na(pb_total_share), pb_total_share := 0]
+    fg_weighted[n_species_with_F == 0 & !is.na(F_FG) & !is.na(PB_FG), PB_FG := PB_FG_before_F + F_FG * (1 - pb_total_share)]
     added <- fg_weighted[n_species_with_F == 0 & !is.na(F_FG) & !is.na(PB_FG_before_F)]
     ## Invertebrate Q/B was set as Q/P = 3 on the species P/B (Christensen,
     ## Walters & Pauly 2008); keep Q/P = 3 on the P/B that now includes F,

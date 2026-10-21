@@ -7660,7 +7660,10 @@ validation_plots[["04_fleet_proportions"]] <- tryCatch({
 ## Algeria/Tunisia (effort_by_fleet, own "Country - gear" naming).
 validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
   eu3 <- if (nrow(effort_by_fleettype_eu3) > 0) {
-    effort_by_fleettype_eu3[, .(Country, Fleet = FleetType, Year, Effort = Effort_days, Source = effort_source)]  # standardize columns for the EU-3 effort source
+    ## days (FDI 2014+, hindcast before) x technology creep, so the plot shows effective effort
+    effort_by_fleettype_eu3[, .(Country, Fleet = FleetType, Year,
+                                Effort = Effort_days * tech_creep_multiplier(Country, Year, if ("Sector" %in% names(effort_by_fleettype_eu3)) Sector else NULL),
+                                Source = effort_source)]  # standardize columns for the EU-3 effort source
   } else data.table()
   mat <- if (nrow(effort_by_fleet) > 0) {
     ## effort_by_fleet has one row per Country x gear x
@@ -7680,8 +7683,8 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     ## still keeps Sector as its own column everywhere else in the
     ## pipeline, nothing upstream of this plot is touched.
     effort_by_fleet[!Country %in% c("Spain", "France", "Italy"),
-                    .(Effort = sum(nom_active_kWdays, na.rm = TRUE)),
-                    by = .(Country, Fleet = gear, Year)][, Source := "FishMIP nom_active"]
+                    .(Effort = sum(if ("nom_active_kWdays_effective" %in% names(effort_by_fleet)) nom_active_kWdays_effective else nom_active_kWdays, na.rm = TRUE)),
+                    by = .(Country, Fleet = gear, Year)][, Source := "FishMIP nom_active x technology creep"]  # the effort sent to Ecosim (creep applied; flat nominal effort after 2017 still rises)
   } else data.table()
   d <- rbindlist(list(eu3, mat), use.names = TRUE, fill = TRUE)  # combine both effort sources into one plotting table
   if (nrow(d) == 0) stop("no effort data available from either source")
@@ -7703,7 +7706,7 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     geom_line(linewidth = 0.4) +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey60", linewidth = 0.3) +
     facet_wrap(~ Country, scales = "free_y") +
-    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Each series divided by its own first available year (= 1). EU-3: FDI days (2014+) / SAU-hindcasted days (pre-2014). Morocco/Algeria/Tunisia: FishMIP nom_active",
+    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Effective effort (technology creep applied), each series divided by its first year (= 1). EU-3: FDI days (2014+) / hindcast (pre-2014) x creep. Morocco/Algeria/Tunisia: FishMIP kW x days (held flat after 2017, creep still applied)",
          x = NULL, y = "Effort (index, first year = 1)", color = "Fleet") +
     theme_minimal(base_size = 8) + theme(legend.position = "bottom")
 }, error = function(e) { message("[Validation plot 5] skipped - ", conditionMessage(e)); NULL })
