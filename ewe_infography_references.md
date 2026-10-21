@@ -64,7 +64,7 @@ Items marked **[verify]** are cited in the code by author, year and journal, but
 31. Scardi, M. (2013). Modelled occurrence probability for Posidonia oceanica meadows across the Mediterranean Sea. In: Giannoulaki, M., et al. (Eds), Mediterranean Sensitive Habitats (MEDISEH), final project report. DG MARE Specific Contract SI2.600741, Hellenic Centre for Marine Research, 557 pp. ICES/EMODnet record c690ac1c-015b-43e2-8aa1-0aff72eec50e — Posidonia reference map (optional).
 32. Olesen, B., et al. (2002). Marine Ecology Progress Series, 236, 89-97, and EEA OURCOAST case 349 GR (Greek WFD reference conditions). **[verify]** — Posidonia depth factor 0.6.
 
-33. Haberman, I., Martone, P.T. (2023). Calcified coralline algae have similar caloric value to uncalcified algae. Marine Ecology Progress Series, 713, 173-179. doi:10.3354/meps14341 — macroalgae dry:wet weight: calcified corallines 0.74 and fleshy seaweeds 0.138 (Table 1), mixed 90:10 using the coralline share of cover in Ballesteros 2006.
+33. Haberman, I., Martone, P.T. (2023). Calcified coralline algae have similar caloric value to uncalcified algae. Marine Ecology Progress Series, 713, 173-179. doi:10.3354/meps14341 — macroalgae dry:wet weight: calcified corallines 0.74 and fleshy seaweeds 0.138 (Table 1), mixed 70:30 (calcareous:fleshy; conservative relative to the ~90% coralline cover in Ballesteros 2006).
 
 ## 2 — Fisheries
 
