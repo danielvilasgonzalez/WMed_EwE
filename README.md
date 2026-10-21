@@ -132,6 +132,7 @@ scripts/
   03b_ecobase.R                    # EcoBase fallbacks
   lib_*.R                          # shared functions (survey density, AquaMaps, FishBase diets, plankton, taxonomy)
   medbs_pipeline_methodology.qmd   # interactive page + full method documentation
+  references.bib, ieee.csl        # every reference of the pipeline; the page numbers them [1], [2]... in order of citation
   gsa_boundaries_westmed.geojson   # GSA 1-12 polygons for the page map
   additional/                      # one-off helpers and backups, not run by the pipeline
 config.R            # Daniel's paths (skipped where they don't exist)
