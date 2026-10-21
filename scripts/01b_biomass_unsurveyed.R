@@ -3047,10 +3047,21 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
   ## Posidonia 0.6, Greek WFD reference conditions / Olesen et al. 2002); the AquaMaps factor
   ## is then written to the REVIEW csv only. TRUE = AquaMaps overrides it.
   if (!exists("HABITAT_AQUAMAPS_OVERRIDE_CSV")) HABITAT_AQUAMAPS_OVERRIDE_CSV <- FALSE
+  ## Species whose AquaMaps envelopes are used (median over species):
+  ## Posidonia / Cymodocea the FG's single species; gorgonians the two
+  ## species the density comes from; macroalgae every species of the
+  ## Macroalgae FG in the FG table (genus fallback in AquaMaps).
+  .fg_sp <- function(pattern) { d <- get0("dataframe2", ifnotfound = NULL)
+    if (is.null(d)) character(0) else unique(d[grepl(pattern, FG_name, ignore.case = TRUE) & grepl(" ", ScientificName) & !grepl(" spp\\.?$", ScientificName), ScientificName]) }
   if (!exists("HABITAT_AQUAMAPS_SPECIES")) HABITAT_AQUAMAPS_SPECIES <- list(
     Posidonia = "Posidonia oceanica", Cymodocea = "Cymodocea nodosa",
-    GorgoniansCorals = c("Paramuricea clavata", "Eunicella singularis"))
-  HABITAT_DEPTH_HIST_GROUP <- c(Posidonia = "Posidonia", Cymodocea = "Posidonia", GorgoniansCorals = "GorgoniansCorals")
+    GorgoniansCorals = c("Paramuricea clavata", "Eunicella singularis"),
+    Macroalgae = .fg_sp("^Macroalgae"))
+  ## Depth distribution used for each group: its own map; Cymodocea the
+  ## Posidonia map (its area is scaled from it); macroalgae the
+  ## coralligenous map (its density is the coralligenous algal layer,
+  ## Ballesteros 2006; the EMODnet macroalgae polygons are not read here).
+  HABITAT_DEPTH_HIST_GROUP <- c(Posidonia = "Posidonia", Cymodocea = "Posidonia", GorgoniansCorals = "GorgoniansCorals", Macroalgae = "GorgoniansCorals")
   dhist <- .hab_depth_table()
   if (isTRUE(HABITAT_AQUAMAPS_DEPTH_FACTOR) && nrow(dhist) > 0) {
     if (!exists("aquamaps_envelope_value", mode = "function")) source(file.path(git_dir, "scripts/lib_aquamaps_depth_extension.R"))
@@ -3066,10 +3077,13 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
       env <- tryCatch(fetch_aquamaps_depth_envelope(resolve_aquamaps_species_ids(HABITAT_AQUAMAPS_SPECIES[[g]])), error = function(e) NULL)
       env <- if (is.null(env)) NULL else env[is.finite(DepthMin) & is.finite(DepthPrefMin) & is.finite(DepthPrefMax) & is.finite(DepthMax)]
       f <- NA_real_; s_map <- NA_real_; s_site <- NA_real_
-      if (!is.null(env) && nrow(env) > 0 && nrow(h) > 0 && is.finite(s_min) && is.finite(s_max)) {
+      ## Without a site depth, the literature density is taken as the density
+      ## at the species' preferred depths (S = 1, ASSUMPTION), so the factor
+      ## is the mean AquaMaps suitability over the mapped area.
+      if (!is.null(env) && nrow(env) > 0 && nrow(h) > 0) {
         S <- function(d) rowMeans(vapply(seq_len(nrow(env)), function(k) aquamaps_envelope_value(d, env$DepthMin[k], env$DepthPrefMin[k], env$DepthPrefMax[k], env$DepthMax[k]), numeric(length(d))), na.rm = TRUE)
         s_map <- sum(h$area_km2 * S(h$depth_bin_mid)) / sum(h$area_km2)
-        s_site <- mean(S(seq(s_min, s_max, by = 0.5)))
+        s_site <- if (is.finite(s_min) && is.finite(s_max)) mean(S(seq(s_min, s_max, by = 0.5))) else 1
         if (is.finite(s_site) && s_site > 0) f <- s_map / s_site
       }
       csv_f <- hab_tab$Depth_factor[hit][1]
@@ -3081,12 +3095,14 @@ if (file.exists(HABITAT_SHAPEFILE_BIOMASS_PATH)) {
                 signif(s_site, 3), " = ", signif(f, 3), " (replaces the CSV value ", hab_tab$Depth_factor[hit][1], ").")
         hab_tab[hit, Depth_factor := f]
         hab_tab[hit, Source_citation := paste0(Source_citation, " Depth_factor ", signif(f, 3), " computed in 01b from AquaMaps depth suitability (",
-          paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = ", "), "; Kaschner et al. 2019) over the mapped area's depth distribution vs the site depth ", s_min, "-", s_max, " m.")]
+          if (length(HABITAT_AQUAMAPS_SPECIES[[g]]) > 3) paste0(length(HABITAT_AQUAMAPS_SPECIES[[g]]), " species of the FG") else paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = ", "),
+          "; Kaschner et al. 2019): mean suitability over the mapped area's depths (", HABITAT_DEPTH_HIST_GROUP[[g]], " map)",
+          if (is.finite(s_min)) paste0(" / suitability at the site depth ", s_min, "-", s_max, " m.") else " (site density taken as the density at the preferred depths, S = 1 - ASSUMPTION).")]
       } else {
         message("[Habitat depth factor] ", g, ": AquaMaps factor not computed (species envelope, site depth or depth histogram missing) - CSV Depth_factor kept (",
                 hab_tab$Depth_factor[hit][1], ").")
       }
-      data.table(Group = g, species = paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = "; "), site_depth_m = paste(s_min, s_max, sep = "-"),
+      data.table(Group = g, species = paste(HABITAT_AQUAMAPS_SPECIES[[g]], collapse = "; "), site_depth_m = if (is.finite(s_min)) paste(s_min, s_max, sep = "-") else "not given (S_site = 1)",
                  mapped_area_km2 = sum(h$area_km2), S_mapped_area = s_map, S_site = s_site, depth_factor_aquamaps = f,
                  depth_factor_used = hab_tab$Depth_factor[hit][1])
     }), fill = TRUE)
