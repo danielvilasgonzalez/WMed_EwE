@@ -62,7 +62,7 @@ Items marked **[verify]** are cited in the code by author, year and journal, but
 29. Mateo, M.A., Romero, J. (1996). **[verify full title and journal]** — Posidonia leaf litter dry:wet weight 0.2132.
 30. Zavodnik, N., Travizi, A., De Rosa, S. (1998). Seasonal variations in the rate of photosynthetic activity and chemical composition of the seagrass Cymodocea nodosa (Ucria) Asch. Scientia Marina, 62(4), 301-309. doi:10.3989/scimar.1998.62n4301 — Cymodocea leaf dry weight 19-29% of wet weight.
 31. Scardi, M. (2013). Modelled occurrence probability for Posidonia oceanica meadows across the Mediterranean Sea. In: Giannoulaki, M., et al. (Eds), Mediterranean Sensitive Habitats (MEDISEH), final project report. DG MARE Specific Contract SI2.600741, Hellenic Centre for Marine Research, 557 pp. ICES/EMODnet record c690ac1c-015b-43e2-8aa1-0aff72eec50e — Posidonia reference map (optional).
-32. Pergent-Martini, C., Rico-Raimondino, V., Pergent, G. (1994). Primary production of Posidonia oceanica in the Mediterranean Basin. Marine Biology, 120, 9-15. doi:10.1007/BF00381936 — Posidonia depth factor 0.276 (leaf production at 20 m vs 5 m, Ischia).
+32. Olesen, B., et al. (2002). Marine Ecology Progress Series, 236, 89-97, and EEA OURCOAST case 349 GR (Greek WFD reference conditions). **[verify]** — Posidonia depth factor 0.6.
 
 ## 2 — Fisheries
 
