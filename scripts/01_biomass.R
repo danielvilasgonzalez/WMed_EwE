@@ -573,7 +573,7 @@ WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
 
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
-## covers 10-800m; this adds DERIVED pseudo-strata (0-10m and the deep bands 800-1000, 1000-2850, 2850-3785m)
+## covers 10-800m; this adds DERIVED pseudo-strata (0-10m and the deep bands 800-1000 m and 1000 m to the seafloor)
 ## using AquaMaps depth-envelope ratios scaled against each species' own
 ## real MEDITS-measured density, folded into the SAME weight_by_strata()/
 ## weight_species_by_area() calculation as the 5 real strata. Left FALSE,
@@ -588,7 +588,7 @@ if (!exists("APPLY_AQUAMAPS_DEPTH_ADJUSTMENT", envir = .GlobalEnv, inherits = FA
 ## MODEL AREA (2026-10-14, project decision). "whole_gsa" (default): the
 ## model area A_model is the WHOLE sea area of the model GSAs, from the
 ## coast to the bottom. MEDITS measures 10-800 m; the other depths
-## (0-10 m, 800-1000 m, 1000-2850 m, 2850 m to the bottom) get AquaMaps
+## (0-10 m, 800-1000 m, 1000 m to the seafloor) get AquaMaps
 ## pseudo-strata (STEP 7b), and every t/km2 of the pipeline (Ecopath_B,
 ## catch, F, 01b groups) is per km2 of that whole area. Written to
 ## model_area_by_gsa.csv / model_area_cells.csv, which 02, 03 and 05 read.
@@ -613,11 +613,14 @@ if (!exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE)) MODEL_GSAS <- F
 ## Deep AquaMaps bands (pseudo-strata below the deepest MEDITS stratum).
 ## whole_gsa: down to the seafloor so the bands cover the whole GSA area.
 ## The deepest point of the Western Med is 3,785 m (Vavilov Basin,
-## Tyrrhenian Sea), so the last band is 2850-3785 m; a bathymetry cell a
-## little deeper than that (grid rounding) is counted in that band too
-## (see compute_strata_area_for_polygon()).
+## Tyrrhenian Sea), so the last band is 1000-3785 m (project decision
+## 2026-10-21: one band from 1000 m to the seafloor, replacing the
+## 1000-2850 / 2850-3785 m split); a bathymetry cell a little deeper than
+## that (grid rounding) is counted in that band too (see
+## compute_strata_area_for_polygon()). ASSUMPTION: one mean AquaMaps
+## suitability over 1000-3785 m applies to the whole band.
 if (!exists("AQUAMAPS_DEEP_RANGES", envir = .GlobalEnv, inherits = FALSE))
-  AQUAMAPS_DEEP_RANGES <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) list(c(800, 1000), c(1000, 2850), c(2850, 3785)) else
+  AQUAMAPS_DEEP_RANGES <- if (identical(MODEL_AREA_BASIS, "whole_gsa")) list(c(800, 1000), c(1000, 3785)) else
     list(c(800, 1000), c(1000, 2850))
 ## Deepest depth whose AquaMaps pseudo-stratum biomass is counted (see
 ## STEP 7b). whole_gsa: all depths (Inf). medits_10_800: 1000 m = limit

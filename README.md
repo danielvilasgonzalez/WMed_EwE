@@ -58,7 +58,7 @@ Run in this order; each step reads files the earlier ones wrote. `run_pipeline_d
 
 | Step | Script | What it does |
 |---|---|---|
-| 1 | `01_biomass.R` (sources `01b_biomass_unsurveyed.R`) | **Biomass** from the MEDITS bottom-trawl and MEDIAS acoustic surveys. AquaMaps depth pseudo-strata cover 0–10 m and 800–3,785 m. Stock assessments are used for assessed single-species FGs and hake stanzas. Small pelagics are back-cast to 1994–96. Ecopath_B, Ecosim biomass series, FG_spp. |
+| 1 | `01_biomass.R` (sources `01b_biomass_unsurveyed.R`) | **Biomass** from the MEDITS bottom-trawl and MEDIAS acoustic surveys. AquaMaps depth pseudo-strata cover 0–10 m, 800–1000 m and 1000 m to the seafloor (3,785 m). Stock assessments are used for assessed single-species FGs and hake stanzas. Small pelagics are back-cast to 1994–96. Ecopath_B, Ecosim biomass series, FG_spp. |
 | 1b | `01b_biomass_unsurveyed.R` | **Groups the surveys can't measure.** Seagrass, macroalgae and corals: density × mapped area × occupancy. Plankton: COBALT model. Detritus: Pauly et al. 1993. Macrozooplankton: MAREDAT. Cetaceans, seabirds, turtles and monk seal: survey density × body mass. Bluefin tuna and swordfish: ICCAT. Some FGs are left for Ecopath to estimate (EE = 0.95). |
 | 2 | `02_fisheries.R` | **Catch, landings, discards, effort and F** by country, fleet and FG. Catch from GFCM, STECF FDI and Sea Around Us; effort from FishMIP; plus ICCAT; technology creep applied to effort. |
 | 3 | `03_pbqb-traits.R` | **P/B and Q/B** per FG from FishBase/SeaLifeBase traits and empirical equations. |
