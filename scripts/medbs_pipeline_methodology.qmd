@@ -69,6 +69,7 @@ table th, table td {
 
 ```{r}
 #| label: setup-copy-figures
+#| context: setup
 #| eval: true
 #| echo: false
 #| include: false

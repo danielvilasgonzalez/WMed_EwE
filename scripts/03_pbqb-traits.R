@@ -1696,6 +1696,7 @@ retry_fetch <- function(expr_fun, attempts = 3, wait_seconds = 5) {
   for (i in seq_len(attempts)) {
     result <- tryCatch(expr_fun(), error = function(e) {
       message("Fetch attempt ", i, "/", attempts, " failed: ", conditionMessage(e))
+      assign(".last_fetch_error", conditionMessage(e), envir = .GlobalEnv)
       NULL
     })
     if (!is.null(result)) return(result)
@@ -1734,12 +1735,48 @@ fetch_per_species <- function(fun, sp_list, server) {
   rbindlist(results, fill = TRUE)
 }
 
+## When the whole batch fails, the list is fetched in chunks of
+## FETCH_CHUNK_SIZE species first and only a failing chunk goes species by
+## species. Each rfishbase call can take minutes (it reads the whole table),
+## so 418 one-species calls took ~2 days; ~9 chunk calls isolate the
+## problem species in a small fraction of that.
+if (!exists("FETCH_CHUNK_SIZE")) FETCH_CHUNK_SIZE <- 50
+fetch_chunked <- function(fun, sp_list, server, ...) {
+  chunks <- split(sp_list, ceiling(seq_along(sp_list) / FETCH_CHUNK_SIZE))
+  rbindlist(lapply(seq_along(chunks), function(k) {
+    ck <- chunks[[k]]
+    r <- tryCatch(as.data.table(fun(ck, server = server, ...)), error = function(e) {
+      message("  Chunk ", k, "/", length(chunks), " (", server, ") failed: ", conditionMessage(e)); data.table() })
+    if (nrow(r) == 0 && length(ck) > 1) {
+      message("  Chunk ", k, "/", length(chunks), " (", server, ") returned nothing - fetching its ", length(ck), " species one by one...")
+      r <- fetch_per_species(fun, ck, server)
+    }
+    r
+  }), fill = TRUE)
+}
+
+## A batch that failed because the FishBase/SeaLifeBase data host could
+## not be reached (timeout, no connection) is not a problem species:
+## every per-species call would time out too (this took ~2 days on
+## 2026-10-21). Stop with a clear message instead; rerun when the
+## connection works.
+.is_network_error <- function(msg) !is.null(msg) && grepl("Timeout|timed out|cannot open the connection|Could not resolve|Failed to connect|SSL|HTTP error 5", msg, ignore.case = TRUE)
+.stop_if_network <- function(server) {
+  msg <- get0(".last_fetch_error", envir = .GlobalEnv, ifnotfound = NULL)
+  if (.is_network_error(msg))
+    stop("[03_pbqb-traits.R] ", server, " data could not be downloaded (", msg, "). This is a connection problem ",
+         "(the FishBase/SeaLifeBase files are hosted on Amazon S3 / Hugging Face), not a species problem. ",
+         "Check the internet connection (VPN/firewall) and rerun step 3 (RUN_STEPS <- 3:5).", call. = FALSE)
+}
+
 fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
+  assign(".last_fetch_error", NULL, envir = .GlobalEnv)
   fb <- retry_fetch(function() as.data.table(fun(sp_list, server = "fishbase", ...)))
+  if (nrow(fb) == 0) .stop_if_network("FishBase")
   if (nrow(fb) == 0 && length(sp_list) > 1) {
-    message("Batch fetch (fishbase) returned nothing - falling back to per-species",
-            " calls to isolate which species is causing it...")
-    fb <- fetch_per_species(fun, sp_list, "fishbase")
+    message("Batch fetch (fishbase) returned nothing - fetching in chunks of ", FETCH_CHUNK_SIZE,
+            " species to isolate which species is causing it...")
+    fb <- fetch_chunked(fun, sp_list, "fishbase", ...)
   }
   ## .fetch_server tracks which database each row came from - needed
   ## downstream because RefNo numbering is independent between
@@ -1750,10 +1787,12 @@ fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
   
   if (fishbase_only) return(fb)
   
+  assign(".last_fetch_error", NULL, envir = .GlobalEnv)
   slb <- retry_fetch(function() as.data.table(fun(sp_list, server = "sealifebase", ...)))
+  if (nrow(slb) == 0) .stop_if_network("SeaLifeBase")
   if (nrow(slb) == 0 && length(sp_list) > 1) {
-    message("Batch fetch (sealifebase) returned nothing - falling back to per-species calls...")
-    slb <- fetch_per_species(fun, sp_list, "sealifebase")
+    message("Batch fetch (sealifebase) returned nothing - fetching in chunks of ", FETCH_CHUNK_SIZE, " species...")
+    slb <- fetch_chunked(fun, sp_list, "sealifebase", ...)
   }
   if (nrow(slb) > 0) slb[, .fetch_server := "sealifebase"]
   
