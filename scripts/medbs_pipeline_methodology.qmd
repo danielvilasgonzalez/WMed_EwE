@@ -1122,40 +1122,7 @@ The pipeline covers several conceptually distinct problems in sequence:
 wm_repo_figure("fig-flow-overview", r"---(Workflow: the species-to-Functional-Group table and the data sources feed four blocks (1 biomass, 2 fisheries, 3 P/B, Q/B and traits, 4 diets) that produce the EwE input. Click to zoom.)---", "ewe_infography.jpg")
 ```
 
-```{mermaid}
-%%| label: fig-flow-fg-matching
-%%| fig-cap: "FG matching detail (@sec-fg-matching) - each stage only attempts species the previous one left unmatched; species still unmatched after seed rules go to manual review."
-%%| eval: true
-%%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '20px'}}}%%
-flowchart LR
-    A1["Direct match (ScientificName lookup)"] --> A2["Nominate subspp. (repeated-word names)"]
-    A2 --> A3["Taxonomy fallback (genus to phylum)"]
-    A3 --> A4["Seed rules (rank to FG, no data)"]
-    A4 --> A5["Manual review"]
-
-    classDef purple fill:#EEEDFE,stroke:#534AB7,color:#26215C
-    classDef gray fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
-    class A1,A2,A3,A4 purple
-    class A5 gray
-```
-
-```{mermaid}
-%%| label: fig-flow-density-weighting
-%%| fig-cap: "Density and weighting detail (@sec-density, @sec-strata-weighted, @sec-regional) - dashed boxes are conditional steps, skipped if their condition isn't met."
-%%| eval: true
-%%{init: {'flowchart': {'padding': 20, 'nodeSpacing': 60, 'rankSpacing': 90}, 'themeVariables': {'fontSize': '20px'}}}%%
-flowchart LR
-    B1["Sample density (biomass / effort)"] --> B2(["Catchability (if q table given)"])
-    B2 --> B3["Outlier removal (per species, per area)"]
-    B3 --> B4(["Strata weighting (if strata = true)"])
-    B4 --> B5(["Area weighting (if more than one area)"])
-
-    classDef teal fill:#E1F5EE,stroke:#0F6E56,color:#04342C
-    class B1,B3 teal
-    class B2,B4,B5 teal
-```
-
-Dashed/rounded boxes above are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if `strata = TRUE` (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).
+Some density steps are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if `strata = TRUE` (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).
 
 Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.
 
@@ -1993,6 +1960,8 @@ Three more checks are written by `05_validation.R` itself and added to the same 
 - **Fishing mortality above 1** (`F_above_1_REVIEW.csv`): FGs with $F = (C/A_{model})/B > 1$ in the Ecopath years, from `F_by_fg.csv`.
 - **Time series assessment** (`ecosim_ts_assessment_REVIEW.csv`, plot 13): for each Ecosim_ts series, the years with data, first and last year, longest gap, $CV = sd/\bar{x}$ and the largest year-to-year jump $\max(x_t/x_{t-1},\ x_{t-1}/x_t)$. Flags: fewer than 5 years, gap > 5 years, CV > 1, jump > 5×.
 - **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to the 1995 Western Med model [@wmed1995model] and other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv`, so far the Gulf of Lion model [@seyer2023] and the Port-Cros model [@valls2009; @valls2012], each with its own area (a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
+=======
+- **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to the 1995 Western Med model and other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv` (each with its own area; a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
 
 ### Zooplankton field check (block 11)
 
