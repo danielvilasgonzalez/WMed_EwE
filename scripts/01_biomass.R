@@ -2722,16 +2722,37 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   ##     anyway; this value is the cross-check;
   ##   juvenile Ecosim: B_juv,y = I_MEDITS,y x B_juv / I_MEDITS(YEAR_ECOPATH).
   if (!exists("HAKE_STANZA_FROM_ASSESSMENT")) HAKE_STANZA_FROM_ASSESSMENT <- TRUE
-  ## Source follows STOCK_ASSESSMENT_SOURCE ("RAM" = RAM Legacy STECF XSA,
-  ## default; "GFCM" = hand-transcribed GFCM SAFs). Stock keys: GSA 1-5-6-7 unit, GSA 9-11, GSA 7.
-  if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
-  .hk_gfcm <- identical(STOCK_ASSESSMENT_SOURCE, "GFCM")
-  HAKE_SA_PATH <- if (.hk_gfcm) file.path(pcloud_dir, "data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv") else
-    file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")
-  .hk_keys <- if (.hk_gfcm) c(k1567 = "HKE_1_5_6_7", k911 = "HKE_9_10_11", k7 = "HKE_7") else c(k1567 = "HAKEMEDGSA1-7", k911 = "HAKEMEDGSA9-11", k7 = "HAKEMEDGSA7")
+  ## Source follows STOCK_ASSESSMENT_SOURCE ("GFCM" = the newest GFCM SAFs
+  ## read from the GFCM website by 01b, gfcm_saf_stock_assessments_ALL.csv;
+  ## "RAM" = RAM Legacy STECF XSA). Stocks: the GSA 1-5-6-7 unit, the unit
+  ## holding GSAs 9-11 (GFCM: GSAs 8-9-10-11 since 2023) and GSA 7 alone.
+  if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+  .hk_all <- file.path(pcloud_dir, "data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv")
+  .hk_gfcm <- identical(STOCK_ASSESSMENT_SOURCE, "GFCM") && file.exists(.hk_all)
+  if (.hk_gfcm) {
+    .hs <- unique(fread(.hk_all)[species == "Merluccius merluccius" & is.finite(biomass), .(stock_key, gsa = as.character(gsa), ref_year, use_for_biomass)])
+    .hs_g <- lapply(.hs$gsa, function(z) floor(suppressWarnings(as.numeric(strsplit(z, ",", fixed = TRUE)[[1]]))))
+    .hk_pick <- function(need, exact = FALSE) {           # newest stock in use that holds these GSAs
+      i <- which(vapply(.hs_g, function(v) if (exact) setequal(v, need) else all(need %in% v), logical(1)))
+      if (!length(i)) return(NA_character_)
+      i <- i[order(-(.hs$use_for_biomass[i] %in% TRUE), -.hs$ref_year[i], lengths(.hs_g[i]))]; .hs$stock_key[i[1]]
+    }
+    .hk_keys <- c(k1567 = .hk_pick(c(1, 5, 6, 7)), k911 = .hk_pick(c(9, 10, 11)), k7 = .hk_pick(7, exact = TRUE))
+    if (anyNA(.hk_keys[c("k1567", "k911")])) {
+      message("[Hake stanzas] the GFCM SAF table has no readable hake assessment for GSAs 1-5-6-7 and 9-11 - using RAM Legacy for the hake stanzas.")
+      .hk_gfcm <- FALSE
+    } else {
+      if (is.na(.hk_keys[["k7"]])) .hk_keys[["k7"]] <- "none"
+      HAKE_STOCK_GSAS <- setNames(lapply(.hk_keys, function(k) if (k == "none") 7 else .hs_g[[match(k, .hs$stock_key)]]), .hk_keys)
+    }
+  }
+  HAKE_SA_PATH <- if (.hk_gfcm) .hk_all else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")
+  if (!.hk_gfcm) {
+    .hk_keys <- c(k1567 = "HAKEMEDGSA1-7", k911 = "HAKEMEDGSA9-11", k7 = "HAKEMEDGSA7")
+    HAKE_STOCK_GSAS <- setNames(list(c(1, 5, 6, 7), c(9, 10, 11), 7), .hk_keys)
+  }
   .hk_lab <- if (.hk_gfcm) "GFCM SAF SSB" else "STECF XSA SSB, RAM Legacy v4.44"
   HAKE_PARAM_PATH <- file.path(pcloud_dir, "data/Complementary data/multistanza_reference_tables/hake_multistanza_parameters.csv")
-  HAKE_STOCK_GSAS <- setNames(list(c(1, 5, 6, 7), c(9, 10, 11), 7), .hk_keys)
   if (isTRUE(HAKE_STANZA_FROM_ASSESSMENT) && file.exists(HAKE_SA_PATH) &&
       !all(.hk_keys[c("k1567", "k911")] %in% fread(HAKE_SA_PATH)[species == "Merluccius merluccius", unique(stock_key)])) {
     message("[Hake stanzas] ", basename(HAKE_SA_PATH), " has no hake rows for ", paste(.hk_keys[c("k1567", "k911")], collapse = " and "),

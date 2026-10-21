@@ -1704,9 +1704,28 @@ First available wins, per FG × year:
 
 EcoBase biomass (other published Mediterranean EwE models; Colléter et al. 2015, *Ecol. Model.* 302:42–48) is evaluated and written to `ecobase_biomass_evaluation_NOT_INCORPORATED.csv`, but never written into `Ecopath_B` (project decision).
 
+### Stock assessments from the GFCM website
+
+`STOCK_ASSESSMENT_SOURCE = "GFCM"` (default). GFCM publishes every validated Stock Assessment Form (SAF) as a PDF in a public folder (the files behind the "GFCM validated SAFs" browser on the GFCM stock assessment page). On each run `lib_gfcm_saf_online.R`:
+
+1. lists all SAF PDFs and reads species (FAO 3-alpha code → ASFIS name), GSAs and reference year from the file names;
+2. keeps stocks whose GSAs are all model GSAs, and downloads the newest SAF of each (cached in `data/fisheries/GFCM_SAF/pdf/`);
+3. reads the summary results table: the table with a year column and an SSB column (else total biomass), from the word positions in the PDF; values in tonnes. If the newest SAF has no such table, the two previous SAFs of the stock are tried;
+4. keeps a set of stocks that do not overlap: per species, the newest reference year, then the larger stock unit (hake GSAs 1-5-6-7 rather than hake GSA 1);
+5. stocks with no readable table take the hand-transcribed `gfcm_saf_stock_assessments.csv`, then RAM Legacy when no GFCM stock of the same species overlaps (`GFCM_SAF_FILL_FROM_RAM`).
+
+Output: `gfcm_saf_stock_assessments_ALL.csv` (column `use_for_biomass`) and `gfcm_saf_parse_REVIEW.csv` (per stock and SAF: status, page, column read, years). Offline, the last download is reused; with no earlier download the run falls back to RAM Legacy. `GFCM_SAF_UPDATE = FALSE` skips the online check.
+
+::: {.callout-warning}
+### Limits of the automatic reading
+- Data-limited assessments (SPiCT, CMSY, survey-based advice) and most small-pelagic SAFs give biomass only in figures; those stocks get no GFCM value. In a test on the 73 newest SAFs inside GSAs 1–12 (October 2026), about 30 had a readable SSB table, most of them demersal (hake, red mullet, striped red mullet, deep-water rose shrimp, blue and red shrimp, giant red shrimp, Norway lobster, blue whiting, Moroccan sardine).
+- A header that puts two quantities over one column is flagged "check: ambiguous header" and not used; a table that ends more than 2 years before the reference year is flagged too. Check `gfcm_saf_parse_REVIEW.csv` after each new download.
+- SAF tables are in tonnes; a column labelled kg or thousand tonnes is converted.
+:::
+
 ### European hake stanzas from the stock assessment
 
-Hake is the only multi-stanza species. MEDITS catches mostly juveniles, so the stanza biomasses come from the STECF XSA hake assessments in RAM Legacy v4.44 (`combined_medbs_star_ramlegacy.csv`): GSA 1-5-6-7 (2003–2014), GSA 9-11 (2006–2014) and GSA 7 (1998–2012).
+Hake is the only multi-stanza species. MEDITS catches mostly juveniles, so the stanza biomasses come from the hake stock assessments: by default the newest GFCM SAFs (GSAs 1-5-6-7 and the unit holding GSAs 9-11, GSAs 8-9-10-11 since 2023, from `gfcm_saf_stock_assessments_ALL.csv`); with `STOCK_ASSESSMENT_SOURCE = "RAM"` the STECF XSA assessments in RAM Legacy v4.44: GSA 1-5-6-7 (2003–2014), GSA 9-11 (2006–2014) and GSA 7 (1998–2012).
 
 $$
 B_{adult} \approx SSB, \qquad B_{juv} = B_{adult}\,\frac{1-r}{r}, \quad r = SSB/TB = 0.42
@@ -1809,7 +1828,7 @@ Indices: $c$ country, $f$ FG, $l$ fleet (country × fleet type), $y$ year.
 | Sea Around Us | catch by gear, pre-2014 fleet shares | Pauly, Zeller & Palomares 2020, seaaroundus.org |
 | FishMIP / ISIMIP3a | effort and discard ratios | Rousseau et al. 2024, *Sci. Data* |
 | ICCAT Task I nominal catch; ST01 active vessels | BFT/SWO/ALB catch and gear split; vessel-size check of the gear → fleet mapping (2016+) | ICCAT t1nc database; ICCAT Active Vessels |
-| Stock assessments (GFCM/STECF, via RAM Legacy) | stock biomass (SSB) for assessed single-species FGs; catch cross-check; hake stanza B | Ricard et al. 2012 (RAM Legacy); `STOCK_ASSESSMENT_SOURCE = "GFCM"` switches to GFCM Stock Assessment Forms transcribed in `data/fisheries/GFCM_SAF/` |
+| Stock assessments: GFCM Stock Assessment Forms (default) | stock biomass (SSB, else total biomass) for assessed single-species FGs; catch cross-check; hake stanza B | GFCM validated SAFs, read from the GFCM website on each run (`lib_gfcm_saf_online.R`); stocks with no readable table: hand-transcribed SAFs, then RAM Legacy (Ricard et al. 2012). `STOCK_ASSESSMENT_SOURCE = "RAM"` uses RAM Legacy only |
 | `gear_to_fleettype.csv`, `fleet_register_taxonomy.csv` | gear → fleet type; excluded gears | project reference tables |
 
 ::: {.callout-warning}

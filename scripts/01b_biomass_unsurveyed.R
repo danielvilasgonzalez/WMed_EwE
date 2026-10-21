@@ -218,18 +218,35 @@
 
 extract_genus <- function(sci_name) str_extract(sci_name, "^[A-Za-z]+")  # pull the genus (first word) from a scientific name
 
-## Stock assessments. Default "RAM": combined_medbs_star_ramlegacy.csv
-## (built by combine_STAR_RAMlegacy.R; today every row comes from RAM
-## Legacy, whose Mediterranean stocks are the STECF/GFCM assessments).
-## "GFCM" reads data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv,
-## transcribed by hand from GFCM Stock Assessment Forms (one row per stock
-## x year, with reference + url).
-if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
-STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) file.path(pcloud_dir, "data/fisheries/GFCM_SAF") else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "gfcm_saf_stock_assessments.csv" else "combined_medbs_star_ramlegacy.csv")
+## Stock assessments (STOCK_ASSESSMENT_SOURCE):
+## "GFCM" (default since 2026-10-21): the newest GFCM Stock Assessment
+##   Forms, listed and downloaded from the GFCM website on every run and
+##   read automatically (lib_gfcm_saf_online.R; PDFs cached in
+##   data/fisheries/GFCM_SAF/pdf/). Result:
+##   data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv (only rows
+##   with use_for_biomass = TRUE are used: non-overlapping stocks); what was
+##   read per stock: gfcm_saf_parse_REVIEW.csv. Stocks with no readable SAF
+##   table take the hand-transcribed gfcm_saf_stock_assessments.csv and then
+##   RAM Legacy (GFCM_SAF_FILL_FROM_RAM). GFCM_SAF_UPDATE = FALSE reuses the
+##   last download. Offline with no earlier download: falls back to "RAM".
+## "RAM": combined_medbs_star_ramlegacy.csv (built by
+##   combine_STAR_RAMlegacy.R; RAM Legacy, whose Mediterranean stocks are
+##   the STECF/GFCM assessments, usually a few years behind GFCM).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+if (!exists("GFCM_SAF_UPDATE", envir = .GlobalEnv, inherits = FALSE)) GFCM_SAF_UPDATE <- TRUE
+if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) {
+  source(file.path(git_dir, "scripts/lib_gfcm_saf_online.R"), local = TRUE)
+  .gfcm_all <- update_gfcm_saf_assessments(pcloud_dir, csv_out_dir, FILTER_AREAS,
+                                           asfis_file = if (exists("asfis_file")) asfis_file else NULL, update = GFCM_SAF_UPDATE)
+  if (is.null(.gfcm_all)) STOCK_ASSESSMENT_SOURCE <- "RAM"
+}
+STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
 message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
-  fread(star_ram_path, encoding = "UTF-8")
+  .sa <- fread(star_ram_path, encoding = "UTF-8")
+  if ("use_for_biomass" %in% names(.sa)) .sa <- .sa[use_for_biomass %in% TRUE]   # GFCM: non-overlapping stocks only
+  .sa
 } else {
   message("\n[Stock-assessment biomass] '", star_ram_path, "' not found - skipping (run",
           " combine_STAR_RAMlegacy.R first and place its output under STAR_RAMLEGACY_DIR",
@@ -399,7 +416,7 @@ if (nrow(star_ram_combined) > 0) {
   ## star_ram_combined's own "source" column (which GFCM/STAR/RAM Legacy
   ## assessment) - embed it instead of a generic label with no way to
   ## trace which specific assessment it came from.
-  stock_assessment_fg_year[, stock_assessment_source := paste0(if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "stock assessment (GFCM SAF): " else "stock assessment (RAM Legacy Database): ", star_sources)]
+  stock_assessment_fg_year[, stock_assessment_source := paste0(if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "stock assessment (GFCM SAF, read from the GFCM website): " else "stock assessment (RAM Legacy Database): ", star_sources)]
   fwrite(stock_assessment_fg_year, file.path(csv_out_dir, "stock_assessment_biomass_by_fg.csv"))
   message("[Stock-assessment biomass] stock_assessment_fg_year: ", nrow(stock_assessment_fg_year),
           " FG x Year row(s) (", uniqueN(stock_assessment_fg_year$FG_num), " FG(s)) - written to",

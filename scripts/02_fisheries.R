@@ -4282,18 +4282,21 @@ message("\n[Catches] fg_catch_timeseries: ", nrow(fg_catch_timeseries), " FG x Y
 ## convention as every other optional source in this script (e.g.
 ## MOROCCO_ALGERIA_DIR above).
 ## =================================================================
-## Stock assessments. Default "RAM": combined_medbs_star_ramlegacy.csv
-## (built by combine_STAR_RAMlegacy.R; today every row comes from RAM
-## Legacy, whose Mediterranean stocks are the STECF/GFCM assessments).
-## "GFCM" reads data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments.csv,
-## transcribed by hand from GFCM Stock Assessment Forms (one row per stock
-## x year, with reference + url).
-if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "RAM"
-STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) file.path(pcloud_dir, "data/fisheries/GFCM_SAF") else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
-star_ram_path <- file.path(STAR_RAMLEGACY_DIR, if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) "gfcm_saf_stock_assessments.csv" else "combined_medbs_star_ramlegacy.csv")
-message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")
+## Stock assessments (STOCK_ASSESSMENT_SOURCE, see 01b_biomass_unsurveyed.R):
+## "GFCM" (default) reads gfcm_saf_stock_assessments_ALL.csv, written by
+## 01b from the newest GFCM SAFs on the GFCM website (stocks in use only);
+## if 01 has not built it yet, RAM Legacy is used. "RAM":
+## combined_medbs_star_ramlegacy.csv (RAM Legacy).
+if (!exists("STOCK_ASSESSMENT_SOURCE", envir = .GlobalEnv, inherits = FALSE)) STOCK_ASSESSMENT_SOURCE <- "GFCM"
+.gfcm_all <- file.path(pcloud_dir, "data/fisheries/GFCM_SAF/gfcm_saf_stock_assessments_ALL.csv")
+.sa_gfcm <- identical(STOCK_ASSESSMENT_SOURCE, "GFCM") && file.exists(.gfcm_all)
+STAR_RAMLEGACY_DIR <- if (.sa_gfcm) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
+star_ram_path <- if (.sa_gfcm) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
+message("[Stock assessments] source = ", if (.sa_gfcm) "GFCM" else "RAM", " (", star_ram_path, ")")
 star_ram_combined <- if (file.exists(star_ram_path)) {
-  fread(star_ram_path, encoding = "UTF-8")
+  .sa <- fread(star_ram_path, encoding = "UTF-8")
+  if ("use_for_biomass" %in% names(.sa)) .sa <- .sa[use_for_biomass %in% TRUE]
+  .sa
 } else {
   message("\n[STAR/RAM cross-check] '", star_ram_path, "' not found - skipping (run combine_STAR_RAMlegacy.R",
           " first and place its output under STAR_RAMLEGACY_DIR if you want this cross-check).")
