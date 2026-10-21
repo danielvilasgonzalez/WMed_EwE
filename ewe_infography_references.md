@@ -66,6 +66,9 @@ Items marked **[verify]** are cited in the code by author, year and journal, but
 
 33. Haberman, I., Martone, P.T. (2023). Calcified coralline algae have similar caloric value to uncalcified algae. Marine Ecology Progress Series, 713, 173-179. doi:10.3354/meps14341 — macroalgae dry:wet weight: calcified corallines 0.74 and fleshy seaweeds 0.138 (Table 1), mixed 70:30 (calcareous:fleshy; conservative relative to the ~90% coralline cover in Ballesteros 2006).
 
+34. Pergent, G., Rico-Raimondino, V., Pergent-Martini, C. (1997). Fate of primary production in Posidonia oceanica meadows of the Mediterranean. Aquatic Botany, 59, 307-321 — Posidonia leaf biomass at 10-20 m (Marseille, Ischia), Table 2.
+35. Romero, J., Pérez, M., Alcoverro, T., Mateo, M.A., Sánchez-Lizaso, J.L. (1998). Production ecology of Posidonia oceanica (L.) Delile meadows in Nueva Tabarca Marine Reserve: growth, biomass and nutrient stocks along a bathymetric gradient. Oecologia aquatica, 11, 111-121 — reserve values, kept in the site table but left out of the fit.
+
 ## 2 — Fisheries
 
 1. FAO-GFCM (2025). Capture production 1970-2023, FishStat. [fao.org/gfcm/data](https://www.fao.org/gfcm/data) — catch by country × species × GFCM division (Tunisia: divisions 37.1.1-37.1.3).
