@@ -186,7 +186,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -7823,3 +7825,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session
