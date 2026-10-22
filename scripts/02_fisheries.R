@@ -7124,6 +7124,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   ## for use with a national (not regional) effort file.
   if (!exists("EFFORT_SCALE_BY_WESTMED_SHARE", envir = .GlobalEnv, inherits = FALSE)) EFFORT_SCALE_BY_WESTMED_SHARE <- character(0)
   .esc <- intersect(EFFORT_SCALE_BY_WESTMED_SHARE, unique(effort_by_fleet$Country))
+  if (!length(.esc)) unlink(file.path(csv_out_dir, "effort_westmed_share_REVIEW.csv"))   # no scaling this run: no stale copy
   if (length(.esc) && !is.null(ts_data$div_share) && nrow(ts_data$div_share) > 0) {
     .sh <- ts_data$div_share[Country %in% .esc, .(Country, Year, share_westmed)]
     .sh_mean <- .sh[is.finite(share_westmed), .(share_mean = mean(share_westmed)), by = Country]
