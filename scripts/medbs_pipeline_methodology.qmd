@@ -1696,7 +1696,7 @@ wm_figure("fig-sample-map-byyear", r"---(Sample coverage faceted by year.)---", 
 
 ---
 
-Outputs are documented per script below (Biomass, Fisheries, P/B and Q/B, Diet matrix, Validation), followed by the known limitations (@sec-open-issues).
+Outputs are documented per script below (Biomass, Fisheries, P/B and Q/B, Diet matrix, Validation), followed by the [Known limitations](#sec-open-issues).
 
 ---
 
