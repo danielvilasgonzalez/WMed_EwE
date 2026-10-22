@@ -10,11 +10,11 @@
   if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
   n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
   dense <- isTRUE(n_panels > 20)
-  mins <- c(plot.title = 14, plot.subtitle = 10, plot.caption = 9, axis.title = 11,
-            axis.text.x.bottom = if (dense) 8 else 10, axis.text.x.top = if (dense) 8 else 10,
-            axis.text.y.left = if (dense) 8 else 10, axis.text.y.right = if (dense) 8 else 10,
-            strip.text.x = if (dense) 8.5 else 11, strip.text.y = if (dense) 8.5 else 11,
-            legend.title = 11, legend.text = 10)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
   th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
   for (el in names(mins)) {
     e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
