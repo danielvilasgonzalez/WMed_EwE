@@ -2010,6 +2010,15 @@ if (nrow(sau_country_fg_gear) > 0) {
     message("[Fleet split] Unmapped SAU (Country, gear) values by catch - add real ones to gear_to_fleettype.csv:")
     print(head(unmatched_by_gear, 40))
   }
+  ## Kept for fleet_assignment_REVIEW.csv (written at the end of 02)
+  .fa_sau <- tryCatch(rbindlist(list(
+    mapped[, .(Country, source = "SAU (pre-FDI years / non-EU countries)", raw_gear = sau_gear, sector_or_length = sau_gear_sector, FleetType,
+               rule = fifelse(grepl("artisanal", sau_gear_sector, ignore.case = TRUE) & FleetType == "Artisanal",
+                              "SAU sector = artisanal -> Artisanal (overrides gear)", "gear_to_fleettype.csv"), Catch_t)],
+    if (nrow(unmatched_gear) > 0) unmatched_gear[, .(Country, source = "SAU (pre-FDI years / non-EU countries)", raw_gear = sau_gear, sector_or_length = sau_gear_sector, FleetType,
+               rule = fifelse(FleetType == "Artisanal", "SAU sector = artisanal -> Artisanal (gear not in gear_to_fleettype.csv)",
+                              "gear not in gear_to_fleettype.csv -> Unclassified"), Catch_t)]), fill = TRUE),
+    error = function(e) NULL)
   mapped_all <- rbindlist(list(mapped[, .(Country, FG_num, FleetType, Catch_t)],
                                unmatched_gear[, .(Country, FG_num, FleetType, Catch_t)]),
                           use.names = TRUE, fill = TRUE)  # combine mapped and unclassified catch
@@ -2705,6 +2714,12 @@ if (!dir.exists(stecf_catches_dir)) {
       stecf_raw <- resolve_stecf_fleettype(stecf_raw, split_cols = c("total_live_weight_landed", "tot_discards_tonnes"))  # assign FleetType via the gear-code cascade
       message("[STECF FDI] vessel_length value(s) found: ", paste(sort(unique(stecf_raw$vessel_length)), collapse = ", "))
       stecf_raw[vessel_length %in% STECF_VESSEL_LENGTH_ARTISANAL, FleetType := "Artisanal"]  # small vessels are always Artisanal, overriding the gear-based assignment
+      ## Kept for fleet_assignment_REVIEW.csv (written at the end of 02)
+      .fa_stecf <- tryCatch(stecf_raw[, .(Country, source = "STECF FDI (Spain, France, Italy)", raw_gear = paste0(gear_code, " (", Metier, ")"),
+                                          sector_or_length = vessel_length, FleetType,
+                                          rule = fifelse(vessel_length %in% STECF_VESSEL_LENGTH_ARTISANAL, "small vessel -> Artisanal (overrides gear)",
+                                                 fifelse(FleetType == "Unclassified", "gear code not mapped -> Unclassified", "stecf_gear_to_fleettype.csv (metier gear code)")),
+                                          Catch_t = total_live_weight_landed)], error = function(e) NULL)
       stecf_raw <- collapse_to_register_fleets(stecf_raw, "total_live_weight_landed", "STECF FDI catches")
       unclassified_share_stecf <- round(100 * sum(stecf_raw[FleetType == "Unclassified"]$total_live_weight_landed, na.rm = TRUE) /
                                           sum(stecf_raw$total_live_weight_landed, na.rm = TRUE), 1)  # what share of landed weight is still Unclassified
@@ -7880,6 +7895,53 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
   assign("message", .orig_message, envir = .GlobalEnv)  # undo the message() mirror
   rm(.orig_message, envir = .GlobalEnv)
 }
+## =================================================================
+## Review tables: how catches were matched to FGs, split across FGs and
+## assigned to fleets. One row per decision, sorted so the ones to check
+## come first. Edit the reference csv named in each row to change it.
+## =================================================================
+tryCatch({
+  sp <- copy(resolved_final)
+  sp[, n_FG := uniqueN(FG_num[!is.na(FG_num)]), by = Species]
+  sp[, check := fifelse(status != "resolved" | is.na(FG_num), "NOT MATCHED - catch not used; add the species to the FG file",
+                fifelse(n_FG > 1, paste0("split over ", n_FG, " FGs (Split_weight)"),
+                fifelse(grepl("nei_keyword|taxonomy_|genus", match_method), "matched through a broader taxon - check", "ok")))]
+  sp[, priority := fifelse(grepl("^NOT MATCHED", check), 1L, fifelse(grepl("^split", check), 2L, fifelse(check == "ok", 4L, 3L)))]
+  sp <- sp[order(priority, -Catch, Species, -Split_weight)][, priority := NULL]
+  fwrite(sp, file.path(csv_out_dir, "catch_species_to_fg_REVIEW.csv"))
+  message("\n[Review] catch_species_to_fg_REVIEW.csv: ", uniqueN(sp$Species), " catch species; ",
+          sp[grepl("^NOT MATCHED", check), uniqueN(Species)], " not matched, ",
+          sp[grepl("^split", check), uniqueN(Species)], " split over several FGs.")
+}, error = function(e) message("[Review] catch_species_to_fg_REVIEW.csv not written - ", conditionMessage(e)))
+
+tryCatch({
+  parts <- list(
+    if (exists("resolved_final")) resolved_final[!is.na(FG_num), if (uniqueN(FG_num) > 1) .SD, by = Species][
+      , .(split_type = "species or NEI group over several FGs", item = Species, Country = NA_character_, Year = NA_integer_,
+          FG_num, FG_name, share = Split_weight, how = match_method)],
+    if (file.exists(file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv")))
+      fread(file = file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv"))[
+        , .(split_type = "Mollusca NEI by identified-catch share", item = "Mollusca NEI", Country, Year = as.integer(Year), FG_num, FG_name, share = Split_weight, how = match_method)],
+    if (file.exists(file.path(csv_out_dir, "nei_keyword_fcap_adjustments.csv")))
+      fread(file = file.path(csv_out_dir, "nei_keyword_fcap_adjustments.csv"))[
+        , .(split_type = "NEI share moved by the F cap", item = Species, Country = NA_character_, Year = NA_integer_, FG_num, FG_name, share = delta,
+            how = "nei_keyword_fcap (share change)")])
+  sl <- rbindlist(parts, fill = TRUE)
+  fwrite(sl[order(split_type, item, Country, Year, -share)], file.path(csv_out_dir, "catch_split_REVIEW.csv"))
+  message("[Review] catch_split_REVIEW.csv: ", nrow(sl), " split row(s) (", uniqueN(sl$item), " catch item(s)).")
+}, error = function(e) message("[Review] catch_split_REVIEW.csv not written - ", conditionMessage(e)))
+
+tryCatch({
+  fa <- rbindlist(list(if (exists(".fa_sau")) .fa_sau, if (exists(".fa_stecf")) .fa_stecf), fill = TRUE)
+  if (!nrow(fa)) stop("no fleet assignment recorded")
+  fa <- fa[, .(Catch_t = round(sum(Catch_t, na.rm = TRUE), 2)), by = .(Country, source, raw_gear, sector_or_length, FleetType, rule)]
+  fa[, pct_of_country_source := round(100 * Catch_t / sum(Catch_t), 2), by = .(Country, source)]
+  fa[, check := FleetType %in% c("Unclassified", "EXCLUDED") | grepl("not mapped|not in gear", rule)]
+  fwrite(fa[order(-check, Country, source, -Catch_t)], file.path(csv_out_dir, "fleet_assignment_REVIEW.csv"))
+  message("[Review] fleet_assignment_REVIEW.csv: ", nrow(fa), " gear x fleet assignment(s); ",
+          round(fa[FleetType == "Unclassified", sum(Catch_t)] / max(1, sum(fa$Catch_t)) * 100, 1), "% of the catch is Unclassified.")
+}, error = function(e) message("[Review] fleet_assignment_REVIEW.csv not written - ", conditionMessage(e)))
+
 sink()
 close(.run_log_con)
 options(error = NULL)   # do not leave the log handler in the R session

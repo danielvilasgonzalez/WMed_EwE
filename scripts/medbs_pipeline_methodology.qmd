@@ -1876,6 +1876,14 @@ Indices: $c$ country, $f$ FG, $l$ fleet (country × fleet type), $y$ year.
 - 24 FGs with species assigned have zero catch in the whole series (`fg_missing_ecopath_L_Di_REVIEW.csv`).
 :::
 
+### Review tables
+
+Three tables in `out_dir/fisheries/` show every matching decision of 02, with the rows to check first:
+
+- `catch_species_to_fg_REVIEW.csv`: each catch species (GFCM, FDI, SAU names) and the FG it went to, with `match_method` (common name, FAO name, genus, broader taxon, NEI keyword) and `Split_weight`. `check` says *NOT MATCHED* (that catch is not used; add the species to the FG file), *split over n FGs*, *matched through a broader taxon* or *ok*.
+- `catch_split_REVIEW.csv`: every catch item spread over several FGs and the share each FG gets: species and NEI groups, Mollusca NEI split by the identified mollusc catch of the same country and year, and the NEI shares moved by the F cap.
+- `fleet_assignment_REVIEW.csv`: each country × source × raw gear (SAU gear, or FDI metier gear code and vessel length) and the fleet it was assigned to, the rule used (`gear_to_fleettype.csv`, `stecf_gear_to_fleettype.csv`, small vessel or SAU artisanal sector → Artisanal, or not mapped → Unclassified) and its catch. Unmapped gears come first; add them to the gear table to assign them.
+
 ### Output plots
 
 ```{r}
