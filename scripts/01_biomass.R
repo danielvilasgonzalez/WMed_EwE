@@ -1,5 +1,6 @@
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -866,6 +867,20 @@ p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                 title = "MEDITS sample coverage by GSA", selected_areas = FILTER_AREAS,
                                 land_on_top = map_land_on_top)
 ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = PLOT_DPI, bg = "white")
+## The map is wider than tall, so the 10 x 8 canvas leaves white bands at
+## the top and bottom: trim fully white rows (keeps a small margin).
+.trim_png_rows <- function(path, pad = 25) {
+  if (!requireNamespace("png", quietly = TRUE) || !file.exists(path)) return(invisible(FALSE))
+  im <- png::readPNG(path)
+  rgb <- if (length(dim(im)) == 3) im[, , 1:min(3, dim(im)[3]), drop = FALSE] else array(im, c(dim(im), 1))
+  white <- apply(rgb, 1, function(r) all(r > 0.985))
+  keep <- which(!white)
+  if (!length(keep)) return(invisible(FALSE))
+  rows <- max(1, min(keep) - pad):min(nrow(im), max(keep) + pad)
+  png::writePNG(if (length(dim(im)) == 3) im[rows, , , drop = FALSE] else im[rows, , drop = FALSE], path)
+  invisible(TRUE)
+}
+.trim_png_rows(file.path(plot_dir, "survey_sample_coverage_map.png"))
 
 ## same coverage map, faceted by year - useful for spotting a specific
 ## year with a coverage gap that the all-years-combined map above would
@@ -876,6 +891,7 @@ p_sample_map_byyear <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_
                                        selected_areas = FILTER_AREAS, land_on_top = map_land_on_top)
 ggsave(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"), p_sample_map_byyear,
        width = 16, height = 12, dpi = PLOT_DPI, bg = "white")
+.trim_png_rows(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"))
 
 ## =================================================================
 ## STEP 3: Scientific name -> FG (direct match)
@@ -1159,7 +1175,12 @@ dt <- dt[AreaID %in% FILTER_AREAS]
 ## FG/FG_name columns dropped (confirmed not needed), species/q_FACTOR
 ## renamed. Filename extension (.csv) is still a guess - confirm this
 ## matches the actual file once it's placed in data/raw.
-CATCHABILITY_CSV_PATH <- resolve_pcloud_file(paste0(pcloud_dir,"/data/catchability_factors_ecotrans_medits_2021_spp.csv"), pcloud_dir, required = FALSE)
+## APPLY_CATCHABILITY (default TRUE) switches the correction on/off;
+## CATCHABILITY_FILE = your own table (columns ScientificName and q, or the
+## default file's species and q_FACTOR), e.g. uploaded on the page.
+if (!exists("APPLY_CATCHABILITY", envir = .GlobalEnv, inherits = FALSE)) APPLY_CATCHABILITY <- TRUE
+CATCHABILITY_CSV_PATH <- if (exists("CATCHABILITY_FILE", envir = .GlobalEnv, inherits = FALSE) && file.exists(CATCHABILITY_FILE)) CATCHABILITY_FILE else
+  resolve_pcloud_file(paste0(pcloud_dir,"/data/Complementary data/catchability_factors_ecotrans_medits_2021_spp.csv"), pcloud_dir, required = FALSE)
 
 ## Pelagic/planktonic/seagrass/algae FGs get q=1 (no catchability
 ## correction) regardless of anything catchability_table or the
@@ -1196,9 +1217,12 @@ if ("survey_exempt" %in% names(fg_raw)) {
   )
 }
 
-if (file.exists(CATCHABILITY_CSV_PATH)) {
-  catchability_raw <- fread(CATCHABILITY_CSV_PATH)
-  CATCHABILITY_TABLE <- catchability_raw[, .(ScientificName = species, q = q_FACTOR)]
+if (!isTRUE(APPLY_CATCHABILITY)) {
+  message("APPLY_CATCHABILITY = FALSE - no catchability correction (q = 1 for every species).")
+} else if (file.exists(CATCHABILITY_CSV_PATH)) {
+  catchability_raw <- fread(file = CATCHABILITY_CSV_PATH)
+  CATCHABILITY_TABLE <- if (all(c("ScientificName", "q") %in% names(catchability_raw))) catchability_raw[, .(ScientificName, q = as.numeric(q))] else
+    catchability_raw[, .(ScientificName = species, q = q_FACTOR)]
   message("Loaded catchability table: ", nrow(CATCHABILITY_TABLE), " entries from ", CATCHABILITY_CSV_PATH)
   ## species_taxonomy (built above, right after Step 4) is what makes
   ## the genus/order/class/phylum-level entries in this table (e.g.
@@ -1263,6 +1287,33 @@ if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
   p_outliers <- plot_outlier_diagnostic(dt_before_outliers, flagged_outliers)
   ggsave(file.path(plot_dir, "survey_outlier_diagnostic.png"), p_outliers,
          width = 10, height = 7, dpi = PLOT_DPI, bg = "white")
+
+  ## Before / after: mean haul density per FG and year with all hauls and
+  ## after the outliers are removed (simple mean over hauls, not the
+  ## stratified index - it shows how much each FG series moves).
+  ## survey_outlier_effect_by_fg_year.csv + plot, also in the validation PDF.
+  tryCatch({
+    .fgc <- intersect(c("FG_name", "FG"), names(dt))[1]
+    if (is.na(.fgc)) stop("no FG column in the haul data")
+    .bef <- dt_before_outliers[!is.na(get(.fgc)), .(before = mean(Density, na.rm = TRUE)), by = c(.fgc, "Year")]
+    .aft <- dt[!is.na(get(.fgc)), .(after = mean(fifelse(is.na(Density), 0, Density))), by = c(.fgc, "Year")]
+    .eff <- merge(.bef, .aft, by = c(.fgc, "Year"))
+    setnames(.eff, .fgc, "FG_name")
+    .eff[, change_pct := fifelse(before > 0, 100 * (after - before) / before, NA_real_)]
+    fwrite(.eff[order(FG_name, Year)], file.path(csv_out_dir, "survey_outlier_effect_by_fg_year.csv"))
+    .top <- .eff[, .(m = max(abs(change_pct), na.rm = TRUE)), by = FG_name][is.finite(m)][order(-m)][seq_len(min(12, .N)), FG_name]
+    .pl <- melt(.eff[FG_name %in% .top], id.vars = c("FG_name", "Year"), measure.vars = c("before", "after"),
+                variable.name = "series", value.name = "density")
+    p_out_eff <- ggplot(.pl, aes(Year, density, colour = series, linetype = series)) + geom_line() +
+      facet_wrap(~ FG_name, scales = "free_y") +
+      scale_colour_manual(values = c(before = "grey55", after = "#1b7f9e"),
+                          labels = c(before = "all hauls", after = "outliers removed")) +
+      scale_linetype_manual(values = c(before = "dashed", after = "solid"), labels = c(before = "all hauls", after = "outliers removed")) +
+      labs(title = "Effect of removing outlier hauls (12 FGs that change most)",
+           subtitle = "Mean haul density per year (survey density units, not stratified)", x = NULL, y = NULL, colour = NULL, linetype = NULL) +
+      theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+    ggsave(file.path(plot_dir, "survey_outlier_before_after.png"), p_out_eff, width = 12, height = 8, dpi = PLOT_DPI)
+  }, error = function(e) message("[Outliers] before/after plot skipped - ", conditionMessage(e)))
 }
 rm(dt_before_outliers)
 
@@ -2827,6 +2878,7 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   p_biomass_by_fg_source <- tryCatch({
     d <- fg_index_regional_combined[Year %in% YEAR_ECOPATH, .(mean_density = mean(mean_density, na.rm = TRUE),
                                                               biomass_source = biomass_source[1]), by = .(FG_num, FG_name)]
+    d <- d[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]   # not living biomass - left out of the plot
     d[, Tier := fcase(
       is.na(biomass_source), "Missing",
       grepl("^MISSING", biomass_source), "Missing",

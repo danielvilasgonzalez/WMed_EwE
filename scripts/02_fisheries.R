@@ -1,5 +1,6 @@
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -1544,7 +1545,7 @@ if (isTRUE(MOLLUSC_NEI_SPLIT) && nrow(ts_data$country_species_ts) > 0) {
   .mn <- .mollusc_nei_split(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES], "Country")
   if (!is.null(.mn)) {
     .mn_t <- merge(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES & grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)],
-                   .mn, by = c("Country", "Year"))[, .(t_per_yr = sum(Catch * Split_weight) / length(YEAR_ECOPATH)), by = FG_name]
+                   .mn, by = c("Country", "Year"), allow.cartesian = TRUE)[, .(t_per_yr = sum(Catch * Split_weight) / length(YEAR_ECOPATH)), by = FG_name]
     fwrite(.mn, file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv"))
     message("\n[Mollusc NEI] 'Marine molluscs nei' split by each country's identified mollusc catch of the same year (",
             paste(range(YEAR_ECOPATH), collapse = "-"), " mean, t/yr): ",
@@ -6106,7 +6107,7 @@ if (n_no_fleet_share > 0) {
           paste0(Country, " ", t, collapse = "; ")], ". Written to fleet_split_no_share_REVIEW.csv.")
   fwrite(fleet_split[is.na(prop_fleet), .(Catch_t = sum(Catch_t, na.rm = TRUE), n_rows = .N), by = .(Country, FG_num, Year)],
          file.path(csv_out_dir, "fleet_split_no_share_REVIEW.csv"))
-}
+} else unlink(file.path(csv_out_dir, "fleet_split_no_share_REVIEW.csv"))   # no stale copy from an earlier run
 fleet_split <- fleet_split[!is.na(prop_fleet)]  # drop rows with no fleet share at all (should be ~0 rows now - see WARNING above if not)
 
 ## Default: distribute the country-level catch/discard total by each
@@ -7095,6 +7096,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
             " - see effort_westmed_share_REVIEW.csv.")
     effort_by_fleet[, c("share_westmed", "share_mean") := NULL]
   } else if (length(.esc)) {
+    unlink(file.path(csv_out_dir, "effort_westmed_share_REVIEW.csv"))   # no stale copy from an earlier run
     message("\n[Effort] No GFCM division shares available - ", paste(.esc, collapse = ", "), " effort left national (overestimate).")
   }
   setorder(effort_by_fleet, Country, Sector, gear, Year)  # sort for readability

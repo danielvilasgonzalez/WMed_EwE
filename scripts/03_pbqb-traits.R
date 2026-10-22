@@ -2,6 +2,7 @@
 ## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
 ## run_pipeline_demo.R), find the folders on this computer: config.local.R,
 ## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
+ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
 if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
   d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
   if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")
@@ -2249,14 +2250,20 @@ fetch_fishlife <- function(taxonomy_dt) {
     parts <- strsplit(row$Species, " ")[[1]]
     if (length(parts) < 2) next
     
-    pred <- tryCatch({
+    ## one species per call: the pdf device is closed when THIS call ends
+    ## (an on.exit inside tryCatch only ran when the whole loop ended, so
+    ## every species left a device open -> "too many open devices" after
+    ## ~60 species, and return(NULL) left the loop early).
+    .fishlife_one <- function() {
       taxon_match <- match_taxon(row$Class, row$Order, row$Family, row$Genus, parts[2])
       if (is.null(taxon_match)) return(NULL)
       tmp_plot <- tempfile(fileext = ".pdf")
       grDevices::pdf(tmp_plot)
-      on.exit({ grDevices::dev.off(); unlink(tmp_plot) }, add = TRUE)
+      .dev <- grDevices::dev.cur()
+      on.exit({ if (.dev %in% grDevices::dev.list()) grDevices::dev.off(.dev); unlink(tmp_plot) }, add = TRUE)
       FishLife::Plot_taxa(taxon_match, mfrow = c(1, 1))
-    }, error = function(e) {
+    }
+    pred <- tryCatch(.fishlife_one(), error = function(e) {
       message("  FishLife lookup failed for ", row$Species, ": ", conditionMessage(e))
       NULL
     })

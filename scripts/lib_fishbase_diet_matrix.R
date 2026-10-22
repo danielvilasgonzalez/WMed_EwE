@@ -66,6 +66,14 @@ if (!exists("FB_DIET_MED_REGEX")) {
                               "greece|turkey|ebro|valencia|marseille|naples|genoa")
 }
 if (!exists("DIET_TAXON_SPLIT"))    DIET_TAXON_SPLIT    <- "equal"     # "equal" | "biomass"
+## FGs never assigned as prey by a broad match (a genus or higher rank, a
+## food category or WoRMS): no Mediterranean predator eats adult large
+## whales or monk seals; such items in stomachs are carcasses (scavenging).
+## A prey record naming the species itself is still kept. Phylum-level
+## matches on Chordata are skipped (they spread a fish or tunicate item
+## over every vertebrate FG, including whales and seabirds).
+if (!exists("DIET_PREY_EXCLUDE_FGS")) DIET_PREY_EXCLUDE_FGS <- c("Fin whale", "Sperm whale", "Monk seals")
+if (!exists("DIET_SKIP_RANK_VALUES")) DIET_SKIP_RANK_VALUES <- c("chordata", "vertebrata")
 if (!exists("DIET_CATEGORY_SPLIT")) DIET_CATEGORY_SPLIT <- "biomass"   # "biomass" | "equal"
 
 ## --- helpers -------------------------------------------------------
@@ -369,7 +377,8 @@ diet_resolve_prey <- function(keys, fg_ref, xwalk, fg_B, fg_universe,
     if (is.null(out) && nzchar(cl) && !early) {
       for (r in ranks) {
         val <- if (r == "Genus") unique(c(cl, sub(" .*", "", cl))) else cl
-        hit <- unique(ref[get(paste0(r, "_l")) %in% val, fg_name])
+        if (r %in% c("Class", "Phylum") && any(val %in% DIET_SKIP_RANK_VALUES)) next
+        hit <- setdiff(unique(ref[get(paste0(r, "_l")) %in% val, fg_name]), DIET_PREY_EXCLUDE_FGS)
         if (length(hit)) { out <- c(.split_w(hit, B, taxon_split), how = tolower(r)); break }
       }
     }
@@ -381,7 +390,7 @@ diet_resolve_prey <- function(keys, fg_ref, xwalk, fg_B, fg_universe,
         m <- xw[(level == lvl | level == "any") & vapply(pattern, function(p) grepl(p, txt, perl = TRUE), logical(1))]
         if (!nrow(m)) next
         row <- m[order(ord)][1]
-        tgt <- if (is.na(row$FG_names) || !nzchar(row$FG_names)) character(0) else intersect(trimws(strsplit(row$FG_names, ";", fixed = TRUE)[[1]]), fg_universe)
+        tgt <- if (is.na(row$FG_names) || !nzchar(row$FG_names)) character(0) else setdiff(intersect(trimws(strsplit(row$FG_names, ";", fixed = TRUE)[[1]]), fg_universe), DIET_PREY_EXCLUDE_FGS)
         out <- if (length(tgt)) c(.split_w(tgt, B, category_split), how = paste0("category ", lvl, " '", txt, "'"))
                else list(fg = NA_character_, w = NA_real_, how = paste0("excluded (non-food / not in model): ", lvl, " '", txt, "'"))
         break
