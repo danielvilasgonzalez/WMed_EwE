@@ -2,7 +2,32 @@
 ## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
 ## run_pipeline_demo.R), find the folders on this computer: config.local.R,
 ## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
-ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 14, plot.subtitle = 10, plot.caption = 9, axis.title = 11,
+            axis.text.x.bottom = if (dense) 8 else 10, axis.text.x.top = if (dense) 8 else 10,
+            axis.text.y.left = if (dense) 8 else 10, axis.text.y.right = if (dense) 8 else 10,
+            strip.text.x = if (dense) 8.5 else 11, strip.text.y = if (dense) 8.5 else 11,
+            legend.title = 11, legend.text = 10)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
   d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
   if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")

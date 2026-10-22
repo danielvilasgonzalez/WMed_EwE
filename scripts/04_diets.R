@@ -1,6 +1,31 @@
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
-ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 14, plot.subtitle = 10, plot.caption = 9, axis.title = 11,
+            axis.text.x.bottom = if (dense) 8 else 10, axis.text.x.top = if (dense) 8 else 10,
+            axis.text.y.left = if (dense) 8 else 10, axis.text.y.right = if (dense) 8 else 10,
+            strip.text.x = if (dense) 8.5 else 11, strip.text.y = if (dense) 8.5 else 11,
+            legend.title = 11, legend.text = 10)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -1561,16 +1586,17 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
       labs(title = "Diet composition matrix (Ecopath_diet)",
            subtitle = "Rows = predator FG, columns = prey FG, both in FG-number order (FG_WMed_2026.csv). Each row sums to ~1; colour = share of that prey in the predator's diet",
            x = "Prey FG", y = "Predator FG", fill = "Diet\nproportion") +
-      theme_minimal(base_size = 6) +
-      theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 5),
-            axis.text.y = element_text(size = 5), panel.grid = element_blank(), legend.position = "right",
-            strip.text.x = element_text(size = 5, angle = 90, hjust = 0), strip.text.y.left = element_text(size = 5, angle = 0, hjust = 1),
+      theme_minimal(base_size = 9) +
+      theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 6.5),
+            axis.text.y = element_text(size = 6.5), panel.grid = element_blank(), legend.position = "right",
+            plot.title = element_text(size = 14), plot.subtitle = element_text(size = 9),
+            strip.text.x = element_text(size = 7, angle = 90, hjust = 0), strip.text.y.left = element_text(size = 7, angle = 0, hjust = 1),
             strip.placement = "outside", panel.spacing = grid::unit(1, "pt"))
   }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_diet_matrix)) {
     n_fg_side <- nlevels(p_diet_matrix$data$prey)   # every FG of FG_WMed_2026.csv, also those with no diet rows
     ggsave(file.path(diets_plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
-           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
+           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = PLOT_DPI, bg = "white", limitsize = FALSE, readable = FALSE)   # one label per FG: own text sizes
     message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis, in ", diets_plot_dir, ").")
   }
   

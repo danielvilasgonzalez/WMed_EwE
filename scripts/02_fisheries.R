@@ -1,6 +1,31 @@
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
-ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)   # white background on every saved plot (theme_minimal has none)
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 14, plot.subtitle = 10, plot.caption = 9, axis.title = 11,
+            axis.text.x.bottom = if (dense) 8 else 10, axis.text.x.top = if (dense) 8 else 10,
+            axis.text.y.left = if (dense) 8 else 10, axis.text.y.right = if (dense) 8 else 10,
+            strip.text.x = if (dense) 8.5 else 11, strip.text.y = if (dense) 8.5 else 11,
+            legend.title = 11, legend.text = 10)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -7706,13 +7731,45 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     base_val <- Effort[which(!is.na(Effort) & Effort != 0)[1]]  # first non-NA, non-zero value for this Country x Fleet series
     if (is.na(base_val) || length(base_val) == 0) NA_real_ else Effort / base_val
   }, by = .(Country, Fleet)]
-  ggplot(d, aes(x = Year, y = Effort_idx, color = Fleet)) +
-    geom_line(linewidth = 0.4) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "grey60", linewidth = 0.3) +
-    facet_wrap(~ Country, scales = "free_y") +
-    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Effective effort (technology creep applied), each series divided by its first year (= 1). EU-3: FDI days (2014+) / hindcast (pre-2014) x creep. Morocco/Algeria/Tunisia: FishMIP kW x days (held flat after 2017, creep still applied)",
-         x = NULL, y = "Effort (index, first year = 1)", color = "Fleet") +
-    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+  ## Readable version: log scale (an index is a ratio: x2 and /2 sit at
+  ## the same distance from 1), one colour per gear shared by all panels,
+  ## each line labelled at its last year (no long legend to decode), and
+  ## the two dates where the effort source changes marked.
+  d <- d[is.finite(Effort_idx) & Effort_idx > 0]
+  d[, Fleet := gsub("_", " ", Fleet)]
+  lab <- d[, .SD[which.max(Year)], by = .(Country, Fleet)]
+  lab[, Fleet_lab := ifelse(nchar(Fleet) > 22, paste0(substr(Fleet, 1, 21), "\u2026"), Fleet)]
+  fleets <- sort(unique(d$Fleet))
+  pal <- setNames(grDevices::hcl.colors(length(fleets), "Dark 3"), fleets)
+  brk <- c(0.01, 0.03, 0.1, 0.25, 0.5, 1, 2, 4, 10)
+  yr_max <- max(d$Year)
+  ggplot(d, aes(x = Year, y = Effort_idx, colour = Fleet)) +
+    geom_vline(xintercept = 2014, linetype = "longdash", colour = "grey55", linewidth = 0.3) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey45", linewidth = 0.35) +
+    geom_vline(xintercept = 2017, linetype = "dotted", colour = "grey55", linewidth = 0.3) +
+    geom_line(linewidth = 0.7, alpha = 0.9) +
+    geom_point(data = lab, size = 1.3) +
+    (if (requireNamespace("ggrepel", quietly = TRUE))
+       ggrepel::geom_text_repel(data = lab, aes(label = Fleet_lab), size = 3.3, hjust = 0, direction = "y",
+                                nudge_x = 1, segment.size = 0.2, segment.colour = "grey70", min.segment.length = 0,
+                                xlim = c(yr_max + 0.5, NA), show.legend = FALSE)
+     else geom_text(data = lab, aes(label = Fleet_lab), size = 3.3, hjust = -0.1, check_overlap = TRUE, show.legend = FALSE)) +
+    scale_y_log10(breaks = brk, labels = function(x) format(x, drop0trailing = TRUE)) +
+    scale_x_continuous(breaks = function(l) { b <- pretty(c(min(d$Year), yr_max), n = 3); b[b <= yr_max] }, expand = expansion(mult = c(0.02, 0.32))) +
+    scale_colour_manual(values = pal, guide = "none") +
+    coord_cartesian(clip = "off") +
+    facet_wrap(~ Country, scales = "free_y", ncol = 3) +
+    labs(title = "Fishing effort by country and fleet (index, first year = 1)",
+         subtitle = paste0("Log scale: 2 = double, 0.5 = half the first-year effort. Technology creep included.\n",
+                           "Long-dashed line = 2014 (EU-3: hindcast before, STECF FDI days from 2014). ",
+                           "\nDotted line = 2017 (Morocco/Algeria/Tunisia FishMIP effort held flat after, creep still applied). ",
+                           "Fleets with zero effort are not drawn."),
+         x = NULL, y = "Effort index (log scale)") +
+    theme_minimal(base_size = 9) +
+    theme(plot.background = element_rect(fill = "white", colour = NA),
+          panel.grid.minor = element_blank(), panel.grid.major.x = element_line(colour = "grey92"),
+          strip.text = element_text(face = "bold", size = 10, hjust = 0),
+          plot.subtitle = element_text(size = 7.5, colour = "grey30"), panel.spacing = unit(1.2, "lines"))
 }, error = function(e) { message("[Validation plot 5] skipped - ", conditionMessage(e)); NULL })
 
 ## 6. Data-source coverage tile - Country x Year, colored by which
@@ -7807,7 +7864,7 @@ if (length(validation_plots) == 0) {
           " sources were found this run). Nothing written.")
 } else {
   pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)  # open the PDF device
-  for (p in validation_plots) print(p)  # draw each figure onto its own PDF page
+  for (p in validation_plots) print(.readable(p))  # each figure on its own PDF page, with the larger text
   dev.off()  # close the PDF device
   for (nm in names(validation_plots)) {
     ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = PLOT_DPI)  # also save each figure as its own PNG

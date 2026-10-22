@@ -1259,7 +1259,7 @@ dt <- match_nominate_subspecies_fg(dt, fg_lookup_safe)
 
 MEDITS species codes that are not in the MEDITS taxonomic list are assigned by hand in `medits_manual_overrides.csv` (`Complementary data/medits_reference_tables/`; columns `species_code`, `taxon_name`, `taxon_rank`). Add a row there to assign or correct a code; the run then matches that name to an FG like any other.
 
-### Stage 3 - Taxonomy fallback (genus through phylum)
+### Stage 3 - Taxonomy fallback (genus to class)
 
 For species with a resolved scientific name but no FG match, the taxonomy of the species is looked up in FishBase/SeaLifeBase and, when missing there, WoRMS [@worms2026; @chamberlain2023] (`taxonomy_source = "both"`, cached in `FISHBASE_TAXONOMY_CACHE_PATH` and `WORMS_TAXONOMY_CACHE_PATH`). Ranks are tried from the most specific: genus, family, order, class. Phylum is not used (too broad).
 
