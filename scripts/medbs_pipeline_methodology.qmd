@@ -74,46 +74,11 @@ table th, table td {
 ```
 
 ```{r}
-#| label: setup-copy-figures
+#| label: figure-helpers
 #| context: setup
 #| eval: true
 #| echo: false
 #| include: false
-
-## Folders on this laptop: wmed_paths.R (config.local.R, then config.R,
-## then the standard pCloud Drive location; see that file). This .qmd sits
-## in <git_dir>/scripts, and knitr runs in that folder.
-git_dir <- normalizePath("..")
-source(file.path(git_dir, "scripts", "wmed_paths.R"))
-.wp <- wmed_find_paths(git_dir)
-message("git_dir: ", .wp$git_dir, "\npcloud_dir: ", .wp$pcloud_dir, "\nout_dir: ", .wp$out_dir)
-
-## --- Regenerate the pipeline outputs before copying them (params$regenerate) ---
-## Runs run_pipeline_demo.R in a SEPARATE R process (Rscript), so the
-## pipeline's own clean start cannot touch this document's objects; folders
-## are found by wmed_paths.R as for a normal run. The full log of each script is
-## in out_dir as usual; a failed step stops the render with its message.
-.regen <- if (exists("params") && !is.null(params$regenerate)) params$regenerate else "none"
-if (!identical(.regen, "none")) {
-  .steps <- switch(.regen, validation = "5", all = "1:5",
-                   stop("params$regenerate must be \"none\", \"validation\" or \"all\" (got \"", .regen, "\")."))
-  .demo <- file.path(git_dir, "scripts", "run_pipeline_demo.R")
-  message("Regenerating pipeline outputs (", .regen, ", steps ", .steps, ") with ", .demo, " ...")
-  .old_wd <- setwd(file.path(git_dir, "scripts"))
-  .p <- function(x, default) if (!is.null(params[[x]])) as.character(params[[x]]) else default
-  .code <- paste0("CLEAN_START <- FALSE; RUN_STEPS <- ", .steps,
-                  "; MODEL_GSAS <- ", .p("model_gsas", "1:12"),
-                  "; MODEL_AREA_BASIS <- '", .p("model_area_basis", "whole_gsa"), "'",
-                  "; YEAR_ECOPATH <- ", .p("year_ecopath", "1994:1996"),
-                  "; TS_YEARS <- ", .p("ts_years", "1995:2023"),
-                  "; source('run_pipeline_demo.R')")
-  message("Pipeline call: ", .code)
-  .status <- system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(.code)))
-  setwd(.old_wd)
-  if (!identical(.status, 0L)) stop("run_pipeline_demo.R failed (exit status ", .status, ") - see the logs in out_dir.")
-  message("Pipeline outputs regenerated.")
-}
-
 ## --- Figures in the text -------------------------------------------------
 ## Each figure is loaded LIVE from out_dir when the page opens (the
 ## run-server chunk serves the file), so it always shows the latest run,
@@ -158,6 +123,49 @@ wm_figure <- function(id, caption, name, script_hint) {
   knitr::asis_output(sprintf('![%s](%s){#%s data-wmfile="%s" data-wmhint="%s" width="100%%"}\n\n',
                              caption, blank, id, rel, gsub('"', "'", script_hint)))
 }
+```
+
+```{r}
+#| label: setup-copy-figures
+#| context: setup
+#| eval: true
+#| echo: false
+#| include: false
+
+## Folders on this laptop: wmed_paths.R (config.local.R, then config.R,
+## then the standard pCloud Drive location; see that file). This .qmd sits
+## in <git_dir>/scripts, and knitr runs in that folder.
+git_dir <- normalizePath("..")
+source(file.path(git_dir, "scripts", "wmed_paths.R"))
+.wp <- wmed_find_paths(git_dir)
+message("git_dir: ", .wp$git_dir, "\npcloud_dir: ", .wp$pcloud_dir, "\nout_dir: ", .wp$out_dir)
+
+## --- Regenerate the pipeline outputs before copying them (params$regenerate) ---
+## Runs run_pipeline_demo.R in a SEPARATE R process (Rscript), so the
+## pipeline's own clean start cannot touch this document's objects; folders
+## are found by wmed_paths.R as for a normal run. The full log of each script is
+## in out_dir as usual; a failed step stops the render with its message.
+.regen <- if (exists("params") && !is.null(params$regenerate)) params$regenerate else "none"
+if (!identical(.regen, "none")) {
+  .steps <- switch(.regen, validation = "5", all = "1:5",
+                   stop("params$regenerate must be \"none\", \"validation\" or \"all\" (got \"", .regen, "\")."))
+  .demo <- file.path(git_dir, "scripts", "run_pipeline_demo.R")
+  message("Regenerating pipeline outputs (", .regen, ", steps ", .steps, ") with ", .demo, " ...")
+  .old_wd <- setwd(file.path(git_dir, "scripts"))
+  .p <- function(x, default) if (!is.null(params[[x]])) as.character(params[[x]]) else default
+  .code <- paste0("CLEAN_START <- FALSE; RUN_STEPS <- ", .steps,
+                  "; MODEL_GSAS <- ", .p("model_gsas", "1:12"),
+                  "; MODEL_AREA_BASIS <- '", .p("model_area_basis", "whole_gsa"), "'",
+                  "; YEAR_ECOPATH <- ", .p("year_ecopath", "1994:1996"),
+                  "; TS_YEARS <- ", .p("ts_years", "1995:2023"),
+                  "; source('run_pipeline_demo.R')")
+  message("Pipeline call: ", .code)
+  .status <- system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(.code)))
+  setwd(.old_wd)
+  if (!identical(.status, 0L)) stop("run_pipeline_demo.R failed (exit status ", .status, ") - see the logs in out_dir.")
+  message("Pipeline outputs regenerated.")
+}
+
 ```
 
 ## Configure and run the pipeline {#sec-configure}

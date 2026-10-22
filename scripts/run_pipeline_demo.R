@@ -181,6 +181,11 @@ FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the 
   message(sprintf("\n--- Step %d/5: %s %s---", i, script, note))
   .progress(sprintf("--- Step %d/5: %s", i, script))
   t <- Sys.time()
+  ## Each script sets options(error = ...) to write errors to its log; put
+  ## the session's own handler back afterwards, or every later error in this
+  ## R session (e.g. running a .qmd chunk) prints a stale "ERROR: ..." line.
+  .old_error_opt <- getOption("error")
+  on.exit(options(error = .old_error_opt), add = TRUE)
   tryCatch(source(file.path(git_dir, "scripts", script), local = globalenv()),
            error = function(e) {
              while (sink.number() > 0) sink()   # close the step's log so the error shows in the console

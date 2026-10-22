@@ -866,7 +866,7 @@ map_land_on_top <- (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "bbox")
 p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                 title = "MEDITS sample coverage by GSA", selected_areas = FILTER_AREAS,
                                 land_on_top = map_land_on_top)
-ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = PLOT_DPI, bg = "white")
+ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 5.5, dpi = PLOT_DPI, bg = "white")
 ## The map is wider than tall, so the 10 x 8 canvas leaves white bands at
 ## the top and bottom: trim fully white rows (keeps a small margin).
 .trim_png_rows <- function(path, pad = 25) {
