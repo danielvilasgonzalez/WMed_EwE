@@ -92,14 +92,6 @@ if (RUN_MODE == "westmed_default") {
   ## A value already set before this file is sourced wins (e.g. from
   ## medbs_pipeline_methodology.qmd's params, with CLEAN_START <- FALSE).
   .set_default <- function(name, value) if (!exists(name, envir = .GlobalEnv, inherits = FALSE)) assign(name, value, envir = .GlobalEnv)
-  ## DEMO_MODE (page switch "Quick demo run"): a small run for tests and
-  ## teaching - MEDITS 10-800 m area only (no AquaMaps download, ~10 GB),
-  ## stock assessments from the last download (no GFCM website check).
-  if (isTRUE(get0("DEMO_MODE", envir = .GlobalEnv, inherits = FALSE))) {
-    for (.nm in names(.demo <- list(MODEL_AREA_BASIS = "medits_10_800", APPLY_AQUAMAPS_DEPTH_ADJUSTMENT = FALSE, GFCM_SAF_UPDATE = FALSE)))
-      assign(.nm, .demo[[.nm]], envir = .GlobalEnv)
-    message("[DEMO_MODE] MEDITS 10-800 m area only, no AquaMaps depth extension, no GFCM website check.")
-  }
   .set_default("MODEL_GSAS",       1:12)
   .set_default("MODEL_AREA_BASIS", "whole_gsa")
   .set_default("YEAR_ECOPATH",     1994:1996)   # Ecopath baseline (01, 02, 03)
@@ -114,7 +106,6 @@ if (RUN_MODE == "westmed_default") {
   ##
   ## All scripts
   # FG_SPECIES_FILE               <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # species -> FG table (FG_number, FG_name, species, taxonomy)
-  # DEMO_MODE                     <- FALSE  # TRUE = quick run: MEDITS 10-800 m only, no AquaMaps, no GFCM website check
   # APPLY_CATCHABILITY            <- TRUE   # MEDITS catchability correction (q)
   # CATCHABILITY_FILE             <- "my_q.csv"   # own catchability table (ScientificName, q)
   # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed

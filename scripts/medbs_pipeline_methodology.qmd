@@ -328,8 +328,6 @@ tagList(
       conditionalPanel("input.catch_q",
         fileInput("catch_upload", "Own catchability table (CATCHABILITY_FILE, optional)", accept = ".csv", width = "100%",
                   placeholder = "csv with ScientificName and q")),
-      .switch("demo", "Quick demo run (DEMO_MODE)",
-              "For tests and teaching: MEDITS 10-800 m area only (no AquaMaps download), reuses the stock assessments already downloaded, no GFCM website check. Pick one or two GSAs.", FALSE),
       radioButtons("steps", "Scripts to run", inline = TRUE,
                    choices = c("All 01-05" = "1:5", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
 
@@ -662,16 +660,37 @@ observeEvent(input$custom_shp, {
   up <- input$custom_shp
   name <- gsub("[^A-Za-z0-9_-]", "_", if (nzchar(input$area_name)) input$area_name else "custom_region")
   dest <- file.path(.out_dir, "shapefiles", "custom", name)   # kept with the outputs, one folder per region
-  unlink(dest, recursive = TRUE); dir.create(dest, recursive = TRUE)
+  ## Files from earlier uploads for this region are kept, so the parts of a
+  ## shapefile can also be uploaded one after the other.
+  dir.create(dest, recursive = TRUE, showWarnings = FALSE)
   for (i in seq_len(nrow(up))) {
     if (grepl("\\.zip$", up$name[i], ignore.case = TRUE)) utils::unzip(up$datapath[i], exdir = dest, junkpaths = TRUE)
     else file.copy(up$datapath[i], file.path(dest, up$name[i]), overwrite = TRUE)
   }
-  f <- list.files(dest, "\\.(shp|geojson|json|gpkg|kml)$", full.names = TRUE, ignore.case = TRUE)
-  f <- f[order(!grepl("\\.shp$", f, ignore.case = TRUE))][1]
-  if (is.na(f)) { showNotification("No .shp, .geojson, .gpkg or .kml found in the upload.", type = "error"); return() }
-  if (grepl("\\.shp$", f, ignore.case = TRUE) && !all(file.exists(sub("\\.shp$", c(".shx", ".dbf"), f, ignore.case = TRUE)))) {
-    showNotification("A shapefile needs at least .shp, .shx and .dbf (and .prj for the CRS) - upload them together or as a .zip.", type = "error"); return() }
+  ## macOS zips carry "._name" / __MACOSX copies that are not real files
+  junk <- list.files(dest, "^\\._", full.names = TRUE, all.files = TRUE)
+  if (length(junk)) unlink(junk)
+  all_f <- list.files(dest, full.names = TRUE)
+  stem <- tolower(tools::file_path_sans_ext(basename(all_f))); ext <- tolower(tools::file_ext(all_f))
+  shp <- all_f[ext == "shp"]
+  if (length(shp)) {
+    ## the shapefile whose .shx and .dbf are also there (same name, any case)
+    ok <- vapply(shp, function(x) all(c("shx", "dbf") %in% ext[stem == tolower(tools::file_path_sans_ext(basename(x)))]), logical(1))
+    if (!any(ok)) {
+      have <- sort(unique(ext[stem == tolower(tools::file_path_sans_ext(basename(shp[1])))]))
+      showNotification(paste0("Shapefile '", basename(shp[1]), "': found ", paste0(".", have, collapse = ", "),
+                              "; still missing ", paste0(".", setdiff(c("shx", "dbf"), have), collapse = " and "),
+                              " (with the same name). Upload the missing part(s), or all parts together, or a .zip."),
+                       type = "error", duration = 12)
+      return()
+    }
+    f <- shp[ok][1]
+  } else {
+    f <- all_f[ext %in% c("geojson", "json", "gpkg", "kml")][1]
+    if (is.na(f)) { showNotification("No .shp, .geojson, .gpkg or .kml found in the upload.", type = "error"); return() }
+  }
+  if (grepl("\\.shp$", f, ignore.case = TRUE) && !"prj" %in% ext[stem == tolower(tools::file_path_sans_ext(basename(f)))])
+    showNotification("No .prj file: coordinates are assumed to be lon/lat (WGS84).", type = "warning", duration = 8)
   g <- tryCatch(sf::st_read(f, quiet = TRUE), error = function(e) { showNotification(conditionMessage(e), type = "error"); NULL })
   if (is.null(g)) return()
   if (is.na(sf::st_crs(g))) sf::st_crs(g) <- 4326 else g <- sf::st_transform(g, 4326)
@@ -750,8 +769,7 @@ config_code <- reactive({
     if (isTRUE(input$fill_b) && length(input$fill_years) == 2) sprintf("ECOPATH_B_FILL_YEARS <- %s", yr(input$fill_years)),
     if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", fg_path()),
     sprintf("APPLY_CATCHABILITY <- %s   # MEDITS catchability correction", tf(input$catch_q)),
-    if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", catch_path()),
-    if (isTRUE(input$demo)) "DEMO_MODE        <- TRUE    # quick run: MEDITS 10-800 m only, no AquaMaps, no GFCM website check")
+    if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", catch_path()))
   head <- c(sprintf("## WMed EwE pipeline settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
             "## Run from the scripts/ folder of the repo (folders found by wmed_paths.R).",
             "CLEAN_START      <- FALSE   # keep the settings below")
@@ -1780,7 +1798,7 @@ Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12, who
 
 | FG | Method | B | Sources | Assumptions (flagged in the code) |
 |---|---|---|---|---|
-| Posidonia | $B = D_{DW} / (DW{:}WW) \times A_{map} \times occ / A_{model}$, $D_{DW} = \sum_b A_b\, e^{a + b z_b} / \sum_b A_b$: leaf biomass fitted against depth ($\ln B = a + b z$) to the Western Med meadows in `posidonia_leaf_biomass_sites.csv` and averaged over the depth distribution of the mapped meadow (5 m bins); DW:WW = 0.2132; $A_{map}$ = EUSeaMap 2025 [@euseamap2025] meadow deeper than 10 m (or MEDISEH); $occ$ = 0.7 | ≈ 4 (run time) | site values: [@azcarate2023; @pergent1997] (Marseille, Ischia, 10–20 m); Nueva Tabarca reserve, [@romero1998] (left out, `POSIDONIA_MPA_WEIGHT` = 0); DW:WW 0.2132 [@mateo1996]; maps: EUSeaMap 2025 MB252 + MB2522 [@euseamap2025]; MEDISEH [@scardi2013] | marine-reserve meadows left out (small and denser than the regional mean); 6 values, mostly summer; occupancy 0.7 |
+| Posidonia | $B = D_{DW}\, f_{season} / (DW{:}WW) \times A_{map} \times occ / A_{model}$, $D_{DW} = \sum_b A_b\, e^{a + b z_b} / \sum_b A_b$: leaf biomass fitted against depth ($\ln B = a + b z$) to the Western Med meadows in `posidonia_leaf_biomass_sites.csv` and averaged over the depth distribution of the mapped meadow (5 m bins); DW:WW = 0.2132; $A_{map}$ = EUSeaMap 2025 [@euseamap2025] meadow deeper than 10 m (or MEDISEH); $occ$ = 0.7; $f_{season}$ = 0.62 = annual mean / late-summer leaf biomass (the site values are summer samples; leaves are 40 % of shoot biomass in summer and 14 % in winter, so winter leaf biomass ≈ 0.24 × summer and the annual mean ≈ (1 + 0.24)/2) [@alcoverro2001]. Without the EUSeaMap depth histogram the fit is not used: $D_{DW}$ = 280 g DW/m² (2–4 m) × depth factor 0.6 | ≈ 4.3 (2026-10-23) | site values: [@azcarate2023; @pergent1997] (Marseille, Ischia, 10–20 m); Nueva Tabarca reserve, [@romero1998] (left out, `POSIDONIA_MPA_WEIGHT` = 0); DW:WW 0.2132 [@mateo1996]; maps: EUSeaMap 2025 MB252 + MB2522 [@euseamap2025]; MEDISEH [@scardi2013] | marine-reserve meadows left out (small and denser than the regional mean); 6 values, mostly summer; occupancy 0.7; $f_{season}$ assumes constant below-ground biomass |
 | Cymodocea | $B = D_{DW} / (DW{:}WW) \times A_{map} \times occ / A_{model}$; $D_{DW}$ = weighted mean of the sites in `habitat_biomass_sites.csv` = (155.2 + 82.1)/2 = 118.7 g DW/m²; DW:WW 0.24; $A_{map}$ 88 km²; $occ$ 0.47; no depth factor | ≈ 0.025 | [@mascaro2009] (Menorca, Alfacs Bay, 0.8–10 m); [@guidetti2002] with leaf share from [@cancemi2002]; Urbinu lagoon [@agostini2003] left out (lagoon); DW:WW [@zavodnik1998]; area and cover *Informe Mar Balear 2020* [@marbalear2020] + EUSeaMap [@euseamap2025] | area from the Balearic ratio (ASSUMPTION); Guidetti site to verify |
 | Macroalgae | $B = D_{DW} \times [f_{calc}/0.7405 + (1-f_{calc})/0.1376] \times A_{map} \times occ / A_{model}$; $D_{DW}$ = mean of shallow (1,650) and deep (1,600) coralligenous algal biomass = 1,625 g DW/m²; $f_{calc}$ 0.7; 325.05 km²; occ 0.4; no depth factor | 0.79 | [@ballesteros2006] (pp. 140, 143); DW:WW [@haberman2023]; EMODnet macroalgae EOV [@emodnetmacroalgae2025] | calcareous share 0.7 (conservative; ~90% coralline cover); occupancy 0.4; area is the ICES ecoregion |
 | Corals and gorgonians | $B = \overline{\sum(N_{col} \times AFDM_{col})} \div 0.143 \times f_z \times A_{map} / A_{model}$; mean of Cap de Creus (4.87) and Gulf of Naples (3.09) = 3.98 g AFDM/m² → 27.8 g WW/m² (living tissue) × $f_z$ × 1,442.4 km² | ≈ 0.048 × $f_z$ | [@coppari2019; @ferrigno2026] (ROV, ~1.8 km²); AFDM:WW 0.143 [@ricciardi1998]; EUSeaMap MC151/MC251 | both sites partly protected; *E. cavolini* uses the *E. singularis* AFDM per colony; skeleton not counted |
