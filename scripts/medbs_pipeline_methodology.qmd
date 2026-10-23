@@ -338,7 +338,7 @@ tagList(
         fileInput("catch_upload", "Own catchability table (CATCHABILITY_FILE, optional)", accept = ".csv", width = "100%",
                   placeholder = "csv with ScientificName and q")),
       radioButtons("steps", "Scripts to run", inline = TRUE,
-                   choices = c("All 01-05" = "1:5", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
+                   choices = c("All 01-05" = "1:5", "Only 01 biomass (and maps)" = "1", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
 
   ## 4. Run ----------------------------------------------------------------
   .card("4", "Run", "\u25B6\ufe0f",
