@@ -1,6 +1,6 @@
 # WMed-EwEbuilder
 
-<img src="scripts/images/wmed_ewebuilder_logo.png" alt="WMed-EwEbuilder" width="560">
+<img src="scripts/images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" width="560">
 
 *Building Ecopath with Ecosim inputs for the Western Mediterranean: biomass, fisheries, P/B, Q/B, traits and diets.*
 
