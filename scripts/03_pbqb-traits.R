@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 03_pbqb-traits.R
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
 ## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
 ## run_pipeline_demo.R), find the folders on this computer: config.local.R,

@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: run_pipeline_demo.R
 ## =================================================================
 ## run_pipeline_demo.R
 ##
@@ -35,7 +37,7 @@ options(warn = 1)
 ## outputs already on disk (used by medbs_pipeline_methodology.qmd).
 if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
 
-RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
+RUN_MODE <- "westmed_default"   # Western Mediterranean (GSAs 1-12, or a custom region inside them)
 
 ## ---- 1. Paths ------------------------------------------------------
 ## out_dir    = writable output folder (local to each laptop)
@@ -142,19 +144,8 @@ if (RUN_MODE == "westmed_default") {
   message("\n=== Running the Western Med pipeline: GSAs ", paste(MODEL_GSAS, collapse = ", "), " (", MODEL_AREA_BASIS, "), Ecopath ",
           paste(range(YEAR_ECOPATH), collapse = "-"), ", Ecosim ", paste(range(TS_YEARS), collapse = "-"), " ===\n")
 
-} else if (RUN_MODE == "custom_example") {
-  ## Example of another region / period (Adriatic GSAs 17-18).
-  MODEL_GSAS       <- 17:18
-  MODEL_AREA_BASIS <- "whole_gsa"
-  TARGET_COUNTRIES_OVERRIDE <- c("Italy", "Croatia", "Slovenia")   # 02_fisheries.R
-  YEAR_ECOPATH     <- 2005:2007                            # same baseline for 01, 02, 03
-  TS_YEARS         <- 2000:2020                            # 01_biomass.R
-  START_YEAR       <- 2000                                 # 02_fisheries.R
-  END_YEAR         <- 2020
-  message("\n=== Running a CUSTOM region (GSA ", paste(MODEL_GSAS, collapse = ", "), ", ",
-          START_YEAR, "-", END_YEAR, ") ===\n")
 } else {
-  stop("Unknown RUN_MODE '", RUN_MODE, "' - use 'westmed_default' or 'custom_example'.")
+  stop("Unknown RUN_MODE '", RUN_MODE, "' - use 'westmed_default' (catch data cover the Western Mediterranean only).")
 }
 ## ---- Custom region (AREA_MODE = "custom", set on the page) ------------
 ## All five steps run for the region, with every output in out_dir/<AREA_NAME>:

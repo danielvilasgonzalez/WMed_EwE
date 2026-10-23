@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 01_biomass.R
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
 ## Every saved plot: white background and text no smaller than the sizes

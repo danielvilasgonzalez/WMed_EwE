@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_fishbase_diet_matrix.R
 ## =================================================================
 ## lib_fishbase_diet_matrix.R - LIBRARY FILE, sourced by 04_diets.R.
 ## Builds EwE functional-group (FG) diet matrices from two external

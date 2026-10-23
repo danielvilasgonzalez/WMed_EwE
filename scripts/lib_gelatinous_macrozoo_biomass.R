@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_gelatinous_macrozoo_biomass.R
 ## =================================================================
 ## lib_gelatinous_macrozoo_biomass.R - LIBRARY FILE, not a pipeline step.
 ## Sourced by 01b_biomass_unsurveyed.R.

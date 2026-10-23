@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_gfcm_saf_online.R
 ## =================================================================
 ## lib_gfcm_saf_online.R
 ## Created by: Daniel Vilas

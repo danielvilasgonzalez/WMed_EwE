@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: phyto.R
 # ============================================================
 # PHYTOPLANKTON BIOMASS
 # WESTERN MEDITERRANEAN

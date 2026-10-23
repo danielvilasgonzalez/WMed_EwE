@@ -1,6 +1,6 @@
 ---
-title: "Inputs for Western Mediterranean EwE models"
-subtitle: "Biomass, catch, effort, P/B, Q/B, diets and validation for Ecopath with Ecosim, built from surveys, fisheries data and the literature"
+title: "WMed-EwEbuilder"
+subtitle: "Building Ecopath with Ecosim inputs for the Western Mediterranean: biomass, fisheries, P/B, Q/B, traits and diets, from survey, fisheries and literature data to the Ecopath baseline and the Ecosim time series (GSAs 1-12 or a custom region inside them)"
 author: "Daniel Vilas"
 date: today
 bibliography: references.bib
@@ -784,7 +784,7 @@ config_code <- reactive({
     if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", fg_path()),
     sprintf("APPLY_CATCHABILITY <- %s   # MEDITS catchability correction", tf(input$catch_q)),
     if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", catch_path()))
-  head <- c(sprintf("## WMed EwE pipeline settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
+  head <- c(sprintf("## WMed-EwEbuilder settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
             "## Run from the scripts/ folder of the repo (folders found by wmed_paths.R).",
             "CLEAN_START      <- FALSE   # keep the settings below")
   if (identical(input$area_mode, "custom")) {

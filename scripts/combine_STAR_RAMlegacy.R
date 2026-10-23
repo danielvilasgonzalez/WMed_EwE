@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: combine_STAR_RAMlegacy.R
 ## --- Reset any logging left over from a previous run in this R session -
 ## Each script replaces message() with a version that also writes to its
 ## log file. If R restores an old workspace (.RData) or a previous run
