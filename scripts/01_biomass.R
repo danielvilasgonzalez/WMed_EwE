@@ -4246,8 +4246,19 @@ if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) tryCa
     if ("EE_input" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", EE_input := i.EE_wm]
     if ("Reference" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", Reference := paste0(i.how, " | Western Med source: ", substr(i.Ref_wm, 1, 300))]
     upsert_workbook_sheets(list(Ecopath_B = .b_reg), .wb_reg)
-    fwrite(.from[, .(FG_num, FG_name, habitat_map = hab, B_westmed_t_km2 = B_wm, B_region_t_km2 = B_region, how)],
+    ## A region smaller than a GSA is the case where the Western Med
+    ## average per km2 is least likely to hold (local habitat, depth range
+    ## and coast decide what lives there): flag every borrowed FG for review.
+    .min_gsa <- if (exists("custom_gsa_overlap") && !is.null(custom_gsa_overlap)) min(custom_gsa_overlap$gsa_area_km2) else NA_real_
+    .small <- is.finite(.min_gsa) && MODEL_AREA_KM2 < .min_gsa
+    .from[, review := fifelse(is.na(hab), fifelse(.small, "REVIEW: region smaller than a GSA - the Western Med density per km2 may be biased here",
+                                                  "check: Western Med density per km2 assumed"), "habitat map share (check the map covers the region)")]
+    fwrite(.from[, .(FG_num, FG_name, habitat_map = hab, B_westmed_t_km2 = B_wm, B_region_t_km2 = B_region, review, how)],
            file.path(csv_out_dir, "custom_fg_biomass_from_westmed_REVIEW.csv"))
+    if (.small) message("\n[Custom region] WARNING: the region (", round(MODEL_AREA_KM2), " km2) is smaller than the smallest GSA it overlaps (",
+                        round(.min_gsa), " km2). The ", sum(is.na(.from$hab)), " FG(s) that took the Western Med density per km2 (megafauna, plankton,",
+                        " groups MEDITS does not sample) may be biased for an area this small - review them in custom_fg_biomass_from_westmed_REVIEW.csv",
+                        " and replace with local values where you have them.")
     message("[Custom region] ", nrow(.from), " FG(s) without survey biomass filled from the Western Med run (custom_fg_biomass_from_westmed_REVIEW.csv):\n",
             paste(sprintf("  %-32s %10.4g t/km2  %s", substr(.from$FG_name, 1, 32), .from$B_region, substr(.from$how, 1, 90)), collapse = "\n"))
 

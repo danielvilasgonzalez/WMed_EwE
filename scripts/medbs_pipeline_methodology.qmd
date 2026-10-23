@@ -1432,6 +1432,11 @@ $$
 where $C_g$ is the catch (t/year) reported for GSA $g$, $A_g$ its sea area (km²), $G$ the GSAs used, $c_{region}$ the catch per km² applied in the region (Ecopath_L, Ecopath_Di, F) and $A_{region}$ the region's model area, so $C_{region}$ is the region's total catch (`region_scale` = $A_{region} / \sum_{g \in G} A_g$). ASSUMPTION: catch per km² is the same inside the region as in its GSAs; a region on a fishing ground (or in a closed area) will differ.
 - **P/B, Q/B, diets, validation (03–05)** read the region's workbook and files, so they follow its biomass and species composition.
 
+::: {.callout-warning}
+### Review the borrowed biomass when the region is smaller than a GSA
+The FGs filled from the Western Med run (megafauna, plankton, groups MEDITS does not sample) assume the Western Med density per km² holds in the region. The smaller the region, the less likely that is: a coastal bay, a canyon or an offshore bank can hold much more or much less of these groups than the Western Med average. When the region is smaller than the smallest GSA it overlaps, 01 prints a warning and marks these FGs *REVIEW* in `custom_fg_biomass_from_westmed_REVIEW.csv`, and 05 counts them in `validation_summary_ALL.csv`. Replace them with local values where you have them. Their pedigree is 0.2 (from another area) and the mapped habitats 0.4, so the pedigree plot shows them too.
+:::
+
 ---
 
 ## Per-haul density and corrections {#sec-density}
@@ -2133,6 +2138,8 @@ Link (2010) suggests biomass should fall by roughly 5–10 % per TL on the log s
 
 ### Data pedigree
 
+**How to read it.** The pedigree says how much each input can be trusted, not whether it is right. The higher the index, the closer the data are to a direct, local measurement of that FG in the model area; the lower, the more the value is estimated (by Ecopath itself, an empirical equation or a guess) or taken from somewhere else (another EwE model, another region, the whole Western Med). Low values are where new data would improve the model most, and where Ecopath balancing and Ecosim fitting should be allowed to move a value most (EwE uses the pedigree for that, e.g. in Monte Carlo runs). A catch-all score per FG hides which input is weak, so look at the per-input tiles, not only $P$.
+
 Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopath) to 1 (local, high-precision data), following the EwE pedigree categories [@christensen2004; @christensen2008]. The source is read from the workbook and matched to a category by the rules below (first match wins; edit `PEDIGREE_RULES`, or point `PEDIGREE_RULES_FILE` to a CSV with columns `input, pattern, index, category`).
 
 | Input | Source in the workbook | Category | Index |
@@ -2150,6 +2157,8 @@ Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopat
 | Diet | MAISHA, 1–4 Mediterranean studies | Quantitative but limited | 0.7 |
 | Diet | MAISHA, ≥ 5 Mediterranean studies | Quantitative, detailed | 1.0 |
 | Catch | FDI / GFCM landings | National statistics | 0.7 |
+| B (custom region) | Western Med habitat biomass × share of the habitat map inside the region | Approximate | 0.4 |
+| B (custom region) | Western Med density per km² (megafauna, plankton, groups MEDITS does not sample) | From another area | 0.2 |
 
 MEDITS biomass is classed as low precision because it depends on an assumed catchability and on the swept-area expansion (ASSUMPTION; it could be argued up to 1.0 for well-sampled demersal fish). The overall index is
 

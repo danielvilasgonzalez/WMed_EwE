@@ -1284,6 +1284,10 @@ validation_plots[["15_prebal"]] <- tryCatch({
 if (!exists("PEDIGREE_RULES", envir = .GlobalEnv, inherits = FALSE)) PEDIGREE_RULES <- rbindlist(list(
   ## Biomass (Ecopath_B Reference)
   data.table(input = "B", pattern = "^__NA_B__$",                 index = 0.0, category = "Estimated by Ecopath (EE fixed)"),
+  ## custom region (01): values borrowed from the Western Med run
+  data.table(input = "B", pattern = "^habitat map:",               index = 0.4, category = "Approximate (Western Med habitat biomass x mapped share in the region)"),
+  data.table(input = "B", pattern = "^no .* mapped inside the region", index = 0.4, category = "Approximate (habitat not mapped in the region, B = 0)"),
+  data.table(input = "B", pattern = "^Western Med density",        index = 0.2, category = "From another area (Western Med density per km2)"),
   data.table(input = "B", pattern = "^marine megafauna",           index = 0.4, category = "Approximate or indirect method (field density x body mass)"),
   data.table(input = "B", pattern = "^benthic habitat",            index = 0.4, category = "Approximate or indirect method (habitat cover x site density)"),
   data.table(input = "B", pattern = "^primary producer|ISIMIP",    index = 0.0, category = "From other model (ISIMIP ocean model)"),
@@ -1357,6 +1361,16 @@ pedigree <- tryCatch({
 }, error = function(e) { message("[05_validation.R] Pedigree skipped - ", conditionMessage(e)); NULL })
 .add_summary_row("Data pedigree per FG and input (pedigree_REVIEW.csv)", file.path(csv_out_dir, "pedigree_REVIEW.csv"),
                  if (is.null(pedigree)) NA_integer_ else pedigree[category == "Not classified - add a rule" | (is.finite(index) & index < 0.3), .N])
+## (f) Custom region: FGs whose biomass was borrowed from the Western Med run
+.cust_p <- file.path(out_dir, "biomass", "custom_fg_biomass_from_westmed_REVIEW.csv")
+if (file.exists(.cust_p)) {
+  .cust <- tryCatch(fread(file = .cust_p), error = function(e) NULL)
+  .add_summary_row("Custom region: biomass borrowed from the Western Med run (custom_fg_biomass_from_westmed_REVIEW.csv)", .cust_p,
+                   if (is.null(.cust)) NA_integer_ else .cust[grepl("^REVIEW", review), .N])
+  if (!is.null(.cust) && any(grepl("^REVIEW", .cust$review)))
+    message("[05_validation.R] Custom region smaller than a GSA: ", .cust[grepl("^REVIEW", review), .N],
+            " FG(s) use the Western Med density per km2 and may be biased - review custom_fg_biomass_from_westmed_REVIEW.csv.")
+}
 validation_plots[["16_pedigree"]] <- tryCatch({
   if (is.null(pedigree)) stop("no pedigree")
   d <- copy(pedigree)
