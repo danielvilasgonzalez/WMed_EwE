@@ -2156,7 +2156,8 @@ Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopat
 | Diet | FishBase DIETITEMS (quantitative, other areas) | Quantitative, other systems | 0.5 |
 | Diet | MAISHA, 1–4 Mediterranean studies | Quantitative but limited | 0.7 |
 | Diet | MAISHA, ≥ 5 Mediterranean studies | Quantitative, detailed | 1.0 |
-| Catch | FDI / GFCM landings | National statistics | 0.7 |
+| L | FDI / GFCM landings | National statistics | 0.7 |
+| Di | Landings × discard ratio (FishMIP, Mediterranean-wide; FDI from 2014) | Approximate | 0.4 |
 | B (custom region) | Western Med habitat biomass × share of the habitat map inside the region | Approximate | 0.4 |
 | B (custom region) | Western Med density per km² (megafauna, plankton, groups MEDITS does not sample) | From another area | 0.2 |
 
@@ -2166,7 +2167,7 @@ $$
 P = \frac{1}{n}\sum_{i=1}^{n} \frac{1}{J_i}\sum_{j=1}^{J_i} I_{ij}
 $$
 
-where $I_{ij}$ is the index of input $j$ for FG $i$, $J_i$ the number of inputs with an index for FG $i$ and $n$ the number of FGs. On the 2026-10-22 run, $P \approx 0.65$. Results per FG are in `pedigree_REVIEW.csv`; the summary row counts sources not matched by any rule plus inputs with index < 0.3.
+where $I_{ij}$ is the index of input $j$ for FG $i$, $J_i$ the number of inputs with an index for FG $i$ and $n$ the number of FGs. On the 2026-10-22 run, $P \approx 0.65$. The indices are also written to the **Pedigree** sheet of `ecopath_ecosim_inputs.xlsx` (one row per FG, columns B, L, Di, PB, QB, Diet and the mean, ready to copy into the EwE pedigree table). Details per FG are in `pedigree_REVIEW.csv`; the summary row counts sources not matched by any rule plus inputs with index < 0.3.
 
 ### Zooplankton field check (block 11)
 

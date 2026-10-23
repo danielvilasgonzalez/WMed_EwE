@@ -1306,8 +1306,12 @@ if (!exists("PEDIGREE_RULES", envir = .GlobalEnv, inherits = FALSE)) PEDIGREE_RU
   data.table(input = "Diet", pattern = "FOODITEMS",                       index = 0.2, category = "Qualitative, prey presence only (FishBase FOODITEMS)"),
   data.table(input = "Diet", pattern = "still_missing|^$",                index = 0.0, category = "General knowledge / no data"),
   ## Catch (Ecopath_L landings)
-  data.table(input = "Catch", pattern = "^landed$",                       index = 0.7, category = "National statistics (FDI / GFCM landings)"),
-  data.table(input = "Catch", pattern = "^none$",                         index = NA_real_, category = "No catch recorded")
+  data.table(input = "L", pattern = "^landed$",                           index = 0.7, category = "National statistics (FDI / GFCM landings)"),
+  data.table(input = "L", pattern = "^none$",                             index = NA_real_, category = "No landings recorded"),
+  ## Discards: landings x discard ratio (FishMIP, Mediterranean-wide, by FG;
+  ## STECF FDI reported discards from 2014) - an indirect estimate
+  data.table(input = "Di", pattern = "^discarded$",                       index = 0.4, category = "Approximate (landings x discard ratio)"),
+  data.table(input = "Di", pattern = "^none$",                            index = NA_real_, category = "No discards recorded")
 ))
 if (exists("PEDIGREE_RULES_FILE", envir = .GlobalEnv, inherits = FALSE) && file.exists(PEDIGREE_RULES_FILE))
   PEDIGREE_RULES <- fread(file = PEDIGREE_RULES_FILE)
@@ -1337,14 +1341,17 @@ pedigree <- tryCatch({
     dp <- fread(file = dp_path)
     merge(dp[, .(FG_name, input = "Diet", source = paste(diet_source, diet_ref))], bb[, .(FG_num, FG_name)], by = "FG_name")
   } else NULL
-  lnd <- if ("Ecopath_L" %in% wb_sheets) as.data.table(openxlsx::read.xlsx(ECOPATH_WORKBOOK_PATH, sheet = "Ecopath_L")) else NULL
-  ped_C <- if (is.null(lnd)) NULL else {
-    fcols <- setdiff(names(lnd), c("FG_num", "FG_name"))
-    tot <- rowSums(as.matrix(lnd[, lapply(.SD, function(x) suppressWarnings(as.numeric(x))), .SDcols = fcols]), na.rm = TRUE)
-    data.table(FG_num = as.integer(lnd$FG_num), input = "Catch", source = fifelse(tot > 0, "landed", "none"))
+  .fleet_total <- function(sheet, inp, word) {
+    if (!sheet %in% wb_sheets) return(NULL)
+    x <- as.data.table(openxlsx::read.xlsx(ECOPATH_WORKBOOK_PATH, sheet = sheet))
+    fcols <- setdiff(names(x), c("FG_num", "FG_name"))
+    tot <- rowSums(as.matrix(x[, lapply(.SD, function(v) suppressWarnings(as.numeric(v))), .SDcols = fcols]), na.rm = TRUE)
+    data.table(FG_num = as.integer(x$FG_num), input = inp, source = fifelse(tot > 0, word, "none"))
   }
-  allp <- rbindlist(list(ped_B[, .(FG_num, input, source)], ped_PQ, ped_D[, .(FG_num, input, source)], ped_C), fill = TRUE)
-  allp[, rule_input := fcase(input == "B", "B", input %in% c("P/B", "Q/B"), "PBQB", input == "Diet", "Diet", input == "Catch", "Catch")]
+  ped_L  <- .fleet_total("Ecopath_L",  "L",  "landed")
+  ped_Di <- .fleet_total("Ecopath_Di", "Di", "discarded")
+  allp <- rbindlist(list(ped_B[, .(FG_num, input, source)], ped_PQ, ped_D[, .(FG_num, input, source)], ped_L, ped_Di), fill = TRUE)
+  allp[, rule_input := fcase(input == "B", "B", input %in% c("P/B", "Q/B"), "PBQB", input == "Diet", "Diet", input == "L", "L", input == "Di", "Di")]
   allp[, c("index", "category") := .pedigree_of(rule_input[1], source), by = rule_input]
   allp <- merge(allp, bb[, .(FG_num, FG_name)], by = "FG_num", all.x = TRUE)
   allp <- allp[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]
@@ -1352,6 +1359,24 @@ pedigree <- tryCatch({
   setcolorder(allp, c("FG_num", "FG_name", "input", "index", "category", "source"))
   allp[, rule_input := NULL]
   fwrite(allp[order(FG_num, input)], file.path(csv_out_dir, "pedigree_REVIEW.csv"))
+  ## Pedigree sheet in ecopath_ecosim_inputs.xlsx: one row per FG, one
+  ## column per input (index 0-1, EwE pedigree categories), in the order of
+  ## the EwE pedigree table; categories and sources in pedigree_REVIEW.csv.
+  tryCatch({
+    .w <- dcast(allp[, .(FG_num, input = factor(input, levels = c("B", "L", "Di", "P/B", "Q/B", "Diet")), index)],
+                FG_num ~ input, value.var = "index", drop = FALSE)
+    setnames(.w, c("P/B", "Q/B"), c("PB", "QB"), skip_absent = TRUE)
+    .w <- merge(bb[, .(FG_num, FG_name)], .w, by = "FG_num", all.x = TRUE)
+    .w[, Mean_index := round(rowMeans(as.matrix(.SD), na.rm = TRUE), 2), .SDcols = intersect(c("B", "L", "Di", "PB", "QB", "Diet"), names(.w))]
+    .w[!is.finite(Mean_index), Mean_index := NA_real_]
+    setcolorder(.w, intersect(c("FG_num", "FG_name", "B", "L", "Di", "PB", "QB", "Diet", "Mean_index"), names(.w)))
+    .wb <- openxlsx::loadWorkbook(ECOPATH_WORKBOOK_PATH)
+    if ("Pedigree" %in% names(.wb)) openxlsx::removeWorksheet(.wb, "Pedigree")
+    openxlsx::addWorksheet(.wb, "Pedigree")
+    openxlsx::writeData(.wb, "Pedigree", .w[order(FG_num)])
+    openxlsx::saveWorkbook(.wb, ECOPATH_WORKBOOK_PATH, overwrite = TRUE)
+    message("[05_validation.R] Pedigree sheet written to ", basename(ECOPATH_WORKBOOK_PATH), " (columns B, L, Di, PB, QB, Diet; index 0-1).")
+  }, error = function(e) message("[05_validation.R] Pedigree sheet not written - ", conditionMessage(e)))
   ## Overall pedigree index P = (1/n) * sum_i sum_j I_ij / J_i  (mean over FGs of the mean index over inputs)
   fg_mean <- allp[is.finite(index), .(mean_index = mean(index)), by = .(FG_num, FG_name)]
   message("[05_validation.R] Pedigree: overall index = ", round(mean(fg_mean$mean_index), 2),
@@ -1375,12 +1400,12 @@ validation_plots[["16_pedigree"]] <- tryCatch({
   if (is.null(pedigree)) stop("no pedigree")
   d <- copy(pedigree)
   d[, FG_lab := factor(paste(FG_num, FG_name), levels = rev(unique(paste(FG_num, FG_name)[order(FG_num)])))]
-  d[, input := factor(input, levels = c("B", "P/B", "Q/B", "Diet", "Catch"))]
+  d[, input := factor(input, levels = c("B", "L", "Di", "P/B", "Q/B", "Diet"))]
   p <- ggplot(d, aes(input, FG_lab, fill = index)) + geom_tile(colour = "white") +
     geom_text(aes(label = ifelse(is.finite(index), sprintf("%.1f", index), "")), size = 1.8) +
     scale_fill_gradient(low = "#f4c7a1", high = "#2b7a78", limits = c(0, 1), na.value = "grey90") +
     labs(title = "Data pedigree by FG and input (EwE pedigree index)",
-         subtitle = "0 = estimated by Ecopath / no data; 0.2 = other model; 0.4-0.5 = indirect or empirical; 0.7 = sampling or national statistics; 1 = local detailed data. Grey = no catch.",
+         subtitle = "0 = estimated by Ecopath / no data; 0.2 = other model; 0.4-0.5 = indirect or empirical; 0.7 = sampling or national statistics; 1 = local detailed data. Grey = no landings or discards.",
          x = NULL, y = NULL, fill = "Index") + theme_minimal(base_size = 6)
   p
 }, error = function(e) { message("[05_validation.R plot] Pedigree skipped - ", conditionMessage(e)); NULL })
