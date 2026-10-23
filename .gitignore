@@ -71,3 +71,4 @@ scripts/qmd_out_dir.txt
 # folders on each computer (written by wmed_paths.R / the qmd page)
 config.local.R
 scripts/config.local.R
+scripts/medbs_pipeline_methodology.html
