@@ -74,6 +74,22 @@ table th, table td {
 ```
 
 ```{r}
+#| label: header-logos
+#| eval: true
+#| echo: false
+## Logos under the title: the EwE software (images/ewe_logo.png, if present)
+## and the iMARES group (images/imares_logo.png). Add or replace the image
+## files in scripts/images/; a missing file is simply not shown.
+.logo <- function(f, alt, href, h) if (file.exists(file.path("images", f)))
+  sprintf('<a href="%s" target="_blank" rel="noopener"><img src="images/%s" alt="%s" style="height:%dpx;width:auto"></a>', href, f, alt, h) else ""
+knitr::asis_output(paste0(
+  '<div class="wm-logos" style="display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;margin:.25rem 0 1.5rem">',
+  .logo("ewe_logo.png", "Ecopath with Ecosim", "https://ecopath.org", 70),
+  .logo("imares_logo.png", "iMARES - Integrated Marine Ecosystem Assessments", "https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments", 90),
+  '</div>'))
+```
+
+```{r}
 #| label: figure-helpers
 #| context: setup
 #| eval: true
