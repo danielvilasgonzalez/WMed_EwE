@@ -2079,7 +2079,7 @@ Outputs: `diet/Metaweb/`, `diet/MAISHA/` and `diet/FishBase/` (each source alone
 #| label: show-fig-diet-matrix-heatmap
 #| eval: true
 #| echo: false
-wm_figure("fig-diet-matrix-heatmap", r"---(Predator x prey Functional Group diet-composition matrix.)---", "diet_matrix_heatmap.png", r"---(04_diets.R)---")
+wm_figure("fig-diet-matrix-heatmap", r"---(Diet-composition matrix: prey FG in rows, predator FG in columns (Ecopath layout).)---", "diet_matrix_heatmap.png", r"---(04_diets.R)---")
 ```
 
 ---
