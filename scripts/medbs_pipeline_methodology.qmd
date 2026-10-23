@@ -23,8 +23,8 @@ format:
     include-before-body:
       text: |
         <div class="wm-toplogos" style="display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:.6rem 1.2rem .2rem;max-width:1400px;margin:0 auto">
-          <img src="images/wmed_ewebuilder_logo_map4_textleft.png" alt="WMed-EwEbuilder" style="height:84px;width:auto">
-          <a href="https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments" target="_blank" rel="noopener"><img src="images/imares_logo.png" alt="iMARES - Integrated Marine Ecosystem Assessments" style="height:68px;width:auto"></a>
+          <img src="images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" style="height:100px;width:auto">
+          <a href="https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments" target="_blank" rel="noopener"><img src="images/imares_logo.png" alt="iMARES - Integrated Marine Ecosystem Assessments" style="height:80px;width:auto"></a>
         </div>
 params:
   ## Inputs of the pipeline run done by this document. Change a value and
