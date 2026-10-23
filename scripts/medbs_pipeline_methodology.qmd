@@ -1397,7 +1397,16 @@ With only one custom area, `AreaID` is set to `1` for every retained sample - th
 
 A custom region runs all five steps, with every output in `out_dir/<AREA_NAME>/`, because the region's own biomass changes everything after it: the species shares inside each FG (used to weight P/B, Q/B and diets), F = C/B, and the diet split by prey biomass.
 
-- **Biomass (01).** Hauls inside the region give the survey FGs. FGs the survey cannot measure (megafauna, plankton, habitats, stock-assessed groups) take the Western Med density per km² from the main run's workbook (ASSUMPTION; listed in `custom_fg_biomass_from_westmed_REVIEW.csv`). Run the Western Med first.
+- **Biomass (01).** Hauls inside the region give the survey FGs. The other FGs are filled from the main Western Med run (run it first; listed in `custom_fg_biomass_from_westmed_REVIEW.csv`):
+  - *Mapped habitats* follow the habitat map (`westmed_posidonia_coralligenous.shp`: EUSeaMap Posidonia MB252/MB2522 and coralligenous MC151/MC251; dead mattes MB2523 excluded):
+
+    $$
+    B_{region} = \frac{B_{WM}\, A_{WM}\; a_{hab,region} / a_{hab,WM}}{A_{region}}
+    $$
+
+    where $B_{WM}$ is the FG's Western Med biomass (t/km²), $A_{WM}$ the Western Med model area, $a_{hab,region}$ and $a_{hab,WM}$ the mapped habitat area (km²) inside the region and inside the Western Med GSAs, and $A_{region}$ the region's model area. Posidonia and Cymodocea follow the Posidonia map, Macroalgae and Corals and gorgonians the coralligenous map. No mapped habitat in the region gives $B = 0$ (FG absent). Shares are in `custom_habitat_map_share.csv`.
+  - *Other FGs* (megafauna, plankton, groups MEDITS does not sample) take the Western Med density per km² (ASSUMPTION).
+  - The species shares inside these FGs come from the Western Med run, so P/B and Q/B (03) stay biomass-weighted averages of the species, $P/B_f = \sum_{s \in f} p_{s|f}\, P/B_s$ with $p_{s|f}$ the species' share of the FG biomass in the region, and the diets (04) are weighted the same way.
 - **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The catch of the GSAs holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea area is divided by their sea area:
 
 $$

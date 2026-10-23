@@ -3789,9 +3789,9 @@ message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg
 ## n_observed = species with a real survey density (MEDITS/MEDIAS) in the
 ## Ecopath years; n_with_biomass also counts species given biomass by a
 ## stock assessment, literature value or split.
-tryCatch({
+.species_coverage <- function(fg_spp_tbl) tryCatch({
   .fg_file_sp <- unique(dataframe2[!is.na(FG_num), .(FG_num = as.integer(FG_num), Species = ScientificName)])
-  .sp_b <- unique(FG_spp_Ecopath[, .(FG_num = as.integer(FG_num), Species,
+  .sp_b <- unique(fg_spp_tbl[, .(FG_num = as.integer(FG_num), Species,
                                      has_B = is.finite(Biomass_t_km2) & Biomass_t_km2 > 0,
                                      observed = is.finite(Density_survey_raw) & Density_survey_raw > 0)])
   .cov <- merge(.fg_file_sp, .sp_b, by = c("FG_num", "Species"), all.x = TRUE)
@@ -3809,6 +3809,7 @@ tryCatch({
           "\nTotal: ", sum(fg_species_coverage$n_with_biomass), " of ", sum(fg_species_coverage$n_species_fg_file), " species have biomass; ",
           sum(fg_species_coverage$n_observed_survey), " observed by the surveys.")
 }, error = function(e) message("[Species coverage] not computed - ", conditionMessage(e)))
+.species_coverage(FG_spp_Ecopath)
 
 ## --- review list: FGs whose species-level split is NOT a real
 ## measurement (i.e. NOT MEDITS/MEDIAS density-weighted and not a
@@ -4173,31 +4174,105 @@ if (nrow(fg_missing_biomass) > 0) {
 
 ## --- Custom region: FGs the survey cannot measure ------------------------
 ## With a bbox/shapefile region only MEDITS runs (01b, MEDIAS and the stock
-## assessments need GSAs). FGs left without biomass (megafauna, plankton,
-## habitats, groups MEDITS does not sample) take their Western Med density
-## (t/km2) from the main run's workbook (<output>/ecopath_ecosim_inputs.xlsx),
-## i.e. the same density per km2 is assumed in the region (ASSUMPTION; worst
-## for coastal habitats such as Posidonia, which depend on how much
-## shallow seabed the region holds). Run the Western Med first.
+## assessments need GSAs). FGs left without biomass are filled from the
+## main Western Med run (<output>/ecopath_ecosim_inputs.xlsx; run it first):
+##  - mapped habitat FGs (Posidonia, Cymodocea, Macroalgae, Corals and
+##    gorgonians): Western Med tonnes x the share of the mapped habitat
+##    (HABITAT_MAP_SHP: EUSeaMap Posidonia MB252/MB2522, coralligenous
+##    MC151/MC251) that lies inside the region, divided by the region's area:
+##      B_region = B_WM x A_WM x (a_hab,region / a_hab,WM) / A_region
+##    No mapped habitat inside the region -> B = 0 (the FG is absent).
+##    Cymodocea follows the Posidonia map (its area is a ratio of it) and
+##    Macroalgae the coralligenous map (coralligenous algal layer).
+##  - other FGs (megafauna, plankton, groups MEDITS does not sample): the
+##    Western Med density per km2 (ASSUMPTION: same density in the region).
+## Species shares inside these FGs (prop_sp_fg) come from the Western Med
+## run, so 03 still weights P/B and Q/B by species biomass and 04 the diets.
+if (!exists("HABITAT_MAP_SHP")) HABITAT_MAP_SHP <- file.path(pcloud_dir, "data/Complementary data/westmed_posidonia_coralligenous.shp")
+.hab_fg_class <- function(fg) ifelse(grepl("posidonia|cymodocea", fg, ignore.case = TRUE), "Posidonia",
+                             ifelse(grepl("macroalga|coral|gorgon", fg, ignore.case = TRUE), "Coralligenous", NA_character_))
+.habitat_share_in_region <- function(main_gsas) {
+  m <- sf::st_read(HABITAT_MAP_SHP, quiet = TRUE)
+  cls_col <- intersect(c("All2019D", "EUNIS2019D", "biomass_cl"), names(m))[1]
+  m$cls <- ifelse(grepl("^MB252(:|2)", m[[cls_col]]), "Posidonia", ifelse(grepl("^MC(151|251)", m[[cls_col]]), "Coralligenous", NA))
+  m <- m[!is.na(m$cls), "cls"]
+  .old_s2 <- suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(.old_s2)), add = TRUE)
+  m <- sf::st_make_valid(sf::st_transform(m, 4326))
+  gsa <- sf::st_make_valid(download_gfcm_gsa_shapefile())
+  gu  <- sf::st_union(gsa[gsa$gsa_num %in% main_gsas, ])
+  in_main <- lengths(sf::st_intersects(suppressWarnings(sf::st_centroid(sf::st_geometry(m))), gu)) > 0
+  den <- data.table(cls = m$cls, a = as.numeric(sf::st_area(m)) / 1e6)[in_main, .(area_westmed_km2 = sum(a)), by = cls]
+  reg <- sf::st_union(sf::st_make_valid(sf::st_transform(area_shp, 4326)))
+  mc  <- m[lengths(sf::st_intersects(m, reg)) > 0, ]
+  num <- if (nrow(mc)) {
+    ii <- suppressWarnings(sf::st_intersection(mc, reg))
+    data.table(cls = ii$cls, a = as.numeric(sf::st_area(ii)) / 1e6)[, .(area_region_km2 = sum(a)), by = cls]
+  } else data.table(cls = character(0), area_region_km2 = numeric(0))
+  out <- merge(den, num, by = "cls", all.x = TRUE)
+  out[is.na(area_region_km2), area_region_km2 := 0][, share := area_region_km2 / area_westmed_km2][]
+}
 if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) tryCatch({
+  .main_dir <- dirname(sub("/+$", "", out_dir))
   .wb_reg  <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
-  .wb_main <- file.path(dirname(sub("/+$", "", out_dir)), "ecopath_ecosim_inputs.xlsx")
+  .wb_main <- file.path(.main_dir, "ecopath_ecosim_inputs.xlsx")
   if (!file.exists(.wb_main)) stop("no Western Med workbook at ", .wb_main, " - run the Western Med pipeline first")
+  .num <- function(x) suppressWarnings(as.numeric(x))
   .b_reg  <- as.data.table(openxlsx::read.xlsx(.wb_reg, sheet = "Ecopath_B"))
   .b_main <- as.data.table(openxlsx::read.xlsx(.wb_main, sheet = "Ecopath_B"))
-  .bcols <- intersect(c("Biomass", "Biomass_1994_1996", "Biomass_1995"), intersect(names(.b_reg), names(.b_main)))
-  .need <- .b_reg[!is.finite(suppressWarnings(as.numeric(Biomass))) | as.numeric(Biomass) <= 0, FG_num]
-  .from <- .b_main[FG_num %in% .need & is.finite(suppressWarnings(as.numeric(Biomass))) & as.numeric(Biomass) > 0]
+  .need <- .b_reg[!is.finite(.num(Biomass)) | .num(Biomass) <= 0, FG_num]
+  .from <- .b_main[FG_num %in% .need & is.finite(.num(Biomass)) & .num(Biomass) > 0, .(FG_num, FG_name, B_wm = .num(Biomass),
+                                                                                     EE_wm = if ("EE_input" %in% names(.b_main)) EE_input else NA, Ref_wm = as.character(Reference))]
   if (nrow(.from)) {
-    for (cc in .bcols) .b_reg[.from, on = "FG_num", (cc) := as.numeric(get(paste0("i.", cc)))]
-    if ("Reference" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", Reference := paste0(
-      "Western Med density assumed for this region (main run; ASSUMPTION): ", substr(as.character(i.Reference), 1, 400))]
-    if ("EE_input" %in% names(.b_reg) && "EE_input" %in% names(.b_main)) .b_reg[.from, on = "FG_num", EE_input := i.EE_input]
+    .from[, hab := .hab_fg_class(FG_name)]
+    .from[, `:=`(B_region = B_wm, how = "Western Med density per km2 assumed in the region (ASSUMPTION)")]
+    if (any(!is.na(.from$hab))) {
+      .ma_main <- file.path(.main_dir, "biomass", "model_area_by_gsa.csv")
+      if (!file.exists(.ma_main)) stop("no ", .ma_main, " (Western Med model area)")
+      .ma_main <- fread(.ma_main); A_wm <- sum(.ma_main$area_km2, na.rm = TRUE)
+      .hs <- tryCatch(suppressMessages(.habitat_share_in_region(sort(unique(as.numeric(.ma_main$GSA))))),
+                      error = function(e) { message("[Custom region] habitat map not usable (", conditionMessage(e), ") - habitat FGs keep the Western Med density."); NULL })
+      if (!is.null(.hs)) {
+        fwrite(.hs, file.path(csv_out_dir, "custom_habitat_map_share.csv"))
+        .from[.hs, on = c(hab = "cls"), `:=`(B_region = B_wm * A_wm * i.share / MODEL_AREA_KM2,
+                                            how = sprintf("habitat map: %.1f of %.0f km2 of the Western Med %s map inside the region (share %.4f); B = %.4g t/km2 x %.0f km2 x share / %.0f km2",
+                                                          i.area_region_km2, i.area_westmed_km2, hab, i.share, B_wm, A_wm, MODEL_AREA_KM2))]
+        .from[!is.na(hab) & B_region == 0, how := paste0("no ", hab, " mapped inside the region - FG absent (B = 0)")]
+      }
+    }
+    .b_reg[.from, on = "FG_num", Biomass := i.B_region]
+    for (cc in intersect(c("Biomass_1994_1996", "Biomass_1995"), names(.b_reg))) .b_reg[.from, on = "FG_num", (cc) := i.B_region]
+    if ("EE_input" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", EE_input := i.EE_wm]
+    if ("Reference" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", Reference := paste0(i.how, " | Western Med source: ", substr(i.Ref_wm, 1, 300))]
     upsert_workbook_sheets(list(Ecopath_B = .b_reg), .wb_reg)
-    fwrite(.from[, .(FG_num, FG_name, Biomass_t_km2_from_westmed = as.numeric(Biomass), Reference)],
+    fwrite(.from[, .(FG_num, FG_name, habitat_map = hab, B_westmed_t_km2 = B_wm, B_region_t_km2 = B_region, how)],
            file.path(csv_out_dir, "custom_fg_biomass_from_westmed_REVIEW.csv"))
-    message("[Custom region] ", nrow(.from), " FG(s) without survey biomass in the region took the Western Med density (t/km2): ",
-            paste(.from$FG_name, collapse = ", "), " - see custom_fg_biomass_from_westmed_REVIEW.csv.")
+    message("[Custom region] ", nrow(.from), " FG(s) without survey biomass filled from the Western Med run (custom_fg_biomass_from_westmed_REVIEW.csv):\n",
+            paste(sprintf("  %-32s %10.4g t/km2  %s", substr(.from$FG_name, 1, 32), .from$B_region, substr(.from$how, 1, 90)), collapse = "\n"))
+
+    ## Species shares of these FGs from the Western Med run (P/B, Q/B and
+    ## diets are weighted by species biomass in 03 and 04)
+    .bp_main_p <- file.path(.main_dir, "biomass", "biomass_proportion_by_species_fg.csv")
+    if (file.exists(.bp_main_p)) {
+      .bp_main <- fread(.bp_main_p)[FG_num %in% .from$FG_num]
+      .bp_main[.from, on = "FG_num", `:=`(Ecopath_B_Biomass = i.B_region, Biomass_t_km2 = prop_sp_fg * i.B_region, Density = prop_sp_fg * i.B_region)]
+      .bp_main[, prop_sp_fg_basis := paste0("Western Med run species share (custom region): ", prop_sp_fg_basis)]
+      .bp_reg_p <- file.path(csv_out_dir, "biomass_proportion_by_species_fg.csv")
+      .bp_reg <- fread(.bp_reg_p)
+      .bp_reg <- rbindlist(list(.bp_reg[!FG_num %in% .from$FG_num], .bp_main[, names(.bp_reg)[names(.bp_reg) %in% names(.bp_main)], with = FALSE]), fill = TRUE)
+      fwrite(.bp_reg[order(FG_num, Species)], .bp_reg_p)
+      if ("FG_spp" %in% openxlsx::getSheetNames(.wb_reg)) {
+        .fs <- as.data.table(openxlsx::read.xlsx(.wb_reg, sheet = "FG_spp"))
+        .sp_col <- intersect(c("Species", "ScientificName"), names(.fs))[1]
+        if (!is.na(.sp_col) && "FG_num" %in% names(.fs)) {
+          .upd <- .bp_main[, .(FG_num, sp = Species, prop_sp_fg, Biomass_t_km2, Density)]
+          for (cc in intersect(c("prop_sp_fg", "Biomass_t_km2", "Density"), names(.fs)))
+            .fs[.upd, on = c(FG_num = "FG_num", setNames("sp", .sp_col)), (cc) := get(paste0("i.", cc))]
+          upsert_workbook_sheets(list(FG_spp = .fs), .wb_reg)
+        }
+      }
+      FG_spp_Ecopath <- rbindlist(list(FG_spp_Ecopath[!FG_num %in% .from$FG_num], .bp_main), fill = TRUE)
+      .species_coverage(FG_spp_Ecopath)
+    }
   }
 }, error = function(e) message("[Custom region] FGs without survey biomass not filled - ", conditionMessage(e)))
 
