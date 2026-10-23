@@ -686,8 +686,14 @@ download_gfcm_gsa_shapefile <- function() {
   ## kept at that path is always the one used; it's only downloaded and
   ## unzipped into that same "shapefiles" subfolder when missing.
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-  gsa_shp_dir  <- file.path(out_dir, "shapefiles", "GFCM_GSA_shp")
-  gsa_zip_file <- file.path(out_dir, "shapefiles", "GFCM_GSA.zip")
+  ## A custom region (out_dir = <output>/<AREA_NAME>) reuses the GSA
+  ## shapefile already in the main output folder instead of downloading it again.
+  .shp_base <- out_dir
+  if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      length(list.files(file.path(dirname(sub("/+$", "", out_dir)), "shapefiles", "GFCM_GSA_shp"), "\\.shp$", recursive = TRUE)))
+    .shp_base <- dirname(sub("/+$", "", out_dir))
+  gsa_shp_dir  <- file.path(.shp_base, "shapefiles", "GFCM_GSA_shp")
+  gsa_zip_file <- file.path(.shp_base, "shapefiles", "GFCM_GSA.zip")
   if (!dir.exists(gsa_shp_dir) || length(list.files(gsa_shp_dir, pattern = "\\.shp$", recursive = TRUE)) == 0) {
     if (!file.exists(gsa_zip_file)) {
       dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
@@ -1607,6 +1613,43 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
 fwrite(MODEL_AREA_CELLS, file.path(csv_out_dir, "model_area_cells.csv"))
 fwrite(MODEL_AREA_CELLS[, .(area_km2 = sum(area_km2)), by = .(GSA = AreaID)][order(GSA)][, basis := MODEL_AREA_BASIS],
        file.path(csv_out_dir, "model_area_by_gsa.csv"))
+
+## --- Custom region: which GSAs it overlaps (for the catch of 02) -------
+## Catch, discards and effort are reported per GSA (or wider), not for an
+## arbitrary polygon. custom_gsa_overlap.csv lists the sea area of the
+## region inside each GSA. 02 takes the catch of the GSAs holding at least
+## CUSTOM_CATCH_MIN_SHARE of the region (default 5 %, so a thin sliver of a
+## neighbouring GSA does not bring in that GSA's whole catch) and divides it
+## by the sea area of those GSAs: catch per km2 is assumed the same inside
+## the region as in its GSAs (ASSUMPTION). Total tonnes in the region =
+## that density x the region's model area (column region_scale).
+if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) {
+  if (!exists("CUSTOM_CATCH_MIN_SHARE", envir = .GlobalEnv, inherits = FALSE)) CUSTOM_CATCH_MIN_SHARE <- 0.05
+  .custom_overlap <- function() {
+    .gsa_all <- sf::st_make_valid(download_gfcm_gsa_shapefile())
+    .reg <- sf::st_union(sf::st_make_valid(sf::st_transform(area_shp, sf::st_crs(.gsa_all))))
+    .old_s2 <- suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(.old_s2)), add = TRUE)
+    .int <- suppressWarnings(suppressMessages(sf::st_intersection(.gsa_all[, "gsa_num"], .reg)))
+    if (!nrow(.int)) stop("the region does not overlap any GFCM GSA")
+    ov <- data.table(GSA = .int$gsa_num, overlap_km2 = as.numeric(sf::st_area(.int)) / 1e6)[, .(overlap_km2 = sum(overlap_km2)), by = GSA]
+    ga <- data.table(GSA = .gsa_all$gsa_num, gsa_area_km2 = as.numeric(sf::st_area(.gsa_all)) / 1e6)[, .(gsa_area_km2 = sum(gsa_area_km2)), by = GSA]
+    ov <- merge(ov[overlap_km2 > 0.01], ga, by = "GSA")
+    ov[, `:=`(share_of_region = overlap_km2 / sum(overlap_km2), share_of_gsa = overlap_km2 / gsa_area_km2)]
+    ov[, used_for_catch := share_of_region >= CUSTOM_CATCH_MIN_SHARE]
+    if (!any(ov$used_for_catch)) ov[which.max(share_of_region), used_for_catch := TRUE]
+    ov[, `:=`(region_model_area_km2 = MODEL_AREA_KM2, catch_gsas_area_km2 = sum(gsa_area_km2[used_for_catch]),
+              region_scale = MODEL_AREA_KM2 / sum(gsa_area_km2[used_for_catch]))]
+    fwrite(ov[order(-share_of_region)], file.path(csv_out_dir, "custom_gsa_overlap.csv"))
+    message("[Custom region] Overlap with GFCM GSAs (custom_gsa_overlap.csv): ",
+            paste(ov[order(-share_of_region), sprintf("GSA %s %.0f%% of the region (%.1f%% of the GSA)%s", GSA, 100 * share_of_region,
+                                                       100 * share_of_gsa, ifelse(used_for_catch, "", " - not used for catch"))], collapse = "; "),
+            ". Catch of 02 = catch per km2 of GSA(s) ", paste(ov[used_for_catch == TRUE, GSA], collapse = ", "),
+            " (assumed the same inside the region); region total = x ", signif(ov$region_scale[1], 3), " of those GSAs' catch.")
+    ov
+  }
+  custom_gsa_overlap <- tryCatch(.custom_overlap(), error = function(e) { message("[Custom region] GSA overlap not computed - ", conditionMessage(e),
+                                   ". 02 needs custom_gsa_overlap.csv to select the catch."); NULL })
+}
 message("[Model area] A_model = ", round(MODEL_AREA_KM2), " km2 (", MODEL_AREA_BASIS, ", GSAs ", paste(sort(unique(MODEL_AREA_CELLS$AreaID)), collapse = ", "), "; MEDITS 10-800 m strata of the surveyed GSAs = ",
         round(sum(as.data.table(strata_area_by_area)$area_km2, na.rm = TRUE)), " km2) - model_area_by_gsa.csv written.")
 
@@ -3741,6 +3784,32 @@ message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg
         " within each FG, whatever sourced that FG's total; Density_survey_raw is the original MEDITS/MEDIAS-observed",
         " density, kept for audit - it's what prop_sp_fg was computed from, but is NOT what 'Density' means in this sheet any more.)")
 
+## --- Species coverage per FG: how many of the FG file's species have
+## biomass in this run (e.g. 5/7 = 5 of the 7 species listed for that FG).
+## n_observed = species with a real survey density (MEDITS/MEDIAS) in the
+## Ecopath years; n_with_biomass also counts species given biomass by a
+## stock assessment, literature value or split.
+tryCatch({
+  .fg_file_sp <- unique(dataframe2[!is.na(FG_num), .(FG_num = as.integer(FG_num), Species = ScientificName)])
+  .sp_b <- unique(FG_spp_Ecopath[, .(FG_num = as.integer(FG_num), Species,
+                                     has_B = is.finite(Biomass_t_km2) & Biomass_t_km2 > 0,
+                                     observed = is.finite(Density_survey_raw) & Density_survey_raw > 0)])
+  .cov <- merge(.fg_file_sp, .sp_b, by = c("FG_num", "Species"), all.x = TRUE)
+  .cov[is.na(has_B), has_B := FALSE][is.na(observed), observed := FALSE]
+  fg_species_coverage <- .cov[, .(n_species_fg_file = .N, n_with_biomass = sum(has_B), n_observed_survey = sum(observed),
+                                 species_without_biomass = paste(sort(Species[!has_B]), collapse = "; ")), by = FG_num]
+  fg_species_coverage <- merge(unique(dataframe2[!is.na(FG_num), .(FG_num = as.integer(FG_num), FG_name)])[, .SD[1], by = FG_num],
+                               fg_species_coverage, by = "FG_num", all.y = TRUE)
+  fg_species_coverage[, coverage := paste0(n_with_biomass, "/", n_species_fg_file)]
+  fg_species_coverage[, coverage_survey := paste0(n_observed_survey, "/", n_species_fg_file)]
+  setcolorder(fg_species_coverage, c("FG_num", "FG_name", "coverage", "coverage_survey", "n_species_fg_file", "n_with_biomass", "n_observed_survey"))
+  fwrite(fg_species_coverage[order(FG_num)], file.path(csv_out_dir, "fg_species_coverage.csv"))
+  message("\n[Species coverage] species with biomass / species in the FG file, per FG (survey-observed in brackets) - fg_species_coverage.csv:\n",
+          paste(fg_species_coverage[order(FG_num), sprintf("  %2d %-40s %7s  (%s)", FG_num, substr(FG_name, 1, 40), coverage, coverage_survey)], collapse = "\n"),
+          "\nTotal: ", sum(fg_species_coverage$n_with_biomass), " of ", sum(fg_species_coverage$n_species_fg_file), " species have biomass; ",
+          sum(fg_species_coverage$n_observed_survey), " observed by the surveys.")
+}, error = function(e) message("[Species coverage] not computed - ", conditionMessage(e)))
+
 ## --- review list: FGs whose species-level split is NOT a real
 ## measurement (i.e. NOT MEDITS/MEDIAS density-weighted and not a
 ## documented single-species/literature-weighted override like the
@@ -4101,6 +4170,36 @@ if (nrow(fg_missing_biomass) > 0) {
   message("\n[Completeness check] Every one of ", nrow(full_fg_list),
           " FG(s) has a nonzero Ecopath_B biomass value for ", paste(range(YEAR_ECOPATH), collapse = "-"), ".")
 }
+
+## --- Custom region: FGs the survey cannot measure ------------------------
+## With a bbox/shapefile region only MEDITS runs (01b, MEDIAS and the stock
+## assessments need GSAs). FGs left without biomass (megafauna, plankton,
+## habitats, groups MEDITS does not sample) take their Western Med density
+## (t/km2) from the main run's workbook (<output>/ecopath_ecosim_inputs.xlsx),
+## i.e. the same density per km2 is assumed in the region (ASSUMPTION; worst
+## for coastal habitats such as Posidonia, which depend on how much
+## shallow seabed the region holds). Run the Western Med first.
+if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) tryCatch({
+  .wb_reg  <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  .wb_main <- file.path(dirname(sub("/+$", "", out_dir)), "ecopath_ecosim_inputs.xlsx")
+  if (!file.exists(.wb_main)) stop("no Western Med workbook at ", .wb_main, " - run the Western Med pipeline first")
+  .b_reg  <- as.data.table(openxlsx::read.xlsx(.wb_reg, sheet = "Ecopath_B"))
+  .b_main <- as.data.table(openxlsx::read.xlsx(.wb_main, sheet = "Ecopath_B"))
+  .bcols <- intersect(c("Biomass", "Biomass_1994_1996", "Biomass_1995"), intersect(names(.b_reg), names(.b_main)))
+  .need <- .b_reg[!is.finite(suppressWarnings(as.numeric(Biomass))) | as.numeric(Biomass) <= 0, FG_num]
+  .from <- .b_main[FG_num %in% .need & is.finite(suppressWarnings(as.numeric(Biomass))) & as.numeric(Biomass) > 0]
+  if (nrow(.from)) {
+    for (cc in .bcols) .b_reg[.from, on = "FG_num", (cc) := as.numeric(get(paste0("i.", cc)))]
+    if ("Reference" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", Reference := paste0(
+      "Western Med density assumed for this region (main run; ASSUMPTION): ", substr(as.character(i.Reference), 1, 400))]
+    if ("EE_input" %in% names(.b_reg) && "EE_input" %in% names(.b_main)) .b_reg[.from, on = "FG_num", EE_input := i.EE_input]
+    upsert_workbook_sheets(list(Ecopath_B = .b_reg), .wb_reg)
+    fwrite(.from[, .(FG_num, FG_name, Biomass_t_km2_from_westmed = as.numeric(Biomass), Reference)],
+           file.path(csv_out_dir, "custom_fg_biomass_from_westmed_REVIEW.csv"))
+    message("[Custom region] ", nrow(.from), " FG(s) without survey biomass in the region took the Western Med density (t/km2): ",
+            paste(.from$FG_name, collapse = ", "), " - see custom_fg_biomass_from_westmed_REVIEW.csv.")
+  }
+}, error = function(e) message("[Custom region] FGs without survey biomass not filled - ", conditionMessage(e)))
 
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())

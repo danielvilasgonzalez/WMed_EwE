@@ -296,7 +296,7 @@ tagList(
             fluidRow(column(6, numericInput("bbox_xmin", "Lon min", 2, step = 0.1)), column(6, numericInput("bbox_xmax", "Lon max", 8, step = 0.1))),
             fluidRow(column(6, numericInput("bbox_ymin", "Lat min", 38, step = 0.1)), column(6, numericInput("bbox_ymax", "Lat max", 42, step = 0.1)))),
           tags$div(class = "alert alert-info py-2 small",
-                   "A custom region runs the biomass step (01) for that region; outputs go to their own subfolder, out_dir/<area name>. Catch, P/B-Q/B, diets and validation (02-05) work on GSAs.")))),
+                   "A custom region runs all steps (01-05) for that region; outputs go to their own subfolder, out_dir/<area name>. Biomass comes from the hauls inside the region (FGs the survey cannot measure take the Western Med density per km\u00b2, so run the Western Med first); catch comes from the GSA(s) the region overlaps, per km\u00b2; P/B, Q/B, F and diets then follow the region's own biomass and species shares.")))),
     tags$hr(),
     uiOutput("area_summary")),
 
@@ -631,17 +631,31 @@ output$fg_summary <- renderUI({
             if (length(gaps)) paste("Missing FG number(s):", paste(gaps, collapse = ", ")))
   stat <- function(label, value, note = NULL)
     column(3, tags$div(class = "wm-stat", tags$div(class = "l", label), tags$div(class = "v", value), if (!is.null(note)) tags$div(class = "n", note)))
+  ## Species with biomass in the last run / species in the FG file (01 writes
+  ## fg_species_coverage.csv); refreshed when a run finishes.
+  run_state()
+  .cov_f <- file.path(.out_dir, if (identical(input$area_mode, "custom")) gsub("[^A-Za-z0-9_-]", "_", input$area_name) else "", "biomass", "fg_species_coverage.csv")
+  cov <- if (file.exists(.cov_f)) tryCatch(data.table::fread(.cov_f), error = function(e) NULL) else NULL
+  has_cov <- !is.null(cov) && all(c("FG_num", "coverage", "coverage_survey") %in% names(cov))
+  if (has_cov) fg <- merge(fg, cov[, .(FG_number = as.numeric(FG_num), coverage, coverage_survey, species_without_biomass)], by = "FG_number", all.x = TRUE)
   rows <- lapply(seq_len(nrow(fg)), function(i)
-    tags$tr(tags$td(fg$FG_number[i]), tags$td(fg$FG_name[i]), if (has_group) tags$td(fg$FG_group[i]), tags$td(fg$n_species[i])))
+    tags$tr(tags$td(fg$FG_number[i]), tags$td(fg$FG_name[i]), if (has_group) tags$td(fg$FG_group[i]), tags$td(fg$n_species[i]),
+            if (has_cov) tags$td(title = if (!is.na(fg$species_without_biomass[i]) && nzchar(fg$species_without_biomass[i])) paste("No biomass:", fg$species_without_biomass[i]) else NULL,
+                                 fg$coverage[i]),
+            if (has_cov) tags$td(fg$coverage_survey[i])))
   tagList(
     fluidRow(
       stat("File", basename(ft$path), format(file.mtime(ft$path), "edited %d %b %Y, %H:%M")),
       stat("Functional groups", nrow(fg), paste0("FG ", min(fg$FG_number), "-", max(fg$FG_number))),
-      stat("Species", data.table::uniqueN(x$species))),
+      stat("Species", data.table::uniqueN(x$species)),
+      if (has_cov) stat("With biomass (last run)", paste0(sum(cov$n_with_biomass), "/", sum(cov$n_species_fg_file)),
+                        paste0(sum(cov$n_observed_survey), " observed in the surveys; ", format(file.mtime(.cov_f), "%d %b %H:%M")))),
     if (length(warn)) tags$div(class = "alert alert-warning py-2 small mt-2 mb-2", lapply(warn, function(w) tags$div(w))),
     tags$div(class = "wm-fg-table mt-2",
       tags$table(class = "table table-sm table-striped",
-        tags$thead(tags$tr(tags$th("FG_number"), tags$th("FG_name"), if (has_group) tags$th("FG_group"), tags$th("N species"))),
+        tags$thead(tags$tr(tags$th("FG_number"), tags$th("FG_name"), if (has_group) tags$th("FG_group"), tags$th("N species"),
+                           if (has_cov) tags$th(title = "Species with biomass in the last run / species in the FG file (hover a value for the species without biomass)", "With biomass"),
+                           if (has_cov) tags$th(title = "Species observed by MEDITS/MEDIAS in the Ecopath years / species in the FG file", "Observed in survey"))),
         tags$tbody(rows))))
 })
 
@@ -775,6 +789,7 @@ config_code <- reactive({
             "CLEAN_START      <- FALSE   # keep the settings below")
   if (identical(input$area_mode, "custom")) {
     c(head,
+      sprintf("RUN_STEPS        <- %s", input$steps),
       "AREA_MODE        <- \"custom\"",
       sprintf("AREA_NAME        <- \"%s\"", gsub("[^A-Za-z0-9_-]", "_", input$area_name)),
       if (identical(input$custom_type, "shapefile")) c(
@@ -785,7 +800,8 @@ config_code <- reactive({
         sprintf("CUSTOM_BBOX      <- c(xmin = %s, xmax = %s, ymin = %s, ymax = %s)",
                 input$bbox_xmin, input$bbox_xmax, input$bbox_ymin, input$bbox_ymax)),
       common,
-      "source(\"01_biomass.R\")   # a custom region runs the biomass step (01)")
+      "## all steps run for the region; catch (02) from the GSA(s) it overlaps, per km2",
+      "source(\"run_pipeline_demo.R\")")
   } else {
     c(head,
       sprintf("RUN_STEPS        <- %s", input$steps),
@@ -864,8 +880,8 @@ observeEvent(input$run, {
   old <- setwd(file.path(.git_dir, "scripts")); on.exit(setwd(old))
   system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)), wait = FALSE, stdout = .console, stderr = .console)
   run_state("running"); run_started(Sys.time()); run_finished(NULL); run_note(""); step_seen(list())
-  run_steps(if (custom) 1L else eval(parse(text = input$steps)))
-  showNotification(if (custom) paste0("Biomass step started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
+  run_steps(eval(parse(text = input$steps)))
+  showNotification(if (custom) paste0("Pipeline started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
                    else "Pipeline started - progress is shown below the button.", duration = 8)
 })
 
@@ -1136,7 +1152,7 @@ output$results <- renderUI({
 |---|---|---|
 | GSAs (map, checkboxes) | `MODEL_GSAS` (→ `FILTER_AREAS`) | GSAs of the model area (default 1-12). Survey data only from these GSAs; GSAs 3, 4 and 12 (no MEDITS) take the survey density per km² of the others (assumption). Catch kept for every coastal state of these GSAs. |
 | Area basis | `MODEL_AREA_BASIS` | `whole_gsa`: A_model is the whole sea area of the GSAs, coast to bottom. `medits_10_800`: only the 10-800 m MEDITS strata. |
-| Custom region | `AREA_MODE = "custom"`, `AREA_NAME`, `CUSTOM_AREA_TYPE`, `CUSTOM_SHAPEFILE_PATH` or `CUSTOM_BBOX` | A region from an uploaded shapefile (.zip, or .shp + .shx + .dbf + .prj), GeoJSON, GeoPackage or KML, or a lon/lat box, instead of GSAs. Runs the biomass step (01) for that region; outputs in `out_dir/<AREA_NAME>/` (@sec-area-definition, Approach B). |
+| Custom region | `AREA_MODE = "custom"`, `AREA_NAME`, `CUSTOM_AREA_TYPE`, `CUSTOM_SHAPEFILE_PATH` or `CUSTOM_BBOX` | A region from an uploaded shapefile (.zip, or .shp + .shx + .dbf + .prj), GeoJSON, GeoPackage or KML, or a lon/lat box, instead of GSAs. Runs all steps (01–05) for that region; outputs in `out_dir/<AREA_NAME>/` (@sec-area-definition, Approach B). Catch: the GSA(s) holding ≥ 5 % of the region (`custom_gsa_overlap.csv`), per km² of their sea area. |
 | Ecopath baseline | `YEAR_ECOPATH` | Years averaged into Ecopath_B, F and P/B (01, 02, 03). |
 | Ecosim biomass series | `TS_YEARS` | Years of the Ecosim biomass series (01). |
 | (no input) | `START_YEAR`, `END_YEAR` | Catch, landings, discards and effort series (02) follow the other years: from the first Ecopath or Ecosim year to the last Ecosim year (set in `run_pipeline_demo.R`). |
@@ -1375,6 +1391,21 @@ wm_figure("fig-custom-coverage", r"---(Sample coverage within a custom bounding-
 ```
 
 With only one custom area, `AreaID` is set to `1` for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever `AreaID`/`area_shp` combination they're given, never assuming GSA-specific structure.
+
+
+### Running the whole pipeline for a custom region
+
+A custom region runs all five steps, with every output in `out_dir/<AREA_NAME>/`, because the region's own biomass changes everything after it: the species shares inside each FG (used to weight P/B, Q/B and diets), F = C/B, and the diet split by prey biomass.
+
+- **Biomass (01).** Hauls inside the region give the survey FGs. FGs the survey cannot measure (megafauna, plankton, habitats, stock-assessed groups) take the Western Med density per km² from the main run's workbook (ASSUMPTION; listed in `custom_fg_biomass_from_westmed_REVIEW.csv`). Run the Western Med first.
+- **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The catch of the GSAs holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea area is divided by their sea area:
+
+$$
+c_{region} = \frac{\sum_{g \in G} C_g}{\sum_{g \in G} A_g}, \qquad C_{region} = c_{region}\, A_{region}
+$$
+
+where $C_g$ is the catch (t/year) reported for GSA $g$, $A_g$ its sea area (km²), $G$ the GSAs used, $c_{region}$ the catch per km² applied in the region (Ecopath_L, Ecopath_Di, F) and $A_{region}$ the region's model area, so $C_{region}$ is the region's total catch (`region_scale` = $A_{region} / \sum_{g \in G} A_g$). ASSUMPTION: catch per km² is the same inside the region as in its GSAs; a region on a fishing ground (or in a closed area) will differ.
+- **P/B, Q/B, diets, validation (03–05)** read the region's workbook and files, so they follow its biomass and species composition.
 
 ---
 

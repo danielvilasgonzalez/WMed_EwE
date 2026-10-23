@@ -289,7 +289,8 @@ if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPA
 if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) {
   FILTER_AREAS <- sort(unique(as.numeric(MODEL_GSAS)))   # set in run_pipeline_demo.R
   if (!is.null(.sa_dom)) .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
-  if (file.exists(.ma_path_dom) && !setequal(FILTER_AREAS, fread(.ma_path_dom)$GSA))
+  if (!identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      file.exists(.ma_path_dom) && !setequal(FILTER_AREAS, fread(.ma_path_dom)$GSA))
     warning("[02_fisheries.R] MODEL_GSAS (", paste(FILTER_AREAS, collapse = ","), ") differs from the GSAs in ", .ma_path_dom,
             " - run 01_biomass.R first with the same MODEL_GSAS, or biomass and catch cover different areas.", call. = FALSE)
 } else if (file.exists(.ma_path_dom)) {
@@ -511,8 +512,14 @@ download_gfcm_gsa_shapefile <- function() {
   ## gfcm_gsa.shp whenever it's already there, and only downloads/
   ## unzips into that same subfolder when it's missing.
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-  gsa_shp_dir  <- file.path(out_dir, "shapefiles", "GFCM_GSA_shp")
-  gsa_zip_file <- file.path(out_dir, "shapefiles", "GFCM_GSA.zip")
+  ## A custom region (out_dir = <output>/<AREA_NAME>) reuses the GSA
+  ## shapefile already in the main output folder instead of downloading it again.
+  .shp_base <- out_dir
+  if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      length(list.files(file.path(dirname(sub("/+$", "", out_dir)), "shapefiles", "GFCM_GSA_shp"), "\\.shp$", recursive = TRUE)))
+    .shp_base <- dirname(sub("/+$", "", out_dir))
+  gsa_shp_dir  <- file.path(.shp_base, "shapefiles", "GFCM_GSA_shp")
+  gsa_zip_file <- file.path(.shp_base, "shapefiles", "GFCM_GSA.zip")
   if (!dir.exists(gsa_shp_dir) || length(list.files(gsa_shp_dir, pattern = "\\.shp$", recursive = TRUE)) == 0) {
     if (!file.exists(gsa_zip_file)) {
       dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
@@ -557,7 +564,19 @@ Total_Area_km2_polygons <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6 
 ## GSA for its MODEL_AREA_BASIS: the whole GSA area by default); that file
 ## wins, so catch and biomass are always on the same area.
 .ma_path <- file.path(out_dir, "biomass", "model_area_by_gsa.csv")
-if (file.exists(.ma_path)) {
+.ov_path <- file.path(out_dir, "biomass", "custom_gsa_overlap.csv")
+if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") && file.exists(.ov_path)) {
+  ## Custom region: the catch of its GSA(s) (FILTER_AREAS, from
+  ## custom_gsa_overlap.csv) per km2 of those GSAs' sea area, i.e. catch per
+  ## km2 assumed the same inside the region (ASSUMPTION). Every t/km2 value
+  ## below (Ecopath_L/Di, F = C/B with the region's B) is therefore on the
+  ## same per-km2 basis as the region's Ecopath_B.
+  .ov <- fread(.ov_path)
+  Total_Area_km2 <- Total_Area_km2_polygons
+  message("\n[Area] Custom region '", get0("AREA_NAME", ifnotfound = ""), "': catch of GSA(s) ", paste(FILTER_AREAS, collapse = ", "),
+          " divided by their sea area (", round(Total_Area_km2), " km^2) = catch per km^2 assumed in the region. Region model area ",
+          round(.ov$region_model_area_km2[1]), " km^2, so region totals = GSA totals x ", signif(.ov$region_model_area_km2[1] / Total_Area_km2, 3), ".")
+} else if (file.exists(.ma_path)) {
   .ma <- fread(.ma_path)
   Total_Area_km2 <- sum(.ma[as.numeric(GSA) %in% FILTER_AREAS, area_km2], na.rm = TRUE)
   message("\n[Area] Model area for every t/km2 conversion: ", round(Total_Area_km2, 1), " km^2 = Ecopath_B's area",
