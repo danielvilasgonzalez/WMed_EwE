@@ -1,5 +1,33 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 02_fisheries.R
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -185,7 +213,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -261,7 +291,8 @@ if (!exists("YEAR_ECOPATH",    envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPA
 if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) {
   FILTER_AREAS <- sort(unique(as.numeric(MODEL_GSAS)))   # set in run_pipeline_demo.R
   if (!is.null(.sa_dom)) .gc_dom <- intersect(c("AreaID", "GSA"), names(.sa_dom))[1]
-  if (file.exists(.ma_path_dom) && !setequal(FILTER_AREAS, fread(.ma_path_dom)$GSA))
+  if (!identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      file.exists(.ma_path_dom) && !setequal(FILTER_AREAS, fread(.ma_path_dom)$GSA))
     warning("[02_fisheries.R] MODEL_GSAS (", paste(FILTER_AREAS, collapse = ","), ") differs from the GSAs in ", .ma_path_dom,
             " - run 01_biomass.R first with the same MODEL_GSAS, or biomass and catch cover different areas.", call. = FALSE)
 } else if (file.exists(.ma_path_dom)) {
@@ -483,8 +514,14 @@ download_gfcm_gsa_shapefile <- function() {
   ## gfcm_gsa.shp whenever it's already there, and only downloads/
   ## unzips into that same subfolder when it's missing.
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-  gsa_shp_dir  <- file.path(out_dir, "shapefiles", "GFCM_GSA_shp")
-  gsa_zip_file <- file.path(out_dir, "shapefiles", "GFCM_GSA.zip")
+  ## A custom region (out_dir = <output>/<AREA_NAME>) reuses the GSA
+  ## shapefile already in the main output folder instead of downloading it again.
+  .shp_base <- out_dir
+  if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      length(list.files(file.path(dirname(sub("/+$", "", out_dir)), "shapefiles", "GFCM_GSA_shp"), "\\.shp$", recursive = TRUE)))
+    .shp_base <- dirname(sub("/+$", "", out_dir))
+  gsa_shp_dir  <- file.path(.shp_base, "shapefiles", "GFCM_GSA_shp")
+  gsa_zip_file <- file.path(.shp_base, "shapefiles", "GFCM_GSA.zip")
   if (!dir.exists(gsa_shp_dir) || length(list.files(gsa_shp_dir, pattern = "\\.shp$", recursive = TRUE)) == 0) {
     if (!file.exists(gsa_zip_file)) {
       dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
@@ -529,7 +566,19 @@ Total_Area_km2_polygons <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6 
 ## GSA for its MODEL_AREA_BASIS: the whole GSA area by default); that file
 ## wins, so catch and biomass are always on the same area.
 .ma_path <- file.path(out_dir, "biomass", "model_area_by_gsa.csv")
-if (file.exists(.ma_path)) {
+.ov_path <- file.path(out_dir, "biomass", "custom_gsa_overlap.csv")
+if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") && file.exists(.ov_path)) {
+  ## Custom region: the catch of its GSA(s) (FILTER_AREAS, from
+  ## custom_gsa_overlap.csv) per km2 of those GSAs' sea area, i.e. catch per
+  ## km2 assumed the same inside the region (ASSUMPTION). Every t/km2 value
+  ## below (Ecopath_L/Di, F = C/B with the region's B) is therefore on the
+  ## same per-km2 basis as the region's Ecopath_B.
+  .ov <- fread(.ov_path)
+  Total_Area_km2 <- Total_Area_km2_polygons
+  message("\n[Area] Custom region '", get0("AREA_NAME", ifnotfound = ""), "': catch of GSA(s) ", paste(FILTER_AREAS, collapse = ", "),
+          " divided by their sea area (", round(Total_Area_km2), " km^2) = catch per km^2 assumed in the region. Region model area ",
+          round(.ov$region_model_area_km2[1]), " km^2, so region totals = GSA totals x ", signif(.ov$region_model_area_km2[1] / Total_Area_km2, 3), ".")
+} else if (file.exists(.ma_path)) {
   .ma <- fread(.ma_path)
   Total_Area_km2 <- sum(.ma[as.numeric(GSA) %in% FILTER_AREAS, area_km2], na.rm = TRUE)
   message("\n[Area] Model area for every t/km2 conversion: ", round(Total_Area_km2, 1), " km^2 = Ecopath_B's area",
@@ -1544,7 +1593,7 @@ if (isTRUE(MOLLUSC_NEI_SPLIT) && nrow(ts_data$country_species_ts) > 0) {
   .mn <- .mollusc_nei_split(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES], "Country")
   if (!is.null(.mn)) {
     .mn_t <- merge(ts_data$country_species_ts[Year %in% YEAR_ECOPATH & Country %in% TARGET_COUNTRIES & grepl(MOLLUSC_NEI_REGEX, Species, perl = TRUE)],
-                   .mn, by = c("Country", "Year"))[, .(t_per_yr = sum(Catch * Split_weight) / length(YEAR_ECOPATH)), by = FG_name]
+                   .mn, by = c("Country", "Year"), allow.cartesian = TRUE)[, .(t_per_yr = sum(Catch * Split_weight) / length(YEAR_ECOPATH)), by = FG_name]
     fwrite(.mn, file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv"))
     message("\n[Mollusc NEI] 'Marine molluscs nei' split by each country's identified mollusc catch of the same year (",
             paste(range(YEAR_ECOPATH), collapse = "-"), " mean, t/yr): ",
@@ -1982,6 +2031,15 @@ if (nrow(sau_country_fg_gear) > 0) {
     message("[Fleet split] Unmapped SAU (Country, gear) values by catch - add real ones to gear_to_fleettype.csv:")
     print(head(unmatched_by_gear, 40))
   }
+  ## Kept for fleet_assignment_REVIEW.csv (written at the end of 02)
+  .fa_sau <- tryCatch(rbindlist(list(
+    mapped[, .(Country, source = "SAU (pre-FDI years / non-EU countries)", raw_gear = sau_gear, sector_or_length = sau_gear_sector, FleetType,
+               rule = fifelse(grepl("artisanal", sau_gear_sector, ignore.case = TRUE) & FleetType == "Artisanal",
+                              "SAU sector = artisanal -> Artisanal (overrides gear)", "gear_to_fleettype.csv"), Catch_t)],
+    if (nrow(unmatched_gear) > 0) unmatched_gear[, .(Country, source = "SAU (pre-FDI years / non-EU countries)", raw_gear = sau_gear, sector_or_length = sau_gear_sector, FleetType,
+               rule = fifelse(FleetType == "Artisanal", "SAU sector = artisanal -> Artisanal (gear not in gear_to_fleettype.csv)",
+                              "gear not in gear_to_fleettype.csv -> Unclassified"), Catch_t)]), fill = TRUE),
+    error = function(e) NULL)
   mapped_all <- rbindlist(list(mapped[, .(Country, FG_num, FleetType, Catch_t)],
                                unmatched_gear[, .(Country, FG_num, FleetType, Catch_t)]),
                           use.names = TRUE, fill = TRUE)  # combine mapped and unclassified catch
@@ -2677,6 +2735,12 @@ if (!dir.exists(stecf_catches_dir)) {
       stecf_raw <- resolve_stecf_fleettype(stecf_raw, split_cols = c("total_live_weight_landed", "tot_discards_tonnes"))  # assign FleetType via the gear-code cascade
       message("[STECF FDI] vessel_length value(s) found: ", paste(sort(unique(stecf_raw$vessel_length)), collapse = ", "))
       stecf_raw[vessel_length %in% STECF_VESSEL_LENGTH_ARTISANAL, FleetType := "Artisanal"]  # small vessels are always Artisanal, overriding the gear-based assignment
+      ## Kept for fleet_assignment_REVIEW.csv (written at the end of 02)
+      .fa_stecf <- tryCatch(stecf_raw[, .(Country, source = "STECF FDI (Spain, France, Italy)", raw_gear = paste0(gear_code, " (", Metier, ")"),
+                                          sector_or_length = vessel_length, FleetType,
+                                          rule = fifelse(vessel_length %in% STECF_VESSEL_LENGTH_ARTISANAL, "small vessel -> Artisanal (overrides gear)",
+                                                 fifelse(FleetType == "Unclassified", "gear code not mapped -> Unclassified", "stecf_gear_to_fleettype.csv (metier gear code)")),
+                                          Catch_t = total_live_weight_landed)], error = function(e) NULL)
       stecf_raw <- collapse_to_register_fleets(stecf_raw, "total_live_weight_landed", "STECF FDI catches")
       unclassified_share_stecf <- round(100 * sum(stecf_raw[FleetType == "Unclassified"]$total_live_weight_landed, na.rm = TRUE) /
                                           sum(stecf_raw$total_live_weight_landed, na.rm = TRUE), 1)  # what share of landed weight is still Unclassified
@@ -6106,7 +6170,7 @@ if (n_no_fleet_share > 0) {
           paste0(Country, " ", t, collapse = "; ")], ". Written to fleet_split_no_share_REVIEW.csv.")
   fwrite(fleet_split[is.na(prop_fleet), .(Catch_t = sum(Catch_t, na.rm = TRUE), n_rows = .N), by = .(Country, FG_num, Year)],
          file.path(csv_out_dir, "fleet_split_no_share_REVIEW.csv"))
-}
+} else unlink(file.path(csv_out_dir, "fleet_split_no_share_REVIEW.csv"))   # no stale copy from an earlier run
 fleet_split <- fleet_split[!is.na(prop_fleet)]  # drop rows with no fleet share at all (should be ~0 rows now - see WARNING above if not)
 
 ## Default: distribute the country-level catch/discard total by each
@@ -7081,6 +7145,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
   ## for use with a national (not regional) effort file.
   if (!exists("EFFORT_SCALE_BY_WESTMED_SHARE", envir = .GlobalEnv, inherits = FALSE)) EFFORT_SCALE_BY_WESTMED_SHARE <- character(0)
   .esc <- intersect(EFFORT_SCALE_BY_WESTMED_SHARE, unique(effort_by_fleet$Country))
+  if (!length(.esc)) unlink(file.path(csv_out_dir, "effort_westmed_share_REVIEW.csv"))   # no scaling this run: no stale copy
   if (length(.esc) && !is.null(ts_data$div_share) && nrow(ts_data$div_share) > 0) {
     .sh <- ts_data$div_share[Country %in% .esc, .(Country, Year, share_westmed)]
     .sh_mean <- .sh[is.finite(share_westmed), .(share_mean = mean(share_westmed)), by = Country]
@@ -7095,6 +7160,7 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
             " - see effort_westmed_share_REVIEW.csv.")
     effort_by_fleet[, c("share_westmed", "share_mean") := NULL]
   } else if (length(.esc)) {
+    unlink(file.path(csv_out_dir, "effort_westmed_share_REVIEW.csv"))   # no stale copy from an earlier run
     message("\n[Effort] No GFCM division shares available - ", paste(.esc, collapse = ", "), " effort left national (overestimate).")
   }
   setorder(effort_by_fleet, Country, Sector, gear, Year)  # sort for readability
@@ -7702,13 +7768,45 @@ validation_plots[["05_effort_by_country_fleet"]] <- tryCatch({
     base_val <- Effort[which(!is.na(Effort) & Effort != 0)[1]]  # first non-NA, non-zero value for this Country x Fleet series
     if (is.na(base_val) || length(base_val) == 0) NA_real_ else Effort / base_val
   }, by = .(Country, Fleet)]
-  ggplot(d, aes(x = Year, y = Effort_idx, color = Fleet)) +
-    geom_line(linewidth = 0.4) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "grey60", linewidth = 0.3) +
-    facet_wrap(~ Country, scales = "free_y") +
-    labs(title = "Fishing effort by country and fleet over time (indexed)", subtitle = "Effective effort (technology creep applied), each series divided by its first year (= 1). EU-3: FDI days (2014+) / hindcast (pre-2014) x creep. Morocco/Algeria/Tunisia: FishMIP kW x days (held flat after 2017, creep still applied)",
-         x = NULL, y = "Effort (index, first year = 1)", color = "Fleet") +
-    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+  ## Readable version: log scale (an index is a ratio: x2 and /2 sit at
+  ## the same distance from 1), one colour per gear shared by all panels,
+  ## each line labelled at its last year (no long legend to decode), and
+  ## the two dates where the effort source changes marked.
+  d <- d[is.finite(Effort_idx) & Effort_idx > 0]
+  d[, Fleet := gsub("_", " ", Fleet)]
+  lab <- d[, .SD[which.max(Year)], by = .(Country, Fleet)]
+  lab[, Fleet_lab := ifelse(nchar(Fleet) > 22, paste0(substr(Fleet, 1, 21), "\u2026"), Fleet)]
+  fleets <- sort(unique(d$Fleet))
+  pal <- setNames(grDevices::hcl.colors(length(fleets), "Dark 3"), fleets)
+  brk <- c(0.01, 0.03, 0.1, 0.25, 0.5, 1, 2, 4, 10)
+  yr_max <- max(d$Year)
+  ggplot(d, aes(x = Year, y = Effort_idx, colour = Fleet)) +
+    geom_vline(xintercept = 2014, linetype = "longdash", colour = "grey55", linewidth = 0.3) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey45", linewidth = 0.35) +
+    geom_vline(xintercept = 2017, linetype = "dotted", colour = "grey55", linewidth = 0.3) +
+    geom_line(linewidth = 0.7, alpha = 0.9) +
+    geom_point(data = lab, size = 1.3) +
+    (if (requireNamespace("ggrepel", quietly = TRUE))
+       ggrepel::geom_text_repel(data = lab, aes(label = Fleet_lab), size = 3.7, hjust = 0, direction = "y",
+                                nudge_x = 1, segment.size = 0.2, segment.colour = "grey70", min.segment.length = 0,
+                                xlim = c(yr_max + 0.5, NA), show.legend = FALSE)
+     else geom_text(data = lab, aes(label = Fleet_lab), size = 3.7, hjust = -0.1, check_overlap = TRUE, show.legend = FALSE)) +
+    scale_y_log10(breaks = brk, labels = function(x) format(x, drop0trailing = TRUE)) +
+    scale_x_continuous(breaks = function(l) { b <- pretty(c(min(d$Year), yr_max), n = 3); b[b <= yr_max] }, expand = expansion(mult = c(0.02, 0.5))) +
+    scale_colour_manual(values = pal, guide = "none") +
+    coord_cartesian(clip = "off") +
+    facet_wrap(~ Country, scales = "free_y", ncol = 3) +
+    labs(title = "Fishing effort by country and fleet (index, first year = 1)",
+         subtitle = paste0("Log scale: 2 = double, 0.5 = half the first-year effort. Technology creep included.\n",
+                           "Long-dashed line = 2014 (EU-3: hindcast before, STECF FDI days from 2014). ",
+                           "\nDotted line = 2017 (Morocco/Algeria/Tunisia FishMIP effort held flat after, creep still applied). ",
+                           "Fleets with zero effort are not drawn."),
+         x = NULL, y = "Effort index (log scale)") +
+    theme_minimal(base_size = 9) +
+    theme(plot.background = element_rect(fill = "white", colour = NA),
+          panel.grid.minor = element_blank(), panel.grid.major.x = element_line(colour = "grey92"),
+          strip.text = element_text(face = "bold", size = 10, hjust = 0),
+          plot.subtitle = element_text(size = 7.5, colour = "grey30"), panel.spacing = unit(1.2, "lines"))
 }, error = function(e) { message("[Validation plot 5] skipped - ", conditionMessage(e)); NULL })
 
 ## 6. Data-source coverage tile - Country x Year, colored by which
@@ -7803,7 +7901,7 @@ if (length(validation_plots) == 0) {
           " sources were found this run). Nothing written.")
 } else {
   pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)  # open the PDF device
-  for (p in validation_plots) print(p)  # draw each figure onto its own PDF page
+  for (p in validation_plots) print(.readable(p))  # each figure on its own PDF page, with the larger text
   dev.off()  # close the PDF device
   for (nm in names(validation_plots)) {
     ggsave(file.path(fisheries_plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 11, height = 8, dpi = PLOT_DPI)  # also save each figure as its own PNG
@@ -7819,5 +7917,53 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
   assign("message", .orig_message, envir = .GlobalEnv)  # undo the message() mirror
   rm(.orig_message, envir = .GlobalEnv)
 }
+## =================================================================
+## Review tables: how catches were matched to FGs, split across FGs and
+## assigned to fleets. One row per decision, sorted so the ones to check
+## come first. Edit the reference csv named in each row to change it.
+## =================================================================
+tryCatch({
+  sp <- copy(resolved_final)
+  sp[, n_FG := uniqueN(FG_num[!is.na(FG_num)]), by = Species]
+  sp[, check := fifelse(status != "resolved" | is.na(FG_num), "NOT MATCHED - catch not used; add the species to the FG file",
+                fifelse(n_FG > 1, paste0("split over ", n_FG, " FGs (Split_weight)"),
+                fifelse(grepl("nei_keyword|taxonomy_|genus", match_method), "matched through a broader taxon - check", "ok")))]
+  sp[, priority := fifelse(grepl("^NOT MATCHED", check), 1L, fifelse(grepl("^split", check), 2L, fifelse(check == "ok", 4L, 3L)))]
+  sp <- sp[order(priority, -Catch, Species, -Split_weight)][, priority := NULL]
+  fwrite(sp, file.path(csv_out_dir, "catch_species_to_fg_REVIEW.csv"))
+  message("\n[Review] catch_species_to_fg_REVIEW.csv: ", uniqueN(sp$Species), " catch species; ",
+          sp[grepl("^NOT MATCHED", check), uniqueN(Species)], " not matched, ",
+          sp[grepl("^split", check), uniqueN(Species)], " split over several FGs.")
+}, error = function(e) message("[Review] catch_species_to_fg_REVIEW.csv not written - ", conditionMessage(e)))
+
+tryCatch({
+  parts <- list(
+    if (exists("resolved_final")) resolved_final[!is.na(FG_num), if (uniqueN(FG_num) > 1) .SD, by = Species][
+      , .(split_type = "species or NEI group over several FGs", item = Species, Country = NA_character_, Year = NA_integer_,
+          FG_num, FG_name, share = Split_weight, how = match_method)],
+    if (file.exists(file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv")))
+      fread(file = file.path(csv_out_dir, "mollusc_nei_split_by_country_year.csv"))[
+        , .(split_type = "Mollusca NEI by identified-catch share", item = "Mollusca NEI", Country, Year = as.integer(Year), FG_num, FG_name, share = Split_weight, how = match_method)],
+    if (file.exists(file.path(csv_out_dir, "nei_keyword_fcap_adjustments.csv")))
+      fread(file = file.path(csv_out_dir, "nei_keyword_fcap_adjustments.csv"))[
+        , .(split_type = "NEI share moved by the F cap", item = Species, Country = NA_character_, Year = NA_integer_, FG_num, FG_name, share = delta,
+            how = "nei_keyword_fcap (share change)")])
+  sl <- rbindlist(parts, fill = TRUE)
+  fwrite(sl[order(split_type, item, Country, Year, -share)], file.path(csv_out_dir, "catch_split_REVIEW.csv"))
+  message("[Review] catch_split_REVIEW.csv: ", nrow(sl), " split row(s) (", uniqueN(sl$item), " catch item(s)).")
+}, error = function(e) message("[Review] catch_split_REVIEW.csv not written - ", conditionMessage(e)))
+
+tryCatch({
+  fa <- rbindlist(list(if (exists(".fa_sau")) .fa_sau, if (exists(".fa_stecf")) .fa_stecf), fill = TRUE)
+  if (!nrow(fa)) stop("no fleet assignment recorded")
+  fa <- fa[, .(Catch_t = round(sum(Catch_t, na.rm = TRUE), 2)), by = .(Country, source, raw_gear, sector_or_length, FleetType, rule)]
+  fa[, pct_of_country_source := round(100 * Catch_t / sum(Catch_t), 2), by = .(Country, source)]
+  fa[, check := FleetType %in% c("Unclassified", "EXCLUDED") | grepl("not mapped|not in gear", rule)]
+  fwrite(fa[order(-check, Country, source, -Catch_t)], file.path(csv_out_dir, "fleet_assignment_REVIEW.csv"))
+  message("[Review] fleet_assignment_REVIEW.csv: ", nrow(fa), " gear x fleet assignment(s); ",
+          round(fa[FleetType == "Unclassified", sum(Catch_t)] / max(1, sum(fa$Catch_t)) * 100, 1), "% of the catch is Unclassified.")
+}, error = function(e) message("[Review] fleet_assignment_REVIEW.csv not written - ", conditionMessage(e)))
+
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session

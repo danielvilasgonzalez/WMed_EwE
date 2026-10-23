@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: emodnet_benthic_habitat_biomass_extraction.R
 # ============================================================
 # WESTERN MEDITERRANEAN HABITAT AREAS -> benthic_habitat_biomass_literature.csv
 #

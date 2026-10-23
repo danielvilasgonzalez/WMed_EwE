@@ -1,5 +1,33 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 01_biomass.R
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -292,7 +320,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -658,8 +688,14 @@ download_gfcm_gsa_shapefile <- function() {
   ## kept at that path is always the one used; it's only downloaded and
   ## unzipped into that same "shapefiles" subfolder when missing.
   gsa_zip_url  <- "https://gfcmsitestorage.blob.core.windows.net/website/5.Data/ArcGIS/GFCM_GSA.zip"
-  gsa_shp_dir  <- file.path(out_dir, "shapefiles", "GFCM_GSA_shp")
-  gsa_zip_file <- file.path(out_dir, "shapefiles", "GFCM_GSA.zip")
+  ## A custom region (out_dir = <output>/<AREA_NAME>) reuses the GSA
+  ## shapefile already in the main output folder instead of downloading it again.
+  .shp_base <- out_dir
+  if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") &&
+      length(list.files(file.path(dirname(sub("/+$", "", out_dir)), "shapefiles", "GFCM_GSA_shp"), "\\.shp$", recursive = TRUE)))
+    .shp_base <- dirname(sub("/+$", "", out_dir))
+  gsa_shp_dir  <- file.path(.shp_base, "shapefiles", "GFCM_GSA_shp")
+  gsa_zip_file <- file.path(.shp_base, "shapefiles", "GFCM_GSA.zip")
   if (!dir.exists(gsa_shp_dir) || length(list.files(gsa_shp_dir, pattern = "\\.shp$", recursive = TRUE)) == 0) {
     if (!file.exists(gsa_zip_file)) {
       dir.create(dirname(gsa_zip_file), recursive = TRUE, showWarnings = FALSE)
@@ -865,7 +901,21 @@ map_land_on_top <- (AREA_MODE == "custom" && CUSTOM_AREA_TYPE == "bbox")
 p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                 title = "MEDITS sample coverage by GSA", selected_areas = FILTER_AREAS,
                                 land_on_top = map_land_on_top)
-ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 8, dpi = PLOT_DPI, bg = "white")
+ggsave(file.path(plot_dir, "survey_sample_coverage_map.png"), p_sample_map, width = 10, height = 5.5, dpi = PLOT_DPI, bg = "white")
+## The map is wider than tall, so the 10 x 8 canvas leaves white bands at
+## the top and bottom: trim fully white rows (keeps a small margin).
+.trim_png_rows <- function(path, pad = 25) {
+  if (!requireNamespace("png", quietly = TRUE) || !file.exists(path)) return(invisible(FALSE))
+  im <- png::readPNG(path)
+  rgb <- if (length(dim(im)) == 3) im[, , 1:min(3, dim(im)[3]), drop = FALSE] else array(im, c(dim(im), 1))
+  white <- apply(rgb, 1, function(r) all(r > 0.985))
+  keep <- which(!white)
+  if (!length(keep)) return(invisible(FALSE))
+  rows <- max(1, min(keep) - pad):min(nrow(im), max(keep) + pad)
+  png::writePNG(if (length(dim(im)) == 3) im[rows, , , drop = FALSE] else im[rows, , drop = FALSE], path)
+  invisible(TRUE)
+}
+.trim_png_rows(file.path(plot_dir, "survey_sample_coverage_map.png"))
 
 ## same coverage map, faceted by year - useful for spotting a specific
 ## year with a coverage gap that the all-years-combined map above would
@@ -876,6 +926,7 @@ p_sample_map_byyear <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_
                                        selected_areas = FILTER_AREAS, land_on_top = map_land_on_top)
 ggsave(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"), p_sample_map_byyear,
        width = 16, height = 12, dpi = PLOT_DPI, bg = "white")
+.trim_png_rows(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"))
 
 ## =================================================================
 ## STEP 3: Scientific name -> FG (direct match)
@@ -1159,7 +1210,12 @@ dt <- dt[AreaID %in% FILTER_AREAS]
 ## FG/FG_name columns dropped (confirmed not needed), species/q_FACTOR
 ## renamed. Filename extension (.csv) is still a guess - confirm this
 ## matches the actual file once it's placed in data/raw.
-CATCHABILITY_CSV_PATH <- resolve_pcloud_file(paste0(pcloud_dir,"/data/catchability_factors_ecotrans_medits_2021_spp.csv"), pcloud_dir, required = FALSE)
+## APPLY_CATCHABILITY (default TRUE) switches the correction on/off;
+## CATCHABILITY_FILE = your own table (columns ScientificName and q, or the
+## default file's species and q_FACTOR), e.g. uploaded on the page.
+if (!exists("APPLY_CATCHABILITY", envir = .GlobalEnv, inherits = FALSE)) APPLY_CATCHABILITY <- TRUE
+CATCHABILITY_CSV_PATH <- if (exists("CATCHABILITY_FILE", envir = .GlobalEnv, inherits = FALSE) && file.exists(CATCHABILITY_FILE)) CATCHABILITY_FILE else
+  resolve_pcloud_file(paste0(pcloud_dir,"/data/Complementary data/catchability_factors_ecotrans_medits_2021_spp.csv"), pcloud_dir, required = FALSE)
 
 ## Pelagic/planktonic/seagrass/algae FGs get q=1 (no catchability
 ## correction) regardless of anything catchability_table or the
@@ -1196,9 +1252,12 @@ if ("survey_exempt" %in% names(fg_raw)) {
   )
 }
 
-if (file.exists(CATCHABILITY_CSV_PATH)) {
-  catchability_raw <- fread(CATCHABILITY_CSV_PATH)
-  CATCHABILITY_TABLE <- catchability_raw[, .(ScientificName = species, q = q_FACTOR)]
+if (!isTRUE(APPLY_CATCHABILITY)) {
+  message("APPLY_CATCHABILITY = FALSE - no catchability correction (q = 1 for every species).")
+} else if (file.exists(CATCHABILITY_CSV_PATH)) {
+  catchability_raw <- fread(file = CATCHABILITY_CSV_PATH)
+  CATCHABILITY_TABLE <- if (all(c("ScientificName", "q") %in% names(catchability_raw))) catchability_raw[, .(ScientificName, q = as.numeric(q))] else
+    catchability_raw[, .(ScientificName = species, q = q_FACTOR)]
   message("Loaded catchability table: ", nrow(CATCHABILITY_TABLE), " entries from ", CATCHABILITY_CSV_PATH)
   ## species_taxonomy (built above, right after Step 4) is what makes
   ## the genus/order/class/phylum-level entries in this table (e.g.
@@ -1263,6 +1322,33 @@ if (!is.null(flagged_outliers) && nrow(flagged_outliers) > 0) {
   p_outliers <- plot_outlier_diagnostic(dt_before_outliers, flagged_outliers)
   ggsave(file.path(plot_dir, "survey_outlier_diagnostic.png"), p_outliers,
          width = 10, height = 7, dpi = PLOT_DPI, bg = "white")
+
+  ## Before / after: mean haul density per FG and year with all hauls and
+  ## after the outliers are removed (simple mean over hauls, not the
+  ## stratified index - it shows how much each FG series moves).
+  ## survey_outlier_effect_by_fg_year.csv + plot, also in the validation PDF.
+  tryCatch({
+    .fgc <- intersect(c("FG_name", "FG"), names(dt))[1]
+    if (is.na(.fgc)) stop("no FG column in the haul data")
+    .bef <- dt_before_outliers[!is.na(get(.fgc)), .(before = mean(Density, na.rm = TRUE)), by = c(.fgc, "Year")]
+    .aft <- dt[!is.na(get(.fgc)), .(after = mean(fifelse(is.na(Density), 0, Density))), by = c(.fgc, "Year")]
+    .eff <- merge(.bef, .aft, by = c(.fgc, "Year"))
+    setnames(.eff, .fgc, "FG_name")
+    .eff[, change_pct := fifelse(before > 0, 100 * (after - before) / before, NA_real_)]
+    fwrite(.eff[order(FG_name, Year)], file.path(csv_out_dir, "survey_outlier_effect_by_fg_year.csv"))
+    .top <- .eff[, .(m = max(abs(change_pct), na.rm = TRUE)), by = FG_name][is.finite(m)][order(-m)][seq_len(min(12, .N)), FG_name]
+    .pl <- melt(.eff[FG_name %in% .top], id.vars = c("FG_name", "Year"), measure.vars = c("before", "after"),
+                variable.name = "series", value.name = "density")
+    p_out_eff <- ggplot(.pl, aes(Year, density, colour = series, linetype = series)) + geom_line() +
+      facet_wrap(~ FG_name, scales = "free_y") +
+      scale_colour_manual(values = c(before = "grey55", after = "#1b7f9e"),
+                          labels = c(before = "all hauls", after = "outliers removed")) +
+      scale_linetype_manual(values = c(before = "dashed", after = "solid"), labels = c(before = "all hauls", after = "outliers removed")) +
+      labs(title = "Effect of removing outlier hauls (12 FGs that change most)",
+           subtitle = "Mean haul density per year (survey density units, not stratified)", x = NULL, y = NULL, colour = NULL, linetype = NULL) +
+      theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+    ggsave(file.path(plot_dir, "survey_outlier_before_after.png"), p_out_eff, width = 12, height = 8, dpi = PLOT_DPI)
+  }, error = function(e) message("[Outliers] before/after plot skipped - ", conditionMessage(e)))
 }
 rm(dt_before_outliers)
 
@@ -1529,6 +1615,43 @@ if (isTRUE(APPLY_AQUAMAPS_DEPTH_ADJUSTMENT)) {
 fwrite(MODEL_AREA_CELLS, file.path(csv_out_dir, "model_area_cells.csv"))
 fwrite(MODEL_AREA_CELLS[, .(area_km2 = sum(area_km2)), by = .(GSA = AreaID)][order(GSA)][, basis := MODEL_AREA_BASIS],
        file.path(csv_out_dir, "model_area_by_gsa.csv"))
+
+## --- Custom region: which GSAs it overlaps (for the catch of 02) -------
+## Catch, discards and effort are reported per GSA (or wider), not for an
+## arbitrary polygon. custom_gsa_overlap.csv lists the sea area of the
+## region inside each GSA. 02 takes the catch of the GSAs holding at least
+## CUSTOM_CATCH_MIN_SHARE of the region (default 5 %, so a thin sliver of a
+## neighbouring GSA does not bring in that GSA's whole catch) and divides it
+## by the sea area of those GSAs: catch per km2 is assumed the same inside
+## the region as in its GSAs (ASSUMPTION). Total tonnes in the region =
+## that density x the region's model area (column region_scale).
+if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) {
+  if (!exists("CUSTOM_CATCH_MIN_SHARE", envir = .GlobalEnv, inherits = FALSE)) CUSTOM_CATCH_MIN_SHARE <- 0.05
+  .custom_overlap <- function() {
+    .gsa_all <- sf::st_make_valid(download_gfcm_gsa_shapefile())
+    .reg <- sf::st_union(sf::st_make_valid(sf::st_transform(area_shp, sf::st_crs(.gsa_all))))
+    .old_s2 <- suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(.old_s2)), add = TRUE)
+    .int <- suppressWarnings(suppressMessages(sf::st_intersection(.gsa_all[, "gsa_num"], .reg)))
+    if (!nrow(.int)) stop("the region does not overlap any GFCM GSA")
+    ov <- data.table(GSA = .int$gsa_num, overlap_km2 = as.numeric(sf::st_area(.int)) / 1e6)[, .(overlap_km2 = sum(overlap_km2)), by = GSA]
+    ga <- data.table(GSA = .gsa_all$gsa_num, gsa_area_km2 = as.numeric(sf::st_area(.gsa_all)) / 1e6)[, .(gsa_area_km2 = sum(gsa_area_km2)), by = GSA]
+    ov <- merge(ov[overlap_km2 > 0.01], ga, by = "GSA")
+    ov[, `:=`(share_of_region = overlap_km2 / sum(overlap_km2), share_of_gsa = overlap_km2 / gsa_area_km2)]
+    ov[, used_for_catch := share_of_region >= CUSTOM_CATCH_MIN_SHARE]
+    if (!any(ov$used_for_catch)) ov[which.max(share_of_region), used_for_catch := TRUE]
+    ov[, `:=`(region_model_area_km2 = MODEL_AREA_KM2, catch_gsas_area_km2 = sum(gsa_area_km2[used_for_catch]),
+              region_scale = MODEL_AREA_KM2 / sum(gsa_area_km2[used_for_catch]))]
+    fwrite(ov[order(-share_of_region)], file.path(csv_out_dir, "custom_gsa_overlap.csv"))
+    message("[Custom region] Overlap with GFCM GSAs (custom_gsa_overlap.csv): ",
+            paste(ov[order(-share_of_region), sprintf("GSA %s %.0f%% of the region (%.1f%% of the GSA)%s", GSA, 100 * share_of_region,
+                                                       100 * share_of_gsa, ifelse(used_for_catch, "", " - not used for catch"))], collapse = "; "),
+            ". Catch of 02 = catch per km2 of GSA(s) ", paste(ov[used_for_catch == TRUE, GSA], collapse = ", "),
+            " (assumed the same inside the region); region total = x ", signif(ov$region_scale[1], 3), " of those GSAs' catch.")
+    ov
+  }
+  custom_gsa_overlap <- tryCatch(.custom_overlap(), error = function(e) { message("[Custom region] GSA overlap not computed - ", conditionMessage(e),
+                                   ". 02 needs custom_gsa_overlap.csv to select the catch."); NULL })
+}
 message("[Model area] A_model = ", round(MODEL_AREA_KM2), " km2 (", MODEL_AREA_BASIS, ", GSAs ", paste(sort(unique(MODEL_AREA_CELLS$AreaID)), collapse = ", "), "; MEDITS 10-800 m strata of the surveyed GSAs = ",
         round(sum(as.data.table(strata_area_by_area)$area_km2, na.rm = TRUE)), " km2) - model_area_by_gsa.csv written.")
 
@@ -2827,6 +2950,7 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   p_biomass_by_fg_source <- tryCatch({
     d <- fg_index_regional_combined[Year %in% YEAR_ECOPATH, .(mean_density = mean(mean_density, na.rm = TRUE),
                                                               biomass_source = biomass_source[1]), by = .(FG_num, FG_name)]
+    d <- d[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]   # not living biomass - left out of the plot
     d[, Tier := fcase(
       is.na(biomass_source), "Missing",
       grepl("^MISSING", biomass_source), "Missing",
@@ -3662,6 +3786,33 @@ message("Saved to biomass_proportion_by_species_fg.csv (Species x FG, prop_sp_fg
         " within each FG, whatever sourced that FG's total; Density_survey_raw is the original MEDITS/MEDIAS-observed",
         " density, kept for audit - it's what prop_sp_fg was computed from, but is NOT what 'Density' means in this sheet any more.)")
 
+## --- Species coverage per FG: how many of the FG file's species have
+## biomass in this run (e.g. 5/7 = 5 of the 7 species listed for that FG).
+## n_observed = species with a real survey density (MEDITS/MEDIAS) in the
+## Ecopath years; n_with_biomass also counts species given biomass by a
+## stock assessment, literature value or split.
+.species_coverage <- function(fg_spp_tbl) tryCatch({
+  .fg_file_sp <- unique(dataframe2[!is.na(FG_num), .(FG_num = as.integer(FG_num), Species = ScientificName)])
+  .sp_b <- unique(fg_spp_tbl[, .(FG_num = as.integer(FG_num), Species,
+                                     has_B = is.finite(Biomass_t_km2) & Biomass_t_km2 > 0,
+                                     observed = is.finite(Density_survey_raw) & Density_survey_raw > 0)])
+  .cov <- merge(.fg_file_sp, .sp_b, by = c("FG_num", "Species"), all.x = TRUE)
+  .cov[is.na(has_B), has_B := FALSE][is.na(observed), observed := FALSE]
+  fg_species_coverage <- .cov[, .(n_species_fg_file = .N, n_with_biomass = sum(has_B), n_observed_survey = sum(observed),
+                                 species_without_biomass = paste(sort(Species[!has_B]), collapse = "; ")), by = FG_num]
+  fg_species_coverage <- merge(unique(dataframe2[!is.na(FG_num), .(FG_num = as.integer(FG_num), FG_name)])[, .SD[1], by = FG_num],
+                               fg_species_coverage, by = "FG_num", all.y = TRUE)
+  fg_species_coverage[, coverage := paste0(n_with_biomass, "/", n_species_fg_file)]
+  fg_species_coverage[, coverage_survey := paste0(n_observed_survey, "/", n_species_fg_file)]
+  setcolorder(fg_species_coverage, c("FG_num", "FG_name", "coverage", "coverage_survey", "n_species_fg_file", "n_with_biomass", "n_observed_survey"))
+  fwrite(fg_species_coverage[order(FG_num)], file.path(csv_out_dir, "fg_species_coverage.csv"))
+  message("\n[Species coverage] species with biomass / species in the FG file, per FG (survey-observed in brackets) - fg_species_coverage.csv:\n",
+          paste(fg_species_coverage[order(FG_num), sprintf("  %2d %-40s %7s  (%s)", FG_num, substr(FG_name, 1, 40), coverage, coverage_survey)], collapse = "\n"),
+          "\nTotal: ", sum(fg_species_coverage$n_with_biomass), " of ", sum(fg_species_coverage$n_species_fg_file), " species have biomass; ",
+          sum(fg_species_coverage$n_observed_survey), " observed by the surveys.")
+}, error = function(e) message("[Species coverage] not computed - ", conditionMessage(e)))
+.species_coverage(FG_spp_Ecopath)
+
 ## --- review list: FGs whose species-level split is NOT a real
 ## measurement (i.e. NOT MEDITS/MEDIAS density-weighted and not a
 ## documented single-species/literature-weighted override like the
@@ -4023,6 +4174,121 @@ if (nrow(fg_missing_biomass) > 0) {
           " FG(s) has a nonzero Ecopath_B biomass value for ", paste(range(YEAR_ECOPATH), collapse = "-"), ".")
 }
 
+## --- Custom region: FGs the survey cannot measure ------------------------
+## With a bbox/shapefile region only MEDITS runs (01b, MEDIAS and the stock
+## assessments need GSAs). FGs left without biomass are filled from the
+## main Western Med run (<output>/ecopath_ecosim_inputs.xlsx; run it first):
+##  - mapped habitat FGs (Posidonia, Cymodocea, Macroalgae, Corals and
+##    gorgonians): Western Med tonnes x the share of the mapped habitat
+##    (HABITAT_MAP_SHP: EUSeaMap Posidonia MB252/MB2522, coralligenous
+##    MC151/MC251) that lies inside the region, divided by the region's area:
+##      B_region = B_WM x A_WM x (a_hab,region / a_hab,WM) / A_region
+##    No mapped habitat inside the region -> B = 0 (the FG is absent).
+##    Cymodocea follows the Posidonia map (its area is a ratio of it) and
+##    Macroalgae the coralligenous map (coralligenous algal layer).
+##  - other FGs (megafauna, plankton, groups MEDITS does not sample): the
+##    Western Med density per km2 (ASSUMPTION: same density in the region).
+## Species shares inside these FGs (prop_sp_fg) come from the Western Med
+## run, so 03 still weights P/B and Q/B by species biomass and 04 the diets.
+if (!exists("HABITAT_MAP_SHP")) HABITAT_MAP_SHP <- file.path(pcloud_dir, "data/Complementary data/westmed_posidonia_coralligenous.shp")
+.hab_fg_class <- function(fg) ifelse(grepl("posidonia|cymodocea", fg, ignore.case = TRUE), "Posidonia",
+                             ifelse(grepl("macroalga|coral|gorgon", fg, ignore.case = TRUE), "Coralligenous", NA_character_))
+.habitat_share_in_region <- function(main_gsas) {
+  m <- sf::st_read(HABITAT_MAP_SHP, quiet = TRUE)
+  cls_col <- intersect(c("All2019D", "EUNIS2019D", "biomass_cl"), names(m))[1]
+  m$cls <- ifelse(grepl("^MB252(:|2)", m[[cls_col]]), "Posidonia", ifelse(grepl("^MC(151|251)", m[[cls_col]]), "Coralligenous", NA))
+  m <- m[!is.na(m$cls), "cls"]
+  .old_s2 <- suppressMessages(sf::sf_use_s2(FALSE)); on.exit(suppressMessages(sf::sf_use_s2(.old_s2)), add = TRUE)
+  m <- sf::st_make_valid(sf::st_transform(m, 4326))
+  gsa <- sf::st_make_valid(download_gfcm_gsa_shapefile())
+  gu  <- sf::st_union(gsa[gsa$gsa_num %in% main_gsas, ])
+  in_main <- lengths(sf::st_intersects(suppressWarnings(sf::st_centroid(sf::st_geometry(m))), gu)) > 0
+  den <- data.table(cls = m$cls, a = as.numeric(sf::st_area(m)) / 1e6)[in_main, .(area_westmed_km2 = sum(a)), by = cls]
+  reg <- sf::st_union(sf::st_make_valid(sf::st_transform(area_shp, 4326)))
+  mc  <- m[lengths(sf::st_intersects(m, reg)) > 0, ]
+  num <- if (nrow(mc)) {
+    ii <- suppressWarnings(sf::st_intersection(mc, reg))
+    data.table(cls = ii$cls, a = as.numeric(sf::st_area(ii)) / 1e6)[, .(area_region_km2 = sum(a)), by = cls]
+  } else data.table(cls = character(0), area_region_km2 = numeric(0))
+  out <- merge(den, num, by = "cls", all.x = TRUE)
+  out[is.na(area_region_km2), area_region_km2 := 0][, share := area_region_km2 / area_westmed_km2][]
+}
+if (AREA_MODE == "custom" && CUSTOM_AREA_TYPE %in% c("bbox", "shapefile")) tryCatch({
+  .main_dir <- dirname(sub("/+$", "", out_dir))
+  .wb_reg  <- file.path(out_dir, "ecopath_ecosim_inputs.xlsx")
+  .wb_main <- file.path(.main_dir, "ecopath_ecosim_inputs.xlsx")
+  if (!file.exists(.wb_main)) stop("no Western Med workbook at ", .wb_main, " - run the Western Med pipeline first")
+  .num <- function(x) suppressWarnings(as.numeric(x))
+  .b_reg  <- as.data.table(openxlsx::read.xlsx(.wb_reg, sheet = "Ecopath_B"))
+  .b_main <- as.data.table(openxlsx::read.xlsx(.wb_main, sheet = "Ecopath_B"))
+  .need <- .b_reg[!is.finite(.num(Biomass)) | .num(Biomass) <= 0, FG_num]
+  .from <- .b_main[FG_num %in% .need & is.finite(.num(Biomass)) & .num(Biomass) > 0, .(FG_num, FG_name, B_wm = .num(Biomass),
+                                                                                     EE_wm = if ("EE_input" %in% names(.b_main)) EE_input else NA, Ref_wm = as.character(Reference))]
+  if (nrow(.from)) {
+    .from[, hab := .hab_fg_class(FG_name)]
+    .from[, `:=`(B_region = B_wm, how = "Western Med density per km2 assumed in the region (ASSUMPTION)")]
+    if (any(!is.na(.from$hab))) {
+      .ma_main <- file.path(.main_dir, "biomass", "model_area_by_gsa.csv")
+      if (!file.exists(.ma_main)) stop("no ", .ma_main, " (Western Med model area)")
+      .ma_main <- fread(.ma_main); A_wm <- sum(.ma_main$area_km2, na.rm = TRUE)
+      .hs <- tryCatch(suppressMessages(.habitat_share_in_region(sort(unique(as.numeric(.ma_main$GSA))))),
+                      error = function(e) { message("[Custom region] habitat map not usable (", conditionMessage(e), ") - habitat FGs keep the Western Med density."); NULL })
+      if (!is.null(.hs)) {
+        fwrite(.hs, file.path(csv_out_dir, "custom_habitat_map_share.csv"))
+        .from[.hs, on = c(hab = "cls"), `:=`(B_region = B_wm * A_wm * i.share / MODEL_AREA_KM2,
+                                            how = sprintf("habitat map: %.1f of %.0f km2 of the Western Med %s map inside the region (share %.4f); B = %.4g t/km2 x %.0f km2 x share / %.0f km2",
+                                                          i.area_region_km2, i.area_westmed_km2, hab, i.share, B_wm, A_wm, MODEL_AREA_KM2))]
+        .from[!is.na(hab) & B_region == 0, how := paste0("no ", hab, " mapped inside the region - FG absent (B = 0)")]
+      }
+    }
+    .b_reg[.from, on = "FG_num", Biomass := i.B_region]
+    for (cc in intersect(c("Biomass_1994_1996", "Biomass_1995"), names(.b_reg))) .b_reg[.from, on = "FG_num", (cc) := i.B_region]
+    if ("EE_input" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", EE_input := i.EE_wm]
+    if ("Reference" %in% names(.b_reg)) .b_reg[.from, on = "FG_num", Reference := paste0(i.how, " | Western Med source: ", substr(i.Ref_wm, 1, 300))]
+    upsert_workbook_sheets(list(Ecopath_B = .b_reg), .wb_reg)
+    ## A region smaller than a GSA is the case where the Western Med
+    ## average per km2 is least likely to hold (local habitat, depth range
+    ## and coast decide what lives there): flag every borrowed FG for review.
+    .min_gsa <- if (exists("custom_gsa_overlap") && !is.null(custom_gsa_overlap)) min(custom_gsa_overlap$gsa_area_km2) else NA_real_
+    .small <- is.finite(.min_gsa) && MODEL_AREA_KM2 < .min_gsa
+    .from[, review := fifelse(is.na(hab), fifelse(.small, "REVIEW: region smaller than a GSA - the Western Med density per km2 may be biased here",
+                                                  "check: Western Med density per km2 assumed"), "habitat map share (check the map covers the region)")]
+    fwrite(.from[, .(FG_num, FG_name, habitat_map = hab, B_westmed_t_km2 = B_wm, B_region_t_km2 = B_region, review, how)],
+           file.path(csv_out_dir, "custom_fg_biomass_from_westmed_REVIEW.csv"))
+    if (.small) message("\n[Custom region] WARNING: the region (", round(MODEL_AREA_KM2), " km2) is smaller than the smallest GSA it overlaps (",
+                        round(.min_gsa), " km2). The ", sum(is.na(.from$hab)), " FG(s) that took the Western Med density per km2 (megafauna, plankton,",
+                        " groups MEDITS does not sample) may be biased for an area this small - review them in custom_fg_biomass_from_westmed_REVIEW.csv",
+                        " and replace with local values where you have them.")
+    message("[Custom region] ", nrow(.from), " FG(s) without survey biomass filled from the Western Med run (custom_fg_biomass_from_westmed_REVIEW.csv):\n",
+            paste(sprintf("  %-32s %10.4g t/km2  %s", substr(.from$FG_name, 1, 32), .from$B_region, substr(.from$how, 1, 90)), collapse = "\n"))
+
+    ## Species shares of these FGs from the Western Med run (P/B, Q/B and
+    ## diets are weighted by species biomass in 03 and 04)
+    .bp_main_p <- file.path(.main_dir, "biomass", "biomass_proportion_by_species_fg.csv")
+    if (file.exists(.bp_main_p)) {
+      .bp_main <- fread(.bp_main_p)[FG_num %in% .from$FG_num]
+      .bp_main[.from, on = "FG_num", `:=`(Ecopath_B_Biomass = i.B_region, Biomass_t_km2 = prop_sp_fg * i.B_region, Density = prop_sp_fg * i.B_region)]
+      .bp_main[, prop_sp_fg_basis := paste0("Western Med run species share (custom region): ", prop_sp_fg_basis)]
+      .bp_reg_p <- file.path(csv_out_dir, "biomass_proportion_by_species_fg.csv")
+      .bp_reg <- fread(.bp_reg_p)
+      .bp_reg <- rbindlist(list(.bp_reg[!FG_num %in% .from$FG_num], .bp_main[, names(.bp_reg)[names(.bp_reg) %in% names(.bp_main)], with = FALSE]), fill = TRUE)
+      fwrite(.bp_reg[order(FG_num, Species)], .bp_reg_p)
+      if ("FG_spp" %in% openxlsx::getSheetNames(.wb_reg)) {
+        .fs <- as.data.table(openxlsx::read.xlsx(.wb_reg, sheet = "FG_spp"))
+        .sp_col <- intersect(c("Species", "ScientificName"), names(.fs))[1]
+        if (!is.na(.sp_col) && "FG_num" %in% names(.fs)) {
+          .upd <- .bp_main[, .(FG_num, sp = Species, prop_sp_fg, Biomass_t_km2, Density)]
+          for (cc in intersect(c("prop_sp_fg", "Biomass_t_km2", "Density"), names(.fs)))
+            .fs[.upd, on = c(FG_num = "FG_num", setNames("sp", .sp_col)), (cc) := get(paste0("i.", cc))]
+          upsert_workbook_sheets(list(FG_spp = .fs), .wb_reg)
+        }
+      }
+      FG_spp_Ecopath <- rbindlist(list(FG_spp_Ecopath[!FG_num %in% .from$FG_num], .bp_main), fill = TRUE)
+      .species_coverage(FG_spp_Ecopath)
+    }
+  }
+}, error = function(e) message("[Custom region] FGs without survey biomass not filled - ", conditionMessage(e)))
+
 message("\nDone. Outputs in ", out_dir, " and ", plot_dir)
 message("Run finished: ", Sys.time())
 
@@ -4033,3 +4299,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session

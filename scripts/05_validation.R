@@ -1,5 +1,33 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 05_validation.R
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -150,7 +178,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -280,6 +310,16 @@ if (!file.exists(ECOPATH_WORKBOOK_PATH)) {
        " 02_fisheries.R/03_pbqb-traits.R too) first.")
 }
 wb_sheets <- openxlsx::getSheetNames(ECOPATH_WORKBOOK_PATH)
+## Keep only REVIEW files written by this run: a file last written more than
+## 24 h before the workbook comes from an older pipeline version (e.g. the
+## EcoBase files from September) and would put stale results in the PDF.
+.current_files <- function(paths) {
+  paths <- paths[file.exists(paths)]
+  old <- difftime(file.mtime(ECOPATH_WORKBOOK_PATH), file.mtime(paths), units = "hours") > 24
+  if (any(old)) message("[05_validation.R] ignoring ", sum(old), " file(s) left over from an older run: ",
+                        paste(basename(paths[old]), collapse = ", "))
+  paths[!old]
+}
 
 read_sheet_safe <- function(sheet_name, needed_cols) {
   if (!sheet_name %in% wb_sheets) {
@@ -639,6 +679,7 @@ fwrite(bio_cmp, file.path(csv_out_dir, "biomass_vs_old_model_REVIEW.csv"))
 .fmt_b <- function(x) ifelse(is.na(x), "", ifelse(x >= 10, sprintf("%.0f", x), ifelse(x >= 0.1, sprintf("%.2f", x), sprintf("%.2g", x))))
 .bio_pair_plot <- function(old_col, title, sub) {
   d <- unique(bio_cmp[!is.na(FG_num) & FG_num > 0, .(FG_num, FG_name, new = new_B_t_km2, old = get(old_col))], by = "FG_num")[order(FG_num)]
+  d <- d[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]   # not living biomass
   d[, label := factor(paste0(FG_num, " ", FG_name), levels = rev(paste0(FG_num, " ", FG_name)))]
   d[, ratio := fifelse(is.finite(new / old) & old > 0, new / old, NA_real_)]
   rng <- range(c(d$new, d$old)[is.finite(c(d$new, d$old)) & c(d$new, d$old) > 0])
@@ -788,7 +829,9 @@ validation_plots[["02_pbqb_plausibility"]] <- tryCatch({
 
 ## 2) Diet matrix column sum (should be 1 for every predator FG).
 validation_plots[["03_diet_column_sum"]] <- tryCatch({
-  d <- fread(file.path(out_dir, "diet", "diet_matrix_column_sum_REVIEW.csv"))
+  .p <- file.path(out_dir, "diet", "diet_matrix_column_sum_REVIEW.csv")
+  if (!file.exists(.p)) stop("no predator FG flagged (file not written)")
+  d <- fread(file = .p)
   if (nrow(d) == 0) stop("no predator FG flagged")
   d <- d[order(total)]
   d[, predator_fg := factor(predator_fg, levels = predator_fg)]
@@ -824,9 +867,9 @@ validation_plots[["04_diet_cannibalism"]] <- tryCatch({
 validation_plots[["05_ecobase_fallback_plausibility"]] <- tryCatch({
   gen_path <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_NOT_INCORPORATED.csv")
   pp_path  <- file.path(out_dir, "biomass", "ecobase_biomass_evaluation_primary_producers_NOT_INCORPORATED.csv")
-  gen <- if (file.exists(gen_path)) fread(gen_path)[, .(FG_num = as.character(FG_num), Biomass_t_km2,
+  gen <- if (length(.current_files(gen_path))) fread(gen_path)[, .(FG_num = as.character(FG_num), Biomass_t_km2,
                                                         plausible = as.character(plausible))] else NULL
-  pp  <- if (file.exists(pp_path))  fread(pp_path)[, .(FG_num = Group, Biomass_t_km2 = Biomass_t, plausible = NA_character_)] else NULL
+  pp  <- if (length(.current_files(pp_path)))  fread(pp_path)[, .(FG_num = Group, Biomass_t_km2 = Biomass_t, plausible = NA_character_)] else NULL
   d <- rbindlist(list(gen, pp), fill = TRUE)
   if (is.null(d) || nrow(d) == 0) stop("no EcoBase evaluation candidates in either file")
   d[, plausible := fifelse(is.na(plausible) | plausible == "NA", "Not checked", plausible)]
@@ -866,7 +909,7 @@ validation_plots[["06_species_even_split_biomass_at_risk"]] <- tryCatch({
 ## rather than incorporated into Ecopath_B (EcoBase is reference-only) -
 ## text-list page since these need a real citation added by hand, not a plot.
 validation_plots[["05b_ecobase_sourced_rows_excluded"]] <- tryCatch({
-  files <- Sys.glob(file.path(out_dir, "biomass", "*_ecobase_sourced_rows_EXCLUDED_REVIEW.csv"))
+  files <- .current_files(Sys.glob(file.path(out_dir, "biomass", "*_ecobase_sourced_rows_EXCLUDED_REVIEW.csv")))
   if (length(files) == 0) stop("no *_ecobase_sourced_rows_EXCLUDED_REVIEW.csv files found")
   d <- rbindlist(lapply(files, function(f) { x <- fread(f); x[, source_file := basename(f)]; x }), fill = TRUE)
   if (nrow(d) == 0) stop("all *_ecobase_sourced_rows_EXCLUDED_REVIEW.csv files were empty")
@@ -879,7 +922,7 @@ validation_plots[["05b_ecobase_sourced_rows_excluded"]] <- tryCatch({
 ## Collection_year column differing from the Ecopath target Year) -
 ## every temporal_mismatch_REVIEW_*.csv this run produced, combined.
 validation_plots[["07_temporal_mismatch"]] <- tryCatch({
-  files <- Sys.glob(file.path(out_dir, "biomass", "temporal_mismatch_REVIEW_*.csv"))
+  files <- .current_files(Sys.glob(file.path(out_dir, "biomass", "temporal_mismatch_REVIEW_*.csv")))
   if (length(files) == 0) stop("no temporal_mismatch_REVIEW_*.csv files found")
   d <- rbindlist(lapply(files, function(f) { x <- fread(f); x[, source_file := basename(f)]; x }), fill = TRUE)
   if (nrow(d) == 0) stop("all temporal_mismatch_REVIEW_*.csv files were empty")
@@ -1077,9 +1120,9 @@ for (.k in c("Biomass", "Catch")) {
 ## unsurveyed FGs vs other models. Each writes a REVIEW csv, adds a row to
 ## validation_summary_ALL.csv and, where useful, a page to the PDF.
 ## =================================================================
-.add_summary_row <- function(check, file, n) {
-  validation_summary <<- rbindlist(list(validation_summary[check != ..check],
-    data.table(check = check, file = file, status = if (is.na(n)) "not found" else if (n == 0) "found, 0 rows (clean)" else paste0("found, ", n, " row(s) flagged"), n_rows = n)), fill = TRUE)
+.add_summary_row <- function(chk, file, n) {
+  validation_summary <<- rbindlist(list(validation_summary[check != chk],
+    data.table(check = chk, file = file, status = if (is.na(n)) "not found" else if (n == 0) "found, 0 rows (clean)" else paste0("found, ", n, " row(s) flagged"), n_rows = n)), fill = TRUE)
 }
 
 ## (a) Fishing mortality above 1 (per year): F_f = (mean catch / A_model) / B_f,
@@ -1160,6 +1203,217 @@ validation_plots[["14_unsurveyed_fg_vs_other_models"]] <- tryCatch({
          subtitle = "t WW/km2 of each model's own area (log scale) - a small coastal model has more seagrass/coastal FGs per km2; see unsurveyed_fg_vs_other_models_REVIEW.csv",
          x = "Biomass (t WW/km2, log)", y = NULL, colour = NULL) + theme_minimal(base_size = 7) + theme(legend.position = "bottom")
 }, error = function(e) { message("[05_validation.R plot] Unsurveyed vs other models skipped - ", conditionMessage(e)); NULL })
+
+## (d) PREBAL (Link 2010): before balancing, log biomass, P/B and Q/B
+## should fall smoothly with trophic level (TL). Groups far off the
+## regression line (|residual| > 2 SD) are worth a second look.
+## TL_i = 1 + sum_j DC_ij * TL_j, where DC_ij is the share of prey j in the
+## diet of predator i (Ecopath_diet sheet). Primary producers, detritus and
+## discards (diet column sum = 0) have TL = 1. Solved by iteration.
+prebal <- tryCatch({
+  if (!"Ecopath_diet" %in% wb_sheets) stop("no Ecopath_diet sheet")
+  dm <- as.data.table(openxlsx::read.xlsx(ECOPATH_WORKBOOK_PATH, sheet = "Ecopath_diet"))
+  pred_cols <- grep("^Predator_[0-9]+_", names(dm), value = TRUE)
+  pred_num  <- as.integer(sub("^Predator_([0-9]+)_.*$", "\\1", pred_cols))
+  prey_num  <- suppressWarnings(as.integer(dm$Prey_FG_num))
+  keep      <- is.finite(prey_num)                                 # drops an 'Import' row if present
+  DC <- as.matrix(dm[keep, ..pred_cols]); DC[!is.finite(DC)] <- 0
+  fg_all <- sort(unique(c(pred_num, prey_num[keep])))
+  TL <- setNames(rep(1, length(fg_all)), fg_all)
+  for (.it in 1:200) {                                             # converges in < 50 iterations
+    TL_old <- TL
+    for (k in seq_along(pred_cols)) {
+      w <- DC[, k]; s <- sum(w)
+      if (s > 0) TL[as.character(pred_num[k])] <- 1 + sum(w / s * TL[as.character(prey_num[keep])])   # diet rescaled to 1
+    }
+    if (max(abs(TL - TL_old)) < 1e-6) break
+  }
+  tl_dt <- data.table(FG_num = as.integer(names(TL)), TL = as.numeric(TL))
+  bb <- read_sheet_safe("Ecopath_B", c("FG_num", "FG_name", "Biomass"))
+  pq <- read_sheet_safe("Ecopath_PBQB", c("FG_num", "PB_FG", "QB_FG"))
+  d <- merge(tl_dt, bb[, .(FG_num, FG_name, B = as.numeric(Biomass))], by = "FG_num")
+  if (!is.null(pq)) d <- merge(d, pq[, .(FG_num, PB = as.numeric(PB_FG), QB = as.numeric(QB_FG))], by = "FG_num", all.x = TRUE)
+  d <- d[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]
+  long <- melt(d, id.vars = c("FG_num", "FG_name", "TL"), measure.vars = intersect(c("B", "PB", "QB"), names(d)),
+               variable.name = "metric", value.name = "value")[is.finite(value) & value > 0]
+  long[, log10_value := log10(value)]
+  long[, c("fit", "resid") := {
+    m <- lm(log10_value ~ TL); list(fitted(m), resid(m))
+  }, by = metric]
+  long[, flag := abs(resid) > 2 * sd(resid), by = metric]
+  slopes <- long[, .(slope_log10_per_TL = coef(lm(log10_value ~ TL))[2]), by = metric]
+  slopes[, pct_change_per_TL := round(100 * (10^slope_log10_per_TL - 1), 1)]
+  fwrite(long[order(metric, -flag, FG_num)], file.path(csv_out_dir, "prebal_REVIEW.csv"))
+  fwrite(slopes, file.path(csv_out_dir, "prebal_slopes.csv"))
+  message("[05_validation.R] PREBAL slopes (% change per TL): ",
+          paste(slopes$metric, slopes$pct_change_per_TL, sep = " ", collapse = "; "),
+          ". Flagged groups (|residual| > 2 SD): ", long[flag == TRUE, .N], ".")
+  list(long = long, slopes = slopes)
+}, error = function(e) { message("[05_validation.R] PREBAL skipped - ", conditionMessage(e)); NULL })
+.add_summary_row("PREBAL: log B, P/B, Q/B vs trophic level (prebal_REVIEW.csv)", file.path(csv_out_dir, "prebal_REVIEW.csv"),
+                 if (is.null(prebal)) NA_integer_ else prebal$long[flag == TRUE, .N])
+validation_plots[["15_prebal"]] <- tryCatch({
+  if (is.null(prebal)) stop("no PREBAL data")
+  labs_map <- c(B = "Biomass (t/km2)", PB = "P/B (1/year)", QB = "Q/B (1/year)")
+  d  <- copy(prebal$long)[, panel := factor(labs_map[as.character(metric)], levels = labs_map)]
+  sl <- copy(prebal$slopes)[, panel := factor(labs_map[as.character(metric)], levels = labs_map)]
+  sl[, txt := paste0(ifelse(pct_change_per_TL > 0, "+", ""), pct_change_per_TL, "% per TL")]
+  p <- ggplot(d, aes(TL, value)) +
+    geom_smooth(method = "lm", formula = y ~ x, colour = "grey40", fill = "grey85") +
+    geom_point(aes(colour = flag), size = 1.6) +
+    (if (requireNamespace("ggrepel", quietly = TRUE)) ggrepel::geom_text_repel(data = d[flag == TRUE], aes(label = FG_name), size = 2.2, colour = "firebrick", min.segment.length = 0)
+     else geom_text(data = d[flag == TRUE], aes(label = FG_name), size = 2.2, vjust = -0.7, colour = "firebrick", check_overlap = TRUE)) +
+    geom_text(data = sl, aes(x = -Inf, y = Inf, label = txt), hjust = -0.1, vjust = 1.5, size = 2.6, inherit.aes = FALSE) +
+    scale_y_log10() + facet_wrap(~ panel, scales = "free_y", ncol = 3) +
+    scale_colour_manual(values = c(`FALSE` = "grey30", `TRUE` = "firebrick"), labels = c("within 2 SD", "> 2 SD from line")) +
+    labs(title = "PREBAL: biomass, P/B and Q/B against trophic level (before balancing)",
+         subtitle = "Log scale. Line = linear fit of log10(value) on TL. Expect a steady decline with TL; red groups are > 2 SD from the line (prebal_REVIEW.csv)",
+         x = "Trophic level (from Ecopath_diet)", y = NULL, colour = NULL) +
+    theme_minimal(base_size = 8) + theme(legend.position = "bottom")
+  p
+}, error = function(e) { message("[05_validation.R plot] PREBAL skipped - ", conditionMessage(e)); NULL })
+
+## (e) Data pedigree (data-quality index per FG and input), using the EwE
+## pedigree categories (Christensen & Walters 2004; EwE User Guide). Each
+## input source in the workbook is mapped to a category and its index
+## (0 = no data / estimated by Ecopath, 1 = local, high-precision data).
+## The mapping is a regex table: edit PEDIGREE_RULES (or supply
+## PEDIGREE_RULES_FILE with columns input, pattern, index, category) to
+## change it. First matching row wins; Biomass rules match the start of the
+## Ecopath_B Reference text (which names the source first).
+if (!exists("PEDIGREE_RULES", envir = .GlobalEnv, inherits = FALSE)) PEDIGREE_RULES <- rbindlist(list(
+  ## Biomass (Ecopath_B Reference)
+  ## Departures from the EwE table (project decision 2026-10-23): EwE gives
+  ## 0 to "estimated by Ecopath" and to "from other model". Here B estimated
+  ## from a fixed EE gets 0.2 (it still rests on a set EE and on the
+  ## predators' consumption), and the ISIMIP hindcast (forced by observed
+  ## climate) 0.4 (approximate/indirect).
+  data.table(input = "B", pattern = "^__NA_B__$",                 index = 0.2, category = "Estimated by Ecopath from a fixed EE (indirect)"),
+  ## custom region (01): values borrowed from the Western Med run
+  data.table(input = "B", pattern = "^habitat map:",               index = 0.4, category = "Approximate (Western Med habitat biomass x mapped share in the region)"),
+  data.table(input = "B", pattern = "^no .* mapped inside the region", index = 0.4, category = "Approximate (habitat not mapped in the region, B = 0)"),
+  data.table(input = "B", pattern = "^Western Med density",        index = 0.2, category = "From another area (Western Med density per km2)"),
+  data.table(input = "B", pattern = "^marine megafauna",           index = 0.4, category = "Approximate or indirect method (field density x body mass)"),
+  data.table(input = "B", pattern = "^benthic habitat",            index = 0.4, category = "Approximate or indirect method (habitat cover x site density)"),
+  data.table(input = "B", pattern = "^primary producer|ISIMIP",    index = 0.4, category = "Approximate (ISIMIP ocean-model hindcast, observed climate)"),
+  data.table(input = "B", pattern = "^(ICCAT )?stock assessment",  index = 0.7, category = "Sampling-based, low precision (stock assessment)"),
+  data.table(input = "B", pattern = "^Per-GSA acoustic|^MEDIAS",   index = 0.7, category = "Sampling-based, low precision (acoustic survey)"),
+  data.table(input = "B", pattern = "^MEDITS",                     index = 0.7, category = "Sampling-based, low precision (trawl survey, assumed catchability)"),
+  data.table(input = "B", pattern = "^$",                          index = 0.0, category = "Guesstimate (placeholder biomass, no data)"),
+  ## P/B and Q/B (PB_source / QB_source, with the FG Reference)
+  data.table(input = "PBQB", pattern = "EcoBase",                         index = 0.2, category = "From other model (EcoBase)"),
+  data.table(input = "PBQB", pattern = "parameter studies",               index = 0.8, category = "Same species, similar system (published estimates)"),
+  data.table(input = "PBQB", pattern = "empirical",                       index = 0.5, category = "Empirical relationship"),
+  ## Diet (diet_provenance_by_predator_fg.csv: diet_source + diet_ref)
+  data.table(input = "Diet", pattern = "MAISHA.*\\(([5-9]|[1-9][0-9]+) study", index = 1.0, category = "Quantitative, detailed (>= 5 Mediterranean studies)"),
+  data.table(input = "Diet", pattern = "MAISHA",                          index = 0.7, category = "Quantitative but limited (1-4 Mediterranean studies)"),
+  data.table(input = "Diet", pattern = "DIETITEMS",                       index = 0.5, category = "Quantitative, other systems (FishBase DIETITEMS)"),
+  data.table(input = "Diet", pattern = "FOODITEMS",                       index = 0.2, category = "Qualitative, prey presence only (FishBase FOODITEMS)"),
+  data.table(input = "Diet", pattern = "still_missing|^$",                index = 0.0, category = "General knowledge / no data"),
+  ## Catch (Ecopath_L landings)
+  data.table(input = "L", pattern = "^landed$",                           index = 0.7, category = "National statistics (FDI / GFCM landings)"),
+  data.table(input = "L", pattern = "^none$",                             index = NA_real_, category = "No landings recorded"),
+  ## Discards: landings x discard ratio (FishMIP, Mediterranean-wide, by FG;
+  ## STECF FDI reported discards from 2014) - an indirect estimate
+  data.table(input = "Di", pattern = "^discarded$",                       index = 0.4, category = "Approximate (landings x discard ratio)"),
+  data.table(input = "Di", pattern = "^none$",                            index = NA_real_, category = "No discards recorded")
+))
+if (exists("PEDIGREE_RULES_FILE", envir = .GlobalEnv, inherits = FALSE) && file.exists(PEDIGREE_RULES_FILE))
+  PEDIGREE_RULES <- fread(file = PEDIGREE_RULES_FILE)
+
+.pedigree_of <- function(inp, txt) {
+  rules <- PEDIGREE_RULES[input == inp]
+  out <- data.table(index = rep(NA_real_, length(txt)), category = NA_character_)
+  txt[is.na(txt)] <- ""
+  for (r in seq_len(nrow(rules))) {
+    hit <- is.na(out$category) & grepl(rules$pattern[r], txt, ignore.case = TRUE)
+    out[hit, `:=`(index = rules$index[r], category = rules$category[r])]
+  }
+  out[is.na(category), category := "Not classified - add a rule"]
+  out
+}
+
+pedigree <- tryCatch({
+  bb <- read_sheet_safe("Ecopath_B", c("FG_num", "FG_name", "Biomass", "Reference"))
+  ped_B <- bb[, .(FG_num, FG_name, input = "B",
+                  source = fifelse(!is.finite(as.numeric(Biomass)), "__NA_B__", as.character(Reference)))]
+  pq <- read_sheet_safe("Ecopath_PBQB", c("FG_num", "PB_source", "QB_source"))
+  ped_PQ <- if (is.null(pq)) NULL else rbindlist(list(
+    pq[, .(FG_num, input = "P/B", source = paste(PB_source, if ("Reference" %in% names(pq)) Reference else ""))],
+    pq[, .(FG_num, input = "Q/B", source = paste(QB_source, if ("Reference" %in% names(pq)) Reference else ""))]))
+  dp_path <- file.path(out_dir, "diet", "diet_provenance_by_predator_fg.csv")
+  ped_D <- if (file.exists(dp_path)) {
+    dp <- fread(file = dp_path)
+    merge(dp[, .(FG_name, input = "Diet", source = paste(diet_source, diet_ref))], bb[, .(FG_num, FG_name)], by = "FG_name")
+  } else NULL
+  .fleet_total <- function(sheet, inp, word) {
+    if (!sheet %in% wb_sheets) return(NULL)
+    x <- as.data.table(openxlsx::read.xlsx(ECOPATH_WORKBOOK_PATH, sheet = sheet))
+    fcols <- setdiff(names(x), c("FG_num", "FG_name"))
+    tot <- rowSums(as.matrix(x[, lapply(.SD, function(v) suppressWarnings(as.numeric(v))), .SDcols = fcols]), na.rm = TRUE)
+    data.table(FG_num = as.integer(x$FG_num), input = inp, source = fifelse(tot > 0, word, "none"))
+  }
+  ped_L  <- .fleet_total("Ecopath_L",  "L",  "landed")
+  ped_Di <- .fleet_total("Ecopath_Di", "Di", "discarded")
+  allp <- rbindlist(list(ped_B[, .(FG_num, input, source)], ped_PQ, ped_D[, .(FG_num, input, source)], ped_L, ped_Di), fill = TRUE)
+  allp[, rule_input := fcase(input == "B", "B", input %in% c("P/B", "Q/B"), "PBQB", input == "Diet", "Diet", input == "L", "L", input == "Di", "Di")]
+  allp[, c("index", "category") := .pedigree_of(rule_input[1], source), by = rule_input]
+  allp <- merge(allp, bb[, .(FG_num, FG_name)], by = "FG_num", all.x = TRUE)
+  allp <- allp[!grepl("detritus|discard", FG_name, ignore.case = TRUE)]
+  allp[, source := substr(sub("^__NA_B__$", "Biomass left for Ecopath (EE fixed)", source), 1, 200)]
+  setcolorder(allp, c("FG_num", "FG_name", "input", "index", "category", "source"))
+  allp[, rule_input := NULL]
+  fwrite(allp[order(FG_num, input)], file.path(csv_out_dir, "pedigree_REVIEW.csv"))
+  ## Pedigree sheet in ecopath_ecosim_inputs.xlsx: one row per FG, one
+  ## column per input (index 0-1, EwE pedigree categories), in the order of
+  ## the EwE pedigree table; categories and sources in pedigree_REVIEW.csv.
+  tryCatch({
+    .w <- dcast(allp[, .(FG_num, input = factor(input, levels = c("B", "L", "Di", "P/B", "Q/B", "Diet")), index)],
+                FG_num ~ input, value.var = "index", drop = FALSE)
+    setnames(.w, c("P/B", "Q/B"), c("PB", "QB"), skip_absent = TRUE)
+    .w <- merge(bb[, .(FG_num, FG_name)], .w, by = "FG_num", all.x = TRUE)
+    .w[, Mean_index := round(rowMeans(as.matrix(.SD), na.rm = TRUE), 2), .SDcols = intersect(c("B", "L", "Di", "PB", "QB", "Diet"), names(.w))]
+    .w[!is.finite(Mean_index), Mean_index := NA_real_]
+    setcolorder(.w, intersect(c("FG_num", "FG_name", "B", "L", "Di", "PB", "QB", "Diet", "Mean_index"), names(.w)))
+    .wb <- openxlsx::loadWorkbook(ECOPATH_WORKBOOK_PATH)
+    if ("Pedigree" %in% names(.wb)) openxlsx::removeWorksheet(.wb, "Pedigree")
+    openxlsx::addWorksheet(.wb, "Pedigree")
+    openxlsx::writeData(.wb, "Pedigree", .w[order(FG_num)])
+    openxlsx::saveWorkbook(.wb, ECOPATH_WORKBOOK_PATH, overwrite = TRUE)
+    message("[05_validation.R] Pedigree sheet written to ", basename(ECOPATH_WORKBOOK_PATH), " (columns B, L, Di, PB, QB, Diet; index 0-1).")
+  }, error = function(e) message("[05_validation.R] Pedigree sheet not written - ", conditionMessage(e)))
+  ## Overall pedigree index P = (1/n) * sum_i sum_j I_ij / J_i  (mean over FGs of the mean index over inputs)
+  fg_mean <- allp[is.finite(index), .(mean_index = mean(index)), by = .(FG_num, FG_name)]
+  message("[05_validation.R] Pedigree: overall index = ", round(mean(fg_mean$mean_index), 2),
+          " (0 = no local data, 1 = all local high-precision); unclassified sources: ",
+          allp[category == "Not classified - add a rule", .N], " (see pedigree_REVIEW.csv).")
+  allp
+}, error = function(e) { message("[05_validation.R] Pedigree skipped - ", conditionMessage(e)); NULL })
+.add_summary_row("Data pedigree per FG and input (pedigree_REVIEW.csv)", file.path(csv_out_dir, "pedigree_REVIEW.csv"),
+                 if (is.null(pedigree)) NA_integer_ else pedigree[category == "Not classified - add a rule" | (is.finite(index) & index < 0.3), .N])
+## (f) Custom region: FGs whose biomass was borrowed from the Western Med run
+.cust_p <- file.path(out_dir, "biomass", "custom_fg_biomass_from_westmed_REVIEW.csv")
+if (file.exists(.cust_p)) {
+  .cust <- tryCatch(fread(file = .cust_p), error = function(e) NULL)
+  .add_summary_row("Custom region: biomass borrowed from the Western Med run (custom_fg_biomass_from_westmed_REVIEW.csv)", .cust_p,
+                   if (is.null(.cust)) NA_integer_ else .cust[grepl("^REVIEW", review), .N])
+  if (!is.null(.cust) && any(grepl("^REVIEW", .cust$review)))
+    message("[05_validation.R] Custom region smaller than a GSA: ", .cust[grepl("^REVIEW", review), .N],
+            " FG(s) use the Western Med density per km2 and may be biased - review custom_fg_biomass_from_westmed_REVIEW.csv.")
+}
+validation_plots[["16_pedigree"]] <- tryCatch({
+  if (is.null(pedigree)) stop("no pedigree")
+  d <- copy(pedigree)
+  d[, FG_lab := factor(paste(FG_num, FG_name), levels = rev(unique(paste(FG_num, FG_name)[order(FG_num)])))]
+  d[, input := factor(input, levels = c("B", "L", "Di", "P/B", "Q/B", "Diet"))]
+  p <- ggplot(d, aes(input, FG_lab, fill = index)) + geom_tile(colour = "white") +
+    geom_text(aes(label = ifelse(is.finite(index), sprintf("%.1f", index), "")), size = 1.8) +
+    scale_fill_gradient(low = "#f4c7a1", high = "#2b7a78", limits = c(0, 1), na.value = "grey90") +
+    labs(title = "Data pedigree by FG and input (EwE pedigree index)",
+         subtitle = "0 = estimated by Ecopath / no data; 0.2 = other model; 0.4-0.5 = indirect or empirical; 0.7 = sampling or national statistics; 1 = local detailed data. Grey = no landings or discards.",
+         x = NULL, y = NULL, fill = "Index") + theme_minimal(base_size = 6)
+  p
+}, error = function(e) { message("[05_validation.R plot] Pedigree skipped - ", conditionMessage(e)); NULL })
 
 fwrite(validation_summary, file.path(csv_out_dir, "validation_summary_ALL.csv"))
 
@@ -1442,6 +1696,7 @@ existing_pngs <- c(
   file.path(out_dir, "plots", "validation", "fish_PB_methods_comparison_by_FG.png"),
   file.path(out_dir, "plots", "validation", "fish_QB_methods_comparison_by_FG.png"),
   file.path(out_dir, "plots", "validation", "biomass_by_fg_source.png"),
+  file.path(out_dir, "plots", "biomass", "survey_outlier_before_after.png"),   # 01: haul-outlier removal effect
   file.path(out_dir, "plots", "diets", "diet_matrix_heatmap.png")
 )
 embedded_png_pages <- list()
@@ -1483,7 +1738,10 @@ if (length(validation_plots) == 0) {
           " missing or empty) - nothing written to ", VALIDATION_PLOTS_PDF, ".")
 } else {
   pdf(VALIDATION_PLOTS_PDF, width = 11, height = 8)   # same open-loop-close PDF pattern 02_fisheries.R's own validation_plots list uses
-  for (p in validation_plots) print(p)
+  ## Larger text on each page, except the tall one-row-per-FG pages, which
+  ## would not fit an 8-inch page at that size (their PNGs are 14 in tall).
+  .tall <- c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published", "16_pedigree")
+  for (nm in names(validation_plots)) print(if (nm %in% .tall) validation_plots[[nm]] else .readable(validation_plots[[nm]]))
   dev.off()
   ## The per-FG biomass-vs-old-model plot has ~one row per FG
   ## (potentially 90+) - the shared 10x7in PNG size every other check uses
@@ -1502,7 +1760,7 @@ if (length(validation_plots) == 0) {
     ## file named "<name>.png.png" for no reason - the real PNG already
     ## exists at its own original path, so just skip it.
     if (nm %in% names(embedded_png_pages)) next
-    ht <- if (nm %in% c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published")) 14 else 7
+    ht <- if (nm %in% c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published", "16_pedigree")) 14 else if (nm == "15_prebal") 5 else 7
     tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = PLOT_DPI, bg = "white", limitsize = FALSE),
              error = function(e) NULL)
   }
@@ -1525,3 +1783,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session

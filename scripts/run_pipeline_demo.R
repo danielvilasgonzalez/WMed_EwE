@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: run_pipeline_demo.R
 ## =================================================================
 ## run_pipeline_demo.R
 ##
@@ -35,7 +37,7 @@ options(warn = 1)
 ## outputs already on disk (used by medbs_pipeline_methodology.qmd).
 if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
 
-RUN_MODE <- "westmed_default"   # "westmed_default" | "custom_example"
+RUN_MODE <- "westmed_default"   # Western Mediterranean (GSAs 1-12, or a custom region inside them)
 
 ## ---- 1. Paths ------------------------------------------------------
 ## out_dir    = writable output folder (local to each laptop)
@@ -105,7 +107,9 @@ if (RUN_MODE == "westmed_default") {
   ## to change it for this run only:
   ##
   ## All scripts
-  # FG_SPECIES_FILE               <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # species -> FG table (FG_number, FG_name, species; optional FG_group)
+  # FG_SPECIES_FILE               <- file.path(pcloud_dir, "data/FG_WMed_2026.csv")   # species -> FG table (FG_number, FG_name, species, taxonomy)
+  # APPLY_CATCHABILITY            <- TRUE   # MEDITS catchability correction (q)
+  # CATCHABILITY_FILE             <- "my_q.csv"   # own catchability table (ScientificName, q)
   # PLOT_DPI                      <- 300    # PNG resolution of every plot; 150 = smaller files, blurrier when zoomed
   ##
   ## Biomass (01)
@@ -136,24 +140,40 @@ if (RUN_MODE == "westmed_default") {
   ##
   ## Validation (05)
   # RUN_VALIDATION <- TRUE
+  if (!identical(get0("AREA_MODE", envir = .GlobalEnv, ifnotfound = "westmed"), "custom"))
   message("\n=== Running the Western Med pipeline: GSAs ", paste(MODEL_GSAS, collapse = ", "), " (", MODEL_AREA_BASIS, "), Ecopath ",
           paste(range(YEAR_ECOPATH), collapse = "-"), ", Ecosim ", paste(range(TS_YEARS), collapse = "-"), " ===\n")
 
-} else if (RUN_MODE == "custom_example") {
-  ## Example of another region / period (Adriatic GSAs 17-18).
-  MODEL_GSAS       <- 17:18
-  MODEL_AREA_BASIS <- "whole_gsa"
-  TARGET_COUNTRIES_OVERRIDE <- c("Italy", "Croatia", "Slovenia")   # 02_fisheries.R
-  YEAR_ECOPATH     <- 2005:2007                            # same baseline for 01, 02, 03
-  TS_YEARS         <- 2000:2020                            # 01_biomass.R
-  START_YEAR       <- 2000                                 # 02_fisheries.R
-  END_YEAR         <- 2020
-  message("\n=== Running a CUSTOM region (GSA ", paste(MODEL_GSAS, collapse = ", "), ", ",
-          START_YEAR, "-", END_YEAR, ") ===\n")
 } else {
-  stop("Unknown RUN_MODE '", RUN_MODE, "' - use 'westmed_default' or 'custom_example'.")
+  stop("Unknown RUN_MODE '", RUN_MODE, "' - use 'westmed_default' (catch data cover the Western Mediterranean only).")
 }
-FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the model GSAs
+## ---- Custom region (AREA_MODE = "custom", set on the page) ------------
+## All five steps run for the region, with every output in out_dir/<AREA_NAME>:
+## 01 the survey biomass inside the region; 02 the catch of the GSA(s) the
+## region overlaps (custom_gsa_overlap.csv, per km2); 03-05 then use the
+## region's own biomass, species shares and catch, so P/B, Q/B, F and the
+## diet weights follow the region.
+.custom_run <- identical(get0("AREA_MODE", envir = .GlobalEnv, ifnotfound = "westmed"), "custom")
+if (.custom_run) {
+  if (!exists("AREA_NAME", envir = .GlobalEnv, inherits = FALSE)) AREA_NAME <- "custom_region"
+  AREA_NAME <- gsub("[^A-Za-z0-9_-]", "_", AREA_NAME)
+  if (basename(sub("/+$", "", out_dir)) != AREA_NAME) out_dir <- file.path(sub("/+$", "", out_dir), AREA_NAME)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE)) rm(MODEL_GSAS, envir = .GlobalEnv)   # 01 uses the region's own polygons
+  FILTER_AREAS <- NULL
+  message("\n=== Custom region '", AREA_NAME, "': steps ", paste(RUN_STEPS, collapse = ", "), "; outputs in ", out_dir, " ===\n")
+} else {
+  FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the model GSAs
+}
+## Custom region, before 02: the catch GSAs from 01's overlap table
+.set_custom_catch_gsas <- function() {
+  ov <- file.path(out_dir, "biomass", "custom_gsa_overlap.csv")
+  if (!file.exists(ov)) stop("[run_pipeline_demo.R] ", ov, " not found - run step 1 (01_biomass.R) for this region first.", call. = FALSE)
+  ov <- data.table::fread(ov)
+  assign("MODEL_GSAS", sort(ov[used_for_catch == TRUE, GSA]), envir = .GlobalEnv)
+  assign("FILTER_AREAS", get("MODEL_GSAS", envir = .GlobalEnv), envir = .GlobalEnv)
+  message("[Custom region] Catch from GSA(s) ", paste(get("MODEL_GSAS", envir = .GlobalEnv), collapse = ", "), " (custom_gsa_overlap.csv).")
+}
 
 ## ---- 3. Run the five steps -----------------------------------------
 ## Each step runs in the global environment (so later steps see the
@@ -170,6 +190,11 @@ FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the 
   message(sprintf("\n--- Step %d/5: %s %s---", i, script, note))
   .progress(sprintf("--- Step %d/5: %s", i, script))
   t <- Sys.time()
+  ## Each script sets options(error = ...) to write errors to its log; put
+  ## the session's own handler back afterwards, or every later error in this
+  ## R session (e.g. running a .qmd chunk) prints a stale "ERROR: ..." line.
+  .old_error_opt <- getOption("error")
+  on.exit(options(error = .old_error_opt), add = TRUE)
   tryCatch(source(file.path(git_dir, "scripts", script), local = globalenv()),
            error = function(e) {
              while (sink.number() > 0) sink()   # close the step's log so the error shows in the console
@@ -183,6 +208,7 @@ FILTER_AREAS <- MODEL_GSAS   # the survey/catch filters of 01 and 02 follow the 
 }
 
 if (1 %in% RUN_STEPS) .run_step(1, "01_biomass.R", "[MEDITS/MEDIAS + unsurveyed groups; the first run after a strata change rebuilds the strata areas from NOAA bathymetry - needs internet] ")
+if (.custom_run && any(2:5 %in% RUN_STEPS)) .set_custom_catch_gsas()
 if (2 %in% RUN_STEPS) .run_step(2, "02_fisheries.R", "[catch, landings, discards, effort, F] ")
 if (3 %in% RUN_STEPS) .run_step(3, "03_pbqb-traits.R", "[P/B, Q/B, traits; includes the EcoBase query] ")
 if (4 %in% RUN_STEPS) .run_step(4, "04_diets.R", "[diet matrix] ")

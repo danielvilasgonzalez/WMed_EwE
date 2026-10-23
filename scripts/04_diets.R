@@ -1,5 +1,33 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 04_diets.R
 ## PNG resolution of every plot (dots per inch). 300 keeps small labels
 ## (FG names, diet heatmap) sharp when zoomed in; 150 = old, smaller files.
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -161,7 +189,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -1519,9 +1549,9 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
   diets_plot_dir <- file.path(out_dir, "plots", "diets")
   if (!dir.exists(diets_plot_dir)) dir.create(diets_plot_dir, recursive = TRUE, showWarnings = FALSE)
   ## Axes in FG-number order from FG_WMed_2026.csv (FG_REFERENCE_CSV_PATH):
-  ## predators as rows (FG 1 at the top, down), prey as columns along the
-  ## top (FG 1 at the left) - the same layout as the EwE diet matrix, but
-  ## transposed (EwE has prey as rows). Labels are "FG_number - FG_name".
+  ## prey as rows (FG 1 at the top, down), predators as columns along the
+  ## top (FG 1 at the left) - the same layout as the EwE diet matrix.
+  ## Labels are "FG_number - FG_name".
   ## A name not in the csv (e.g. an import column) goes last.
   p_diet_matrix <- tryCatch({
     if (nrow(fg_diet) == 0) stop("fg_diet is empty")
@@ -1537,8 +1567,9 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
     hm <- copy(fg_diet)[, .(weight = sum(weight, na.rm = TRUE)), by = .(predator_fg, prey_fg)]
     ## every predator x prey cell, so each FG shows on both axes even without diet rows
     hm <- merge(CJ(predator_fg = lev_names, prey_fg = lev_names), hm, by = c("predator_fg", "prey_fg"), all.x = TRUE)
-    hm[, predator := factor(predator_fg, levels = rev(lev_names), labels = rev(lev_labels))]   # rev: FG 1 at the top
-    hm[, prey := factor(prey_fg, levels = lev_names, labels = lev_labels)]
+    ## Ecopath layout: prey in rows (FG 1 at the top), predators in columns
+    hm[, prey := factor(prey_fg, levels = rev(lev_names), labels = rev(lev_labels))]   # rev: FG 1 at the top
+    hm[, predator := factor(predator_fg, levels = lev_names, labels = lev_labels)]
     ## FG_group column (optional): blocks of the matrix per group, groups in
     ## the order of their first FG number, group names as strip labels
     if (has_group) {
@@ -1549,25 +1580,26 @@ run_pipeline <- function(metaweb_path = METAWEB_XLSX_PATH,
       hm[, pred_group := factor(grp[predator_fg], levels = grp_lev)]
       hm[, prey_group := factor(grp[prey_fg], levels = grp_lev)]
     }
-    ggplot(hm, aes(x = prey, y = predator, fill = weight)) +
-      (if (has_group) facet_grid(pred_group ~ prey_group, scales = "free", space = "free", switch = "y") else NULL) +
+    ggplot(hm, aes(x = predator, y = prey, fill = weight)) +
+      (if (has_group) facet_grid(prey_group ~ pred_group, scales = "free", space = "free", switch = "y") else NULL) +
       geom_tile(color = "white", linewidth = 0.1) +
       scale_x_discrete(position = "top", drop = has_group) +   # with groups each panel keeps only its own FGs
       scale_y_discrete(drop = has_group) +
       scale_fill_viridis_c(option = "magma", direction = -1, na.value = "grey95", limits = c(0, NA)) +
       labs(title = "Diet composition matrix (Ecopath_diet)",
-           subtitle = "Rows = predator FG, columns = prey FG, both in FG-number order (FG_WMed_2026.csv). Each row sums to ~1; colour = share of that prey in the predator's diet",
-           x = "Prey FG", y = "Predator FG", fill = "Diet\nproportion") +
-      theme_minimal(base_size = 6) +
-      theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 5),
-            axis.text.y = element_text(size = 5), panel.grid = element_blank(), legend.position = "right",
-            strip.text.x = element_text(size = 5, angle = 90, hjust = 0), strip.text.y.left = element_text(size = 5, angle = 0, hjust = 1),
+           subtitle = "Rows = prey FG, columns = predator FG (Ecopath layout), both in FG-number order (FG_WMed_2026.csv). Each column sums to ~1; colour = share of that prey in the predator's diet",
+           x = "Predator FG", y = "Prey FG", fill = "Diet\nproportion") +
+      theme_minimal(base_size = 9) +
+      theme(axis.text.x.top = element_text(angle = 90, hjust = 0, vjust = 0.5, size = 8.5),
+            axis.text.y = element_text(size = 8.5), panel.grid = element_blank(), legend.position = "right",
+            plot.title = element_text(size = 16), plot.subtitle = element_text(size = 11),
+            strip.text.x = element_text(size = 9, angle = 90, hjust = 0), strip.text.y.left = element_text(size = 9, angle = 0, hjust = 1),
             strip.placement = "outside", panel.spacing = grid::unit(1, "pt"))
   }, error = function(e) { message("[04_diets.R] Diet-matrix heatmap skipped - ", conditionMessage(e)); NULL })
   if (!is.null(p_diet_matrix)) {
-    n_fg_side <- nlevels(p_diet_matrix$data$prey)   # every FG of FG_WMed_2026.csv, also those with no diet rows
+    n_fg_side <- nlevels(p_diet_matrix$data$predator)   # every FG of FG_WMed_2026.csv, also those with no diet rows
     ggsave(file.path(diets_plot_dir, "diet_matrix_heatmap.png"), p_diet_matrix,
-           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = PLOT_DPI, bg = "white", limitsize = FALSE)
+           width = max(10, 0.13 * n_fg_side), height = max(9, 0.13 * n_fg_side), dpi = PLOT_DPI, bg = "white", limitsize = FALSE, readable = FALSE)   # one label per FG: own text sizes
     message("[04_diets.R] Saved diet_matrix_heatmap.png (", n_fg_side, " FG(s) on each axis, in ", diets_plot_dir, ").")
   }
   
@@ -1698,3 +1730,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session

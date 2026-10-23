@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_worms_taxonomy_lookup.R
 ## =================================================================
 ## Created by: Daniel Vilas
 ## lib_worms_taxonomy_lookup.R - LIBRARY FILE, not a pipeline step.

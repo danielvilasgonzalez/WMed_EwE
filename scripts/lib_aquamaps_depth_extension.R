@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_aquamaps_depth_extension.R
 ## =================================================================
 ## lib_aquamaps_depth_extension.R - LIBRARY FILE, not a pipeline step.
 ## Sourced (opt-in, see APPLY_AQUAMAPS_DEPTH_ADJUSTMENT) by

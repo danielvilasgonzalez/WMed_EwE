@@ -1,7 +1,35 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 03_pbqb-traits.R
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
 ## When this script runs on its own (out_dir/pcloud_dir/git_dir not set by
 ## run_pipeline_demo.R), find the folders on this computer: config.local.R,
 ## then config.R, then the standard pCloud Drive location (see wmed_paths.R).
+## Every saved plot: white background and text no smaller than the sizes
+## below (titles, subtitles, axis text and titles, facet labels, legends),
+## so figures are easy to read on screen and in the page. Text that is
+## already larger is kept. Plots with many small panels (> 20) get a
+## smaller minimum for axis and facet text so labels do not collide.
+## Pass readable = FALSE for dense heatmaps with one label per FG.
+.readable <- function(p) {
+  if (!inherits(p, "ggplot") || inherits(p, "patchwork")) return(p)
+  n_panels <- tryCatch(nrow(ggplot2::ggplot_build(p)$layout$layout), error = function(e) 1L)
+  dense <- isTRUE(n_panels > 20)
+  mins <- c(plot.title = 16, plot.subtitle = 12, plot.caption = 11, axis.title = 13,
+            axis.text.x.bottom = if (dense) 10 else 12, axis.text.x.top = if (dense) 10 else 12,
+            axis.text.y.left = if (dense) 10 else 12, axis.text.y.right = if (dense) 10 else 12,
+            strip.text.x = if (dense) 10.5 else 13, strip.text.y = if (dense) 10.5 else 13,
+            legend.title = 13, legend.text = 12)
+  th <- tryCatch(ggplot2:::plot_theme(p), error = function(e) ggplot2::theme_get() + p$theme)
+  for (el in names(mins)) {
+    e <- tryCatch(ggplot2::calc_element(el, th), error = function(e) NULL)
+    if (is.null(e) || inherits(e, "element_blank")) next          # hidden on purpose (or not used): leave it
+    if (!is.numeric(e$size) || e$size < mins[[el]])
+      p <- p + do.call(ggplot2::theme, stats::setNames(list(ggplot2::element_text(size = mins[[el]])), el))
+  }
+  p
+}
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
+  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
 if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
   d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
   if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")
@@ -260,7 +288,9 @@ sink(.run_log_con, split = TRUE)  # stdout (cat/print): teed to console + file
 cat("Run started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 ## R errors normally only reach the console; also write the error message
 ## into this log so a stopped run shows why in the log file.
-options(error = function() try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE))
+options(error = function() {   # write errors to the step log while it is open; switch itself off afterwards
+  if (isTRUE(tryCatch(isOpen(.run_log_con), error = function(e) FALSE))) try(cat("\nERROR: ", geterrmessage(), file = .run_log_con), silent = TRUE) else options(error = NULL)
+})
 ## Deliberately NOT sinking the message/stderr stream: sink(type = "message")
 ## has previously been seen to silently swallow ALL console output, including
 ## real errors, if anything goes wrong with the redirect - exactly the
@@ -2249,14 +2279,20 @@ fetch_fishlife <- function(taxonomy_dt) {
     parts <- strsplit(row$Species, " ")[[1]]
     if (length(parts) < 2) next
     
-    pred <- tryCatch({
+    ## one species per call: the pdf device is closed when THIS call ends
+    ## (an on.exit inside tryCatch only ran when the whole loop ended, so
+    ## every species left a device open -> "too many open devices" after
+    ## ~60 species, and return(NULL) left the loop early).
+    .fishlife_one <- function() {
       taxon_match <- match_taxon(row$Class, row$Order, row$Family, row$Genus, parts[2])
       if (is.null(taxon_match)) return(NULL)
       tmp_plot <- tempfile(fileext = ".pdf")
       grDevices::pdf(tmp_plot)
-      on.exit({ grDevices::dev.off(); unlink(tmp_plot) }, add = TRUE)
+      .dev <- grDevices::dev.cur()
+      on.exit({ if (.dev %in% grDevices::dev.list()) grDevices::dev.off(.dev); unlink(tmp_plot) }, add = TRUE)
       FishLife::Plot_taxa(taxon_match, mfrow = c(1, 1))
-    }, error = function(e) {
+    }
+    pred <- tryCatch(.fishlife_one(), error = function(e) {
       message("  FishLife lookup failed for ", row$Species, ": ", conditionMessage(e))
       NULL
     })
@@ -3938,3 +3974,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
+options(error = NULL)   # do not leave the log handler in the R session

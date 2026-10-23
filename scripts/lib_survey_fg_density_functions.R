@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: lib_survey_fg_density_functions.R
 ## =================================================================
 ## Created by: Daniel Vilas
 ## lib_survey_fg_density_functions.R - LIBRARY FILE, not a pipeline step.
@@ -2837,9 +2839,15 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
   ## plain rectangle can't know the coastline to exclude it itself.
   build_land_layer <- function() {
     tryCatch({
-      pad <- 0.5
-      xlim <- c(unname(display_bbox["xmin"]) - pad, unname(display_bbox["xmax"]) + pad)
-      ylim <- c(unname(display_bbox["ymin"]) - pad, unname(display_bbox["ymax"]) + pad)
+      ## Land for the whole drawn extent: the zoom box, every area polygon
+      ## and every haul (the map can show the whole Mediterranean, and land
+      ## outside the zoom box was left white before).
+      pad <- 2
+      .ab <- st_bbox(area_shp)
+      .px <- if (nrow(dt) && all(c("Lon", "Lat") %in% names(dt))) range(dt$Lon, na.rm = TRUE) else numeric(0)
+      .py <- if (nrow(dt) && all(c("Lon", "Lat") %in% names(dt))) range(dt$Lat, na.rm = TRUE) else numeric(0)
+      xlim <- range(c(unname(display_bbox[c("xmin", "xmax")]), unname(.ab[c("xmin", "xmax")]), .px), na.rm = TRUE) + c(-pad, pad)
+      ylim <- range(c(unname(display_bbox[c("ymin", "ymax")]), unname(.ab[c("ymin", "ymax")]), .py), na.rm = TRUE) + c(-pad, pad)
       
       ## Temporarily disable S2 spherical geometry for the crop
       ## specifically - S2 (sf's default) treats polygon edges as
@@ -2905,9 +2913,6 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
     ## logic for an unprojected/geographic CRS, which can otherwise
     ## interpolate long polygon edges as curved great-circle arcs
     ## rather than straight lines in the displayed projection.
-    coord_sf(xlim = c(unname(display_bbox["xmin"]) - 0.3, unname(display_bbox["xmax"]) + 0.3),
-             ylim = c(unname(display_bbox["ymin"]) - 0.3, unname(display_bbox["ymax"]) + 0.3),
-             default_crs = sf::st_crs(points_crs)) +
     labs(title = title) +
     theme_minimal(base_size = 11) +
     theme(
@@ -3091,6 +3096,13 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
             " no individual sample points.")
   }
   
+  ## Map extent, added LAST: a geom_sf() added after coord_sf() resets the
+  ## coordinates to its own default, which had dropped the zoom limits.
+  ## expand = FALSE: no white margin between the map and the panel border
+  ## (sf's version of scale_x/y_continuous(expand = c(0, 0))).
+  p <- p + coord_sf(xlim = c(unname(display_bbox["xmin"]) - 0.3, unname(display_bbox["xmax"]) + 0.3),
+                    ylim = c(unname(display_bbox["ymin"]) - 0.3, unname(display_bbox["ymax"]) + 0.3),
+                    default_crs = sf::st_crs(points_crs), expand = FALSE)
   print(intensity[order(-n_samples)])
   p
 }

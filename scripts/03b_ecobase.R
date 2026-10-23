@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 03b_ecobase.R
 ## =================================================================
 ## Created by: Daniel Vilas
 ## 03b_ecobase.R
@@ -622,6 +624,17 @@ fetch_ecobase_literature_biomass <- function(out_dir, force_refresh = FALSE,
 ## outputs; this sheet is meant as the full comparison reference.
 build_ecobase_sheet_dt <- function(out_dir, target_year = NULL) {
   raw_meta_path <- file.path(out_dir, "ecobase_all_inputs_with_meta.csv")
+  ## With a cached ecobase_literature_pb_qb_simple.csv the query is not
+  ## re-run, so the raw cache may only exist in a sibling step folder
+  ## (diet/ or biomass/, same EcoBase download): use the newest copy.
+  if (!file.exists(raw_meta_path)) {
+    .alt <- file.path(dirname(out_dir), c("pbqb-traits", "diet", "biomass", "."), "ecobase_all_inputs_with_meta.csv")
+    .alt <- .alt[file.exists(.alt)]
+    if (length(.alt)) {
+      raw_meta_path <- .alt[which.max(file.mtime(.alt))]
+      message("build_ecobase_sheet_dt(): using the cached EcoBase download in ", raw_meta_path)
+    }
+  }
   if (!file.exists(raw_meta_path)) {
     message("build_ecobase_sheet_dt(): '", raw_meta_path, "' not found - neither",
             " fetch_ecobase_literature_pb_qb() nor fetch_ecobase_literature_biomass() has produced",

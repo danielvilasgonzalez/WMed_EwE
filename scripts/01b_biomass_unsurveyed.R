@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: 01b_biomass_unsurveyed.R
 ## =================================================================
 ## 01b_biomass_unsurveyed.R
 ##
@@ -1317,6 +1319,21 @@ load_manual_cited_biomass_group <- function(csv_path, taxon_keywords, label, rev
         message("[", label, "] Depth_factor applied to Density_value for: ",
                 paste(paste0(raw$Group[has_dfac], " (x", raw$Depth_factor[has_dfac], ")"), collapse = ", "))
         raw[has_dfac, Density_value := Density_value * Depth_factor]
+      }
+    }
+    ## Optional Season_factor: annual mean / sampled-season biomass, for a
+    ## density measured at the seasonal peak (Ecopath B is an annual mean).
+    ## Applied to Density_value; blank = 1.
+    ##   B (t WW) = D_DW x f_depth x f_season / (DW:WW) x A_map x occupancy.
+    col_sfac <- resolve_iccat_col(names(raw), c("Season_factor", "season_factor"))
+    if (!is.na(col_sfac)) {
+      setnames(raw, col_sfac, "Season_factor")
+      raw[, Season_factor := as.numeric(Season_factor)]
+      has_sfac <- !is.na(raw$Season_factor) & !is.na(raw$Density_value)
+      if (any(has_sfac)) {
+        message("[", label, "] Season_factor (annual mean / sampled season) applied to Density_value for: ",
+                paste(paste0(raw$Group[has_sfac], " (x", raw$Season_factor[has_sfac], ")"), collapse = ", "))
+        raw[has_sfac, Density_value := Density_value * Season_factor]
       }
     }
     no_area_occ <- rep(FALSE, nrow(raw))

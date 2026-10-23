@@ -1,3 +1,5 @@
+## WMed-EwEbuilder - building Ecopath with Ecosim inputs for the Western Mediterranean
+## (biomass, fisheries, P/B, Q/B, traits and diets). This file: coral_gorgonian.R
 # ============================================================
 # FG70 BIOMASS ESTIMATE
 # Western Mediterranean

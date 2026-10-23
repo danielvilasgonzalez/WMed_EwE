@@ -1,0 +1,2021 @@
+---
+title: "Inputs for Western Mediterranean EwE models"
+subtitle: "Biomass, catch, effort, P/B, Q/B, diets and validation for Ecopath with Ecosim, built from surveys, fisheries data and the literature"
+author: "Daniel Vilas"
+date: today
+bibliography: references.bib
+csl: ieee.csl
+link-citations: true
+nocite: |
+  @*
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+params:
+  ## Inputs of the pipeline run done by this document. Change a value and
+  ## click Render: the pipeline reruns with these values and the HTML shows
+  ## the new plots and tables. Values are R expressions.
+  model_gsas: "1:12"              # GSAs of the model area, e.g. "c(6, 7)"
+  model_area_basis: "whole_gsa"   # "whole_gsa" or "medits_10_800"
+  year_ecopath: "1994:1996"       # Ecopath baseline years
+  ts_years: "1995:2023"           # Ecosim biomass years
+  ## catch/effort years follow the Ecopath and Ecosim years (run_pipeline_demo.R)
+  ## What the render reruns before building the HTML:
+  ##   "all"        - the whole pipeline 01 -> 05 with the inputs above
+  ##                  (about 10 min; the first run after a change needs internet)
+  ##   "validation" - only 05_validation.R (redraws the validation plots)
+  ##   "none"       - nothing; uses the outputs already on disk
+  regenerate: "none"
+server: shiny
+execute:
+  eval: false
+  echo: true
+  freeze: false   # overrides the site's freeze: auto for THIS document specifically -
+                   # this doc's setup chunk copies PNGs from an external out_dir/plots
+                   # folder that changes independently of the .qmd's own source code,
+                   # which is exactly the case freeze:auto can't detect (it only checks
+                   # whether the .qmd's OWN code changed, not files it reads at render
+                   # time) - so this doc always re-executes fully, every render
+---
+
+```{=html}
+<style>
+/* Tables (e.g. the Input files / sheet-order tables) default to a
+   fixed layout that's often too wide for anything narrower than a
+   full desktop window, forcing an ugly horizontal scrollbar on the
+   whole page. table-layout: auto + wrapping cell content lets columns
+   size themselves to what's actually needed and wrap long text,
+   instead of every column claiming a wide fixed share of the table -
+   and the overflow-x fallback below only kicks in if a table genuinely
+   can't fit even after wrapping (e.g. a very narrow phone screen). */
+table {
+  table-layout: auto;
+  width: 100%;
+}
+table th, table td {
+  word-break: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+@media (max-width: 700px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+</style>
+```
+
+```{r}
+#| label: setup-copy-figures
+#| context: setup
+#| eval: true
+#| echo: false
+#| include: false
+
+## Folders on this laptop: wmed_paths.R (config.local.R, then config.R,
+## then the standard pCloud Drive location; see that file). This .qmd sits
+## in <git_dir>/scripts, and knitr runs in that folder.
+git_dir <- normalizePath("..")
+source(file.path(git_dir, "scripts", "wmed_paths.R"))
+.wp <- wmed_find_paths(git_dir)
+message("git_dir: ", .wp$git_dir, "\npcloud_dir: ", .wp$pcloud_dir, "\nout_dir: ", .wp$out_dir)
+
+## --- Regenerate the pipeline outputs before copying them (params$regenerate) ---
+## Runs run_pipeline_demo.R in a SEPARATE R process (Rscript), so the
+## pipeline's own clean start cannot touch this document's objects; folders
+## are found by wmed_paths.R as for a normal run. The full log of each script is
+## in out_dir as usual; a failed step stops the render with its message.
+.regen <- if (exists("params") && !is.null(params$regenerate)) params$regenerate else "none"
+if (!identical(.regen, "none")) {
+  .steps <- switch(.regen, validation = "5", all = "1:5",
+                   stop("params$regenerate must be \"none\", \"validation\" or \"all\" (got \"", .regen, "\")."))
+  .demo <- file.path(git_dir, "scripts", "run_pipeline_demo.R")
+  message("Regenerating pipeline outputs (", .regen, ", steps ", .steps, ") with ", .demo, " ...")
+  .old_wd <- setwd(file.path(git_dir, "scripts"))
+  .p <- function(x, default) if (!is.null(params[[x]])) as.character(params[[x]]) else default
+  .code <- paste0("CLEAN_START <- FALSE; RUN_STEPS <- ", .steps,
+                  "; MODEL_GSAS <- ", .p("model_gsas", "1:12"),
+                  "; MODEL_AREA_BASIS <- '", .p("model_area_basis", "whole_gsa"), "'",
+                  "; YEAR_ECOPATH <- ", .p("year_ecopath", "1994:1996"),
+                  "; TS_YEARS <- ", .p("ts_years", "1995:2023"),
+                  "; source('run_pipeline_demo.R')")
+  message("Pipeline call: ", .code)
+  .status <- system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(.code)))
+  setwd(.old_wd)
+  if (!identical(.status, 0L)) stop("run_pipeline_demo.R failed (exit status ", .status, ") - see the logs in out_dir.")
+  message("Pipeline outputs regenerated.")
+}
+
+## --- Figures in the text -------------------------------------------------
+## Each figure is loaded LIVE from out_dir when the page opens (the
+## run-server chunk serves the file), so it always shows the latest run,
+## on any laptop. Nothing is copied at render time. Paths are relative
+## to out_dir.
+.fig_src <- c(
+  "survey_sample_coverage_map.png"                    = "plots/biomass/survey_sample_coverage_map.png",
+  "survey_sample_coverage_map_by_year.png"            = "plots/biomass/survey_sample_coverage_map_by_year.png",
+  "survey_fg_density_timeseries.png"                  = "plots/biomass/survey_fg_density_timeseries.png",
+  "survey_fg_density_timeseries_regional.png"         = "plots/biomass/survey_fg_density_timeseries_regional.png",
+  "survey_fg_depth_strata_profile.png"                = "plots/biomass/survey_fg_depth_strata_profile.png",
+  "custom_survey_sample_coverage_map.png"             = "custom_region/plots/survey_sample_coverage_map.png",
+  "custom_survey_fg_density_timeseries.png"           = "custom_region/plots/survey_fg_density_timeseries.png",
+  "biomass_by_fg_source.png"                          = "plots/biomass/biomass_by_fg_source.png",
+  "biomass_survey_fg_density_timeseries_regional.png" = "plots/biomass/survey_fg_density_timeseries_regional.png",
+  "07_catch_by_fg_and_fleet.png"                      = "plots/fisheries/07_catch_by_fg_and_fleet.png",
+  "08_discards_by_fg_and_fleet.png"                   = "plots/fisheries/08_discards_by_fg_and_fleet.png",
+  "pipeline_01_catches_per_FG.png"                    = "plots/fisheries/01_catches_per_FG.png",
+  "05_effort_by_country_fleet.png"                    = "plots/fisheries/05_effort_by_country_fleet.png",
+  "fg_pb_qb_scatter.png"                              = "plots/validation/fg_pb_qb_scatter.png",
+  "F_by_fg.png"                                       = "plots/validation/F_by_fg.png",
+  "PQ_ratio_by_fg.png"                                = "plots/validation/PQ_ratio_by_fg.png",
+  "biomass_vs_old_model_by_fg.png"                    = "plots/validation/biomass_vs_old_model_by_fg.png",
+  "11_zooplankton_total_field_check.png"              = "plots/validation/11_zooplankton_total_field_check.png",
+  "diet_matrix_heatmap.png"                           = "plots/diets/diet_matrix_heatmap.png")
+
+## A figure kept in the repo (e.g. ewe_infography.jpg at the repo root),
+## also loaded live, so an edited image shows without re-rendering.
+wm_repo_figure <- function(id, caption, rel) {
+  blank <- "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+  knitr::asis_output(sprintf('![%s](%s){#%s data-wmrepo="%s" width="100%%"}\n\n', caption, blank, id, rel))
+}
+
+## A markdown figure (caption, Quarto cross-reference id) whose image the
+## page fills in from out_dir; a figure not produced yet shows a note.
+wm_figure <- function(id, caption, name, script_hint) {
+  rel <- unname(.fig_src[name]); if (is.na(rel)) rel <- name
+  blank <- "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+  knitr::asis_output(sprintf('![%s](%s){#%s data-wmfile="%s" data-wmhint="%s" width="100%%"}\n\n',
+                             caption, blank, id, rel, gsub('"', "'", script_hint)))
+}
+```
+
+## Configure and run the pipeline {#sec-configure}
+
+Pick the model area on the map, set the years and options, and click **Run pipeline**. The run (01 → 05) goes in the background with exactly the settings shown in the *Settings block* box; when it finishes, the plots at the bottom and the tables in the output folder are updated. A full run takes about 10 minutes (the first run after a change of GSAs needs internet for the bathymetry). The same settings block can be copied or downloaded to run the pipeline from the R console instead.
+
+This works when the document is opened with **Run Document** in RStudio (or `quarto serve medbs_pipeline_methodology.qmd` in a terminal). A plain HTML file opened from disk shows the page but cannot run R.
+
+```{r}
+#| label: run-ui
+#| eval: true
+#| echo: false
+library(shiny)
+## GFCM GSA polygons (official GFCM_GSA.zip, simplified to 5 % of the
+## vertices for display; GSA 11 has two polygons, W and E Sardinia).
+.gsa_geojson <- if (file.exists("gsa_boundaries_westmed.geojson"))
+  paste(readLines("gsa_boundaries_westmed.geojson", warn = FALSE), collapse = "") else "null"
+.gsa_names <- c("Northern Alboran", "Alboran Island", "Southern Alboran", "Algeria", "Balearic Islands",
+                "Northern Spain", "Gulf of Lion", "Corsica", "Ligurian & N Tyrrhenian", "S & C Tyrrhenian", "Sardinia", "Northern Tunisia")
+.card <- function(step, title, icon, ..., class = "") {
+  tags$div(class = paste("card wm-card mb-3", class),
+           tags$div(class = "card-header wm-card-header",
+                    tags$span(class = "wm-step", step), tags$span(class = "wm-icon", icon), title),
+           tags$div(class = "card-body", ...))
+}
+.switch <- function(id, label, help, value = TRUE) {
+  tags$div(class = "form-check form-switch wm-switch",
+           tags$input(class = "form-check-input", type = "checkbox", role = "switch", id = id,
+                      checked = if (value) NA else NULL),
+           tags$label(class = "form-check-label", `for` = id, label),
+           tags$div(class = "wm-help", help))
+}
+
+tagList(
+  tags$link(rel = "stylesheet", href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"),
+  tags$script(src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"),
+  tags$style(HTML("
+    .wm-card { border: 0; border-radius: 14px; box-shadow: 0 2px 12px rgba(16, 42, 67, .10); overflow: hidden; }
+    .wm-card-header { background: linear-gradient(90deg, #0b4f6c 0%, #1b7f9e 100%); color: #fff; font-weight: 600;
+                      font-size: 1.05rem; display: flex; align-items: center; gap: .55rem; border: 0; }
+    .wm-step { background: rgba(255,255,255,.22); border-radius: 50%; width: 1.7rem; height: 1.7rem;
+               display: inline-flex; align-items: center; justify-content: center; font-size: .9rem; }
+    .wm-icon { font-size: 1.1rem; }
+    .wm-help { font-size: .82rem; color: #6c757d; margin: .1rem 0 .6rem 0; }
+    #wm-map { height: 430px; border-radius: 10px; border: 1px solid #dfe6ec; }
+    #wm-map .leaflet-tooltip { font-weight: 600; }
+    .wm-legend { background: rgba(255,255,255,.92); padding: .4rem .6rem; border-radius: 8px; font-size: .75rem;
+                 line-height: 1.5; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+    .wm-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px;
+                   vertical-align: -1px; opacity: .8; }
+    .wm-quick .btn { margin: 0 .3rem .35rem 0; border-radius: 20px; font-size: .8rem; padding: .2rem .7rem; }
+    .wm-gsa-grid .shiny-options-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .1rem .8rem; }
+    .wm-gsa-grid .checkbox, .wm-gsa-grid .form-check { margin: 0; font-size: .88rem; }
+    .wm-stat { background: #f3f8fb; border-radius: 12px; padding: .7rem .9rem; height: 100%; border-left: 4px solid #1b7f9e; }
+    .wm-stat .v { font-size: 1.35rem; font-weight: 700; color: #0b4f6c; line-height: 1.2; }
+    .wm-stat .l { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #6c757d; }
+    .wm-stat .n { font-size: .78rem; color: #6c757d; }
+    .wm-stat.warn { border-left-color: #e0a100; }
+    .wm-switch { margin-bottom: .2rem; }
+    .wm-switch .form-check-input { width: 2.4em; height: 1.25em; cursor: pointer; }
+    .wm-switch .form-check-label { font-weight: 600; margin-left: .35rem; cursor: pointer; }
+    #run { font-size: 1.1rem; padding: .65rem 1.6rem; border-radius: 30px; box-shadow: 0 3px 10px rgba(13,110,253,.3); }
+    .wm-fg-table { max-height: 340px; overflow-y: auto; border: 1px solid #e3e9ee; border-radius: 8px; }
+    .wm-fg-table table { font-size: .8rem; margin: 0; }
+    .wm-fg-table thead th { position: sticky; top: 0; background: #f3f8fb; }
+    .wm-config { background: #1e1e2e; color: #cdd6f4; padding: .9rem 1.1rem; border-radius: 10px;
+                 font-size: .8rem; white-space: pre; overflow-x: auto; margin: 0; border: 0; }
+    .wm-results .nav-link { font-weight: 600; }
+    .wm-downloads .btn { margin: 0 .3rem .3rem 0; border-radius: 20px; }
+    .wm-results img { border-radius: 8px; cursor: zoom-in; }
+    .wm-view { margin-bottom: .8rem; gap: .4rem; }
+    .wm-view .nav-link { border-radius: 20px; padding: .35rem 1rem; }
+    .wm-key-img { width: 100%; margin-top: .6rem; }
+    .wm-filter { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-bottom: .8rem; }
+    .wm-filter .btn { border-radius: 20px; font-size: .8rem; padding: .2rem .75rem; }
+    .wm-filter input { max-width: 240px; margin-left: auto; border-radius: 20px; font-size: .85rem; }
+    .wm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .8rem; }
+    .wm-thumb { background: #fff; border: 1px solid #e3e9ee; border-radius: 10px; padding: .45rem; transition: box-shadow .15s; }
+    .wm-thumb:hover { box-shadow: 0 4px 14px rgba(16, 42, 67, .15); }
+    .wm-thumb img { width: 100%; height: 170px; object-fit: contain; background: #fff; }
+    .wm-thumb-name { font-size: .76rem; color: #34495e; margin-top: .3rem; word-break: break-word; line-height: 1.25; }
+    .wm-thumb-folder { font-size: .68rem; color: #1b7f9e; text-transform: uppercase; letter-spacing: .03em; }
+    #wm-lightbox { position: fixed; inset: 0; background: rgba(10, 20, 30, .92); z-index: 2000; display: none; overflow: hidden; }
+    #wm-lightbox img { position: absolute; top: 0; left: 0; transform-origin: 0 0; cursor: grab; max-width: none; user-select: none; }
+    #wm-lightbox .wm-lb-bar { position: absolute; top: 12px; right: 16px; z-index: 2001; display: flex; gap: .4rem; }
+    #wm-lightbox .wm-lb-bar button { border: 0; border-radius: 20px; padding: .35rem .85rem; font-weight: 600; background: #fff; color: #0b4f6c; }
+    #wm-lightbox .wm-lb-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); color: #cfd8dc; font-size: .8rem; z-index: 2001; }
+  ")),
+
+  ## 0. Folders on this computer -------------------------------------------
+  .card("0", "Folders on this computer", "\U0001F4C1", uiOutput("folders")),
+
+  ## 1. Area -------------------------------------------------------------
+  .card("1", "Model area", "\U0001F5FA",
+    fluidRow(
+      column(7, tags$div(id = "wm-map"),
+             tags$div(class = "wm-help", "Click a GSA to add or remove it. GSAs 3, 4 and 12 (orange) have no MEDITS survey and take the survey density per km\u00b2 of the others.")),
+      column(5,
+        radioButtons("area_mode", NULL, inline = TRUE,
+                     choices = c("Western Med GSAs" = "westmed", "Custom region" = "custom"), selected = "westmed"),
+        conditionalPanel("input.area_mode == 'westmed'",
+          tags$div(class = "wm-quick",
+            tags$button(type = "button", class = "btn btn-sm btn-outline-primary", `data-gsas` = "1,2,3,4,5,6,7,8,9,10,11,12", "All 1-12"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-primary", `data-gsas` = "1,2,5,6,7,8,9,10,11", "MEDITS GSAs"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-secondary", `data-gsas` = "1,2,5,6", "Spain"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-secondary", `data-gsas` = "7,8", "France"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-secondary", `data-gsas` = "9,10,11", "Italy"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-secondary", `data-gsas` = "1,2,3,4,5,6,7,8,9,10,11", "Without Tunisia"),
+            tags$button(type = "button", class = "btn btn-sm btn-outline-danger", `data-gsas` = "", "Clear")),
+          tags$div(class = "wm-gsa-grid",
+            checkboxGroupInput("gsas", NULL, choices = setNames(1:12, paste0(1:12, " - ", .gsa_names)), selected = 1:12)),
+          radioButtons("basis", "Area basis (A_model)",
+                       choices = c("Whole GSA, coast to bottom" = "whole_gsa", "MEDITS strata 10-800 m only" = "medits_10_800"),
+                       selected = "whole_gsa"),
+          tags$div(class = "wm-help", "Every t/km\u00b2 is per km\u00b2 of this area. Whole GSA: depths outside 10-800 m filled with AquaMaps."),
+          tags$div(class = "wm-help", tags$strong("Note: "), "groups the surveys cannot measure (plankton, seagrass, megafauna...) were estimated for the whole model area (GSAs 1-12). With a filtered area their biomass can change and may not represent the smaller area well.")),
+        conditionalPanel("input.area_mode == 'custom'",
+          textInput("area_name", "Area name (AREA_NAME)", "custom_region"),
+          tags$div(class = "wm-help", "Used for the output subfolder, so runs for different regions do not overwrite each other."),
+          radioButtons("custom_type", "Region defined by", inline = TRUE,
+                       choices = c("Shapefile / polygon file" = "shapefile", "Lon/lat box" = "bbox"), selected = "shapefile"),
+          conditionalPanel("input.custom_type == 'shapefile'",
+            fileInput("custom_shp", "Upload the region (CUSTOM_SHAPEFILE_PATH)", multiple = TRUE, width = "100%",
+                      accept = c(".zip", ".shp", ".shx", ".dbf", ".prj", ".cpg", ".geojson", ".json", ".gpkg", ".kml"),
+                      placeholder = "a .zip of the shapefile, or .shp+.shx+.dbf+.prj, or .geojson/.gpkg"),
+            tags$div(class = "wm-help", "Any CRS (reprojected to WGS84). Each polygon becomes one area of the model.")),
+          conditionalPanel("input.custom_type == 'bbox'",
+            fluidRow(column(6, numericInput("bbox_xmin", "Lon min", 2, step = 0.1)), column(6, numericInput("bbox_xmax", "Lon max", 8, step = 0.1))),
+            fluidRow(column(6, numericInput("bbox_ymin", "Lat min", 38, step = 0.1)), column(6, numericInput("bbox_ymax", "Lat max", 42, step = 0.1)))),
+          tags$div(class = "alert alert-info py-2 small",
+                   "A custom region runs the biomass step (01) for that region; outputs go to their own subfolder, out_dir/<area name>. Catch, P/B-Q/B, diets and validation (02-05) work on GSAs.")))),
+    tags$hr(),
+    uiOutput("area_summary")),
+
+  ## Functional groups ----------------------------------------------------
+  .card("FG", "Functional groups (species \u2192 FG table)", "\U0001F41F",
+    fluidRow(
+      column(6, selectInput("fg_file", "FG file in the pCloud data folder (FG_SPECIES_FILE)", choices = NULL, width = "100%")),
+      column(6, fileInput("fg_upload", "or upload a csv", accept = ".csv", width = "100%",
+                          placeholder = "columns FG_number, FG_name, species (FG_group optional)"))),
+    uiOutput("fg_summary")),
+
+  ## 2. Years and options --------------------------------------------------
+  fluidRow(
+    column(6, .card("2", "Years", "\U0001F4C5",
+      sliderInput("ecopath_years", "Ecopath baseline (YEAR_ECOPATH)", min = 1990, max = 2023, value = c(1994, 1996), step = 1, sep = "", width = "100%"),
+      sliderInput("ts_years", "Ecosim biomass series (TS_YEARS)", min = 1990, max = 2023, value = c(1995, 2023), step = 1, sep = "", width = "100%"),
+      tags$div(class = "wm-help", "Catch, landings, discards and effort (02) follow these years: from the first Ecopath or Ecosim year to the last Ecosim year."))),
+    column(6, .card("3", "Options", "\u2699\ufe0f",
+      .switch("strata", "Strata-weighted density (STRATA)", "Off = simple mean density instead of the depth-stratum (area-weighted) estimator.", TRUE),
+      .switch("drop_outliers", "Remove flagged outlier hauls (DROP_OUTLIERS)", "Off = outliers are only reported in survey_outliers_flagged.csv.", TRUE),
+      .switch("normalize_ts", "Ecosim series as relative index (NORMALIZE_TS)", "Off = raw density (t/km\u00b2) instead of first value = 1.", TRUE),
+      .switch("fill_b", "Fill missing Ecopath_B with a later-years mean (ECOPATH_B_FILL_MODE)",
+              "FGs with no biomass in the Ecopath years get their mean over the years below (else the nearest year with data). Expanding FGs always get 0.00001 t/km\u00b2. Off = nearest single year only.", TRUE),
+      conditionalPanel("input.fill_b",
+        sliderInput("fill_years", "Years for the mean (ECOPATH_B_FILL_YEARS)", min = 1990, max = 2023, value = c(1995, 2000),
+                    step = 1, sep = "", width = "100%")),
+      radioButtons("steps", "Scripts to run", inline = TRUE,
+                   choices = c("All 01-05" = "1:5", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
+
+  ## 4. Run ----------------------------------------------------------------
+  .card("4", "Run", "\u25B6\ufe0f",
+    fluidRow(
+      column(5,
+        actionButton("run", "Run pipeline", class = "btn-primary", icon = icon("play")),
+        tags$p(),
+        uiOutput("run_progress"),
+        verbatimTextOutput("run_status")),
+      column(7,
+        tags$div(class = "d-flex justify-content-between align-items-center mb-1",
+          tags$strong("Settings block"),
+          tags$div(
+            tags$button(type = "button", id = "wm-copy", class = "btn btn-sm btn-outline-secondary", "Copy"),
+            downloadButton("dl_config", "Download .R", class = "btn-sm btn-outline-secondary"))),
+        textOutput("config_text", container = function(...) tags$pre(class = "wm-config", ...))))),
+
+  ## Results ---------------------------------------------------------------
+  .card("5", "Results", "\U0001F4CA",
+    tags$div(class = "wm-downloads mb-3",
+      tags$strong("Download the outputs: "),
+      downloadButton("dl_workbook", "Ecopath/Ecosim inputs (.xlsx)", class = "btn-sm btn-primary"),
+      downloadButton("dl_diet", "Diet matrices (.xlsx)", class = "btn-sm btn-outline-primary"),
+      downloadButton("dl_review", "REVIEW tables (.zip)", class = "btn-sm btn-outline-secondary"),
+      downloadButton("dl_all", "All tables (.zip)", class = "btn-sm btn-outline-secondary"),
+      uiOutput("dl_info", inline = TRUE)),
+    tags$div(class = "wm-results", uiOutput("results"))),
+
+  tags$script(type = "application/json", id = "wm-gsa-geojson", HTML(.gsa_geojson)),
+  tags$script(HTML(r"---(
+(function () {
+  var UNSURVEYED = [3, 4, 12];
+  function checked() {
+    return $('input[name="gsas"]:checked').map(function () { return +this.value; }).get();
+  }
+  function setGsas(list) {
+    var boxes = $('input[name="gsas"]');
+    boxes.each(function () { $(this).prop('checked', list.indexOf(+this.value) !== -1); });
+    boxes.first().trigger('change');
+  }
+  function init() {
+    if (typeof L === 'undefined' || !document.getElementById('wm-map')) { return setTimeout(init, 200); }
+    var map = L.map('wm-map', { scrollWheelZoom: false, zoomSnap: 0.25 });
+    // Esri Ocean basemap (no API key); falls back to OpenStreetMap if its tiles fail
+    var base = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri - GEBCO, NOAA, Garmin', maxZoom: 10 }).addTo(map);
+    var fails = 0;
+    base.on('tileerror', function () {
+      if (++fails === 3) {
+        map.removeLayer(base);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors', maxZoom: 10 }).addTo(map);
+      }
+    });
+    var data = null;
+    try { data = JSON.parse(document.getElementById('wm-gsa-geojson').textContent); } catch (e) {}
+    var layer = null, rect = null;
+    function style(f) {
+      var g = f.properties.gsa_num, on = checked().indexOf(g) !== -1, uns = UNSURVEYED.indexOf(g) !== -1;
+      return { color: on ? '#0b4f6c' : '#8a99a6', weight: on ? 1.5 : 1,
+               fillColor: on ? (uns ? '#f0a202' : '#1b7f9e') : '#d5dde3', fillOpacity: on ? 0.5 : 0.15 };
+    }
+    if (data) {
+      layer = L.geoJSON(data, {
+        style: style,
+        onEachFeature: function (f, l) {
+          var g = f.properties.gsa_num;
+          l.bindTooltip('GSA ' + g + ' - ' + f.properties.SMU_NAME +
+                        (UNSURVEYED.indexOf(g) !== -1 ? ' (no MEDITS)' : ''), { sticky: true });
+          l.on('click', function () {
+            if ($('input[name="area_mode"]:checked').val() !== 'westmed') return;
+            var s = checked(), i = s.indexOf(g);
+            if (i === -1) s.push(g); else s.splice(i, 1);
+            setGsas(s);
+          });
+          l.on('mouseover', function () { l.setStyle({ weight: 3 }); });
+          l.on('mouseout', function () { layer.resetStyle(l); });
+        }
+      }).addTo(map);
+      map.fitBounds(layer.getBounds(), { padding: [10, 10] });
+      var legend = L.control({ position: 'topright' });
+      legend.onAdd = function () {
+        var d = L.DomUtil.create('div', 'wm-legend');
+        d.innerHTML = '<i style="background:#1b7f9e"></i>In the model, MEDITS survey<br>' +
+                      '<i style="background:#f0a202"></i>In the model, no survey (GSA 3, 4, 12)<br>' +
+                      '<i style="background:#d5dde3"></i>Not in the model';
+        return d;
+      };
+      legend.addTo(map);
+    } else { map.setView([39, 5], 5); }
+    var shapeLayer = null, shapeData = null;
+    function drawBox() {
+      if (rect) { map.removeLayer(rect); rect = null; }
+      if (shapeLayer) { map.removeLayer(shapeLayer); shapeLayer = null; }
+      var custom = $('input[name="area_mode"]:checked').val() === 'custom';
+      if (layer) layer.setStyle(custom ? { fillOpacity: 0.05, color: '#b8c4cc', weight: 1 } : style);
+      if (!custom) { if (layer) layer.setStyle(style); return; }
+      if ($('input[name="custom_type"]:checked').val() === 'shapefile') {
+        if (shapeData) {
+          shapeLayer = L.geoJSON(shapeData, { style: { color: '#d9480f', weight: 2, fillOpacity: 0.25 } }).addTo(map);
+          map.fitBounds(shapeLayer.getBounds(), { padding: [20, 20], maxZoom: 9 });
+        }
+        return;
+      }
+      var v = ['bbox_xmin', 'bbox_xmax', 'bbox_ymin', 'bbox_ymax'].map(function (id) { return parseFloat($('#' + id).val()); });
+      if (v.every(function (x) { return !isNaN(x); }) && v[1] > v[0] && v[3] > v[2]) {
+        rect = L.rectangle([[v[2], v[0]], [v[3], v[1]]], { color: '#d9480f', weight: 2, fillOpacity: 0.15 }).addTo(map);
+      }
+    }
+    $(document).on('change', 'input[name="gsas"]', function () { if (layer) layer.setStyle(style); });
+    $(document).on('change', 'input[name="area_mode"], input[name="custom_type"]', drawBox);
+    function onShape(m) { shapeData = m.geojson ? JSON.parse(m.geojson) : null; drawBox(); }
+    if (window.Shiny && Shiny.addCustomMessageHandler) Shiny.addCustomMessageHandler('wm-custom-shape', onShape);
+    $(document).on('input change', '#bbox_xmin, #bbox_xmax, #bbox_ymin, #bbox_ymax', drawBox);
+    $(document).on('click', '.wm-quick .btn', function () {
+      var s = String($(this).data('gsas'));
+      setGsas(s ? s.split(',').map(Number) : []);
+    });
+    $(document).on('click', '#wm-copy', function () {
+      var btn = this;
+      navigator.clipboard.writeText($('#config_text').text()).then(function () {
+        btn.textContent = 'Copied!'; setTimeout(function () { btn.textContent = 'Copy'; }, 1200);
+      });
+    });
+    setTimeout(function () { map.invalidateSize(); if (layer) map.fitBounds(layer.getBounds(), { padding: [10, 10] }); }, 400);
+  }
+  $(init);
+
+  // --- Zoomable plot viewer: click a plot, wheel or +/- to zoom, drag to move, Esc to close
+  var lb, img, sc = 1, tx = 0, ty = 0, drag = null;
+  function apply() { img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + sc + ')'; }
+  function fit() {
+    var w = img.naturalWidth, h = img.naturalHeight, W = window.innerWidth, H = window.innerHeight;
+    sc = Math.min(W / w, (H - 60) / h, 1); tx = (W - w * sc) / 2; ty = (H - h * sc) / 2 + 20; apply();
+  }
+  function zoomAt(f, cx, cy) {
+    var ns = Math.min(Math.max(sc * f, 0.1), 8);
+    tx = cx - (cx - tx) * ns / sc; ty = cy - (cy - ty) * ns / sc; sc = ns; apply();
+  }
+  function build() {
+    lb = $('<div id="wm-lightbox"><div class="wm-lb-bar">' +
+           '<button data-z="in">+</button><button data-z="out">&minus;</button>' +
+           '<button data-z="fit">Fit</button><button data-z="full">100%</button><button data-z="close">Close &times;</button></div>' +
+           '<img alt=""><div class="wm-lb-hint">Mouse wheel or +/- to zoom - drag to move - Esc to close</div></div>').appendTo('body');
+    img = lb.find('img')[0];
+    lb.on('click', 'button', function () {
+      var z = $(this).data('z'), W = window.innerWidth / 2, H = window.innerHeight / 2;
+      if (z === 'in') zoomAt(1.4, W, H); else if (z === 'out') zoomAt(1 / 1.4, W, H);
+      else if (z === 'fit') fit(); else if (z === 'full') zoomAt(1 / sc, W, H); else lb.hide();
+    });
+    lb[0].addEventListener('wheel', function (e) { e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
+    $(img).on('mousedown', function (e) { e.preventDefault(); drag = { x: e.clientX - tx, y: e.clientY - ty }; img.style.cursor = 'grabbing'; });
+    $(document).on('mousemove', function (e) { if (drag) { tx = e.clientX - drag.x; ty = e.clientY - drag.y; apply(); } });
+    $(document).on('mouseup', function () { drag = null; if (img) img.style.cursor = 'grab'; });
+    $(document).on('keydown', function (e) { if (e.key === 'Escape') lb.hide(); });
+  }
+  function wmFilter() {
+    var f = $('.wm-filter .btn.active').data('folder') || '', q = ($('#wm-search').val() || '').toLowerCase();
+    $('.wm-thumb').each(function () {
+      var ok = (!f || $(this).data('folder') === f) && (!q || String($(this).data('name')).indexOf(q) !== -1);
+      $(this).toggle(ok);
+    });
+  }
+  $(document).on('click', '.wm-filter .btn', function () {
+    $('.wm-filter .btn').removeClass('active'); $(this).addClass('active'); wmFilter();
+  });
+  $(document).on('input', '#wm-search', wmFilter);
+  // Figures in the text: their image comes from out_dir through the Shiny session
+  function wmFillFiles(m) {
+    $('img[data-wmrepo]').each(function () {
+      var el = this;
+      el.onerror = function () {
+        $(el).replaceWith($('<div class="alert alert-secondary small"></div>').text('Image not found in the repo: ' + $(el).data('wmrepo')));
+      };
+      el.src = m.repo + '&f=' + encodeURIComponent($(el).data('wmrepo')) + '&v=' + m.v; el.style.cursor = 'zoom-in';
+    });
+    $('[data-wmfile]').each(function () {
+      var el = this, url = m.base + '&f=' + encodeURIComponent($(el).data('wmfile')) + '&v=' + m.v;
+      if (el.tagName === 'IMG') {
+        el.onerror = function () {
+          $(el).replaceWith($('<div class="alert alert-secondary small"></div>').text(
+            'Figure not yet available (' + $(el).data('wmfile') + '): run ' + ($(el).data('wmhint') || 'the pipeline') + ' first.'));
+        };
+        el.src = url; el.style.cursor = 'zoom-in';
+      } else { el.href = url; }
+    });
+  }
+  if (window.Shiny && Shiny.addCustomMessageHandler) Shiny.addCustomMessageHandler('wmfile-base', wmFillFiles);
+  else $(document).on('shiny:connected', function () { Shiny.addCustomMessageHandler('wmfile-base', wmFillFiles); });
+  $(document).on('click', 'img[data-wmfile], img[data-wmrepo]', function () {
+    if (!this.naturalWidth || this.naturalWidth < 2) return;
+    if (!lb) build();
+    img.onload = fit; img.src = this.src; lb.show();
+    if (img.complete) fit();
+  });
+  $(document).on('click', '.wm-results img', function () {
+    if (!this.src || this.naturalWidth === 0) return;
+    if (!lb) build();
+    img.onload = fit; img.src = this.src; lb.show();
+    if (img.complete) fit();
+  });
+})();
+)---"))
+)
+```
+
+```{r}
+#| label: run-server
+#| context: server
+#| eval: true
+## Paths: found by wmed_paths.R, the same way run_pipeline_demo.R finds them.
+.git_dir <- normalizePath("..")   # this .qmd sits in <git_dir>/scripts
+source(file.path(.git_dir, "scripts", "wmed_paths.R"), local = TRUE)
+.paths <- wmed_find_paths(.git_dir)  # config.local.R > config.R > standard pCloud Drive place
+.out_dir <- .paths$out_dir
+## Run files live in out_dir/.qmd_run (not in R's temporary folder), so a page
+## reopened later still knows the last run started from here, and a run
+## that is still going.
+.run_dir <- if (!is.na(.out_dir) && dir.exists(.out_dir)) file.path(.out_dir, ".qmd_run") else file.path(tempdir(), "wmed_qmd_run")
+dir.create(.run_dir, showWarnings = FALSE, recursive = TRUE)
+.status_file <- file.path(.run_dir, "status.txt")       # "done" or "error: ..." when the run ends; its time = end
+.console <- file.path(.run_dir, "console.txt")          # everything the run prints
+.progress_file <- file.path(.run_dir, "progress.txt")   # "--- Step i/5 ..." lines
+.pid_file <- file.path(.run_dir, "pid.txt")             # process id of the run
+.settings_file <- file.path(.run_dir, "settings.R")     # settings block of the run; its time = start
+
+## Whole-GSA area of each GSA from the map polygons (km2). An approximate
+## preview only: 01 computes the real A_model from the GSA shapefile and
+## the bathymetry (795,431 km2 for GSAs 1-11 in the 2026-10-15 run, before GSA 12 was added; the
+## simplified polygons give about 1 % more).
+.gsa_km2 <- tryCatch({
+  g <- sf::st_read(file.path(.git_dir, "scripts", "gsa_boundaries_westmed.geojson"), quiet = TRUE)
+  a <- tapply(as.numeric(sf::st_area(g)) / 1e6, g$gsa_num, sum)
+  setNames(as.numeric(a), names(a))
+}, error = function(e) NULL)
+## Depth cells of the model area written by 01 (out_dir/biomass/
+## model_area_cells.csv: GSA x depth band, km2, from the NOAA bathymetry).
+## With whole_gsa it holds every depth band, so both bases can be summed
+## from it: 10-800 m = cells with Depth_min_m >= 10 and Depth_max_m <= 800.
+model_cells <- reactive({
+  last_finished()
+  f <- if (!is.na(.out_dir)) file.path(.out_dir, "biomass", "model_area_cells.csv") else ""
+  if (!file.exists(f)) return(NULL)
+  x <- tryCatch(utils::read.csv(f), error = function(e) NULL)
+  if (is.null(x) || !all(c("AreaID", "Depth_min_m", "Depth_max_m", "area_km2") %in% names(x))) NULL else x
+})
+## --- Functional groups: the species -> FG csv the run uses -------------------
+.pcloud_dir <- .paths$pcloud_dir
+.fg_default <- if (!is.na(.pcloud_dir)) file.path(.pcloud_dir, "data", "FG_WMed_2026.csv") else NA_character_
+.fg_choices <- if (!is.na(.pcloud_dir) && dir.exists(file.path(.pcloud_dir, "data")))
+  list.files(file.path(.pcloud_dir, "data"), "^FG.*\\.csv$", full.names = TRUE, ignore.case = TRUE) else character(0)
+updateSelectInput(session, "fg_file", choices = setNames(.fg_choices, basename(.fg_choices)),
+                  selected = if (.fg_default %in% .fg_choices) .fg_default else .fg_choices[1])
+fg_path <- reactiveVal(.fg_default)
+observeEvent(input$fg_file, if (nzchar(input$fg_file)) fg_path(input$fg_file))
+observeEvent(input$fg_upload, {   # an uploaded csv is kept next to the run files so the run can read it
+  dest <- file.path(.run_dir, paste0("uploaded_", gsub("[^A-Za-z0-9_.-]", "_", input$fg_upload$name)))
+  file.copy(input$fg_upload$datapath, dest, overwrite = TRUE)
+  fg_path(dest)
+})
+fg_table <- reactive({
+  f <- fg_path()
+  if (is.na(f) || !file.exists(f)) return(list(error = paste("File not found:", f)))
+  x <- tryCatch(data.table::fread(f, encoding = "UTF-8"), error = function(e) NULL)
+  if (is.null(x)) return(list(error = paste("Could not read", basename(f))))
+  need <- c("FG_number", "FG_name", "species")
+  if (!all(need %in% names(x))) return(list(error = paste0(basename(f), " is missing column(s): ", paste(setdiff(need, names(x)), collapse = ", "),
+                                                         ". Columns found: ", paste(names(x), collapse = ", "))))
+  list(data = x, path = f)
+})
+output$fg_summary <- renderUI({
+  ft <- fg_table()
+  if (!is.null(ft$error)) return(tags$div(class = "alert alert-danger py-2 small mb-0", ft$error))
+  x <- data.table::copy(ft$data)
+  has_group <- "FG_group" %in% names(x)
+  x[, FG_number := suppressWarnings(as.numeric(FG_number))]
+  fg <- x[!is.na(FG_number), .(FG_name = paste(unique(FG_name), collapse = " / "),
+                               FG_group = if (has_group) paste(unique(stats::na.omit(FG_group)), collapse = " / ") else NA_character_,
+                               n_species = data.table::uniqueN(species)), by = FG_number][order(FG_number)]
+  ## Checks: one name per FG number, each species in one FG only, no gaps in the numbers
+  multi_name <- fg[grepl(" / ", FG_name), FG_number]
+  sp2 <- x[!is.na(species) & nzchar(species), .(n = data.table::uniqueN(FG_number)), by = species][n > 1, species]
+  gaps <- setdiff(seq(min(fg$FG_number), max(fg$FG_number)), fg$FG_number)
+  warn <- c(if (length(multi_name)) paste("FG number(s) with more than one FG_name:", paste(multi_name, collapse = ", ")),
+            if (length(sp2)) paste0(length(sp2), " species in more than one FG (", paste(head(sp2, 3), collapse = ", "),
+                                    if (length(sp2) > 3) ", ...", ") - expected only for multistanza groups such as hake juv./adult"),
+            if (length(gaps)) paste("Missing FG number(s):", paste(gaps, collapse = ", ")),
+            if (!has_group) "No FG_group column - add one to group the FGs (the diet heatmap then shows the groups as blocks).")
+  stat <- function(label, value, note = NULL)
+    column(3, tags$div(class = "wm-stat", tags$div(class = "l", label), tags$div(class = "v", value), if (!is.null(note)) tags$div(class = "n", note)))
+  rows <- lapply(seq_len(nrow(fg)), function(i)
+    tags$tr(tags$td(fg$FG_number[i]), tags$td(fg$FG_name[i]), if (has_group) tags$td(fg$FG_group[i]), tags$td(fg$n_species[i])))
+  tagList(
+    fluidRow(
+      stat("File", basename(ft$path), format(file.mtime(ft$path), "edited %d %b %Y, %H:%M")),
+      stat("Functional groups", nrow(fg), paste0("FG ", min(fg$FG_number), "-", max(fg$FG_number))),
+      stat("Species", data.table::uniqueN(x$species)),
+      stat("FG groups", if (has_group) data.table::uniqueN(stats::na.omit(x$FG_group)) else "-", if (!has_group) "no FG_group column")),
+    if (length(warn)) tags$div(class = "alert alert-warning py-2 small mt-2 mb-2", lapply(warn, function(w) tags$div(w))),
+    tags$div(class = "wm-fg-table mt-2",
+      tags$table(class = "table table-sm table-striped",
+        tags$thead(tags$tr(tags$th("FG_number"), tags$th("FG_name"), if (has_group) tags$th("FG_group"), tags$th("N species"))),
+        tags$tbody(rows))))
+})
+
+## Coastal state of each GSA - the same table as GSA_COASTAL_STATE in 02_fisheries.R
+.gsa_state <- c("1" = "Spain", "2" = "Spain", "3" = "Morocco", "4" = "Algeria", "5" = "Spain", "6" = "Spain",
+                "7" = "France", "8" = "France", "9" = "Italy", "10" = "Italy", "11" = "Italy", "12" = "Tunisia")
+.unsurveyed <- c(3, 4, 12)
+## Expected minutes per script (01..05), from the 2026-10-15 run; 01 is much
+## slower the first time after a change of GSAs (bathymetry download).
+.step_min <- c(1.1, 1.5, 5.2, 1.2, 0.8)
+.step_names <- c("01 biomass", "02 fisheries", "03 P/B, Q/B", "04 diets", "05 validation")
+
+## --- Custom region from an uploaded shapefile / polygon file ---------------
+custom_shape <- reactiveVal(NULL)   # list(path, sf) of the uploaded region
+observeEvent(input$custom_shp, {
+  up <- input$custom_shp
+  name <- gsub("[^A-Za-z0-9_-]", "_", if (nzchar(input$area_name)) input$area_name else "custom_region")
+  dest <- file.path(.run_dir, paste0("region_", name))
+  unlink(dest, recursive = TRUE); dir.create(dest, recursive = TRUE)
+  for (i in seq_len(nrow(up))) {
+    if (grepl("\\.zip$", up$name[i], ignore.case = TRUE)) utils::unzip(up$datapath[i], exdir = dest, junkpaths = TRUE)
+    else file.copy(up$datapath[i], file.path(dest, up$name[i]), overwrite = TRUE)
+  }
+  f <- list.files(dest, "\\.(shp|geojson|json|gpkg|kml)$", full.names = TRUE, ignore.case = TRUE)
+  f <- f[order(!grepl("\\.shp$", f, ignore.case = TRUE))][1]
+  if (is.na(f)) { showNotification("No .shp, .geojson, .gpkg or .kml found in the upload.", type = "error"); return() }
+  if (grepl("\\.shp$", f, ignore.case = TRUE) && !all(file.exists(sub("\\.shp$", c(".shx", ".dbf"), f, ignore.case = TRUE)))) {
+    showNotification("A shapefile needs at least .shp, .shx and .dbf (and .prj for the CRS) - upload them together or as a .zip.", type = "error"); return() }
+  g <- tryCatch(sf::st_read(f, quiet = TRUE), error = function(e) { showNotification(conditionMessage(e), type = "error"); NULL })
+  if (is.null(g)) return()
+  if (is.na(sf::st_crs(g))) sf::st_crs(g) <- 4326 else g <- sf::st_transform(g, 4326)
+  g <- g[!sf::st_is_empty(g), ]
+  custom_shape(list(path = normalizePath(f), sf = g))
+  tmp <- tempfile(fileext = ".geojson"); sf::st_write(sf::st_geometry(g), tmp, quiet = TRUE)
+  session$sendCustomMessage("wm-custom-shape", list(geojson = paste(readLines(tmp, warn = FALSE), collapse = "")))
+})
+
+## --- Area summary cards ---------------------------------------------------
+output$area_summary <- renderUI({
+  stat <- function(label, value, note = NULL, warn = FALSE)
+    column(3, tags$div(class = paste("wm-stat", if (warn) "warn"),
+                       tags$div(class = "l", label), tags$div(class = "v", value),
+                       if (!is.null(note)) tags$div(class = "n", note)))
+  if (identical(input$area_mode, "custom") && identical(input$custom_type, "shapefile")) {
+    cs <- custom_shape()
+    if (is.null(cs)) return(tags$div(class = "alert alert-secondary mb-0", "Upload the region file to see it on the map."))
+    a <- suppressWarnings(as.numeric(sum(sf::st_area(cs$sf)))) / 1e6
+    bb <- sf::st_bbox(cs$sf)
+    return(fluidRow(
+      stat("Region", input$area_name, basename(cs$path)),
+      stat("Polygons", nrow(cs$sf), "one model area each"),
+      stat("Polygon area", paste(format(round(a, -2), big.mark = ","), "km\u00b2"), "as drawn, land included"),
+      stat("Extent", sprintf("%.1f-%.1f\u00b0E", bb["xmin"], bb["xmax"]), sprintf("%.1f-%.1f\u00b0N", bb["ymin"], bb["ymax"]))))
+  }
+  if (identical(input$area_mode, "custom")) {
+    b <- c(input$bbox_xmin, input$bbox_xmax, input$bbox_ymin, input$bbox_ymax)
+    ok <- all(is.finite(b)) && b[2] > b[1] && b[4] > b[3]
+    km2 <- if (ok) (b[2] - b[1]) * 111.32 * cos(mean(b[3:4]) * pi / 180) * (b[4] - b[3]) * 110.57 else NA
+    return(fluidRow(
+      stat("Region", input$area_name),
+      stat("Box", if (ok) sprintf("%.1f-%.1f\u00b0E, %.1f-%.1f\u00b0N", b[1], b[2], b[3], b[4]) else "invalid", warn = !ok),
+      stat("Box area", if (ok) paste(format(round(km2, -2), big.mark = ","), "km\u00b2") else "-", "rectangle, land included"),
+      stat("Scripts", "01 biomass", "02-05 work on GSAs", warn = TRUE)))
+  }
+  g <- as.numeric(input$gsas)
+  if (!length(g)) return(tags$div(class = "alert alert-danger mb-0", "No GSA selected - click the map or a quick-select button."))
+  ## Area: from the depth cells 01 wrote (exact, from the bathymetry) when
+  ## the last run covered these GSAs; otherwise the map polygons (whole GSA)
+  cells <- model_cells()
+  basis <- input$basis
+  per_gsa <- if (!is.null(cells)) {
+    keep <- if (identical(basis, "medits_10_800")) cells$Depth_min_m >= 10 & cells$Depth_max_m <= 800 else rep(TRUE, nrow(cells))
+    tapply(cells$area_km2[keep], cells$AreaID[keep], sum)
+  } else NULL
+  have <- !is.null(per_gsa) && all(as.character(g) %in% names(per_gsa))
+  fmt <- function(x) paste(format(round(x, -2), big.mark = ","), "km\u00b2")
+  area_box <- if (have) {
+    stat("Model area", fmt(sum(per_gsa[as.character(g)])),
+         if (identical(basis, "medits_10_800")) "MEDITS strata 10-800 m, from the bathymetry (01)" else "whole GSA, coast to bottom (01)")
+  } else if (identical(basis, "whole_gsa") && !is.null(.gsa_km2)) {
+    stat("Model area", paste0("\u2248 ", fmt(sum(.gsa_km2[as.character(g)], na.rm = TRUE))), "from the map polygons; 01 computes the exact value")
+  } else stat("Model area", "computed by 01", "these GSAs are not in the last run's model_area_cells.csv", warn = TRUE)
+  uns <- intersect(g, .unsurveyed)
+  fluidRow(
+    stat("GSAs", length(g), paste(sort(g), collapse = ", ")),
+    area_box,
+    stat("Survey coverage", paste0(length(setdiff(g, .unsurveyed)), " of ", length(g)),
+         if (length(uns)) paste0("GSA ", paste(uns, collapse = ", "), ": survey density assumed") else "all GSAs sampled by MEDITS",
+         warn = length(uns) > 0),
+    stat("Catch countries", length(unique(.gsa_state[as.character(g)])), paste(unique(.gsa_state[as.character(g)]), collapse = ", ")))
+})
+
+## --- Settings block: the exact code the Run button executes ---------------
+config_code <- reactive({
+  yr <- function(v) paste0(v[1], ":", v[2])
+  tf <- function(x) if (isTRUE(x)) "TRUE" else "FALSE"
+  common <- c(
+    sprintf("YEAR_ECOPATH     <- %s   # Ecopath baseline", yr(input$ecopath_years)),
+    sprintf("TS_YEARS         <- %s   # Ecosim biomass series", yr(input$ts_years)),
+    sprintf("STRATA           <- %s", tf(input$strata)),
+    sprintf("DROP_OUTLIERS    <- %s", tf(input$drop_outliers)),
+    sprintf("NORMALIZE_TS     <- %s", tf(input$normalize_ts)),
+    sprintf("ECOPATH_B_FILL_MODE  <- \"%s\"   # FGs with no Ecopath-years biomass", if (isTRUE(input$fill_b)) "window_mean" else "nearest"),
+    if (isTRUE(input$fill_b) && length(input$fill_years) == 2) sprintf("ECOPATH_B_FILL_YEARS <- %s", yr(input$fill_years)),
+    if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", fg_path()))
+  head <- c(sprintf("## WMed EwE pipeline settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
+            "## Run from the scripts/ folder of the repo (folders found by wmed_paths.R).",
+            "CLEAN_START      <- FALSE   # keep the settings below")
+  if (identical(input$area_mode, "custom")) {
+    c(head,
+      "AREA_MODE        <- \"custom\"",
+      sprintf("AREA_NAME        <- \"%s\"", gsub("[^A-Za-z0-9_-]", "_", input$area_name)),
+      if (identical(input$custom_type, "shapefile")) c(
+        "CUSTOM_AREA_TYPE <- \"shapefile\"",
+        sprintf("CUSTOM_SHAPEFILE_PATH <- \"%s\"", if (is.null(custom_shape())) "<upload the region file>" else custom_shape()$path))
+      else c(
+        "CUSTOM_AREA_TYPE <- \"bbox\"",
+        sprintf("CUSTOM_BBOX      <- c(xmin = %s, xmax = %s, ymin = %s, ymax = %s)",
+                input$bbox_xmin, input$bbox_xmax, input$bbox_ymin, input$bbox_ymax)),
+      common,
+      "source(\"01_biomass.R\")   # a custom region runs the biomass step (01)")
+  } else {
+    c(head,
+      sprintf("RUN_STEPS        <- %s", input$steps),
+      sprintf("MODEL_GSAS       <- c(%s)", paste(sort(as.numeric(input$gsas)), collapse = ", ")),
+      sprintf("MODEL_AREA_BASIS <- \"%s\"", input$basis),
+      common,
+      "## catch / effort years (02) follow the Ecopath and Ecosim years",
+      "source(\"run_pipeline_demo.R\")")
+  }
+})
+output$config_text <- renderText(paste(config_code(), collapse = "\n"))
+output$dl_config <- downloadHandler(
+  filename = function() if (identical(input$area_mode, "custom")) "wmed_custom_settings.R" else "wmed_pipeline_settings.R",
+  content = function(file) writeLines(config_code(), file))
+
+## --- Run -------------------------------------------------------------------
+run_state <- reactiveVal("idle")          # idle | running | done | error
+run_started <- reactiveVal(NULL)
+run_finished <- reactiveVal(NULL)
+run_steps <- reactiveVal(1:5)
+step_seen <- reactiveVal(list())          # step number -> time its start line was first seen
+last_finished <- reactiveVal(Sys.time())  # changes after every run -> images reload
+run_note <- reactiveVal("")
+
+.pid_alive <- function() {
+  pid <- if (file.exists(.pid_file)) suppressWarnings(as.integer(readLines(.pid_file, warn = FALSE)[1])) else NA
+  !is.na(pid) && isTRUE(tryCatch(tools::pskill(pid, 0L), error = function(e) FALSE))
+}
+.settings_lines <- function() if (file.exists(.settings_file)) readLines(.settings_file, warn = FALSE) else character(0)
+
+## Reopened page: pick up the last run started from here (finished, failed,
+## or still going)
+if (file.exists(.settings_file)) {
+  run_started(file.mtime(.settings_file))
+  .st <- grep("^RUN_STEPS", .settings_lines(), value = TRUE)
+  run_steps(tryCatch(eval(parse(text = sub("^[^<]*<-", "", .st[1]))), error = function(e) 1:5))
+  if (file.exists(.status_file)) {
+    run_state(if (identical(readLines(.status_file, warn = FALSE)[1], "done")) "done" else "error")
+    run_finished(file.mtime(.status_file))
+  } else if (.pid_alive()) {
+    run_state("running")
+  } else {
+    run_state("error"); run_finished(file.mtime(.console))
+    run_note("The last run from this page stopped without finishing (R or RStudio was closed?).")
+  }
+}
+
+observe({   # the Run button is for GSA runs only (disabled= needs shiny >= 1.11)
+  custom <- identical(input$area_mode, "custom")
+  no_shape <- custom && identical(input$custom_type, "shapefile") && is.null(custom_shape())
+  lab <- if (identical(run_state(), "running")) "Running..." else if (custom) "Run biomass (01) for this region" else "Run pipeline"
+  if (utils::packageVersion("shiny") >= "1.11.0")
+    updateActionButton(session, "run", label = lab, disabled = no_shape || identical(run_state(), "running")) else
+    updateActionButton(session, "run", label = lab)
+})
+
+observeEvent(input$run, {
+  custom <- identical(input$area_mode, "custom")
+  if (identical(run_state(), "running")) return()
+  if (custom && identical(input$custom_type, "shapefile") && is.null(custom_shape())) {
+    showNotification("Upload the region file first.", type = "error"); return() }
+  if (!custom && !length(input$gsas)) { showNotification("Select at least one GSA.", type = "error"); return() }
+  unlink(c(.status_file, .progress_file, .console, .pid_file))
+  writeLines(config_code(), .settings_file)
+  Sys.setenv(WMED_PROGRESS_FILE = .progress_file)   # inherited by the Rscript process
+  ## The settings block, with the final source() wrapped so the result is reported back here
+  body <- config_code()
+  body <- body[!grepl("^##", body)]
+  body <- sub("^source\\(\"01_biomass.R\"\\).*$", paste0(
+    "res <- tryCatch({ cat('--- Step 1/5: 01_biomass.R\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); ",
+    "source('01_biomass.R'); cat('--- Step 1/5 done\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); 'done' }, ",
+    "error = function(e) paste('error:', conditionMessage(e)))"), body)
+  code <- paste(c(sprintf("writeLines(as.character(Sys.getpid()), '%s')", .pid_file), sub("^source\\(\"run_pipeline_demo.R\"\\)$",
+                      "res <- tryCatch({ source('run_pipeline_demo.R'); 'done' }, error = function(e) paste('error:', conditionMessage(e)))", body),
+                  sprintf("writeLines(res, '%s')", .status_file)), collapse = "\n")
+  old <- setwd(file.path(.git_dir, "scripts")); on.exit(setwd(old))
+  system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)), wait = FALSE, stdout = .console, stderr = .console)
+  run_state("running"); run_started(Sys.time()); run_finished(NULL); run_note(""); step_seen(list())
+  run_steps(if (custom) 1L else eval(parse(text = input$steps)))
+  showNotification(if (custom) paste0("Biomass step started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
+                   else "Pipeline started - progress is shown below the button.", duration = 8)
+})
+
+## Poll the status file while a run is going
+observe({
+  if (!identical(run_state(), "running")) return()
+  invalidateLater(5000)
+  if (file.exists(.status_file)) {
+    res <- readLines(.status_file, warn = FALSE)[1]
+    run_state(if (identical(res, "done")) "done" else "error")
+    run_finished(file.mtime(.status_file)); last_finished(Sys.time())
+    showNotification(if (identical(res, "done")) "Pipeline finished - plots updated." else res,
+                     type = if (identical(res, "done")) "message" else "error", duration = NULL)
+  } else if (file.exists(.pid_file) && !.pid_alive()) {
+    run_state("error"); run_finished(Sys.time()); last_finished(Sys.time())
+    run_note("The run stopped without finishing - see the last lines below.")
+  }
+})
+
+## Progress: read the "--- Step i/5: ..." / "--- Step i/5 done in x min ---"
+## lines that run_pipeline_demo.R writes, and estimate the share done from
+## the expected minutes per script.
+output$run_progress <- renderUI({
+  invalidateLater(3000)
+  st <- run_state()
+  if (identical(st, "idle")) {
+    steps <- eval(parse(text = input$steps))
+    return(tags$small(class = "text-muted", sprintf("Expected run time about %.0f min (%s).", sum(.step_min[steps]),
+                                                   paste(.step_names[steps], collapse = ", "))))
+  }
+  lines <- if (file.exists(.progress_file)) readLines(.progress_file, warn = FALSE) else character(0)
+  started <- as.integer(sub("^--- Step (\\d)/5:.*", "\\1", grep("^--- Step \\d/5: ", lines, value = TRUE)))
+  finished <- as.integer(sub("^--- Step (\\d)/5 done.*", "\\1", grep("^--- Step \\d/5 done", lines, value = TRUE)))
+  seen <- isolate(step_seen())
+  for (k in setdiff(started, as.integer(names(seen)))) seen[[as.character(k)]] <- Sys.time()
+  isolate(step_seen(seen))
+  steps <- run_steps(); w <- .step_min[steps]
+  current <- setdiff(started, finished); current <- if (length(current)) max(current) else NA
+  done_min <- sum(.step_min[intersect(finished, steps)])
+  cur_min <- if (!is.na(current)) min(as.numeric(difftime(Sys.time(), seen[[as.character(current)]], units = "mins")),
+                                      0.95 * .step_min[current]) else 0
+  pct <- if (st == "done") 100 else round(100 * (done_min + cur_min) / sum(w))
+  elapsed <- as.numeric(difftime(if (is.null(run_finished())) Sys.time() else run_finished(), run_started(), units = "mins"))
+  label <- switch(st,
+    running = paste0(if (!is.na(current)) paste0("Running ", .step_names[current]) else "Starting",
+                     " - ", length(intersect(finished, steps)), " of ", length(steps), " script(s) done - ",
+                     sprintf("%.1f", elapsed), " min elapsed, about ", sprintf("%.0f", max(sum(w) - done_min - cur_min, 0)), " min left"),
+    done = sprintf("Finished %s, in %.1f min", format(run_finished(), "%d %b %H:%M"), elapsed),
+    error = "Stopped with an error - see below")
+  colour <- switch(st, running = "bg-info", done = "bg-success", error = "bg-danger")
+  ## one chip per script: done / running / waiting
+  chips <- lapply(steps, function(k) {
+    cls <- if (k %in% finished || st == "done") "bg-success" else if (identical(k, current)) "bg-info" else "bg-light text-dark"
+    tags$span(class = paste("badge rounded-pill me-1", cls), .step_names[k])
+  })
+  tagList(
+    tags$div(class = "progress mb-1", style = "height: 22px; border-radius: 11px;",
+             tags$div(class = paste("progress-bar progress-bar-striped", colour, if (st == "running") "progress-bar-animated"),
+                      role = "progressbar", style = paste0("width: ", pct, "%;"), paste0(pct, "%"))),
+    tags$div(class = "mb-1", chips),
+    tags$small(label))
+})
+
+output$run_status <- renderText({
+  invalidateLater(5000)
+  st <- run_state()
+  tail_txt <- if (file.exists(.console)) paste(tail(readLines(.console, warn = FALSE), 3), collapse = "\n") else ""
+  paste0("Status: ", st, "\nOutput folder: ", .out_dir,
+         if (st == "error" && file.exists(.status_file)) paste0("\n", readLines(.status_file, warn = FALSE)[1]) else "",
+         if (nzchar(run_note())) paste0("\n", run_note()) else "",
+         if (nzchar(tail_txt)) paste0("\n--- last lines ---\n", tail_txt) else "")
+})
+
+## --- Files under out_dir for the figures in the text ------------------------
+.ctype <- c(png = "image/png", csv = "text/csv", pdf = "application/pdf", txt = "text/plain",
+            xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+.file_url <- session$registerDataObj("wmfile", .out_dir, function(data, req) {
+  q <- shiny::parseQueryString(req$QUERY_STRING)
+  root <- normalizePath(data, mustWork = FALSE)
+  f <- normalizePath(file.path(data, if (is.null(q$f)) "" else q$f), mustWork = FALSE)
+  ext <- tolower(tools::file_ext(f))
+  if (is.null(q$f) || !startsWith(f, root) || !file.exists(f) || dir.exists(f) || !ext %in% names(.ctype))
+    return(list(status = 404L, headers = list("Content-Type" = "text/plain"), body = "not found"))
+  list(status = 200L, headers = list("Content-Type" = .ctype[[ext]]), body = readBin(f, "raw", file.info(f)$size))
+})
+## Images kept in the repo (top folder and docs/): the workflow figure
+.repo_url <- session$registerDataObj("wmrepo", .git_dir, function(data, req) {
+  q <- shiny::parseQueryString(req$QUERY_STRING)
+  root <- normalizePath(data, mustWork = FALSE)
+  f <- normalizePath(file.path(data, if (is.null(q$f)) "" else q$f), mustWork = FALSE)
+  ext <- tolower(tools::file_ext(f))
+  types <- c(jpg = "image/jpeg", jpeg = "image/jpeg", png = "image/png", svg = "image/svg+xml")
+  if (is.null(q$f) || !startsWith(f, root) || !file.exists(f) || !ext %in% names(types))
+    return(list(status = 404L, headers = list("Content-Type" = "text/plain"), body = "not found"))
+  list(status = 200L, headers = list("Content-Type" = types[[ext]]), body = readBin(f, "raw", file.info(f)$size))
+})
+observe({   # tell the page where to load the figures from; again after every run
+  last_finished()
+  session$sendCustomMessage("wmfile-base", list(base = .file_url, repo = .repo_url, v = as.integer(Sys.time())))
+})
+
+## --- Folders on this computer -------------------------------------------------
+output$folders <- renderUI({
+  row <- function(label, path, from, ok)
+    tags$tr(tags$td(if (ok) "\u2705" else "\u274C"), tags$td(tags$strong(label)),
+            tags$td(tags$code(if (is.na(path)) "not found" else path)), tags$td(class = "text-muted", if (!is.na(from)) from))
+  tagList(
+    tags$table(class = "table table-sm mb-2", style = "font-size:.85rem;",
+      row("Repo (git_dir)", .paths$git_dir, "this page's folder", dir.exists(file.path(.paths$git_dir, "scripts"))),
+      row("pCloud data (pcloud_dir)", .paths$pcloud_dir, .paths$pcloud_from, !is.na(.paths$pcloud_dir)),
+      row("Outputs (out_dir)", .paths$out_dir, .paths$out_from, dir.exists(.paths$out_dir))),
+    if (is.na(.paths$pcloud_dir)) tags$div(class = "alert alert-danger py-2 small",
+      "The pCloud folder '", .wmed_pcloud_name, "' was not found on this computer. Is pCloud Drive running? ",
+      "Otherwise paste its path below and save."),
+    tags$details(open = if (is.na(.paths$pcloud_dir)) NA else NULL,
+      tags$summary(class = "small text-muted", "Change the folders for this computer"),
+      fluidRow(
+        column(5, textInput("set_pcloud", "pCloud folder", value = if (is.na(.paths$pcloud_dir)) "" else .paths$pcloud_dir, width = "100%")),
+        column(5, textInput("set_out", "Output folder", value = .paths$out_dir, width = "100%")),
+        column(2, tags$label(HTML("&nbsp;")), actionButton("save_folders", "Save", class = "btn-outline-primary w-100"))),
+      tags$div(class = "wm-help", "Saved in config.local.R in the repo, for this computer only (not committed). Reopen the page after saving.")))
+})
+observeEvent(input$save_folders, {
+  pc <- path.expand(trimws(input$set_pcloud)); od <- path.expand(trimws(input$set_out))
+  if (!dir.exists(pc)) { showNotification(paste("Folder not found:", pc), type = "error"); return() }
+  if (!dir.exists(od) && !dir.create(od, recursive = TRUE, showWarnings = FALSE)) {
+    showNotification(paste("Cannot create:", od), type = "error"); return() }
+  f <- wmed_save_local_config(.git_dir, out_dir = od, pcloud_dir = pc)
+  showNotification(paste("Saved to", f, "- stop the page and open it again (Run Document)."), duration = NULL)
+})
+
+## --- Downloads: the output files of the last run ----------------------------
+.wb_path   <- if (!is.na(.out_dir)) file.path(.out_dir, "ecopath_ecosim_inputs.xlsx") else NA_character_
+.diet_path <- if (!is.na(.out_dir)) file.path(.out_dir, "diet", "diet_matrix_main_vs_reference.xlsx") else NA_character_
+.out_tables <- function(pattern) {   # csv/xlsx under out_dir (not the plots or the page's run files)
+  if (is.na(.out_dir)) return(character(0))
+  f <- list.files(.out_dir, "\\.(csv|xlsx)$", recursive = TRUE)
+  f <- f[!grepl("^(plots|plots_old|\\.qmd_run|isimip3a_cache|shapefiles|GFCM_GSA_shp)", f)]
+  f[grepl(pattern, f)]
+}
+.send_file <- function(path) function(file) {
+  if (!file.exists(path)) stop("Not found: ", path, " - run the pipeline first.")
+  file.copy(path, file)
+}
+.send_zip <- function(pattern) function(file) {
+  f <- .out_tables(pattern)
+  if (!length(f)) stop("No tables found in ", .out_dir, " - run the pipeline first.")
+  old <- setwd(.out_dir); on.exit(setwd(old))
+  if (requireNamespace("zip", quietly = TRUE)) zip::zip(file, f) else utils::zip(file, f, flags = "-q")
+}
+.stamp <- function() format(Sys.time(), "%Y%m%d")
+output$dl_workbook <- downloadHandler(function() paste0("ecopath_ecosim_inputs_", .stamp(), ".xlsx"), .send_file(.wb_path))
+output$dl_diet     <- downloadHandler(function() paste0("diet_matrix_main_vs_reference_", .stamp(), ".xlsx"), .send_file(.diet_path))
+output$dl_review   <- downloadHandler(function() paste0("WMed_EwE_REVIEW_tables_", .stamp(), ".zip"), .send_zip("REVIEW"))
+output$dl_all      <- downloadHandler(function() paste0("WMed_EwE_all_tables_", .stamp(), ".zip"), .send_zip("."))
+output$dl_info <- renderUI({
+  last_finished()
+  if (is.na(.wb_path) || !file.exists(.wb_path)) return(tags$small(class = "text-muted", " No workbook yet - run the pipeline."))
+  tags$small(class = "text-muted", sprintf(" Workbook written %s; %d tables in the output folder.",
+                                           format(file.mtime(.wb_path), "%d %b %Y, %H:%M"), length(.out_tables("."))))
+})
+
+## --- Results: key plots and every plot in out_dir/plots ----------------------
+## The PNGs are served straight from out_dir/plots (no copy); "?v=<time>"
+## makes the browser fetch a plot again after a run rewrites it.
+.plot_dir <- if (!is.na(.out_dir)) file.path(.out_dir, "plots") else NA_character_
+## Served through the session (registerDataObj), which works inside Quarto;
+## only files under out_dir/plots can be read this way.
+.plot_url <- session$registerDataObj("wmplot", .plot_dir, function(data, req) {
+  q <- shiny::parseQueryString(req$QUERY_STRING)
+  root <- normalizePath(data, mustWork = FALSE)
+  f <- normalizePath(file.path(data, if (is.null(q$f)) "" else q$f), mustWork = FALSE)
+  if (is.null(q$f) || !startsWith(f, root) || !file.exists(f) || dir.exists(f))
+    return(list(status = 404L, headers = list("Content-Type" = "text/plain"), body = "not found"))
+  list(status = 200L, headers = list("Content-Type" = "image/png", "Cache-Control" = "max-age=3600"),
+       body = readBin(f, "raw", file.info(f)$size))
+})
+.key_plots <- c("Biomass by source" = "biomass/biomass_by_fg_source.png",
+                "Biomass series"    = "biomass/survey_fg_density_timeseries_regional.png",
+                "Catch by FG"       = "fisheries/01_catches_per_FG.png",
+                "F by FG"           = "validation/F_by_fg.png",
+                "P/Q by FG"         = "validation/PQ_ratio_by_fg.png",
+                "Diet matrix"       = "diets/diet_matrix_heatmap.png",
+                "vs 1995 model"     = "validation/biomass_vs_old_model_by_fg.png")
+
+output$results <- renderUI({
+  last_finished(); st <- run_state()
+  files <- if (!is.na(.plot_dir)) list.files(.plot_dir, "\\.png$", recursive = TRUE) else character(0)
+  if (!length(files)) return(tags$div(class = "alert alert-secondary py-2 small mb-0", "No plots yet - click Run pipeline."))
+  mt <- file.mtime(file.path(.plot_dir, files)); names(mt) <- files
+  src <- function(f) paste0(.plot_url, "&f=", utils::URLencode(f, reserved = TRUE), "&v=", as.integer(mt[[f]]))
+  fmt <- function(t) format(t, "%d %b %Y, %H:%M")
+
+  ## Where these plots come from
+  newest <- max(mt)
+  set <- .settings_lines()
+  set <- gsub("\\s+", " ", trimws(sub("#.*", "", set[grepl("^(MODEL_GSAS|MODEL_AREA_BASIS|YEAR_ECOPATH|TS_YEARS|START_YEAR|END_YEAR|DROP_OUTLIERS)", set)])))
+  from_here <- !is.null(run_finished()) && !is.null(run_started()) &&
+               newest >= run_started() && newest <= run_finished() + 120
+  banner <- if (identical(st, "running")) {
+    tags$div(class = "alert alert-warning py-2 small", "A run is going. These are the previous plots; they are replaced when it finishes.")
+  } else if (from_here && identical(st, "done")) {
+    tags$div(class = "alert alert-success py-2 small",
+             tags$strong("From the run started on this page "), sprintf("on %s, finished %s. ", fmt(run_started()), fmt(run_finished())),
+             tags$br(), tags$code(paste(set, collapse = "; ")))
+  } else {
+    tags$div(class = "alert alert-info py-2 small",
+             sprintf("Plots last written %s by a run outside this page (from the R console or another session).", fmt(newest)),
+             if (!is.null(run_started())) sprintf(" The last run from this page was on %s.", fmt(run_started())))
+  }
+
+  ## Key plots: one tab each
+  ids <- paste0("wm-key-", seq_along(.key_plots))
+  key_nav <- tags$ul(class = "nav nav-tabs", role = "tablist",
+    lapply(seq_along(.key_plots), function(i)
+      tags$li(class = "nav-item", role = "presentation",
+              tags$button(class = paste("nav-link", if (i == 1) "active"), type = "button", role = "tab",
+                          `data-bs-toggle` = "tab", `data-bs-target` = paste0("#", ids[i]), names(.key_plots)[i]))))
+  key_body <- tags$div(class = "tab-content",
+    lapply(seq_along(.key_plots), function(i) {
+      f <- .key_plots[[i]]
+      tags$div(class = paste("tab-pane fade", if (i == 1) "show active"), id = ids[i], role = "tabpanel",
+               if (f %in% files) tags$img(class = "wm-key-img", src = src(f), alt = basename(f))
+               else tags$div(class = "alert alert-secondary small mt-2", "Not available yet: plots/", f))
+    }))
+
+  ## All plots: thumbnails, filter by folder, search by name
+  folder <- dirname(files)
+  ord <- order(folder, basename(files)); files <- files[ord]; folder <- folder[ord]
+  counts <- table(folder)
+  filt <- tags$div(class = "wm-filter",
+    tags$button(type = "button", class = "btn btn-sm btn-outline-primary active", `data-folder` = "", sprintf("All (%d)", length(files))),
+    lapply(names(counts), function(d)
+      tags$button(type = "button", class = "btn btn-sm btn-outline-primary", `data-folder` = d, sprintf("%s (%d)", d, counts[[d]]))),
+    tags$input(id = "wm-search", type = "search", class = "form-control form-control-sm", placeholder = "Search plot name"))
+  grid <- tags$div(class = "wm-grid",
+    lapply(seq_along(files), function(i)
+      tags$div(class = "wm-thumb", `data-folder` = folder[i], `data-name` = tolower(basename(files[i])),
+               tags$img(src = src(files[i]), loading = "lazy", alt = basename(files[i]), title = "Click to zoom"),
+               tags$div(class = "wm-thumb-folder", folder[i]),
+               tags$div(class = "wm-thumb-name", sub("\\.png$", "", basename(files[i]))))))
+
+  tagList(
+    banner,
+    tags$ul(class = "nav nav-pills wm-view", role = "tablist",
+      tags$li(class = "nav-item", tags$button(class = "nav-link active", type = "button", `data-bs-toggle` = "pill",
+                                              `data-bs-target` = "#wm-view-key", "Key plots")),
+      tags$li(class = "nav-item", tags$button(class = "nav-link", type = "button", `data-bs-toggle` = "pill",
+                                              `data-bs-target` = "#wm-view-all", sprintf("All plots (%d)", length(files))))),
+    tags$div(class = "tab-content",
+      tags$div(class = "tab-pane fade show active", id = "wm-view-key", key_nav, key_body),
+      tags$div(class = "tab-pane fade", id = "wm-view-all", filt, grid)),
+    tags$small(class = "text-muted", "Click any plot to zoom. Plots are read from ", tags$code(.plot_dir), "."))
+})
+```
+
+| Input | Script variable | Effect |
+|---|---|---|
+| GSAs (map, checkboxes) | `MODEL_GSAS` (→ `FILTER_AREAS`) | GSAs of the model area (default 1-12). Survey data only from these GSAs; GSAs 3, 4 and 12 (no MEDITS) take the survey density per km² of the others (assumption). Catch kept for every coastal state of these GSAs. |
+| Area basis | `MODEL_AREA_BASIS` | `whole_gsa`: A_model is the whole sea area of the GSAs, coast to bottom. `medits_10_800`: only the 10-800 m MEDITS strata. |
+| Custom region | `AREA_MODE = "custom"`, `AREA_NAME`, `CUSTOM_AREA_TYPE`, `CUSTOM_SHAPEFILE_PATH` or `CUSTOM_BBOX` | A region from an uploaded shapefile (.zip, or .shp + .shx + .dbf + .prj), GeoJSON, GeoPackage or KML, or a lon/lat box, instead of GSAs. Runs the biomass step (01) for that region; outputs in `out_dir/<AREA_NAME>/` (@sec-area-definition, Approach B). |
+| Ecopath baseline | `YEAR_ECOPATH` | Years averaged into Ecopath_B, F and P/B (01, 02, 03). |
+| Ecosim biomass series | `TS_YEARS` | Years of the Ecosim biomass series (01). |
+| (no input) | `START_YEAR`, `END_YEAR` | Catch, landings, discards and effort series (02) follow the other years: from the first Ecopath or Ecosim year to the last Ecosim year (set in `run_pipeline_demo.R`). |
+| Strata-weighted density | `STRATA` (default `TRUE`) | Depth-stratum, area-weighted estimator (@sec-strata-weighted) vs a simple mean. |
+| Remove outliers | `DROP_OUTLIERS` (default `TRUE`) | Flagged outlier hauls removed, or only reported in `survey_outliers_flagged.csv`. |
+| Relative Ecosim series | `NORMALIZE_TS` (default `TRUE`) | Ecosim series as an index (first value = 1) or raw density. |
+| Fill missing Ecopath_B | `ECOPATH_B_FILL_MODE`, `ECOPATH_B_FILL_YEARS` (default on, 1995-2000) | An FG with no biomass in the Ecopath years gets its mean over these years (else the nearest year with data); off = nearest single year only. Expanding FGs always get 0.00001 t/km². |
+| Scripts to run | `RUN_STEPS` | `1:5` all; `2:5` reuses the biomass on disk; `5` redraws the validation only. |
+
+The model-area figure in the summary is a preview from the simplified map polygons (about 1 % above the real value); the A_model used in the outputs is the one 01 computes and writes to `model_area_by_gsa.csv`.
+
+---
+
+## Overview
+
+This tool builds the inputs of Ecopath with Ecosim (EwE) models of the Western Mediterranean: biomass per Functional Group (FG) for the Ecopath baseline and the Ecosim time series, catch, landings, discards and effort by fleet, fishing mortality, P/B and Q/B, the diet matrix, and a validation against the 1995 Western Mediterranean model. It runs as five R scripts (01 biomass, 02 fisheries, 03 P/B and Q/B, 04 diets, 05 validation) from the page above, or from the R console, and writes everything to one Excel workbook plus review tables.
+
+**Biomass first:** the starting point is a time series of biomass density per Functional Group — how much of each modeled group is really out there, year by year, for whichever region and time window is configured. Everything else in the wider pipeline (catches, mortality, production, diet) is expressed relative to this density, so getting it right — correctly weighted by survey stratum and area, not just averaged naively — is what lets the rest of the model be trusted.
+
+The biomass step has two layers:
+
+1. **A shared, survey-agnostic function library** (`lib_survey_fg_density_functions.R`) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.
+2. **One Step-1 driver script, `01_biomass.R`,** that reads the survey's raw files, reshapes them into the library's standardized input format and calls the shared functions. `AREA_MODE` picks the study area:
+   - `AREA_MODE = "westmed"` (default) - MEDITS bottom-trawl data, study area defined by the official GFCM GSA polygons (`MODEL_GSAS`, set in `run_pipeline_demo.R` with the years; default GSAs 1–12, the Western Med with Northern Tunisia; MEDITS/MEDIAS data exist for GSAs 1, 2, 5–11). Also incorporates MEDIAS acoustic survey data (@sec-medias), combined with MEDITS into a single density index, and sources `01b_biomass_unsurveyed.R` for the groups the surveys cannot measure (@sec-biomass). Outputs in `out_dir/biomass/` and `out_dir/plots/biomass/`.
+   - `AREA_MODE = "custom"` - the same MEDITS data with a custom boundary (a shapefile or other polygon file uploaded on the page, a lon/lat box, or a custom GSA grouping; `CUSTOM_AREA_TYPE`) - useful when the same survey supports a different EwE model with its own footprint. MEDITS-only. Outputs in `out_dir/<AREA_NAME>/` (default `custom_region`), so the two modes never overwrite each other.
+
+Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) not available at render time. Run the source `.R` scripts directly to reproduce the actual numbers. (The figures are the exception: each one is loaded from your output folder when the page opens, so it always shows the latest run; a figure whose script has not run yet shows a short note instead.)
+
+The pipeline covers several conceptually distinct problems in sequence:
+
+1. **Which Functional Group does each species belong to?** (@sec-fg-matching)
+2. **What study area am I actually working with?** (@sec-area-definition)
+3. **Given catch and effort, what's the correctly-standardized density for each haul?** (@sec-density, including catchability correction and outlier removal)
+4. **Given that, what's the correctly-weighted density estimate for each FG?** (@sec-strata-weighted, @sec-regional)
+5. **For the westmed script specifically: how does a second, structurally different survey (acoustic, not trawl) get folded into the same index?** (@sec-medias)
+
+### Pipeline flow
+
+```{r}
+#| label: show-fig-flow-overview
+#| eval: true
+#| echo: false
+wm_repo_figure("fig-flow-overview", r"---(Workflow: the species-to-Functional-Group table and the data sources feed four blocks (1 biomass, 2 fisheries, 3 P/B, Q/B and traits, 4 diets) that produce the EwE input. Click to zoom.)---", "ewe_infography.jpg")
+```
+
+Some density steps are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if `strata = TRUE` (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).
+
+Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.
+
+---
+
+## Input files {#sec-inputs}
+
+Every file the pipeline actually reads, traced directly from `01_biomass.R` (both `AREA_MODE`s)'s own variable assignments - not a general description, the literal paths and variable names used in the code.
+
+| File | Variable | Used for | Required? |
+|---|---|---|---|
+| `FG_WMed_2026.csv` | `fg_file` | Species→FG reference master (`dataframe2`, @sec-fg-matching) | Yes, both scripts |
+| `TM_list_(April_2019).xlsx` | `tm_list_file` | MEDITS species code → `ScientificName` lookup | Yes, both scripts |
+| `TA.csv` | loaded as `ta` | MEDITS haul-level metadata - station, depth, swept area, effort | Yes, both scripts |
+| `TB.csv` | loaded as `tb` | MEDITS catch-per-haul records | Yes, both scripts |
+| `ASFIS_sp_2026.1.csv` | `asfis_file` | FAO species code list - MEDIAS species code → `ScientificName` (@sec-medias) | westmed only |
+| `abundance.csv` / `biomass.csv` | in `medias_dir` | MEDIAS acoustic survey raw records (@sec-medias) | westmed only |
+| `catchability_factors_ecotrans_medits_2021_spp.csv` | `CATCHABILITY_CSV_PATH` | Optional per-species catchability correction factors (@sec-density) | Optional - falls back to `q = 1` (no correction) if missing |
+| GFCM GSA shapefile (`GFCM_GSA.zip`) | downloaded to `area_shp` | Official GSA boundary polygons (@sec-area-definition, Approach A) | westmed only - downloaded automatically, not a local file |
+| NOAA bathymetry raster | downloaded via `marmap::getNOAA.bathy()` | Stratum area computation (@sec-strata-weighted) | Both scripts - downloaded automatically |
+| Custom shapefile / bounding box | `CUSTOM_BBOX` or a user-supplied shapefile path | Study area definition (@sec-area-definition, Approach B) | custom script only |
+
+::: {.callout-note}
+### Species → FG table: `FG_WMed_2026.csv`
+The species → functional group assignment comes from `FG_WMed_2026.csv` (pCloud `data` folder), built and reviewed for the EwE Western Mediterranean model. One row per species, with its `FG_number` and `FG_name` (plus `Genus`, `Family`, `Order`, `Class`, `Phylum`, `source` and `status`). Scripts 01-04 all read it. Another file with the same columns can be chosen or uploaded in the *Functional groups* card (@sec-configure), which sets `FG_SPECIES_FILE` for the run.
+:::
+
+All the pCloud-hosted files above share one root, `pcloud_dir`, the pCloud Drive folder `EwE Western Med 2026`. `scripts/wmed_paths.R` finds it on any laptop with pCloud Drive and the repo: first a path in `config.local.R` (this computer only, not committed), then `config.R`, then the standard pCloud Drive place (macOS `~/pCloud Drive/`, Windows `P:/`, Linux `~/pCloudDrive/`). A path that does not exist on this computer is skipped. The outputs go to `out_dir` (from the same files, default `~/WMed_EwE_output`). The *Folders on this computer* card at the top of the page shows the folders found and lets you change them.
+
+::: {.callout-note}
+### Two downloads happen automatically - no local file needed
+The GSA shapefile and the bathymetry raster aren't files you provide - both are fetched over the network the first time a script needs them (from GFCM's own Azure blob storage, and from NOAA respectively) and cached locally afterward (`gsa_shp_dir`/`GFCM_GSA_shp` for the shapefile; wherever `getNOAA.bathy()`'s own cache lands, keyed by the bounding box requested) so re-running the script doesn't re-download every time. This is also why `eval: false` on the code chunks throughout this document matters (@sec-configure) - reproducing this pipeline's actual output needs live network access at least once, which isn't guaranteed at render time.
+:::
+
+```{r}
+#| label: bathymetry-download
+#| code-fold: false
+## Real call, from lib_survey_fg_density_functions.R's strata-area
+## computation (@sec-strata-weighted) - bbox comes from the study
+## area's own extent (a GSA polygon or the custom region), so this
+## downloads only the bathymetry actually needed, not the whole
+## Mediterranean every time.
+bathy <- marmap::getNOAA.bathy(lon1 = bbox["xmin"], lon2 = bbox["xmax"],
+                                lat1 = bbox["ymin"], lat2 = bbox["ymax"],
+                                resolution = 1, keep = TRUE)
+bathy_r <- marmap::as.raster(bathy)
+```
+
+---
+
+## Functional Group matching {#sec-fg-matching}
+
+Every species caught in a haul needs to be assigned to one of the model's Functional Groups before its biomass can contribute to an FG-level index. This happens in stages, each one only attempting species the previous stage couldn't resolve - and at every stage, an **ambiguous** match (a species or taxonomic rank that could plausibly belong to more than one FG) is flagged for manual review rather than guessed.
+
+### Stage 1 - Direct species-level match
+
+The MEDITS species code is translated to a scientific name via the MEDITS taxonomic list (`TM_list`), then matched directly against the FG reference table.
+
+```{r}
+#| label: direct-match
+fg_lookup_safe <- prepare_fg_lookup(dataframe2)
+dt <- match_species_to_fg(dataframe1, fg_lookup_safe)
+```
+
+`prepare_fg_lookup()` also resolves **stanza splits** here - a species appearing in more than one FG, where every one of those FGs is exclusive to that single species (a life-stage split, e.g. juvenile/adult), is reduced to one FG automatically. This is a structural rule (detected from the FG table's own shape), not a text-pattern match on words like "juv." - so it works regardless of the wording convention any given FG scheme happens to use. A species spanning multiple FGs where at least one of those FGs also contains *other* species is a genuinely different, ambiguous case and is excluded from automatic matching entirely.
+
+### Stage 1b - Nominate subspecies
+
+Some scientific names are trinomials for the nominate subspecies, where the subspecies epithet repeats the species epithet by taxonomic convention (e.g. "Diplodus sargus sargus" is the nominate subspecies of "Diplodus sargus"). These fail a direct match if the FG reference only has the binomial form.
+
+```{r}
+#| label: nominate-subspecies
+dt <- match_nominate_subspecies_fg(dt, fg_lookup_safe)
+```
+
+### Stage 2 - Manual overrides
+
+A short table of species codes not present in the MEDITS taxonomic list at all, resolved by hand at whichever taxonomic rank is appropriate (species, genus, family, or class). Merged on `species_code`, not `ScientificName` - the latter is exactly the column that's `NA` for override-needed rows (that's *why* they need an override), so using it as a join key would match every `NA` row against every other `NA` row and produce a cartesian-product explosion.
+
+### Stage 3 - Taxonomy fallback (genus through phylum)
+
+For species with a resolved scientific name but no FG match, WoRMS taxonomy [@worms2026; @chamberlain2023] is used to check progressively broader ranks - genus, family, order, class, phylum, most specific first.
+
+```{r}
+#| label: taxonomy-fallback
+dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms")
+```
+
+**Safety rule**, applied at every rank: a taxonomic value is only used for fallback matching if it maps to **exactly one** FG among all species already in the reference table.
+
+$$\text{rank value is safe to use} \iff \left| \{\, FG_i : \text{species}_i \text{ shares this rank value} \,\} \right| = 1$$
+
+A genus spanning multiple FGs (e.g. containing both a small pelagic species and a large predatory one) is too ecologically diverse to assign safely, and is excluded rather than assigned to whichever FG happens to come up first. Ranks are tried in order of specificity - a genus-level match always wins over a broader but explicit order-level rule for the same species, since rank specificity takes priority over whether a mapping happened to be data-driven or explicitly stated.
+
+### Stage 4 - Seed rules for catch-all FGs
+
+Some FGs (e.g. "Other macro-benthos") have **zero species pre-listed** against them in the FG reference table - they're buckets meant to catch "anything else" of a general taxonomic type. The data-driven fallback above can't discover a mapping for these, since it can only learn from species already assigned to an FG. A small, explicit seed table covers this genuine gap:
+
+```{r}
+#| label: seed-rules
+SEED_RULES <- data.table(
+  rank = c("Class", "Order", "Phylum"),
+  rank_value = c("Holothuroidea", "Decapoda", "Cnidaria"),
+  fg_name_target = c("Sea cucumbers", "Non-commercial decapods", "Other macro-benthos")
+)
+SPECIES_EXCEPTIONS <- data.table(
+  ScientificName = "Squilla mantis",
+  fg_name_target = "Other commercial decapods"
+)
+dt <- apply_seed_fg_rules(dt, dataframe2, SEED_RULES, species_exceptions = SPECIES_EXCEPTIONS)
+```
+
+`species_exceptions` is applied *before* the rank-based rules, so a named species is never caught by a broader rule that's wrong for it specifically - e.g. Squilla mantis is commercially exploited even though the rest of its order (Stomatopoda) isn't, so the generic "Decapoda-adjacent → non-commercial" rule would misclassify it without this override.
+
+### Match-rate reporting
+
+```{r}
+#| label: match-rate-reporting
+taxonomy_context <- attr(dt, "still_unresolved_taxonomy")
+still_unmatched <- summarize_unresolved_species(dt, taxonomy = taxonomy_context)
+```
+
+`summarize_unresolved_species()` reports mean biomass and appearance count alongside taxonomy for whatever remains genuinely unmatched, so manual review can be prioritized - a species appearing in hundreds of samples with real biomass matters more than a one-off trace appearance.
+
+---
+
+## Study area definition {#sec-area-definition}
+
+Every function downstream of FG matching needs to know which "area" each sample belongs to, and needs a polygon layer to compute stratum areas from bathymetry. The shared library doesn't assume this has to be a set of official GSA polygons - it just needs *some* polygon layer with an ID column. Two approaches are covered here.
+
+### Approach A - GFCM GSA polygons
+
+The official GFCM GSA shapefile is downloaded once and cached. MEDITS' own `area` field already gives each haul's GSA directly, so no spatial join is needed.
+
+```{r}
+#| label: gsa-area-setup
+gsa_shp_path <- list.files(gsa_shp_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
+area_shp <- st_read(gsa_shp_path, quiet = TRUE)
+area_shp$gsa_num <- as.numeric(area_shp$SMU_CODE)
+area_shp$gsa_num[area_shp$gsa_num %in% c(111, 112)] <- 11   # Western/Eastern Sardinia -> single GSA 11
+AREA_ID_COL <- "gsa_num"
+FILTER_AREAS <- 1:11
+```
+
+```{r}
+#| label: show-fig-gsa-coverage
+#| eval: true
+#| echo: false
+wm_figure("fig-gsa-coverage", r"---(Sample coverage by GSA. selected_areas highlights the GSAs actually in scope (FILTER_AREAS) with a bold black outline - the outer contour of their union, not the internal lines between them.)---", "survey_sample_coverage_map.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+### Approach B - a custom boundary (bounding box or arbitrary shapefile)
+
+The same MEDITS raw data can instead be restricted to a custom footprint that doesn't correspond to any GSA code - a simple bounding box, or a shapefile for a different EwE model's own boundary.
+
+```{r}
+#| label: custom-area-setup
+CUSTOM_BBOX <- c(xmin = 2, xmax = 8, ymin = 38, ymax = 42)
+custom_poly <- st_as_sfc(st_bbox(c(
+  xmin = unname(CUSTOM_BBOX["xmin"]), ymin = unname(CUSTOM_BBOX["ymin"]),
+  xmax = unname(CUSTOM_BBOX["xmax"]), ymax = unname(CUSTOM_BBOX["ymax"])
+), crs = 4326))
+area_shp <- st_sf(area_id = 1, geometry = custom_poly)
+AREA_ID_COL <- "area_id"
+
+dataframe1 <- filter_samples_by_area(dataframe1, area_filter = CUSTOM_BBOX, filter_type = "bbox")
+dataframe1[, AreaID := 1]
+```
+
+`filter_samples_by_area(filter_type = "shapefile")` works the same way, but takes an `sf` polygon (or a path to one) instead of a bounding box - for a real, non-rectangular model boundary.
+
+::: {.callout-note}
+### The sample coverage map shows the full survey context, not just the custom box
+`plot_sample_map()` computes its display extent from the **union** of `area_shp`'s own bounding box and the sample points' own Lat/Lon distribution - not `area_shp`'s bbox alone. Passing it the full, unfiltered survey data (before `filter_samples_by_area()` runs) means the map zooms out to show the complete MEDITS distribution across the whole survey region, with the custom area's contour highlighted within that context via `selected_areas` - not a tight, context-free zoom into just the small box itself. Points inside vs. outside the selected area are shown in different colors either way.
+
+A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it can genuinely overlap land. `land_on_top = TRUE` draws the land basemap *after* the intensity fill rather than before, so any part of the box that's actually land is visibly masked - only marine area should read as part of the study region, and a rectangle has no way to exclude land on its own.
+:::
+
+```{r}
+#| label: show-fig-custom-coverage
+#| eval: true
+#| echo: false
+wm_figure("fig-custom-coverage", r"---(Sample coverage within a custom bounding-box region, independent of GSA lines entirely.)---", "custom_survey_sample_coverage_map.png", r"---(01_biomass.R (AREA_MODE = "custom"))---")
+```
+
+With only one custom area, `AreaID` is set to `1` for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever `AreaID`/`area_shp` combination they're given, never assuming GSA-specific structure.
+
+---
+
+## Per-haul density and corrections {#sec-density}
+
+### Swept area
+
+Trawl catch weight on its own isn't comparable between hauls - a haul that swept more seafloor will naturally catch more, independent of true fish density. Standardizing to a **density** (weight per unit area swept) is what makes hauls comparable at all.
+
+$$A_{\text{swept}} = \text{distance towed} \times \text{net wing opening}$$
+
+```{r}
+#| label: swept-area
+WING_OPENING_UNIT <- "decimetres"
+ta_swept <- ta %>%
+  mutate(
+    wing_opening_m = if (WING_OPENING_UNIT == "decimetres") wing_opening / 10 else wing_opening,
+    swept_area_km2 = (distance * wing_opening_m) / 1e6,
+    mean_depth = (shooting_depth + hauling_depth) / 2
+  )
+dt <- compute_sample_densities(dt)   # Density := Biomass / Effort
+```
+
+The unit for `wing_opening` (decimetres, not metres) isn't documented directly in the raw data - confirmed by cross-checking against `vertical_opening`, a constant 20 across hauls using the standard MEDITS GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73's real vertical opening; 20 *metres* would be absurd for a bottom trawl.
+
+### Depth-stratum assignment
+
+MEDITS is a stratified-random survey design: the sampling area within each GSA (or custom region) is divided into 5 standard bathymetric strata.
+
+```{r}
+#| label: stratum-from-depth
+MEDITS_STRATA <- data.table(
+  stratum_num = 1:5,
+  depth_min = c(10, 50, 100, 200, 500),
+  depth_max = c(49.9999, 99.9999, 199.9999, 499.9999, 799.9999)
+)
+dt <- assign_depth_stratum(dt, MEDITS_STRATA)
+```
+
+`assign_depth_stratum()` supports three input shapes: no `Stratum` column at all (fully derived from depth), a `Stratum` column already fully populated (used as-is, no derivation attempted), or a *partially* populated one - existing values are kept, only the missing ones are derived from depth. Hauls with a mean depth outside 10-800m don't belong to any of the 5 standard strata and are excluded from the strata-weighted index, rather than force-assigned to whichever edge stratum happens to be closest.
+
+### Catchability correction
+
+Trawl surveys don't catch 100% of what's actually in the swept area - some individuals escape under, over, or around the net. The raw survey density is a systematic *underestimate* of true density by an amount that varies by species. Catchability ($q$, typically $0 < q \le 1$) corrects this:
+
+$$D_{\text{true}} = \frac{D_{\text{raw}}}{q}$$
+
+```{r}
+#| label: catchability
+catchability_raw <- fread(CATCHABILITY_CSV_PATH)
+CATCHABILITY_TABLE <- catchability_raw[, .(ScientificName = species, q = q_FACTOR)]
+dt <- apply_catchability_correction(
+  dt, CATCHABILITY_TABLE, default_q = 1,
+  species_taxonomy = species_taxonomy, exempt_fg_names = EXEMPT_FG_NAMES
+)
+```
+
+Real catchability tables mix true species binomials with broader taxonomic-group entries (e.g. "Isopoda", "Hydrozoa" - order/class names) and genus-level "spp" entries ("Cirolana spp", meaning any species in that genus). `apply_catchability_correction()` classifies each table entry by its apparent level from its text shape and resolves species against it in order of specificity - genus before order, order before phylum - so a genus-level match always wins over a broader but explicit rule for the same species. For species matching nothing in the table at any level, a **taxonomic-proximity fallback** looks for other species already in the table sharing genus, then family, then order, and borrows the average of their $q$ rather than falling straight to a generic default.
+
+`exempt_fg_names`/`exempt_species` force $q=1$ (no correction) regardless of anything else resolved - for groups a bottom trawl isn't designed to sample representatively at all (pelagic, planktonic, seagrass/algae FGs), where "catchability" as a concept doesn't apply the same way.
+
+### Sample-level outlier detection
+
+A single anomalous haul (a genuine data error, misidentification, or unit mismatch) can distort an entire year's FG-level density if left uncorrected. `remove_sample_outliers()` runs *before* any aggregation, so only that one species' one observation is affected - not the whole FG or the whole year for other species sharing it.
+
+```{r}
+#| label: outlier-removal
+dt <- remove_sample_outliers(dt, threshold = 70, min_samples = 5, drop_outliers = DROP_OUTLIERS)
+```
+
+Detection compares each observation only against that *same species'* own history within the *same area* - a robust (median/MAD-based) z-score, computed on `log1p(Density)` rather than the raw scale. This matters for schooling/aggregating species (anchovy, horse mackerel, boarfish): their catch data is naturally, heavily right-skewed - most hauls catch little to nothing, occasionally a haul hits a school and catches a lot, which is genuine ecology, not an error. On the raw scale this makes the reference statistics tiny, so even a real high catch produces a huge z-score; `threshold=70` on the log scale was calibrated against a synthetic test distribution to separate genuine school events from a clear data error, and is a starting point to tune against your own data's actual flagged/not-flagged split, not a universal constant.
+
+`drop_outliers=FALSE` reports flagged observations without changing the data - useful for reviewing what *would* be removed before committing to it. Flagged observations (species, area, year, sample, flagged value, typical value, z-score, and whether each was actually dropped) are saved to `survey_outliers_flagged.csv`.
+
+---
+
+## Strata-weighted density (within an area) {#sec-strata-weighted}
+
+This is the central statistical correction in the pipeline. A **simple mean density across all hauls in an area** implicitly assumes every haul represents an equal share of that area's seafloor - but different strata are sampled with different numbers of hauls *and* cover different fractions of the total area, so an unweighted mean would be biased toward whichever stratum happened to get more hauls that year, independent of how much of the area it actually represents.
+
+The standard stratified-survey estimator instead computes a per-stratum mean, then weights each stratum's contribution by its **true share of the area's total surveyable area** (not its share of hauls):
+
+$$D_{\text{area}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{area}}}, \qquad \bar{D}_h = \frac{\sum \text{density in stratum } h}{n_{\text{samples},\,h}}$$
+
+The stratum area shares are computed from **bathymetry**, not from sample counts - a NOAA bathymetry raster is downloaded, clipped to the area's own polygon (a GSA boundary, or the custom region from @sec-area-definition - `compute_strata_area_by_area()` doesn't need to know which), and each cell's real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.
+
+```{r}
+#| label: strata-area-and-weighted-estimator
+strata_area_by_area <- compute_strata_area_by_area(
+  area_ids = FILTER_AREAS, area_shp = area_shp, area_id_col = AREA_ID_COL,
+  strata_def = MEDITS_STRATA, cache_path = file.path(out_dir, "strata_area_by_area.csv")
+)
+n_samples_by_stratum <- dt[!is.na(Stratum), .(n_samples = uniqueN(SampleID)), by = .(AreaID, Year, Stratum)]
+per_group_fg <- compute_fg_densities_by_stratum(dt, strata = STRATA)
+fg_index <- weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_area)
+```
+
+::: {.callout-note}
+### `n_samples` must come from the full dataset, never a species/FG-filtered subset
+`per_group_fg` deliberately does **not** compute its own sample count - a species/FG-specific count would only include samples where that group had non-zero catch, understating true sampling effort (a sample where a species was genuinely absent still counts toward the denominator in a proper mean-density estimator, contributing a true zero). The one correct source of `n_samples` is `n_samples_by_stratum`, computed from the *full* `dt` (every species/FG together). Using the wrong source here was confirmed, via a hand-calculated test, to produce up to a 4x overestimate for a species caught in only 1 of 4 hauls at a stratum.
+:::
+
+```{r}
+#| label: show-fig-strata-timeseries
+#| eval: true
+#| echo: false
+wm_figure("fig-strata-timeseries", r"---(Density index by Functional Group and area, strata-weighted (per-area version - see @sec-regional for the region-wide aggregate used in Ecopath/Ecosim inputs).)---", "survey_fg_density_timeseries.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+## Region-wide aggregation (across areas) {#sec-regional}
+
+@sec-strata-weighted gives a correctly-weighted density **per area**. Combining multiple areas into a single region-wide estimate has exactly the same weighting problem one level up: areas differ substantially in total surveyable area, so a simple mean of per-area densities would implicitly treat a small area as equally representative of the region as a large one.
+
+A single-stage estimator combining every (area, stratum) cell directly - using each cell's **absolute** area, not its proportion within its own area - avoids any double-weighting error from compounding two separate weighting stages:
+
+$$D_{\text{region}} = \frac{\sum_{a,h} \bar{D}_{a,h} \, A_{a,h}}{\sum_{a,h} A_{a,h}}$$
+
+```{r}
+#| label: regional-estimator
+fg_index_regional <- weight_by_area(fg_index)
+```
+
+This is the version used for Ecopath/Ecosim-facing outputs - the per-area index (@sec-strata-weighted) is retained separately for area-level plots and comparisons, where seeing individual areas is the point.
+
+**Zero catches count.** The sum in the denominator runs over **every cell sampled in that year**, whether or not the FG was caught there; a cell without the FG contributes $\bar{D}_{a,h} = 0$. Dividing only by the area where the FG was caught would ignore the zeros and inflate patchy or depth-restricted FGs (median ×1.7 across MEDITS FGs, up to ×90 for groupers). The same rule applies to the species index (`weight_species_by_area()`) and to MEDIAS (denominator = area of all GSAs surveyed that year). Cells not sampled in a year are left out of both sums, so the estimate is the mean over the sampled area.
+
+**GSAs and strata not sampled in a year** (`SURVEY_IMPUTE_UNSAMPLED_CELLS` = TRUE, `impute_unsampled_cells()`). Every valid haul is kept; only outliers are removed.
+
+- **Unsampled GSA.** A GSA with no haul in a year is left out of that year. The density is the biomass of the sampled GSAs divided by the area of those GSAs: $D_y = \sum_{c \in G_y} m_{c,y} A_c / \sum_{c \in G_y} A_c$, where $G_y$ is the set of cells of the GSAs sampled in year $y$. Nothing is interpolated into a GSA from other GSAs. Examples: GSA 5 in 1994, 2000 and 2003; 2022, when only GSAs 7–8 were sampled.
+- **Unsampled stratum inside a sampled GSA.** It is filled from the same GSA with a multiplicative stratum × year model fitted on that GSA's sampled cells: $\hat m_{c,y} = a_c\, b_{g,y}$. Here $a_c$ is the cell level and $b_{g,y}$ the year level of GSA $g$, fitted by alternating least squares. This is the classic missing-cell estimate of a two-way layout [@yates1933], in multiplicative form.
+- **Partial-coverage years** are kept (`ECOSIM_MIN_AREA_COVERAGE` = 0).
+- ASSUMPTION: the mean over the sampled GSAs represents the year. In a year with few GSAs (2022: 14 % of the area), the value reflects those GSAs only. The spike filter still applies.
+
+**Model area (`MODEL_AREA_BASIS = "whole_gsa"`, `MODEL_GSAS = 1:12`).** $A_{model}$ is the whole sea area of GSAs 1–12, from the coast to the bottom: GSAs 1–11 (Western Mediterranean) plus GSA 12 (Northern Tunisia), which the MSFD includes in the Western Mediterranean subregion (GSA polygons ≈ 843,000 km²; GSAs 3 Southern Alboran ≈ 22,300 km², 4 Algeria ≈ 129,800 km² and 12 Northern Tunisia ≈ 38,300 km² included; the exact value is computed from NOAA bathymetry at run time and written to `model_area_by_gsa.csv`). MEDITS and MEDIAS survey GSAs 1, 2, 5–11 only. ASSUMPTION (project decision): the survey density per km² of the surveyed GSAs holds for GSAs 3, 4 and 12, so it is applied to the whole $A_{model}$; for small pelagics the unsurveyed GSAs take the median shelf density of the surveyed ones, and the MEDIAS shelf ratio uses the 10–200 m shelf of all model GSAs. Catch of every coastal state of the model GSAs is kept (Spain, France, Italy, Morocco, Algeria, Tunisia). Tunisia's catch is its GFCM catch in the Western Med divisions (37.1.1–37.1.3, i.e. GSA 12); its effort, like Algeria's and Morocco's, is taken as is from the FishMIP Western Mediterranean Sea region file (`effort_histsoc_1841_2017_western-mediterranean-sea.parquet`), which is already clipped to that region, so no further scaling is applied (`EFFORT_SCALE_BY_WESTMED_SHARE` can scale a country by its GFCM catch share in 37.1.1–37.1.3 if a national effort file is used instead). ASSUMPTION: the FishMIP region boundary matches GSAs 1–12; Morocco's Atlantic effort is outside that region. Tunisia's fleets are the GSA 12 fleets of `fleet_register_taxonomy.csv` (Artisanal, Longlines, Purse seiners, Trawls n.e.i., plus Recreational), with Tunisia's gear map in `gear_to_fleettype.csv`; like Morocco and Algeria it has no FDI data, so its fleet shares come from the GFCM fleet register or SAU, and its effort technology-creep multiplier is 0.7 (`tech_creep_country_multiplier.csv`). `MODEL_GSAS` and `MODEL_AREA_BASIS` are set in `run_pipeline_demo.R` with the years; the default is the whole Western Med, and any subset of GSAs filters the area, the survey data and the catch countries together. MEDITS measures 10–800 m. The other depths get AquaMaps pseudo-strata: 0–10 m, 800–1000 m and 1000 m to the seafloor (3,785 m, the deepest point of the Western Med, in the Vavilov Basin of the Tyrrhenian Sea), each scaled from the nearest real stratum by the species' AquaMaps depth suitability. All bands enter the numerator, and the denominator is the whole area of the GSAs sampled that year:
+$$\bar D_y = \frac{\sum_{g \in G_y}\sum_{s} \bar D_{g,s,y} A_{g,s}}{\sum_{g \in G_y}\sum_{s} A_{g,s}}, \quad s \in \{0\text{–}10, \text{MEDITS strata}, 800\text{–}1000, 1000\text{–}3785\}$$
+Ecopath_B, catch per km², F and every 01b group use this same $A_{model}$ (`model_area_by_gsa.csv` is read by 02, 03 and 05; the COBALT plankton mean covers all depths of the GSAs). Alternative: `MODEL_AREA_BASIS = "medits_10_800"` uses only the 10–800 m MEDITS strata (175,660 km² for the surveyed GSAs), with pseudo-strata down to 1000 m.
+
+**FGs with no biomass in the Ecopath years.** When an FG has no biomass (missing or 0) in `YEAR_ECOPATH` (1994–1996), its Ecopath_B is the mean of its values over `ECOPATH_B_FILL_YEARS` (default 1995–2000, every year with data in that window, zeros included):
+$$B_f = \frac{1}{|Y_f|}\sum_{y \in Y_f} \bar D_{f,y}, \quad Y_f = \{y \in 1995\ldots2000 : \bar D_{f,y} \text{ available}\}$$
+used when $B_f > 0$. If the window has no positive mean, the nearest single year with data is used (the earlier rule). Which rule filled each FG is in `ecopath_B_baseline_year_borrowed_REVIEW.csv` (`borrowed_how`). `ECOPATH_B_FILL_MODE = "nearest"` restores the earlier rule. The **Expanding** FGs (range-expanding species, rare or absent at the baseline) are never filled from other years: they get the minimal biomass `ECOPATH_B_EXPANDING_MIN` = 0.00001 t/km² so Ecopath keeps the group, and get no F (catch divided by a placeholder biomass is not a fishing mortality).
+
+**Depth strata.** Bathymetry cells are assigned to strata with `findInterval()` on the stratum lower bounds, so every stratum, including the deepest (501–800 m) and the AquaMaps bands below 800 m, gets its own area.
+
+**AquaMaps occurrence outside the sampled depths.** Every biomass except MEDIAS, stock assessments, plankton models and mapped habitats is extended to depths its source did not sample, scaled by AquaMaps depth suitability:
+
+- *MEDITS* (`lib_aquamaps_depth_extension.R`): pseudo-strata 0–10 m and 800–1000 m, each anchored to the adjacent real stratum's measured density × the suitability ratio. Species with no AquaMaps match at species level take the median envelope of their AquaMaps congeners (`match_method = "genus"`, ASSUMPTION: congeners share a depth range). Before this, 341 of 989 species had no envelope.
+- *Literature depth-band densities* (`lit_aquamaps_extension()` in 01b): a density measured over $[z_1, z_2]$ is extended to the other depth bands of the same domain as $D_k = D\, S_k / S_{band}$. Here $S$ is the group's mean AquaMaps suitability over a band (species from `Habitat_species`, else the FG's species), with no double counting between rows of the same group. `LIT_AQUAMAPS_EXTEND = FALSE` switches this off.
+
+**Strata-area caches.** `compute_strata_area_by_area()` reuses a cached CSV only when its strata numbers and depth bounds match the current strata definition and it covers every area. Otherwise it recomputes and keeps the old file as `.stale`. The cache of 2026-10-05 had 4 real strata: stratum 4 carried the 201–800 m area and there was no stratum 5, so every 501–800 m haul was dropped. The AquaMaps cache had the 800–3785 m area under an 800–1000 m label.
+
+**Ecosim trend hygiene** (`01_biomass.R`, STEP 7c and the export). Three rules applied only to the year-to-year shape of the B series, not to `Ecopath_B`:
+
+1. *Haul cap* (`ECOSIM_HAUL_CAP_Q` = 0.95). Each haul's FG density is capped at the 95th percentile of that FG's positive hauls in the same GSA × stratum over all years (only where there are ≥ 10 positive hauls). The capped index $I^{cap}$ is built with the same estimator, and its shape is carried over as $I^{new}_{f,y} = I_{f,y}\, s_{f,y}\, \overline{I_f}^{EP} / \overline{I_f s_f}^{EP}$, with $s_{f,y} = I^{cap}_{f,y}/I^{raw}_{f,y}$ and $\overline{\cdot}^{EP}$ the 1994–1996 mean. So `Ecopath_B` is unchanged. Capping lowers absolute densities by construction, which is why it is not applied to the baseline. `ecosim_haul_cap_effect_REVIEW.csv` lists, per FG, how much the 1994–1996 mean would fall if capped. A ratio ≫ 1 means the baseline rests on a few very large hauls (e.g. commercial small demersal fish, ×6 from one 1995 haul of *Gymnammodytes cicerelus*).
+2. *Area coverage* (`ECOSIM_MIN_AREA_COVERAGE`, default 0 = off). A year whose sampled strata cover less than this share of the model area would be left blank. It is off because the area-adjusted index (an unsampled GSA is dropped from both numerator and area) already handles partial years (2022: GSAs 7–8 only, 14 %; 2023: 60 %). The 1994–1996 years are never blanked. Coverage by year: `survey_area_coverage_by_year.csv`.
+3. *Spike filter* (`ECOSIM_SPIKE_FILTER` = TRUE, `flag_ts_upward_spikes()`). In every B series (survey, model, literature), a year is blanked when $\log x_y - \text{median}(\log x_{\text{4 nearest years}}) > \max(3 \cdot 1.4826\,\text{MAD}, \log 3)$. This is a one-sided Hampel filter [@hampel1974; @pearson2002]. ASSUMPTION: the window, the 3 MAD and the 3-fold floor are judgment choices. Dips are kept. Removed values: `ecosim_ts_spikes_removed_REVIEW.csv`.
+
+Effect of each rule, tested against the 1995 model's series (simplified MEDITS index without q):
+
+| Version | FGs with a spike > 10× the series median | Negative r with the old model | Median r |
+|---|---|---|---|
+| Zeros not counted | 11 | 22 | −0.05 |
+| Zeros counted | 8 | 24 | −0.03 |
+| + haul cap + coverage | 4 | 20 | 0.02 |
+| + spike filter | 3 | 20 | 0.05 |
+
+The effect on the full pipeline is in 05 block 12.
+
+```{r}
+#| label: show-fig-regional-timeseries
+#| eval: true
+#| echo: false
+wm_figure("fig-regional-timeseries", r"---(Region-wide, area-weighted density index by Functional Group.)---", "survey_fg_density_timeseries_regional.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+For the custom-region example (@sec-area-definition, Approach B), this step is mathematically a formality with only one area in scope - `weight_by_area()` still runs the same formula, it just sums over one area's worth of cells, so the result is identical to the per-area index above. It's kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.
+
+---
+
+## MEDIAS acoustic survey {#sec-medias}
+
+Everything from @sec-fg-matching through @sec-regional describes **MEDITS**, the demersal trawl survey - but `01_biomass.R` (`AREA_MODE = "westmed"`) also incorporates **MEDIAS**, the acoustic survey, and combines the two into a single density index rather than keeping them as separate Ecopath/Ecosim sheets. MEDIAS is specifically relevant for small pelagics (sardine, anchovy) that a bottom trawl doesn't sample well but an acoustic survey does.
+
+::: {.callout-important}
+### MEDIAS is not part of the sample coverage map (@sec-area-definition)
+MEDITS data arrives per-haul, with a real lat/lon for every sample - that's what @sec-area-definition's sample coverage map plots. MEDIAS data arrives **already aggregated** by country/GSA/year/species (no individual acoustic transect coordinates in the files this pipeline reads) - there's no per-point geometry to plot for it, so the coverage map only ever shows MEDITS. This isn't a bug or an oversight to fix; it's a structural difference in what the two source files actually contain.
+:::
+
+MEDIAS differs from MEDITS in several ways that matter for interpreting the combined result, not just in data source:
+
+- **No strata weighting, no catchability correction.** @sec-strata-weighted and the catchability step in @sec-density don't apply here - there's no per-haul depth to stratify by, and MEDIAS' own acoustic backscatter-to-biomass conversion already accounts for detectability in a way a MEDITS-style catchability table doesn't map onto.
+- **A fixed 10-200m depth band**, per the MEDIAS Handbook [@medias2025] - the acoustic sampling design's own minimum (10m isobath) and maximum (200m echo-sounding limit), not a modeling choice made in this pipeline.
+- **Official reporting convention is t/nm²** (tons per square nautical mile), not the kg/km² MEDITS density work uses elsewhere in this pipeline - converted to t/km² before combining with MEDITS (`KM2_PER_NM2` conversion constant), so the two indices are on a comparable footing before averaging.
+
+### Loading and FG matching
+
+Raw abundance/biomass CSVs are collapsed to country/GSA/year/species (summing across length classes, replicate-checked to decide `sum()` vs `mean()` for collapsing raw records), then species codes are resolved to scientific names via the ASFIS species list (FAO's own code table) rather than MEDITS' own species-code system:
+
+```{r}
+#| label: medias-load-match
+acoustic <- merge(acoustic_biom, acoustic_abund, by = c("country", "gsa", "year", "species"), all = TRUE)
+acoustic <- merge(acoustic, fao_code_lookup, by = "species", all.x = TRUE)   # ASFIS Alpha3_Code -> ScientificName
+
+acoustic_matched <- match_species_to_fg(acoustic[!is.na(ScientificName)], fg_lookup_safe)
+acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_safe)
+acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms")
+```
+
+Once resolved to `ScientificName`, matching reuses the exact same `fg_lookup_safe` and the exact same Stage 1/1b/3 functions from @sec-fg-matching - a species matched here and a species matched in MEDITS go through identical logic, they just start from a different species-code system (ASFIS vs. MEDITS' own).
+
+### Area denominator
+
+MEDIAS density needs a country/GSA-level survey area (NM²), which - unlike MEDITS' bathymetry-derived stratum areas (@sec-strata-weighted) - primarily comes from each reporting institute's own published figure, the MEDIAS Handbook's Table 1:
+
+```{r}
+#| label: medias-area
+MEDIAS_HANDBOOK_AREAS <- data.table(
+  country         = c("Spain", "France", "Italy", "Italy", "Italy", "Malta"),
+  geographic_area = c("Iberian coast", "Gulf of Lion", "Sardinia (east)",
+                      "Tyrrhenian and Ligurian Sea", "Sicily Channel", "Malta (east)"),
+  area_nm2        = c(8829, 3300, 3207, 6644, 4300, 1868)
+)
+```
+
+::: {.callout-warning}
+### Handbook areas are hand-transcribed - verify against your own institute's reports
+These six rows were transcribed from the MEDIAS Handbook [@medias2025] and restricted to entries plausibly overlapping the Western Med (`FILTER_AREAS`, GSA 1-11) - Adriatic/Black Sea entries were left out as out of scope, not because they don't exist. Verify against your own institute's current MEDIAS survey reports before trusting these for anything beyond this pipeline's own internal density calculation - handbook figures can be revised between editions.
+:::
+
+For any country/GSA combination *not* covered by Table 1, the pipeline falls back to a bathymetry-derived 10-200m area estimate - reusing `compute_strata_area_by_area()` from @sec-strata-weighted with a single depth stratum spanning MEDIAS' own sampling range, rather than duplicating that bathymetry logic:
+
+```{r}
+#| label: medias-area-fallback
+MEDIAS_DEPTH_RANGE <- data.table(stratum_num = 1, depth_min = 10, depth_max = 200)
+fallback_area_km2 <- compute_strata_area_by_area(
+  area_shp = area_shp, area_id_col = AREA_ID_COL,
+  strata_def = MEDIAS_DEPTH_RANGE,
+  cache_path = file.path(out_dir, "medias_area_10_200m_fallback.csv")
+)
+```
+
+### Combining MEDITS and MEDIAS into one index
+
+Rather than write separate MEDIAS sheets, both surveys' FG-level and species-level density indices are stacked and **averaged** wherever they overlap on the same Year/FG (or Year/species) - this is the `species_density_regional_combined` object that everything from @sec-configure onward (`FG_spp_Ecopath`, `traits_ewe`, etc.) actually reads from, not MEDITS alone:
+
+```{r}
+#| label: medias-combine
+fg_index_combined_raw <- rbindlist(list(
+  fg_index_regional[, .(Year, FG_num, FG_name, mean_density, Survey = "MEDITS")],
+  medias_fg_index_regional[, .(Year, FG_num, FG_name, mean_density = mean_density_biomass_t_km2, Survey = "MEDIAS")]
+), fill = TRUE)
+
+## FG/Year combinations present in BOTH surveys are flagged and printed,
+## not silently averaged without comment - blending a demersal-trawl
+## density with an acoustic density is a real methodological choice,
+## worth a second look for the specific FGs/years it actually happens to
+fg_overlap <- fg_index_combined_raw[, .N, by = .(Year, FG_num, FG_name)][N > 1]
+
+fg_index_regional_combined <- fg_index_combined_raw[
+  , .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
+```
+
+The species-level combination (`species_density_regional_combined`) follows the identical pattern - stack, flag genuine species/Year overlaps (typically a small pelagic taken in both an acoustic survey and incidentally in demersal trawl catches), then average.
+
+::: {.callout-note}
+### Averaging on overlap is a modeling choice, not a statistical inevitability
+When both surveys report a density for the same FG (or species) and year, this pipeline takes a simple, unweighted mean of the two. An alternative - weighting by each survey's own sampling effort or estimated precision, rather than treating both estimates as equally trustworthy - would be a defensible different choice. The overlap is flagged and printed specifically so this default doesn't apply invisibly to combinations where the two surveys substantially disagree.
+:::
+
+---
+
+## Validation: depth-strata density profile
+
+A direct ecological sanity check on the strata-weighting logic itself: for each FG, plot its **raw per-sample density** (deliberately *before* area-weighting, since area-weighting is about scaling to a population estimate, not about revealing where a species actually lives) across the 5 depth strata.
+
+```{r}
+#| label: depth-profile-validation
+p_profile <- plot_strata_profile(fg_index, MEDITS_STRATA)
+```
+
+If the pipeline is working correctly, FGs known to live in deep water should show density concentrated toward the deeper strata, and coastal/shallow FGs should concentrate toward the shallow ones. A flat profile, or an unexpected peak for a well-documented species, is worth investigating directly - it could point at a stratum-coding issue, a swept-area problem, or a species-matching error further upstream, rather than being dismissed as noise.
+
+```{r}
+#| label: show-fig-depth-profile
+#| eval: true
+#| echo: false
+wm_figure("fig-depth-profile", r"---(Depth-strata density profile by Functional Group.)---", "survey_fg_depth_strata_profile.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+## Sample coverage map
+
+Before (or alongside) the density calculations, `plot_sample_map()` gives a direct visual and geometric check on the input data itself - independent of anything FG- or density-related.
+
+```{r}
+#| label: sample-map
+p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
+                                  title = "Sample coverage", selected_areas = FILTER_AREAS)
+```
+
+This does more than plot points - it performs concrete geometric checks and reports them directly:
+
+- **CRS is validated explicitly**, not assumed: `area_shp` and the sample points are both transformed to a common, known CRS before plotting rather than relying on automatic layer alignment, and the function errors clearly if `area_shp` has no CRS defined at all (rather than silently producing a badly misplaced polygon layer).
+- **Points genuinely outside every polygon** (even after correct CRS alignment) are counted and listed - this distinguishes a real projection problem (should resolve to ~0 once fixed) from genuine bad coordinate data (stays nonzero regardless).
+- **Points inside vs. outside the selected study area specifically** are shown in different colors - a point can be a perfectly valid coordinate in a real, neighboring GSA and still be outside this particular analysis's scope, which is a different question from "is this a valid coordinate at all".
+- **The selected study area's outer contour** is drawn in bold, using a rasterize-then-repolygonize technique rather than a plain `st_union()` - real shapefiles are rarely perfectly topologically snapped at shared boundaries, and a plain union can leave a visible seam artifact at the join between adjacent polygons that a coarser raster grid smooths over.
+
+```{r}
+#| label: show-fig-sample-map
+#| eval: true
+#| echo: false
+wm_figure("fig-sample-map", r"---(Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area.)---", "survey_sample_coverage_map.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+`by_year = TRUE` produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year's samples overlaid on top of it can make a real gap look fine.
+
+```{r}
+#| label: show-fig-sample-map-byyear
+#| eval: true
+#| echo: false
+wm_figure("fig-sample-map-byyear", r"---(Sample coverage faceted by year.)---", "survey_sample_coverage_map_by_year.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
+```
+
+---
+
+Outputs are documented per script below (Biomass, Fisheries, P/B and Q/B, Diet matrix, Validation), followed by the known limitations (@sec-open-issues).
+
+---
+
+## Biomass (`01_biomass.R` + `01b_biomass_unsurveyed.R`) {#sec-biomass}
+
+`01_biomass.R` is the Step-1 script. It runs the survey method described above (MEDITS, plus MEDIAS when `AREA_MODE = "westmed"`) and then `source()`s `01b_biomass_unsurveyed.R` (`local = TRUE`) for every group a trawl or acoustic survey cannot measure. Together they write `Ecopath_B`, `FG_spp` and `Ecosim_ts`.
+
+**Model area.** Every density in every sheet (biomass, catch, landings, discards) is expressed per km² of the same area:
+
+$$
+A_{model} = \sum_{g,h} A_{g,h} = 175{,}660\ \text{km}^2
+$$
+
+the MEDITS 10–800 m strata of GSAs 1, 2, 5, 6, 7, 8, 9, 10 and 11 (`strata_area_by_area.csv`, bathymetry from NOAA ETOPO via `marmap`; [@pante2013]). Habitats shallower than 10 m (most of the seagrass, lagoons) are outside this area by construction.
+
+### Equations
+
+| # | Quantity | Equation | Source |
+|---|---|---|---|
+| 1 | Swept area per haul | $a_k = \text{distance}_k \times \text{wing opening}_k$ | MEDITS Handbook v9 [@medits2017; @bertrand2002] |
+| 2 | Haul density | $d_{s,k} = W_{s,k} / a_k$ | — |
+| 3 | Catchability | $d^{*}_{s,k} = d_{s,k} / q_s$, $q$ from `catchability_factors_ecotrans_medits_2021_spp.csv` (taxonomic cascade species → … → phylum; $q = 1$ for pelagic, planktonic, seagrass and algae FGs) | ECOTRANS MEDITS catchability table |
+| 4 | Outliers | $\log(1+d)$ above $Q_3 + 3\,\text{IQR}$ of the same species × GSA × stratum × year removed unless ≥ 2 hauls are high | [@tukey1977] ("far out" fence) |
+| 5 | Stratified mean per GSA | $D_{s,g,y} = \sum_h A_{g,h}\,\bar d_{s,g,h,y} / \sum_h A_{g,h}$ | [@cochran1977] |
+| 6 | Model-area density | $D_{s,y} = \sum_g A_g D_{s,g,y} / \sum_g A_g$ | — |
+| 7 | FG density | $D_{f,y} = \sum_{s \in f} D_{s,y}$ (`FG_WMed_2026.csv`) | — |
+| 8 | MEDIAS (acoustic) | $D^{sh}_{g,y} = B_{g,y}/A^{surv}_g$; model-area density $= \sum_g D^{sh}_{g,y} A^{shelf}_g / A_{model}$ (10–200 m shelf) | [@leonori2021] |
+| 9 | Small pelagics per GSA | gaps: $D_{g,y} = D_{g,y_0}\,SSB_y/SSB_{y_0}$ (own-GSA assessment), else linear interpolation, else carried flat (ASSUMPTION) | GFCM/STECF assessments via RAM Legacy [@ricard2012]; pre-MEDIAS acoustics from GFCM SAFs and [@palomera2007] |
+| 10 | Ecopath / Ecosim | $B_f = \overline{D_{f,y}}_{\,y \in 1994\text{–}1996}$; $I_{f,y} = D_{f,y}/D_{f,1995}$ | [@christensen2005], EwE User Guide |
+
+**Zeros in Ecosim series.** In `Ecosim_ts` a year with no catch in the survey, no recorded catch or no recorded discards is left blank, not 0: Ecosim fitting would read a 0 as an observed zero. `Ecopath_B` also carries `Biomass_1994_1996` (the value in `Biomass`) and the biomass of the first Ecosim year (`Biomass_1995`).
+
+### Source priority per FG
+
+First available wins, per FG × year:
+
+1. A single-species stock assessment, for FGs the surveys do not measure (bluefin tuna, swordfish; `01b`, SOURCE A).
+2. MEDIAS acoustic density (pelagic FGs; sardine and anchovy via the per-GSA series, eq. 9).
+3. MEDITS density / $q$.
+4. For FGs the surveys cannot sample (`EXEMPT_FG_NAMES`): the cited literature, habitat-map or plankton-model value from `01b` (SOURCES B–D). These are never back-filled with survey bycatch. If none exists the FG stays empty and is listed in `fg_missing_ecopath_B_REVIEW.csv`.
+
+EcoBase biomass (other published Mediterranean EwE models; [@colleter2015]) is evaluated and written to `ecobase_biomass_evaluation_NOT_INCORPORATED.csv`, but never written into `Ecopath_B` (project decision).
+
+### Stock assessments from the GFCM website
+
+`STOCK_ASSESSMENT_SOURCE = "GFCM"` (default). GFCM publishes every validated Stock Assessment Form (SAF) [@gfcmsaf2026] as a PDF in a public folder (the files behind the "GFCM validated SAFs" browser on the GFCM stock assessment page). On each run `lib_gfcm_saf_online.R`:
+
+1. lists all SAF PDFs and reads species (FAO 3-alpha code → ASFIS name), GSAs and reference year from the file names;
+2. keeps stocks whose GSAs are all model GSAs, and downloads the newest SAF of each (cached in `data/fisheries/GFCM_SAF/pdf/`);
+3. reads the summary results table: the table with a year column and an SSB column (else total biomass), from the word positions in the PDF; values in tonnes. If the newest SAF has no such table, the two previous SAFs of the stock are tried;
+4. keeps a set of stocks that do not overlap: per species, the newest reference year, then the larger stock unit (hake GSAs 1-5-6-7 rather than hake GSA 1);
+5. stocks with no readable table take the hand-transcribed `gfcm_saf_stock_assessments.csv`, then RAM Legacy when no GFCM stock of the same species overlaps (`GFCM_SAF_FILL_FROM_RAM`).
+
+Output: `gfcm_saf_stock_assessments_ALL.csv` (column `use_for_biomass`) and `gfcm_saf_parse_REVIEW.csv` (per stock and SAF: status, page, column read, years). Offline, the last download is reused; with no earlier download the run falls back to RAM Legacy. `GFCM_SAF_UPDATE = FALSE` skips the online check.
+
+::: {.callout-warning}
+### Limits of the automatic reading
+- Data-limited assessments (SPiCT, CMSY, survey-based advice) and most small-pelagic SAFs give biomass only in figures; those stocks get no GFCM value. In a test on the 73 newest SAFs inside GSAs 1–12 (October 2026), about 30 had a readable SSB table, most of them demersal (hake, red mullet, striped red mullet, deep-water rose shrimp, blue and red shrimp, giant red shrimp, Norway lobster, blue whiting, Moroccan sardine).
+- A header that puts two quantities over one column is flagged "check: ambiguous header" and not used; a table that ends more than 2 years before the reference year is flagged too. Check `gfcm_saf_parse_REVIEW.csv` after each new download.
+- SAF tables are in tonnes; a column labelled kg or thousand tonnes is converted.
+:::
+
+### European hake stanzas from the stock assessment
+
+Hake is the only multi-stanza species. MEDITS catches mostly juveniles, so the stanza biomasses come from the hake stock assessments: by default the newest GFCM SAFs (GSAs 1-5-6-7 and the unit holding GSAs 9-11, GSAs 8-9-10-11 since 2023, from `gfcm_saf_stock_assessments_ALL.csv`); with `STOCK_ASSESSMENT_SOURCE = "RAM"` the STECF XSA assessments in RAM Legacy v4.44: GSA 1-5-6-7 (2003–2014), GSA 9-11 (2006–2014) and GSA 7 (1998–2012).
+
+$$
+B_{adult} \approx SSB, \qquad B_{juv} = B_{adult}\,\frac{1-r}{r}, \quad r = SSB/TB = 0.42
+$$
+
+back-cast to 1994–1996 with the MEDITS hake index (× 0.84). Result: adult (FG 27) 0.0918 t/km², juvenile (FG 26) 0.127 t/km². Ecosim: adult = the 17 assessment years (1998–2014), other years blank; juvenile = MEDITS index scaled to $B_{juv}$. Written to `hake_stanza_stock_assessment_REVIEW.csv`; parameters in `multistanza_reference_tables/hake_multistanza_parameters.csv`.
+
+### Groups the surveys cannot measure (`01b_biomass_unsurveyed.R`)
+
+::: {.callout-warning}
+### These values are for the whole Western Mediterranean
+The biomass of the groups below was estimated for the full model area (GSAs 1-12, coast to bottom). The sources (literature densities, habitat maps, ocean-model plankton fields, stock assessments of large pelagics and megafauna) describe the whole region, not single GSAs. If you filter the model area (fewer GSAs, or the 10-800 m basis), these values can change and may no longer represent the smaller area well: check them before using a filtered run.
+:::
+
+Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12, whole GSA area); they change with the model area and years chosen.
+
+| FG | Method | B | Sources | Assumptions (flagged in the code) |
+|---|---|---|---|---|
+| Posidonia | $B = D_{DW} / (DW{:}WW) \times A_{map} \times occ / A_{model}$, $D_{DW} = \sum_b A_b\, e^{a + b z_b} / \sum_b A_b$: leaf biomass fitted against depth ($\ln B = a + b z$) to the Western Med meadows in `posidonia_leaf_biomass_sites.csv` and averaged over the depth distribution of the mapped meadow (5 m bins); DW:WW = 0.2132; $A_{map}$ = EUSeaMap 2025 [@euseamap2025] meadow deeper than 10 m (or MEDISEH); $occ$ = 0.7 | ≈ 4 (run time) | site values: [@azcarate2023; @pergent1997] (Marseille, Ischia, 10–20 m); Nueva Tabarca reserve, [@romero1998] (left out, `POSIDONIA_MPA_WEIGHT` = 0); DW:WW 0.2132 [@mateo1996]; maps: EUSeaMap 2025 MB252 + MB2522 [@euseamap2025]; MEDISEH [@scardi2013] | marine-reserve meadows left out (small and denser than the regional mean); 6 values, mostly summer; occupancy 0.7 |
+| Cymodocea | $B = D_{DW} / (DW{:}WW) \times A_{map} \times occ / A_{model}$; $D_{DW}$ = weighted mean of the sites in `habitat_biomass_sites.csv` = (155.2 + 82.1)/2 = 118.7 g DW/m²; DW:WW 0.24; $A_{map}$ 88 km²; $occ$ 0.47; no depth factor | ≈ 0.025 | [@mascaro2009] (Menorca, Alfacs Bay, 0.8–10 m); [@guidetti2002] with leaf share from [@cancemi2002]; Urbinu lagoon [@agostini2003] left out (lagoon); DW:WW [@zavodnik1998]; area and cover *Informe Mar Balear 2020* [@marbalear2020] + EUSeaMap [@euseamap2025] | area from the Balearic ratio (ASSUMPTION); Guidetti site to verify |
+| Macroalgae | $B = D_{DW} \times [f_{calc}/0.7405 + (1-f_{calc})/0.1376] \times A_{map} \times occ / A_{model}$; $D_{DW}$ = mean of shallow (1,650) and deep (1,600) coralligenous algal biomass = 1,625 g DW/m²; $f_{calc}$ 0.7; 325.05 km²; occ 0.4; no depth factor | 0.79 | [@ballesteros2006] (pp. 140, 143); DW:WW [@haberman2023]; EMODnet macroalgae EOV [@emodnetmacroalgae2025] | calcareous share 0.7 (conservative; ~90% coralline cover); occupancy 0.4; area is the ICES ecoregion |
+| Corals and gorgonians | $B = \overline{\sum(N_{col} \times AFDM_{col})} \div 0.143 \times f_z \times A_{map} / A_{model}$; mean of Cap de Creus (4.87) and Gulf of Naples (3.09) = 3.98 g AFDM/m² → 27.8 g WW/m² (living tissue) × $f_z$ × 1,442.4 km² | ≈ 0.048 × $f_z$ | [@coppari2019; @ferrigno2026] (ROV, ~1.8 km²); AFDM:WW 0.143 [@ricciardi1998]; EUSeaMap MC151/MC251 | both sites partly protected; *E. cavolini* uses the *E. singularis* AFDM per colony; skeleton not counted |
+| Large / small phytoplankton | ISIMIP3a GFDL-MOM6-COBALT2 obsclim, vertically integrated, mean over the domain; C:WW 1:9 (0.111) | ≈ 8.2 / 9.1 (5.70 / 6.30 with the earlier C:WW 0.16) | [@isimip3a_cobalt; @stock2020]; C:WW [@pauly1995] | model, not observation; C:WW 1:9 is the EwE convention, phytoplankton C:WW varies with cell size |
+| Meso and micro zooplankton | COBALT zmicro-vint + zmeso-vint, whole water column, level and trend; C:WW 0.07 micro, 0.09 meso | 29.6 | [@stock2020; @fenchel1983; @kiorboe2013]; field reference in `zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv` | the net value (0.87 t DM/km², 0–100 m, ≥ 250 µm; [@fernandez2023]) is a different quantity: COBALT integrates the whole column (mean 290 m) and includes microzooplankton |
+| Macro zooplankton | MAREDAT macrozooplankton (23 cells, 67 values in the Western Med box): median mg C/m³ (0–350 m) × $z_{eff}$ 214.5 m / 0.04 (C:WW) / 1000 | 3.15 | [@moriarty2013]; C:WW from [@molina2015] | C:WW 0.04 (krill would be 0.086, `MACRO_C_FRACTION_WW`); 1990s–2000s nets, sparse cells |
+| Suprabenthos | literature density × depth band (10–388 m and 389–1,255 m), plus the literature AquaMaps extension (+35.1 t, 9 species) | 0.0205 (reference only; Ecopath estimates B from EE = 0.95) | [@cartes2007; @cartes1999] | figure hand-read; 1991/2003 data |
+| Salps and other gelatinous zooplankton; Jellyfish | no B: Ecopath estimates it from EE = 0.95 | — | [@luo2020] (*ESSD* 12:1047) cell values are computed and written to `gelatinous_macrozoo_biomass_REVIEW.csv` for review only (`GEL_LUO_USE_FOR_B = FALSE`); salp upper bound 10.8 t/km² from the field check (@sec-validation) | Luo data are few, patchy and dominated by bloom samples |
+| Detritus | [@pauly1993] equation from COBALT intpp and euphotic depth; C:WW 1:9 | ≈ 288 | [@pauly1995; @morel1989] | — |
+| Bluefin tuna | GBYP aerial survey density, Balearic A-core block, 2017–2021 mean | 0.153 | ICCAT GBYP Phase 11 [@creem2021] | spawning snapshot; 2017–21 ≠ 1995 |
+| Swordfish | $B_{2018} = 0.72 \times B_{MSY}$ (JABBA) on the Mediterranean stock | 0.0205 | ICCAT SWO-MED assessment [@iccat2020swo] | 2018 ≠ 1995 |
+| Cetaceans, monk seal, seabirds, loggerhead turtle | survey density (ind/km²) × mean body mass, applied to the whole $A_{model}$ (`Model_area_density_t_km2`); `Scale_to_1995` multiplies by a trend ratio when one is published; monk seal and fin whale are counts | see `marine_megafauna_biomass.csv` | striped dolphin: 1991 survey, [@forcada1998]; fin whale: 1991 survey, [@forcada1996]; bottlenose dolphin, Risso's dolphin, pilot and beaked whales: ACCOBAMS ASI 2018–2019 [@panigada2024]; sperm whale: [@boisseau2024]; body mass of bottlenose, striped and Risso's dolphins: [@carlucci2024]; monk seal: [@johnson2006] (Monk Seal Fact Files); seabirds: [@pettex2017] (SAMM 2011–12) with the Scopoli's shearwater detection correction (× 3.89) from [@lambert2024]; loggerhead: [@dimatteo2022], summer 2018 count not corrected for turtles underwater (343,321 for the basin; a minimum) | striped dolphin and fin whale are 1991 surveys; the others are 2003–2019 surveys with no published trend to 1995 (`Scale_to_1995` = 1, flagged); seabird and turtle masses not from a primary source; little gull, gannet and auks excluded (not in the FG species list) |
+
+**Survey zeros do not override cited values.** In the source-priority rule (MEDIAS > MEDITS > stock assessment/cited value > survey-wide average) a MEDIAS or MEDITS density is used only when it is **> 0**. The zero-inclusive index gives explicit zeros for FGs the trawl survey effectively never catches (e.g. Swordfish, Detritus); those zeros never replace a cited value.
+
+**Depth factor from AquaMaps.** For the habitat FGs without a depth factor in the CSV (currently Corals and gorgonians; Posidonia takes depth from the fit over the sites, so its factor is 1; Cymodocea and Macroalgae 1), $f_z = \sum_b A_b S(d_b) / \sum_b A_b \,/\, \bar S_{site}$: the mean AquaMaps depth suitability $S$ (0–1; [@kaschner2019]) of the FG's species over the mapped area in 5 m depth bins $b$, divided by the suitability at the depth where the density was measured. When that depth is not known, $\bar S_{site}$ = 1 (ASSUMPTION: the literature density is the density at the species' preferred depths). A factor in the CSV wins; the AquaMaps value is then written to `habitat_depth_factor_aquamaps_REVIEW.csv` only.
+
+**Other FG files.** The estimates above are attached to FGs by name (the `FG_WMed_2026.csv` names). With another FG file, an estimate whose FG name is not found is not used. `unsurveyed_fg_not_matched_REVIEW.csv` lists every expected unsurveyed FG, whether it is in the FG file, whether it received a value, its method and the output file that holds the estimate, so it can be added by hand; the 01 log prints a warning when any is missing.
+
+**B left for Ecopath (`ECOPATH_B_FROM_EE`).** Benthic mollusc, Other macro-benthos, Suprabenthos, Jellyfish and Salps get no B in `Ecopath_B`; their EE is set to 0.95 (`ECOPATH_B_EE_VALUE`) and Ecopath solves for B. The gelatinous / macrozooplankton FGs are added to this list automatically only when their dataset estimate is missing.
+
+Small pelagics in 1994–1996 (eq. 9): sardine 1.448 t/km², anchovy 0.744 t/km² (`small_pelagics_per_gsa_series_REVIEW.csv`).
+
+::: {.callout-warning}
+### Known caveats
+- FGs with no Ecopath_B: the three "Expanding" FGs (a real baseline zero), Discards, and the five FGs left for Ecopath to estimate from EE (above).
+- Stock assessments applied domain-wide from fewer than half of the GSAs (giant red shrimp, blue and red shrimp, anglerfish, blue whiting, mullets) are listed in the log; their density comes from the assessed GSAs only.
+- 123 species in 7 FGs still use an even within-FG biomass split (`fg_species_biomass_needs_review.csv`).
+- Values from 2017–2021 surveys (bluefin tuna, cetaceans) stand in for 1995; the direction of the bias is documented in each `Source_citation`.
+:::
+
+### Output plots
+
+```{r}
+#| label: show-fig-biomass-by-fg-source
+#| eval: true
+#| echo: false
+wm_figure("fig-biomass-by-fg-source", r"---(Base-year biomass density by Functional Group, colored by the source that supplied it.)---", "biomass_by_fg_source.png", r"---(01_biomass.R)---")
+```
+
+```{r}
+#| label: show-fig-biomass-regional-ts
+#| eval: true
+#| echo: false
+wm_figure("fig-biomass-regional-ts", r"---(Regional FG density time series feeding the Ecosim_ts sheet.)---", "biomass_survey_fg_density_timeseries_regional.png", r"---(01_biomass.R)---")
+```
+
+---
+
+## Fisheries — Catches, Landings, Discards, Effort & F (`02_fisheries.R`) {#sec-fisheries}
+
+`02_fisheries.R` builds the FG × year catch series, its landings/discards split by fleet (`Ecopath_L`, `Ecopath_Di`), the effort series, and the fishing mortality $F$ used by `03_pbqb-traits.R`.
+
+### Catch domain
+
+Only catch from the coastal states of the model GSAs is kept (`GSA_COASTAL_STATE`, from GFCM Res. GFCM/33/2009/2): `TARGET_COUNTRIES` = Spain, France, Italy, Morocco, Algeria and Tunisia for GSAs 1–12 (override with `TARGET_COUNTRIES_OVERRIDE`). Catch by countries with no coast in the model GSAs (distant-water fleets) is left out; the 02 log lists the excluded tonnes by country. STECF FDI is filtered to the model GSAs; the fleet register, gear table and FishMIP effort are filtered to the target countries.
+
+### Equations
+
+Indices: $c$ country, $f$ FG, $l$ fleet (country × fleet type), $y$ year.
+
+1. Species → FG: $C_{c,f,y} = \sum_{s \in f} C_{c,s,y}$. FAO "NEI" groups are split over candidate FGs in proportion to biomass, with an $F \le 1$ cap (below). "Marine molluscs nei" (3,814 t/yr in 1994–1996) is split over the commercial mollusc FGs in proportion to the mollusc catch the same country reported to species or group level in the same year, $C_{nei,f,c,y} = C_{nei,c,y}\,C_{id,f,c,y}/\sum_f C_{id,f,c,y}$ (fallback: the country's all-year shares, then all countries pooled; `mollusc_nei_split_by_country_year.csv`). In 1994–1996 the identified mollusc catch was about 44 % cephalopods and 56 % bivalves/gastropods.
+2. Catch source (`CATCH_FDI_FIRST`): for Spain, France and Italy the STECF FDI landings of the model GSAs are used directly in every Country × FG × year FDI reports (2014+); GFCM is used for the years before FDI (incl. 1994–1996) and for Morocco, Algeria and Tunisia. The pre-FDI GFCM years are scaled to the FDI level, $k_{c,f} = \sum C^{FDI} / \sum C^{GFCM}$ over 2014–2023, so the series has no step at 2014; factors > `MAX_CATCH_CALIBRATION_FACTOR` (10) are not applied (`catch_calibration_factor_capped_REVIEW.csv`).
+3. Gears with no model fleet (`FleetType = EXCLUDED`): $C \leftarrow C\,(1 - \text{share}_{excl,c,y})$, share from FDI (2014+) or SAU (earlier). The removed tonnes are in the 02 log.
+4. Discards: $Di = C \times r$, $r$ = FDI per-fleet discard ratio, else the FishMIP reported-vs-total ratio by FG × year; $L = C - Di$.
+5. ICCAT (bluefin tuna, swordfish, albacore): Task I nominal catch of the target countries, Mediterranean records only, scaled to the model GSAs by each country's FDI landings share inside them: $C^{ICCAT}_{c,sp} \times s_{c,sp}$. Shares in this run: Italy SWO 0.59, BFT 0.57, ALB 0.23; Spain BFT 0.95, SWO 0.89; France 1.
+6. Fleet split: $C_l = C_{c,f,y}\,p_{l,c,f,y}$; $p$ from FDI (2014+), SAU hindcast bias-corrected to FDI (earlier), else FDI multi-year mean, else country mix, else equal share (flagged). Target-country catch whose fleet cannot be resolved goes to the residual column "Target countries - fleet not resolved" (renamed on 2026-10-07; it no longer holds other countries' catch).
+7. Hake stanzas: juvenile share of the catch from MEDITS length frequencies (TC, 1994–1996, model GSAs), $L(a) = L_\infty(1 - e^{-K(a - t_0)})$ with $L_\infty$ = 110 cm, $K$ = 0.178 yr⁻¹, $t_0$ = 0 [@mellonduval2010], $W = aL^{3.035}$; juvenile = age < 2 yr ($L$ < 32.9 cm); landings are $L \ge$ MCRS 20 cm [@reg1967_2006; @reg2019_1022]. Result: 55.9 % of landings and 100 % of discards are juvenile (FG 26), applied at fleet level too.
+8. Effort (EU): $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$, $NE$ = Rousseau et al. nominal effort, $\kappa_c = \sum E^{FDI}/\sum NE$ over the overlap years. With `EFFORT_PRIMARY_SOURCE = "rousseau"` (default) this one formula is used for **every** year, so the series has no source change at 2014. FDI is used only for $\kappa_c$, for the days-per-tonne used in the fleet share $s_{l,y}$ (catch × days-per-tonne share, rescaled per fleet to the 2014–2016 FDI mean), and to carry the trend after Rousseau's last year: $E_y = E_{last}\,E^{FDI}_y / E^{FDI}_{last}$. FDI's own effort is kept as a check column (2014 Rousseau-based / FDI ratio ≈ 1.14 for France in this run). Before this change, stitching the hindcast to FDI at 2014 gave jumps of up to ×196.
+9. Technology creep (effective effort), compounded year by year from the base year $t_0$ = 2014 (first FDI year): $E'_t = E_t \prod_{y=t_0+1}^{t}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$ for $t > t_0$ and $E'_t = E_t \big/ \prod_{y=t}^{t_0-1}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$ for $t < t_0$; $E$ = nominal effort in kW × fishing days (FDI total over vessels, = mean kW × mean days × number of vessels; [@rousseau2024] nominal active effort), $r_{g,y}$ = annual creep rate (%) of gear $g$ in year $y$, $m_c$ = country multiplier (EU 1, Morocco/Algeria/Tunisia 0.7, ASSUMPTION), $m_s$ = sector multiplier. Creep is applied to the whole series, including the non-EU years after 2017 where the nominal effort is held at its 2017 value, so effective effort keeps rising. Ecosim uses effort relative to 1995, so the choice of $t_0$ changes the level but not the trend. Rates: $r$ = 0.79 %/yr bottom trawl and 2.0 %/yr other gears in 1994–2013 ([@damalas2015], quoted by [@tsagarakis2022]), 4.5 %/yr in 2014–2023 ([@palomares2019], $C\% = 13.8\,Y^{-0.511}$ at $Y$ = 9). Sector multiplier: industrial 1.0, artisanal/recreational 0.6 (ASSUMPTION).
+10. Ecopath: $L_{f,l} = \overline{L}_{y \in 1994\text{–}1996} / A_{model}$ (t/km²/yr, same $A_{model}$ as biomass).
+11. **Fishing mortality**: $F_f = (\bar C_f / A_{model}) / B_f$, with $B_f$ = the final `Ecopath_B` written by `01_biomass.R` (survey species density only for FGs without an Ecopath_B). Using the final Ecopath_B (not the survey density) keeps F consistent for groups whose biomass comes from `01b` (macrozooplankton, suprabenthos) and gives adult hake (FG 27) an F. The same $B_f$ is used by the NEI $F \le 1$ cap.
+12. Ecosim: catch series $C_{f,y}/A_{model}$; effort series relative to 1995.
+
+### Data sources and references
+
+| Source | Role | Citation |
+|---|---|---|
+| FAO-GFCM capture production | bulk catch by country × species × division | [@gfcm2025capture] |
+| STECF FDI | EU catch, landings, discards, effort, capacity, model GSAs, 2014+ | [@stecffdi] |
+| Sea Around Us | catch by gear, pre-2014 fleet shares | [@sau2020], seaaroundus.org |
+| FishMIP / ISIMIP3a | effort and discard ratios | [@rousseau2024]|
+| ICCAT Task I nominal catch; ST01 active vessels | BFT/SWO/ALB catch and gear split; vessel-size check of the gear → fleet mapping (2016+) | [@iccatt1nc] |
+| Stock assessments: GFCM Stock Assessment Forms (default) | stock biomass (SSB, else total biomass) for assessed single-species FGs; catch cross-check; hake stanza B | GFCM validated SAFs, read from the GFCM website on each run (`lib_gfcm_saf_online.R`); stocks with no readable table: hand-transcribed SAFs, then RAM Legacy [@ricard2012]. `STOCK_ASSESSMENT_SOURCE = "RAM"` uses RAM Legacy only |
+| `gear_to_fleettype.csv`, `fleet_register_taxonomy.csv` | gear → fleet type; excluded gears | project reference tables |
+
+::: {.callout-warning}
+### Known caveats
+- $F$ is one region-wide, all-gear rate per FG, applied to every species in the FG.
+- Rousseau effort correlates with FDI for France (r = 0.96) and Spain (0.95) but not Italy (r = −0.24, 2014–2017).
+- 9 of 80 FGs get less than half their landings from a named fleet; the rest is in the "fleet not resolved" column.
+- 564 catch rows (0 t) have no fleet share at all and are dropped from the fleet split.
+- 24 FGs with species assigned have zero catch in the whole series (`fg_missing_ecopath_L_Di_REVIEW.csv`).
+:::
+
+### Output plots
+
+```{r}
+#| label: show-fig-catch-by-fg-fleet
+#| eval: true
+#| echo: false
+wm_figure("fig-catch-by-fg-fleet", r"---(Catch by Functional Group and fleet.)---", "07_catch_by_fg_and_fleet.png", r"---(02_fisheries.R)---")
+```
+
+```{r}
+#| label: show-fig-discards-by-fg-fleet
+#| eval: true
+#| echo: false
+wm_figure("fig-discards-by-fg-fleet", r"---(Discards by Functional Group and fleet.)---", "08_discards_by_fg_and_fleet.png", r"---(02_fisheries.R)---")
+```
+
+```{r}
+#| label: show-fig-catches-per-fg
+#| eval: true
+#| echo: false
+wm_figure("fig-catches-per-fg", r"---(Total catch by Functional Group.)---", "pipeline_01_catches_per_FG.png", r"---(02_fisheries.R)---")
+```
+
+```{r}
+#| label: show-fig-effort-by-fleet
+#| eval: true
+#| echo: false
+wm_figure("fig-effort-by-fleet", r"---(Fishing effort by country and fleet (target countries only).)---", "05_effort_by_country_fleet.png", r"---(02_fisheries.R)---")
+```
+
+---
+
+## PB/QB & Life-History Traits (`03_pbqb-traits.R` + `03b_ecobase.R`) {#sec-pbqb-traits}
+
+`03_pbqb-traits.R` computes P/B and Q/B per species by taxon group and aggregates them to FGs, weighted by biomass. Life-history data come from FishBase [@fishbase] and SeaLifeBase [@sealifebase] via `rfishbase` [@boettiger2012]. `03b_ecobase.R` supplies EcoBase values as a cross-check and gap-filler only. Equation numbers refer to the project protocol "Quick guide on how to calculate P/B and Q/B for EwE models".
+
+### Equations
+
+| Group | P/B | Q/B |
+|---|---|---|
+| Fish | $P/B = Z = M + F$ [@allen1971]. $M$ priority: [@then2015] > [@pauly1980] ($\log_{10} M = -0.0066 - 0.279\log_{10}L_\infty + 0.6543\log_{10}K + 0.4634\log_{10}T$) > [@hoenig1983] > [@alverson1975] (via TropFishR; [@mildenberger2017]) > FishLife [@thorson2017] > [@gascuel2008] ($M = 2.31\,TL^{-1.72}e^{0.053T}$). $F$ from 02 (@sec-fisheries). | [@palomares1998]: $\log_{10} Q/B = 5.847 + 0.280\log_{10}Z - 0.152\log_{10}W_\infty - 1.360\,T' + 0.062A + 0.510h + 0.390d$, $T' = 1000/(T+273.15)$; no-$Z$ variant; [@christensen1992]; Q/P = 3 fallback |
+| Marine mammals | Siler survivorship [@barlow1991], else $20.19\,TL^{-3.26}e^{0.041T}$ [@gascuel2008] | $365 \times 0.1\,W^{0.8}/W$ [@innes1987; @trites1997], $W$ = mean body mass in kg (`homeotherm_mean_body_mass.csv`: [@carlucci2024], to be completed from [@tritespauly1998]; else FishBase/SeaLifeBase maximum mass, flagged) |
+| Seabirds | [@gascuel2008] | $365 \times 10^{-0.293 + 0.85\log_{10}W}/W$ [@nilsson1976], $W$ = mean body mass in g (to be completed from [@dunning2008]; else maximum mass, flagged) |
+| Invertebrates | [@tumbiolo1994]: $\log_{10}P = 0.24 + 0.96\log_{10}B - 0.21\log_{10}W_{max} + 0.03T - 0.16\log_{10}(z+1)$; [@brey1999] ($M_{max}$ at 4.5 kJ/g, ASSUMPTION); [@gascuel2008] fallback | $Q/B = 3\,P/B$ [@christensen2008] |
+| Primary producers | — | $Q/B = 0$ |
+
+FG level: $X_f = \sum_s B_s X_s / \sum_s B_s$. Missing species values are borrowed from the closest relative (genus > family > order > class).
+
+**Fishing mortality for non-fish FGs.** $P/B = Z = M + F$ [@allen1971] holds for every group, not only fish, as long as the empirical P/B is natural mortality. Fish species get $P/B = M + F$ inside `calc_fish()`. For invertebrate, mammal and seabird FGs the FG-level $F$ from `02_fisheries.R` (`F_by_fg.csv`) is added to the part of the FG whose P/B is natural mortality (Siler survivorship; Tumbiolo & Downing; Brey), $P/B_f = P/B^{emp}_f + F_f\,(1 - s_f)$, where $s_f$ is the biomass share of the FG whose P/B comes from the [@gascuel2008] equation: that equation was fitted to the P/B of published EwE models, i.e. total mortality, so it already includes fishing (all seabirds, and the fallback for mammals and invertebrates); and for invertebrates $Q/B_f = 3\,P/B_f$ is computed on that P/B, so a fished group's P/B includes its fishing mortality (otherwise Ecopath cannot balance it, e.g. coastal benthic cephalopods with $F$ = 0.85). ASSUMPTION: the empirical invertebrate P/B is treated as natural mortality.
+
+::: {.callout-warning}
+### Known caveats
+- The fish Q/B diet-type dummies ($h$, $d$) are fixed defaults, not taken from a diet classification.
+- `QB_InnesTrites_1987_1997` and `QB_NilssonNilsson_1976` are conventionally cited, not re-verified against the primary papers.
+- 28 of 68 FGs fall outside the 0.05–0.3 P/Q range; 8 FGs have no P/B or Q/B (3 Expanding FGs, corals and gorgonians, meso and micro zooplankton, Cymodocea, detritus, discards).
+- 23 FGs differ from the EcoBase average by more than 2× (mostly cephalopods, decapods, macrobenthos, suprabenthos, where the empirical value is lower).
+:::
+
+### Output plots
+
+```{r}
+#| label: show-fig-pb-qb-scatter
+#| eval: true
+#| echo: false
+wm_figure("fig-pb-qb-scatter", r"---(Chosen PB vs. QB by Functional Group.)---", "fg_pb_qb_scatter.png", r"---(03_pbqb-traits.R)---")
+```
+
+```{r}
+#| label: show-fig-f-by-fg
+#| eval: true
+#| echo: false
+wm_figure("fig-f-by-fg", r"---(Fishing mortality F by Functional Group, 1994-1996.)---", "F_by_fg.png", r"---(05_validation.R)---")
+```
+
+---
+
+## Diet Matrix (`04_diets.R`) {#sec-diets}
+
+`04_diets.R` builds the predator FG × prey FG diet matrix ($DC_{f,j}$, columns sum to 1; [@christensen2005]). It sources `lib_fishbase_diet_matrix.R` and `lib_worms_taxonomy_lookup.R`.
+
+### Tiers (first available per predator FG)
+
+1. **Mediterranean trophic metaweb** [@collmetaweb] (`data_entry_metaweb_empty.xlsx`, `DATA_ENTRY`; codes resolved through its `Taxonomic_codes` and `Non_taxonomic_groups` tabs). One metric per study (study = reference × area × years × life stage × season), chosen by `diet_metric_priority.csv` (IRI [@pinkas1971] > %W > %Vol > stable-isotope mixing model > %N > %F > presence; [@hyslop1980]), normalised to 1. Since 2026-10-14 the rows go through the same prey → FG resolution, stage selection and biomass weighting as MAISHA and FishBase (`metaweb_diet_records()`); generic metaweb groups ("Pelagic fish", "Zooplankton", "Pelagic tunicates", ...) are placed by rules at the top of `fishbase_food_category_to_fg.csv`. The choice is made **per predator FG**: an FG with any metaweb record takes its diet only from the metaweb; FGs without one take it from tiers 2–4. The template is still empty, so for now every FG comes from tiers 2–4.
+2. **MAISHA** ([@vascotto2026], v1.2, OGS NODC, doi:10.13120/hwpn1e, CC-BY 4.0): Darwin Core Archive (`data/diet/MAISHA/MAISHA_DwC-A`); predator records (`occurrenceRemarks == "Predator"`) linked to prey through `associatedOccurrences`; gravimetric %, then numerical %, then frequency of occurrence from the extended measurement table; detritus kept as a prey item, unknown and debris dropped; studies tagged as Mediterranean by coordinates (lon −6 to 36.5, lat 30 to 46), and non-Mediterranean studies dropped for a predator that has Mediterranean ones.
+3. **FishBase / SeaLifeBase** diet tables [@fishbase; @sealifebase] (DIET, DIETITEMS, FOODITEMS), Mediterranean studies first; DietCode joins done per server because FishBase and SeaLifeBase codes collide.
+4. **EcoBase** diet matrices [@colleter2015] — the public web service exposes none, so this tier currently finds nothing.
+
+MAISHA and FishBase records are pooled per predator species and studies are averaged with equal weight.
+
+**Two matrices.** The *main* matrix (`Ecopath_diet`) follows the tiers above. A *reference* matrix (MAISHA, then FishBase/SeaLifeBase for species without MAISHA records) is built for **every** predator FG, whether or not the metaweb covers it. `diet/diet_matrix_main_vs_reference.xlsx` puts them side by side (sheets Main, Reference, Main_minus_Reference, Source; long form in `diet_main_vs_reference_REVIEW.csv`), so single values of the main matrix can be checked and tuned by hand against an independent estimate. After a hand change, the column must sum to 1 again.
+
+### Prey → FG and aggregation
+
+$$
+p_{s,d,k} = v_k / \textstyle\sum_k v_k, \qquad DC_{s,j} = \frac{1}{n_s}\sum_d\sum_k p_{s,d,k}\,w_{k\to j}, \qquad DC_{f,j} = \frac{\sum_{s \in f} b_{s|f}\,DC_{s,j}}{\sum_{s \in f} b_{s|f}}
+$$
+
+$w_{k \to j}$: prey species in `FG_WMed_2026.csv` → its FG; else the genus, family, order, class or phylum shared with model species → equal split over the FGs holding that taxon (`DIET_TAXON_SPLIT`); else a food-category rule (`diet_reference_tables/fishbase_food_category_to_fg.csv`, about 44 regex rules) → split by Ecopath B of the target FGs (`DIET_CATEGORY_SPLIT`, ASSUMPTION: prey taken in proportion to availability); else a second pass resolves the prey name through WoRMS and repeats the rank match (cache `diet/worms_diet_prey_cache.rds`). Fish eggs and larvae go to zooplankton. Detritus/debris items are dropped for predators with FishBase trophic level ≥ 3 (`DIET_DETRITUS_MAX_TL`, ASSUMPTION: digested remains, not detritus feeding). Non-food items are dropped and the study renormalised. $b_{s|f}$ = species share of FG biomass (`biomass_proportion_by_species_fg.csv` from 01).
+
+### Coverage of the diet sources
+
+- MAISHA: 496 predator records (417 inside the Mediterranean box), 9,801 prey records → 54 predator FGs, 230 species, 426 study records.
+- FishBase/SeaLifeBase: 48 predator FGs, 262 species, 389 study records (DIET 272, DIETITEMS 1,499, FOODITEMS 3,892 rows pulled for 1,084 species, cached).
+- Combined: 70 predator FGs, 492 species, 815 study records. Provenance: MAISHA + FishBase 54 FGs, FishBase/SeaLifeBase only 16, missing 3 (corals and gorgonians, meso and micro zooplankton, suprabenthos). 70 of 80 FGs have at least one cited diet study.
+- All predator columns sum to 1. Cannibalism above 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114.
+- Unassigned prey item types: 58 (`*_unassigned_items_REVIEW.csv`).
+- Technical note: on a pCloud drive, files that are not fully downloaded can crash `data.table::fread` (memory-mapping error, "R bomb"). `lib_fishbase_diet_matrix.R` therefore copies the MAISHA files and cached FishBase tables to a local temporary file before reading them (`.fread_local()`).
+
+Outputs: `diet/Metaweb/`, `diet/MAISHA/` and `diet/FishBase/` (each source alone), `diet/reference_diet_matrix_fg_long.csv` / `_wide.csv` (reference matrix, all FGs), `diet/diet_matrix_main_vs_reference.xlsx` and `diet_main_vs_reference_REVIEW.csv`, `diet_provenance_by_predator_fg.csv`, `diet_references_by_fg.csv`, `diet_composition_ewe.csv` (EwE import format).
+
+### Output plots
+
+```{r}
+#| label: show-fig-diet-matrix-heatmap
+#| eval: true
+#| echo: false
+wm_figure("fig-diet-matrix-heatmap", r"---(Predator x prey Functional Group diet-composition matrix.)---", "diet_matrix_heatmap.png", r"---(04_diets.R)---")
+```
+
+---
+
+## Validation (`05_validation.R`) {#sec-validation}
+
+`05_validation.R` reads what 01–04 wrote; it does not change any input sheet.
+
+### STEP A — comparison with the 1995 Western Mediterranean model
+
+Reference: the "estimates" sheet of `WMed_EwE.xlsx` [@wmed1995model], model area $A_{old}$ = 846,002 km². Old groups are matched to new FGs through `validation_reference_tables/old_to_new_fg_crosswalk.csv` (33 rows): several old groups → one new FG are summed (P/B and Q/B biomass-weighted); one old group → several new FGs is compared with the sum of the new FGs.
+
+$$
+\text{ratio} = X_{new}/X_{old}, \qquad X_{old}^{(A_{new})} = X_{old}\,A_{old}/A_{new}, \qquad \text{ratio}_{same\ total} = X_{new}/X_{old}^{(A_{new})}
+$$
+
+The second form compares the same total tonnes. Flags: ratio outside `VALIDATION_RATIO_LOW`–`VALIDATION_RATIO_HIGH` (0.5–2), values appearing/disappearing. In a recent full run about half of the FG × metric rows were flagged (a review prompt, not a verdict). The old sheet has no landings/discards columns, so only B, P/B and Q/B are compared.
+
+### F vs P/Q check (`03_pbqb-traits.R`)
+
+Because $P/B = M + F$, a large $F$ raises P/B and P/Q. For every FG with $F > 0$, `F_vs_PQ_diagnostic_REVIEW.csv` gives $F$, P/B, the part without fishing ($P/B - F$), $E = F/Z$, P/Q with and without $F$, catch and B, and flags: $F > 1$; $F$ alone pushes P/Q above 0.3; $E > 0.5$ [@gulland1971]. A flagged FG points to too much catch assigned to it or too little B. Invertebrates have Q/B = 3 P/B, so their P/Q is 0.33 by construction. On the 2026-10-13 data: 14 FGs flagged, 7 with $F > 1$, and $F$ pushes P/Q above 0.3 only for groupers (0.52) and bluefin tuna (0.32).
+
+### STEP B — consolidated checks
+
+`validation_summary_ALL.csv` indexes every REVIEW file of 01–04: P/B, Q/B and GE plausibility; P/Q outside 0.05–0.3; diet column sums ≠ 1; cannibalism > 0.1 (EwE User Guide); missing diets; EcoBase evaluations; FGs without Ecopath_B; even species splits; temporal mismatches; fleet coverage; zero-catch FGs; unmatched old FG names.
+
+Three more checks are written by `05_validation.R` itself and added to the same summary:
+
+- **Fishing mortality above 1** (`F_above_1_REVIEW.csv`): FGs with $F = (C/A_{model})/B > 1$ in the Ecopath years, from `F_by_fg.csv`.
+- **Time series assessment** (`ecosim_ts_assessment_REVIEW.csv`, plot 13): for each Ecosim_ts series, the years with data, first and last year, longest gap, $CV = sd/\bar{x}$ and the largest year-to-year jump $\max(x_t/x_{t-1},\ x_{t-1}/x_t)$. Flags: fewer than 5 years, gap > 5 years, CV > 1, jump > 5×.
+- **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to the 1995 Western Med model [@wmed1995model] and other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv`, so far the Gulf of Lion model [@seyer2023] and the Port-Cros model [@valls2009; @valls2012], each with its own area (a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
+=======
+- **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to the 1995 Western Med model and other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv` (each with its own area; a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
+
+### Zooplankton field check (block 11)
+
+Field reference: [@fernandez2023] — RADMED, Alborán to Balearic Sea, 2007–2017, Bongo 250 µm, daytime oblique tows 0–100 m: total zooplankton 2–17 mg DM/m³ (mean ≈ 10).
+
+$$
+z_{eff} = \frac{\sum_k A_k \min(z^{mid}_k, 100)}{\sum_k A_k} = 86.7\ \text{m}, \qquad B_{tot} = \frac{DM \times z_{eff}}{DW{:}WW \times 1000}
+$$
+
+DW:WW 0.1–0.2 (ASSUMPTION). Salp upper bound: $DM \times z_{eff} / 0.0804 / 1000$ (salp DW:WW 0.0804, *Thalia democratica*, Add-my-Pet). Result: field 0.87–15 t/km² (mean 5.8); model FGs 68 + 69 + 71 + 72 ≈ 33 t/km² (meso + micro at the COBALT level, 29.6, + macro 3.15); salp bound 10.8 t/km². The net misses most microzooplankton, so the model total should sit above the field value.
+
+### Outputs
+
+- `plots/validation/validation_plots_ALL.pdf` (19 pages) and one PNG per check.
+- `validation/comparison_with_old_westmed_estimates_REVIEW.csv`, `biomass_vs_old_model_REVIEW.csv`, `validation_summary_ALL.csv`, `zooplankton_total_field_check_REVIEW.csv`.
+
+```{r}
+#| label: show-fig-biomass-vs-old
+#| eval: true
+#| echo: false
+wm_figure("fig-biomass-vs-old", r"---(New vs. old (1995) biomass by FG, both values shown on the new model area (same total tonnes).)---", "biomass_vs_old_model_by_fg.png", r"---(05_validation.R)---")
+```
+
+```{r}
+#| label: show-fig-zooplankton-check
+#| eval: true
+#| echo: false
+wm_figure("fig-zooplankton-check", r"---(Total zooplankton: model vs. field (Fernández de Puelles et al. 2023).)---", "11_zooplankton_total_field_check.png", r"---(05_validation.R)---")
+```
+
+---
+
+## Known limitations {#sec-open-issues}
+
+Points to review before using the inputs in a balanced Ecopath model. Each one is written to the file in the third column at every run.
+
+| Area | Issue | Evidence (log / file) | Suggested next step |
+|---|---|---|---|
+| Biomass | Meso + micro zooplankton at the COBALT level (29.6 t/km², whole water column), above the net-based field value | `zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv` | check the zooplankton EE once Ecopath is balanced |
+| Fisheries | $F > 1$ for 7 FGs: caramote prawn 7.8, deep-water rose shrimp 3.4, groupers 1.95, mackerels 1.37, common dentex 1.19, coastal benthic cephalopods 1.15, salema 1.07 | `F_by_fg.csv` | under review; caramote prawn catch is mostly lagoon/coastal (< 10 m, outside $A_{model}$), the others need a check of catch assignment vs survey catchability |
+| Fisheries | 562 catch rows (0 t) with no fleet share; 9 FGs with < 50 % of landings in a named fleet | 02 log, `ecopath_L_fg_coverage_check.csv` | — |
+| Biomass | With `STOCK_ASSESSMENT_SOURCE = "RAM"` the hake assessments end in 2014 (the default GFCM source reads them to 2024); about half the stocks inside GSAs 1–12 have no readable SAF table | `gfcm_saf_parse_REVIEW.csv` | check the stocks read and the ones filled from RAM Legacy |
+| Biomass | Jellyfish, salps, suprabenthos, benthic mollusc, other macro-benthos left to Ecopath (EE = 0.95) | 01 log | check the B Ecopath returns against the review values ([@luo2020], salp bound 10.8) |
+| Biomass | 4 FGs still on an even within-FG species split | `fg_species_biomass_needs_review.csv` | — |
+| P/B, Q/B | Some FGs without P/B or Q/B, and FGs outside P/Q 0.05–0.3 | 03 log, `F_vs_PQ_diagnostic_REVIEW.csv` | review |
+| Diet | No diet for corals and gorgonians, meso and micro zooplankton, suprabenthos | `diet_still_missing_REVIEW.csv` | fill `diet_literature_fallback.csv` by hand, e.g. from [@ribes1999] (gorgonians), [@coll2006] (zooplankton), [@banaru2013] (suprabenthos) |
+| Diet | Cannibalism > 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114 | `diet_cannibalism_REVIEW.csv` | move the self-prey to other FGs (EwE User Guide) |
+| Data | `FG_WMed_2026.csv` has no `survey_exempt` column (hard-coded list used) | 01 log | add the column |
+
+---
+
+## References {#sec-references .unnumbered}
+
+Numbered in order of first citation; the number in square brackets in the text points to this list. References used by the code but not cited above are listed after the cited ones. All entries are in `scripts/references.bib`; entries marked [verify] still need checking against the original.
+
+::: {#refs}
+:::
