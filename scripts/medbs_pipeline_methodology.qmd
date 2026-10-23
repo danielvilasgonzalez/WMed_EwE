@@ -2144,8 +2144,9 @@ Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopat
 
 | Input | Source in the workbook | Category | Index |
 |---|---|---|---|
-| B | Biomass left blank (EE fixed) or placeholder | Estimated by Ecopath / guesstimate | 0.0 |
-| B | ISIMIP ocean model (plankton) | From other model | 0.0 |
+| B | Placeholder biomass (Expanding FGs) | Guesstimate | 0.0 |
+| B | Biomass left for Ecopath with a fixed EE | Estimated by Ecopath from the EE (indirect)\* | 0.2 |
+| B | ISIMIP ocean-model hindcast (plankton) | Approximate / indirect\* | 0.4 |
 | B | Megafauna sighting density × body mass; habitat cover × site density | Approximate or indirect method | 0.4 |
 | B | MEDITS trawl, MEDIAS / acoustic series, stock assessment | Sampling-based, low precision | 0.7 |
 | P/B, Q/B | EcoBase (other Mediterranean EwE models) | From other model | 0.2 |
@@ -2161,7 +2162,7 @@ Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopat
 | B (custom region) | Western Med habitat biomass × share of the habitat map inside the region | Approximate | 0.4 |
 | B (custom region) | Western Med density per km² (megafauna, plankton, groups MEDITS does not sample) | From another area | 0.2 |
 
-MEDITS biomass is classed as low precision because it depends on an assumed catchability and on the swept-area expansion (ASSUMPTION; it could be argued up to 1.0 for well-sampled demersal fish). The overall index is
+\* Departures from the EwE table, where both "estimated by Ecopath" and "from other model" score 0: a biomass estimated from a fixed EE still rests on a chosen EE and on the predators' consumption, and the ISIMIP hindcast is forced by observed climate, so both carry some information (project decision). MEDITS biomass is classed as low precision because it depends on an assumed catchability and on the swept-area expansion (ASSUMPTION; it could be argued up to 1.0 for well-sampled demersal fish). The overall index is
 
 $$
 P = \frac{1}{n}\sum_{i=1}^{n} \frac{1}{J_i}\sum_{j=1}^{J_i} I_{ij}

@@ -1283,14 +1283,19 @@ validation_plots[["15_prebal"]] <- tryCatch({
 ## Ecopath_B Reference text (which names the source first).
 if (!exists("PEDIGREE_RULES", envir = .GlobalEnv, inherits = FALSE)) PEDIGREE_RULES <- rbindlist(list(
   ## Biomass (Ecopath_B Reference)
-  data.table(input = "B", pattern = "^__NA_B__$",                 index = 0.0, category = "Estimated by Ecopath (EE fixed)"),
+  ## Departures from the EwE table (project decision 2026-10-23): EwE gives
+  ## 0 to "estimated by Ecopath" and to "from other model". Here B estimated
+  ## from a fixed EE gets 0.2 (it still rests on a set EE and on the
+  ## predators' consumption), and the ISIMIP hindcast (forced by observed
+  ## climate) 0.4 (approximate/indirect).
+  data.table(input = "B", pattern = "^__NA_B__$",                 index = 0.2, category = "Estimated by Ecopath from a fixed EE (indirect)"),
   ## custom region (01): values borrowed from the Western Med run
   data.table(input = "B", pattern = "^habitat map:",               index = 0.4, category = "Approximate (Western Med habitat biomass x mapped share in the region)"),
   data.table(input = "B", pattern = "^no .* mapped inside the region", index = 0.4, category = "Approximate (habitat not mapped in the region, B = 0)"),
   data.table(input = "B", pattern = "^Western Med density",        index = 0.2, category = "From another area (Western Med density per km2)"),
   data.table(input = "B", pattern = "^marine megafauna",           index = 0.4, category = "Approximate or indirect method (field density x body mass)"),
   data.table(input = "B", pattern = "^benthic habitat",            index = 0.4, category = "Approximate or indirect method (habitat cover x site density)"),
-  data.table(input = "B", pattern = "^primary producer|ISIMIP",    index = 0.0, category = "From other model (ISIMIP ocean model)"),
+  data.table(input = "B", pattern = "^primary producer|ISIMIP",    index = 0.4, category = "Approximate (ISIMIP ocean-model hindcast, observed climate)"),
   data.table(input = "B", pattern = "^(ICCAT )?stock assessment",  index = 0.7, category = "Sampling-based, low precision (stock assessment)"),
   data.table(input = "B", pattern = "^Per-GSA acoustic|^MEDIAS",   index = 0.7, category = "Sampling-based, low precision (acoustic survey)"),
   data.table(input = "B", pattern = "^MEDITS",                     index = 0.7, category = "Sampling-based, low precision (trawl survey, assumed catchability)"),
