@@ -17,6 +17,9 @@ format:
     code-fold: true
     code-tools: true
     theme: cosmo
+    include-in-header:
+      text: |
+        <link rel="icon" type="image/png" href="images/wmed_ewebuilder_icon.png">
 params:
   ## Inputs of the pipeline run done by this document. Change a value and
   ## click Render: the pipeline reruns with these values and the HTML shows
