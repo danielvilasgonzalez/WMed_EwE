@@ -2839,9 +2839,15 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
   ## plain rectangle can't know the coastline to exclude it itself.
   build_land_layer <- function() {
     tryCatch({
-      pad <- 0.5
-      xlim <- c(unname(display_bbox["xmin"]) - pad, unname(display_bbox["xmax"]) + pad)
-      ylim <- c(unname(display_bbox["ymin"]) - pad, unname(display_bbox["ymax"]) + pad)
+      ## Land for the whole drawn extent: the zoom box, every area polygon
+      ## and every haul (the map can show the whole Mediterranean, and land
+      ## outside the zoom box was left white before).
+      pad <- 2
+      .ab <- st_bbox(area_shp)
+      .px <- if (nrow(dt) && all(c("Lon", "Lat") %in% names(dt))) range(dt$Lon, na.rm = TRUE) else numeric(0)
+      .py <- if (nrow(dt) && all(c("Lon", "Lat") %in% names(dt))) range(dt$Lat, na.rm = TRUE) else numeric(0)
+      xlim <- range(c(unname(display_bbox[c("xmin", "xmax")]), unname(.ab[c("xmin", "xmax")]), .px), na.rm = TRUE) + c(-pad, pad)
+      ylim <- range(c(unname(display_bbox[c("ymin", "ymax")]), unname(.ab[c("ymin", "ymax")]), .py), na.rm = TRUE) + c(-pad, pad)
       
       ## Temporarily disable S2 spherical geometry for the crop
       ## specifically - S2 (sf's default) treats polygon edges as
