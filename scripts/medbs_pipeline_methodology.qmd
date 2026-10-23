@@ -20,6 +20,12 @@ format:
     include-in-header:
       text: |
         <link rel="icon" type="image/png" href="images/wmed_ewebuilder_icon_map4.png">
+    include-before-body:
+      text: |
+        <div class="wm-toplogos" style="display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:.6rem 1.2rem .2rem;max-width:1400px;margin:0 auto">
+          <img src="images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" style="height:64px;width:auto">
+          <a href="https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments" target="_blank" rel="noopener"><img src="images/imares_logo.png" alt="iMARES - Integrated Marine Ecosystem Assessments" style="height:52px;width:auto"></a>
+        </div>
 params:
   ## Inputs of the pipeline run done by this document. Change a value and
   ## click Render: the pipeline reruns with these values and the HTML shows
@@ -74,23 +80,6 @@ table th, table td {
   }
 }
 </style>
-```
-
-```{r}
-#| label: header-logos
-#| eval: true
-#| echo: false
-## Logos under the title: WMed-EwEbuilder and the iMARES group
-## (images/imares_logo.png). Add or replace the image
-## files in scripts/images/; a missing file is simply not shown.
-.logo <- function(f, alt, href, h) if (file.exists(file.path("images", f)))
-  sprintf('<a href="%s" target="_blank" rel="noopener"><img src="images/%s" alt="%s" style="height:%dpx;width:auto"></a>', href, f, alt, h) else ""
-knitr::asis_output(paste0(
-  if (file.exists("images/wmed_ewebuilder_logo_map4.png"))
-    '<div style="margin:.5rem 0 .75rem"><img src="images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" style="width:100%;max-width:620px;height:auto"></div>' else "",
-  '<div class="wm-logos" style="display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;margin:.25rem 0 1.5rem">',
-  .logo("imares_logo.png", "iMARES - Integrated Marine Ecosystem Assessments", "https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments", 90),
-  '</div>'))
 ```
 
 ```{r}
