@@ -83,6 +83,8 @@ table th, table td {
 .logo <- function(f, alt, href, h) if (file.exists(file.path("images", f)))
   sprintf('<a href="%s" target="_blank" rel="noopener"><img src="images/%s" alt="%s" style="height:%dpx;width:auto"></a>', href, f, alt, h) else ""
 knitr::asis_output(paste0(
+  if (file.exists("images/wmed_ewebuilder_logo.png"))
+    '<div style="margin:.5rem 0 .75rem"><img src="images/wmed_ewebuilder_logo.png" alt="WMed-EwEbuilder" style="width:100%;max-width:620px;height:auto"></div>' else "",
   '<div class="wm-logos" style="display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;margin:.25rem 0 1.5rem">',
   .logo("ewe_logo.png", "Ecopath with Ecosim", "https://ecopath.org", 70),
   .logo("imares_logo.png", "iMARES - Integrated Marine Ecosystem Assessments", "https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments", 90),

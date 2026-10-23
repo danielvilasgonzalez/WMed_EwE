@@ -1,5 +1,7 @@
 # WMed-EwEbuilder
 
+<img src="scripts/images/wmed_ewebuilder_logo.png" alt="WMed-EwEbuilder" width="560">
+
 *Building Ecopath with Ecosim inputs for the Western Mediterranean: biomass, fisheries, P/B, Q/B, traits and diets.*
 
 WMed-EwEbuilder is an R pipeline that turns survey, fisheries and literature data into Ecopath with Ecosim (EwE) inputs for the Western Mediterranean (GSAs 1–12: GSAs 1–11 plus GSA 12, Northern Tunisia, as in the MSFD Western Mediterranean subregion). It writes one workbook, `ecopath_ecosim_inputs.xlsx`, plus a CSV and plot for every step, and a validation report.
