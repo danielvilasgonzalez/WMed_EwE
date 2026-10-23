@@ -2913,9 +2913,6 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
     ## logic for an unprojected/geographic CRS, which can otherwise
     ## interpolate long polygon edges as curved great-circle arcs
     ## rather than straight lines in the displayed projection.
-    coord_sf(xlim = c(unname(display_bbox["xmin"]) - 0.3, unname(display_bbox["xmax"]) + 0.3),
-             ylim = c(unname(display_bbox["ymin"]) - 0.3, unname(display_bbox["ymax"]) + 0.3),
-             default_crs = sf::st_crs(points_crs)) +
     labs(title = title) +
     theme_minimal(base_size = 11) +
     theme(
@@ -3099,6 +3096,13 @@ plot_sample_map <- function(dt, area_shp, area_id_col, title = "Sample locations
             " no individual sample points.")
   }
   
+  ## Map extent, added LAST: a geom_sf() added after coord_sf() resets the
+  ## coordinates to its own default, which had dropped the zoom limits.
+  ## expand = FALSE: no white margin between the map and the panel border
+  ## (sf's version of scale_x/y_continuous(expand = c(0, 0))).
+  p <- p + coord_sf(xlim = c(unname(display_bbox["xmin"]) - 0.3, unname(display_bbox["xmax"]) + 0.3),
+                    ylim = c(unname(display_bbox["ymin"]) - 0.3, unname(display_bbox["ymax"]) + 0.3),
+                    default_crs = sf::st_crs(points_crs), expand = FALSE)
   print(intensity[order(-n_samples)])
   p
 }
