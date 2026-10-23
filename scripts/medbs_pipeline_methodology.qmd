@@ -300,7 +300,9 @@ tagList(
             fileInput("custom_shp", "Upload the region (CUSTOM_SHAPEFILE_PATH)", multiple = TRUE, width = "100%",
                       accept = c(".zip", ".shp", ".shx", ".dbf", ".prj", ".cpg", ".geojson", ".json", ".gpkg", ".kml"),
                       placeholder = "a .zip of the shapefile, or .shp+.shx+.dbf+.prj, or .geojson/.gpkg"),
-            tags$div(class = "wm-help", "Any CRS (reprojected to WGS84). Each polygon becomes one area of the model.")),
+            tags$div(class = "wm-help", "Any CRS (reprojected to WGS84). Each polygon becomes one area of the model."),
+            actionButton("custom_example", "Use the example: Mediterranean cetacean migration corridor", icon = icon("map"), class = "btn-outline-primary btn-sm mt-1"),
+            tags$div(class = "wm-help", "Spanish Marine Protected Area between the Catalan-Valencian coast and the Balearic Islands (46,386 km\u00b2; boundary from Real Decreto 699/2018). Files in scripts/example_regions/.")),
           conditionalPanel("input.custom_type == 'bbox'",
             fluidRow(column(6, numericInput("bbox_xmin", "Lon min", 2, step = 0.1)), column(6, numericInput("bbox_xmax", "Lon max", 8, step = 0.1))),
             fluidRow(column(6, numericInput("bbox_ymin", "Lat min", 38, step = 0.1)), column(6, numericInput("bbox_ymax", "Lat max", 42, step = 0.1)))),
@@ -679,6 +681,19 @@ output$fg_summary <- renderUI({
 
 ## --- Custom region from an uploaded shapefile / polygon file ---------------
 custom_shape <- reactiveVal(NULL)   # list(path, sf) of the uploaded region
+## Built-in example region: the Mediterranean cetacean migration corridor
+## (Real Decreto 699/2018; scripts/example_regions/README.md)
+observeEvent(input$custom_example, {
+  f <- file.path(.git_dir, "scripts", "example_regions", "cetacean_migration_corridor_RD699_2018.shp")
+  if (!file.exists(f)) { showNotification(paste("Example file not found:", f), type = "error"); return() }
+  g <- tryCatch(sf::st_transform(sf::st_read(f, quiet = TRUE), 4326), error = function(e) { showNotification(conditionMessage(e), type = "error"); NULL })
+  if (is.null(g)) return()
+  updateTextInput(session, "area_name", value = "cetacean_corridor")
+  custom_shape(list(path = normalizePath(f), sf = g))
+  tmp <- tempfile(fileext = ".geojson"); sf::st_write(sf::st_geometry(g), tmp, quiet = TRUE)
+  session$sendCustomMessage("wm-custom-shape", list(geojson = paste(readLines(tmp, warn = FALSE), collapse = "")))
+  showNotification("Example region loaded: Mediterranean cetacean migration corridor (area name 'cetacean_corridor').", type = "message")
+})
 observeEvent(input$custom_shp, {
   up <- input$custom_shp
   name <- gsub("[^A-Za-z0-9_-]", "_", if (nzchar(input$area_name)) input$area_name else "custom_region")
@@ -1368,6 +1383,8 @@ wm_figure("fig-gsa-coverage", r"---(Sample coverage by GSA. selected_areas highl
 ### Approach B - a custom boundary (bounding box or arbitrary shapefile)
 
 The same MEDITS raw data can instead be restricted to a custom footprint that doesn't correspond to any GSA code - a simple bounding box, or a shapefile for a different EwE model's own boundary.
+
+**Built-in example.** `scripts/example_regions/cetacean_migration_corridor_RD699_2018.shp` is the Mediterranean cetacean migration corridor (*Corredor de migración de cetáceos del Mediterráneo*), a Spanish Marine Protected Area between the Catalan–Valencian coast and the Balearic Islands. Its boundary is built from the 16 vertices in Real Decreto 699/2018 (BOE-A-2018-9034, art. 1.3, ETRS89); its area in ETRS89 / UTM 31N, 46,385.7 km², matches the area stated in the decree. On the page, *Use the example* loads it as the custom region. The same area is WDPA site 555596226 on Protected Planet; the WDPA polygon is not bundled because its terms do not allow redistribution.
 
 ```{r}
 #| label: custom-area-setup
