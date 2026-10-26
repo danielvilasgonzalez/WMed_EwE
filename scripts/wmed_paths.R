@@ -111,6 +111,9 @@ wmed_save_local_config <- function(git_dir, out_dir = NULL, pcloud_dir = NULL) {
   old <- if (file.exists(f)) .wmed_read_config(f) else list(out_dir = NA, pcloud_dir = NA)
   out_dir <- if (is.null(out_dir)) old$out_dir else out_dir
   pcloud_dir <- if (is.null(pcloud_dir)) old$pcloud_dir else pcloud_dir
+  ## "/" in the saved paths: a Windows path with "\" inside "..." is not valid R
+  if (!is.na(out_dir)) out_dir <- gsub("\\\\", "/", out_dir)
+  if (!is.na(pcloud_dir)) pcloud_dir <- gsub("\\\\", "/", pcloud_dir)
   writeLines(c("## config.local.R - folders on THIS computer (not committed; see wmed_paths.R).",
                if (!is.na(out_dir)) sprintf('out_dir    <- "%s"', out_dir),
                if (!is.na(pcloud_dir)) sprintf('pcloud_dir <- "%s"', pcloud_dir)), f)

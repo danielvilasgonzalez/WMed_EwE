@@ -569,8 +569,10 @@ Total_Area_km2_polygons <- sum(as.numeric(sf::st_area(gsa_shp_for_area))) / 1e6 
 .ov_path <- file.path(out_dir, "biomass", "custom_gsa_overlap.csv")
 if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") && file.exists(.ov_path)) {
   ## Custom region: the catch of its GSA(s) (FILTER_AREAS, from
-  ## custom_gsa_overlap.csv) per km2 of those GSAs' sea area, i.e. catch per
-  ## km2 assumed the same inside the region (ASSUMPTION). Every t/km2 value
+  ## custom_gsa_overlap.csv) per km2 of those GSAs' sea area, weighted by
+  ## how much of the region lies in each GSA (k_FG, see "Custom region:
+  ## overlap-weighted catch per FG" below); catch per km2 is then assumed
+  ## the same inside the region (ASSUMPTION). Every t/km2 value
   ## below (Ecopath_L/Di, F = C/B with the region's B) is therefore on the
   ## same per-km2 basis as the region's Ecopath_B.
   .ov <- fread(.ov_path)
@@ -5425,6 +5427,54 @@ if (nrow(multistanza_fg_pairs) == 0 || nrow(multistanza_age_split) == 0) {
           " species pair(s).")
 }
 
+## =================================================================
+## # Custom region: overlap-weighted catch per FG
+## Catch of a custom region is
+##   c_FG = sum_g w_g * C_g,FG / A_g,   w_g = overlap_g / sum(overlap)
+## (g = GSAs used for catch in custom_gsa_overlap.csv, A_g = GSA sea
+## area, overlap_g = km2 of the region inside GSA g), i.e. each GSA's
+## catch per km2 counts by how much of the region lies in it, instead of
+## the pooled sum(C_g)/sum(A_g) where a big GSA dominates.
+## GFCM/SAU catch is by division/country, not GSA, so C_g,FG is not
+## known directly: the pooled catch C_FG is split among the GSAs with
+## each FG's share s_g,FG in STECF FDI landings+discards by sub_region
+## (all FDI years - ASSUMPTION: the GSA split of an FG's catch is the
+## same in YEAR_ECOPATH). Then
+##   c_FG = C_FG / A_used * k_FG,  k_FG = sum_g w_g * s_g,FG / (A_g / A_used)
+## k_FG = 1 when the region sits in one GSA, or when FDI has no catch of
+## the FG in these GSAs (then catch is assumed spread like area).
+## Juvenile stanzas take their adult's k. Every t/km2 figure below
+## (Ecopath_L/Di, Catches_Ecopath/Ecosim, F, the F<=1 cap) uses k_FG.
+## =================================================================
+.custom_k_fg <- data.table(FG_num = numeric(), k_catch = numeric())
+if (identical(get0("AREA_MODE", ifnotfound = "westmed"), "custom") && exists(".ov")) {
+  .ovu <- copy(.ov)[used_for_catch == TRUE]
+  .ovu[, `:=`(w = overlap_km2 / sum(overlap_km2), a = gsa_area_km2 / sum(gsa_area_km2))]
+  .fdi_g <- if (exists("stecf_fdi_catch_by_gsa")) copy(stecf_fdi_catch_by_gsa) else {
+    .p <- file.path(csv_out_dir, "stecf_fdi_catch_by_gsa_gear_year.csv"); if (file.exists(.p)) fread(.p) else NULL }
+  if (nrow(.ovu) > 1 && !is.null(.fdi_g) && nrow(.fdi_g)) {
+    .fdi_g[, g := suppressWarnings(floor(as.numeric(sub("^GSA\\s*", "", toupper(trimws(as.character(GSA)))))))]
+    .sg <- .fdi_g[g %in% .ovu$GSA, .(t = sum(Catch_t, na.rm = TRUE) + sum(Discard_t, na.rm = TRUE)), by = .(FG_num, g)]
+    .sg <- .sg[, s := t / sum(t), by = FG_num][is.finite(s)]
+    .sg <- merge(.sg, .ovu[, .(g = GSA, w, a)], by = "g")
+    .custom_k_fg <- .sg[, .(k_catch = sum(w * s / a), GSAs_with_FDI_catch = paste(g[t > 0], collapse = ","),
+                            FDI_share_by_GSA = paste0(g, ":", round(s, 3), collapse = "; ")), by = FG_num]
+    if (nrow(multistanza_props_applied)) {
+      .juv <- merge(multistanza_props_applied[, .(FG_num = fg_juv, fg_adult)], .custom_k_fg, by.x = "fg_adult", by.y = "FG_num")
+      if (nrow(.juv)) .custom_k_fg <- rbind(.custom_k_fg[!FG_num %in% .juv$FG_num], .juv[, fg_adult := NULL], fill = TRUE)
+    }
+  }
+  .out_k <- merge(unique(catches_discards_fg[, .(FG_num, FG_name)]), .custom_k_fg, by = "FG_num", all.x = TRUE)
+  .out_k[is.na(k_catch), `:=`(k_catch = 1, note = if (nrow(.ovu) > 1) "no FDI catch in these GSAs: catch spread like area" else "region in one GSA")]
+  .out_k[, `:=`(overlap_weights = paste0(.ovu$GSA, ":", round(.ovu$w, 3), collapse = "; "),
+                area_shares = paste0(.ovu$GSA, ":", round(.ovu$a, 3), collapse = "; "))]
+  fwrite(.out_k, file.path(csv_out_dir, "custom_catch_overlap_weights_REVIEW.csv"))
+  message("[Area] Custom region: overlap weights w_g = ", .out_k$overlap_weights[1], " (area shares ", .out_k$area_shares[1],
+          "). Catch factor k_FG range ", paste(signif(range(.out_k$k_catch), 3), collapse = "-"),
+          " -> custom_catch_overlap_weights_REVIEW.csv")
+}
+.kc <- function(fg) { k <- .custom_k_fg$k_catch[match(fg, .custom_k_fg$FG_num)]; fifelse(is.na(k), 1, k) }  # 1 outside custom runs
+
 ## --- F<=1 cap on the broad ecological-keyword (NEI) fallback's own
 ## contribution: splits Marine fishes NEI into major commercial FGs
 ## only where it doesn't increase F beyond 1 --------
@@ -5521,7 +5571,7 @@ if (nrow(nei_keyword_matches) > 0 && file.exists(SPECIES_DENSITY_PATH)) {
                                                      .(Biomass_density = sum(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
   fg_biomass_avg_for_cap <- fg_density_year_for_cap[, .(Biomass_density_avg = mean(Biomass_density, na.rm = TRUE)), by = .(FG_num, FG_name)]
   fg_biomass_avg_for_cap <- .use_ecopath_b(fg_biomass_avg_for_cap, "NEI keyword fallback - F<=1 cap")
-  fg_biomass_avg_for_cap[, Catch_cap_t := Biomass_density_avg * Total_Area_km2]  # F=1 threshold in absolute tonnes - same definition F_by_fg uses below
+  fg_biomass_avg_for_cap[, Catch_cap_t := Biomass_density_avg * Total_Area_km2 / .kc(FG_num)]  # F=1 threshold in absolute tonnes - same definition F_by_fg uses below
   
   nei_species_fg_year <- gfcm_species_division_fg[grepl("^nei_keyword_", match_method) & Year %in% YEAR_ECOPATH,
                                                   .(Landings_t = sum(Landings_t, na.rm = TRUE)), by = .(FG_num, FG_name, Species)]  # summed across Division and across the YEAR_ECOPATH years
@@ -5737,7 +5787,7 @@ if (nrow(species_fg_crosswalk_all) > 0) {
 ## (landings + discards where FishMIP's ratio is available), full West
 ## Med scope. Writes directly into the workbook.
 add_catches_to_ecopath_workbook(  # write Catches_Ecopath/Catches_Ecosim sheets into the workbook
-  fg_catch        = catches_discards_fg[, .(Year, FG_num, Catch_t)],
+  fg_catch        = catches_discards_fg[, .(Year, FG_num, Catch_t = Catch_t * .kc(FG_num))],  # .kc: overlap weighting for custom regions (1 otherwise)
   fg_lookup       = full_fg_list,
   out_path        = ECOPATH_WORKBOOK_PATH,
   year_ecopath    = YEAR_ECOPATH,
@@ -6855,9 +6905,9 @@ if (nrow(multistanza_props_applied)) {
   }
 }
 ecopath_fleet_long[, `:=`(Fleet = paste(Country, FleetType, sep = " - "),
-                          Catch_t_km2_avg = Catch_t_avg / Total_Area_km2,
-                          Discard_t_km2_avg = Discard_t_avg / Total_Area_km2,
-                          Landings_t_km2_avg = Landings_t_avg / Total_Area_km2)]  # build the Fleet label and convert catch/discards/landings to density
+                          Catch_t_km2_avg = Catch_t_avg * .kc(FG_num) / Total_Area_km2,
+                          Discard_t_km2_avg = Discard_t_avg * .kc(FG_num) / Total_Area_km2,
+                          Landings_t_km2_avg = Landings_t_avg * .kc(FG_num) / Total_Area_km2)]  # build the Fleet label and convert catch/discards/landings to density
 
 ## --- Ecopath_L / Ecopath_Di: FG x Fleet, one column PER FLEET -------
 ## Final workbook sheets, per spec: "FG_number, FG_name, landings/
@@ -6906,8 +6956,8 @@ setorder(discards_ecopath_by_fleet_wide, FG_num)
 ## catch whose fleet split could not be resolved - not catch of other
 ## Mediterranean countries. Renamed accordingly.
 OTHER_GFCM_COL <- "Target countries - fleet not resolved"
-broad_landings_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_km2_broad = mean(Landings_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
-broad_discards_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Discard_t_km2_broad = mean(Discard_t, na.rm = TRUE) / Total_Area_km2), by = FG_num]
+broad_landings_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Landings_t_km2_broad = mean(Landings_t, na.rm = TRUE) * .kc(FG_num[1]) / Total_Area_km2), by = FG_num]
+broad_discards_density <- catches_discards_fg[Year %in% YEAR_ECOPATH, .(Discard_t_km2_broad = mean(Discard_t, na.rm = TRUE) * .kc(FG_num[1]) / Total_Area_km2), by = FG_num]
 
 landings_ecopath_by_fleet_wide <- merge(landings_ecopath_by_fleet_wide, broad_landings_density, by = "FG_num", all.x = TRUE)
 landings_ecopath_by_fleet_wide[is.na(Landings_t_km2_broad), Landings_t_km2_broad := 0]
@@ -7043,7 +7093,7 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
   
   f_by_fg <- merge(fg_biomass_avg, fg_catch_avg, by = c("FG_num", "FG_name"), all.x = TRUE)  # pair up biomass and catch by FG
   f_by_fg[, `:=`(
-    Catch_density_avg = Catch_t_avg / Total_Area_km2,  # catch as a density, matching biomass's units
+    Catch_density_avg = Catch_t_avg * .kc(FG_num) / Total_Area_km2,  # catch as a density, matching biomass's units
     ## F is left NA, not a literal 0, whenever Catch_t_avg is exactly 0.
     ## catches_discards_fg (this script's own catch grid) deliberately
     ## keeps an explicit Catch_t = 0 row for every FG with no matched
@@ -7061,7 +7111,7 @@ if (!file.exists(SPECIES_DENSITY_PATH)) {
     ## (05_validation.R filters to !is.na(F_for_plot) when it builds
     ## F_by_fg.png from this file) instead of plotting as F = 0.
     F = fifelse(!is.na(Catch_t_avg) & Catch_t_avg > 0,
-                (Catch_t_avg / Total_Area_km2) / Biomass_density_avg, NA_real_)
+                (Catch_t_avg * .kc(FG_num) / Total_Area_km2) / Biomass_density_avg, NA_real_)
   )]
   message("[F] F_by_FG (", paste(range(YEAR_ECOPATH), collapse = "-"), " average): ", nrow(f_by_fg), " FG(s).",
           " F left NA (not 0) where Catch_t_avg is 0/NA (no real catch ever matched to that FG for those",

@@ -65,21 +65,44 @@ execute:
    can't fit even after wrapping (e.g. a very narrow phone screen). */
 table {
   table-layout: auto;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
 }
 table th, table td {
-  word-break: break-word;
-  overflow-wrap: break-word;
+  overflow-wrap: break-word;   /* wrap long words only when they do not fit */
+  word-break: normal;          /* break-word here squeezed columns to a few letters */
   white-space: normal;
+  min-width: 4.5rem;           /* no column narrower than this */
+  vertical-align: top;
 }
-@media (max-width: 700px) {
-  table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-  }
-}
+table td code, table th code { white-space: normal; overflow-wrap: anywhere; }
+/* Every table sits in a box that scrolls sideways when the table is wider
+   than the text column, so it never runs over the table of contents or
+   the next section (the script below adds the box, also to tables the
+   app draws after the page opens). */
+.wm-table-scroll { overflow-x: auto; max-width: 100%; margin-bottom: 1rem; }
+.wm-table-scroll > table { margin-bottom: .25rem; }
 </style>
+<script>
+(function () {
+  function wrapTables() {
+    document.querySelectorAll('main table').forEach(function (t) {
+      var p = t.parentElement;
+      if (!p || p.classList.contains('wm-table-scroll') || t.closest('.wm-table-scroll')) return;
+      var d = document.createElement('div'); d.className = 'wm-table-scroll';
+      p.insertBefore(d, t); d.appendChild(t);
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    wrapTables();
+    var busy = false;
+    new MutationObserver(function () {
+      if (busy) return; busy = true;
+      setTimeout(function () { busy = false; wrapTables(); }, 100);
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+})();
+</script>
 ```
 
 ```{r}
@@ -209,8 +232,18 @@ library(shiny)
 }
 
 tagList(
-  tags$link(rel = "stylesheet", href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"),
-  tags$script(src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"),
+  ## Leaflet 1.9.4 (the GSA map) ships with the repo in scripts/leaflet/, so
+  ## the map does not depend on reaching a CDN; the CDN copy is only a
+  ## fallback if the local file is missing.
+  ## (as an htmlDependency, so Shiny serves the folder itself: a plain
+  ## src = "leaflet/leaflet.js" gave 404 under Run Document)
+  if (file.exists("leaflet/leaflet.js"))
+    htmltools::htmlDependency("leaflet-wm", "1.9.4", src = c(file = normalizePath("leaflet")),
+                              script = "leaflet.js", stylesheet = "leaflet.css"),
+  tags$script(HTML("if (typeof L === 'undefined') {
+    document.write('<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css\">');
+    document.write('<script src=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js\"><\\/script>');
+  }")),
   tags$style(HTML("
     .wm-card { border: 0; border-radius: 14px; box-shadow: 0 2px 12px rgba(16, 42, 67, .10); overflow: hidden; }
     .wm-card-header { background: linear-gradient(90deg, #0b4f6c 0%, #1b7f9e 100%); color: #fff; font-weight: 600;
@@ -383,8 +416,13 @@ tagList(
     boxes.each(function () { $(this).prop('checked', list.indexOf(+this.value) !== -1); });
     boxes.first().trigger('change');
   }
+  var tries = 0;
   function init() {
-    if (typeof L === 'undefined' || !document.getElementById('wm-map')) { return setTimeout(init, 200); }
+    if (typeof L === 'undefined' || !document.getElementById('wm-map')) {
+      if (++tries === 50 && document.getElementById('wm-map'))   // 10 s without Leaflet: say so instead of a blank box
+        document.getElementById('wm-map').innerHTML = '<div style="padding:1rem;color:#8a4b00">The map library (Leaflet) did not load: scripts/leaflet/leaflet.js is missing and the CDN could not be reached. Use the GSA checkboxes instead.</div>';
+      return setTimeout(init, 200);
+    }
     var map = L.map('wm-map', { scrollWheelZoom: false, zoomSnap: 0.25 });
     // Esri Ocean basemap (no API key); falls back to OpenStreetMap if its tiles fail
     var base = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', {
@@ -763,7 +801,7 @@ output$area_summary <- renderUI({
       stat("Region", input$area_name),
       stat("Box", if (ok) sprintf("%.1f-%.1f\u00b0E, %.1f-%.1f\u00b0N", b[1], b[2], b[3], b[4]) else "invalid", warn = !ok),
       stat("Box area", if (ok) paste(format(round(km2, -2), big.mark = ","), "km\u00b2") else "-", "rectangle, land included"),
-      stat("Scripts", "01 biomass", "02-05 work on GSAs", warn = TRUE)))
+      stat("Scripts", "01-05", "catch from the overlapping GSAs")))
   }
   g <- as.numeric(input$gsas)
   if (!length(g)) return(tags$div(class = "alert alert-danger mb-0", "No GSA selected - click the map or a quick-select button."))
@@ -794,6 +832,9 @@ output$area_summary <- renderUI({
 })
 
 ## --- Settings block: the exact code the Run button executes ---------------
+## Paths written into R code must use "/" - on Windows a path such as
+## C:\Users\... inside "..." is read as escape codes (\U) and the run fails.
+.fwd <- function(p) gsub("\\\\", "/", p)
 config_code <- reactive({
   yr <- function(v) paste0(v[1], ":", v[2])
   tf <- function(x) if (isTRUE(x)) "TRUE" else "FALSE"
@@ -805,9 +846,9 @@ config_code <- reactive({
     sprintf("NORMALIZE_TS     <- %s", tf(input$normalize_ts)),
     sprintf("ECOPATH_B_FILL_MODE  <- \"%s\"   # FGs with no Ecopath-years biomass", if (isTRUE(input$fill_b)) "window_mean" else "nearest"),
     if (isTRUE(input$fill_b) && length(input$fill_years) == 2) sprintf("ECOPATH_B_FILL_YEARS <- %s", yr(input$fill_years)),
-    if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", fg_path()),
+    if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", .fwd(fg_path())),
     sprintf("APPLY_CATCHABILITY <- %s   # MEDITS catchability correction", tf(input$catch_q)),
-    if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", catch_path()))
+    if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", .fwd(catch_path())))
   head <- c(sprintf("## WMed-EwEbuilder settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
             "## Run from the scripts/ folder of the repo (folders found by wmed_paths.R).",
             "CLEAN_START      <- FALSE   # keep the settings below")
@@ -818,13 +859,13 @@ config_code <- reactive({
       sprintf("AREA_NAME        <- \"%s\"", gsub("[^A-Za-z0-9_-]", "_", input$area_name)),
       if (identical(input$custom_type, "shapefile")) c(
         "CUSTOM_AREA_TYPE <- \"shapefile\"",
-        sprintf("CUSTOM_SHAPEFILE_PATH <- \"%s\"", if (is.null(custom_shape())) "<upload the region file>" else custom_shape()$path))
+        sprintf("CUSTOM_SHAPEFILE_PATH <- \"%s\"", if (is.null(custom_shape())) "<upload the region file>" else .fwd(custom_shape()$path)))
       else c(
         "CUSTOM_AREA_TYPE <- \"bbox\"",
         sprintf("CUSTOM_BBOX      <- c(xmin = %s, xmax = %s, ymin = %s, ymax = %s)",
                 input$bbox_xmin, input$bbox_xmax, input$bbox_ymin, input$bbox_ymax)),
       common,
-      "## all steps run for the region; catch (02) from the GSA(s) it overlaps, per km2",
+      "## all steps run for the region; catch (02) from the GSA(s) it overlaps, weighted by overlap",
       "source(\"run_pipeline_demo.R\")")
   } else {
     c(head,
@@ -852,7 +893,13 @@ run_note <- reactiveVal("")
 
 .pid_alive <- function() {
   pid <- if (file.exists(.pid_file)) suppressWarnings(as.integer(readLines(.pid_file, warn = FALSE)[1])) else NA
-  !is.na(pid) && isTRUE(tryCatch(tools::pskill(pid, 0L), error = function(e) FALSE))
+  if (is.na(pid)) return(FALSE)
+  if (.Platform$OS.type == "windows") {   # pskill(pid, 0) does not test a process on Windows
+    out <- tryCatch(suppressWarnings(system2("tasklist", c("/FI", shQuote(paste("PID eq", pid)), "/NH", "/FO", "CSV"),
+                                             stdout = TRUE, stderr = FALSE)), error = function(e) character(0))
+    return(any(grepl(sprintf('"%d"', pid), out, fixed = TRUE)))
+  }
+  isTRUE(tryCatch(tools::pskill(pid, 0L), error = function(e) FALSE))
 }
 .settings_lines <- function() if (file.exists(.settings_file)) readLines(.settings_file, warn = FALSE) else character(0)
 
@@ -873,10 +920,10 @@ if (file.exists(.settings_file)) {
   }
 }
 
-observe({   # the Run button is for GSA runs only (disabled= needs shiny >= 1.11)
+observe({   # Run button label; disabled while running or with no shapefile (disabled= needs shiny >= 1.11)
   custom <- identical(input$area_mode, "custom")
   no_shape <- custom && identical(input$custom_type, "shapefile") && is.null(custom_shape())
-  lab <- if (identical(run_state(), "running")) "Running..." else if (custom) "Run biomass (01) for this region" else "Run pipeline"
+  lab <- if (identical(run_state(), "running")) "Running..." else if (custom) "Run pipeline for this region" else "Run pipeline"
   if (utils::packageVersion("shiny") >= "1.11.0")
     updateActionButton(session, "run", label = lab, disabled = no_shape || identical(run_state(), "running")) else
     updateActionButton(session, "run", label = lab)
@@ -898,11 +945,15 @@ observeEvent(input$run, {
     "res <- tryCatch({ cat('--- Step 1/5: 01_biomass.R\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); ",
     "source('01_biomass.R'); cat('--- Step 1/5 done\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); 'done' }, ",
     "error = function(e) paste('error:', conditionMessage(e)))"), body)
-  code <- paste(c(sprintf("writeLines(as.character(Sys.getpid()), '%s')", .pid_file), sub("^source\\(\"run_pipeline_demo.R\"\\)$",
+  code <- paste(c(sprintf("writeLines(as.character(Sys.getpid()), '%s')", .fwd(.pid_file)), sub("^source\\(\"run_pipeline_demo.R\"\\)$",
                       "res <- tryCatch({ source('run_pipeline_demo.R'); 'done' }, error = function(e) paste('error:', conditionMessage(e)))", body),
-                  sprintf("writeLines(res, '%s')", .status_file)), collapse = "\n")
+                  sprintf("writeLines(res, '%s')", .fwd(.status_file))), collapse = "\n")
   old <- setwd(file.path(.git_dir, "scripts")); on.exit(setwd(old))
-  system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)), wait = FALSE, stdout = .console, stderr = .console)
+  ## The run's code goes in a file: on Windows a multi-line "Rscript -e" does
+  ## not survive the command line (cmd.exe), so the run never started there.
+  .run_script <- file.path(.run_dir, "run.R")
+  writeLines(code, .run_script)
+  system2(file.path(R.home("bin"), "Rscript"), shQuote(.fwd(.run_script)), wait = FALSE, stdout = .console, stderr = .console)
   run_state("running"); run_started(Sys.time()); run_finished(NULL); run_note(""); step_seen(list())
   run_steps(eval(parse(text = input$steps)))
   showNotification(if (custom) paste0("Pipeline started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
@@ -1433,13 +1484,21 @@ A custom region runs all five steps, with every output in `out_dir/<AREA_NAME>/`
     where $B_{WM}$ is the FG's Western Med biomass (t/km²), $A_{WM}$ the Western Med model area, $a_{hab,region}$ and $a_{hab,WM}$ the mapped habitat area (km²) inside the region and inside the Western Med GSAs, and $A_{region}$ the region's model area. Posidonia and Cymodocea follow the Posidonia map, Macroalgae and Corals and gorgonians the coralligenous map. No mapped habitat in the region gives $B = 0$ (FG absent). Shares are in `custom_habitat_map_share.csv`.
   - *Other FGs* (megafauna, plankton, groups MEDITS does not sample) take the Western Med density per km² (ASSUMPTION).
   - The species shares inside these FGs come from the Western Med run, so P/B and Q/B (03) stay biomass-weighted averages of the species, $P/B_f = \sum_{s \in f} p_{s|f}\, P/B_s$ with $p_{s|f}$ the species' share of the FG biomass in the region, and the diets (04) are weighted the same way.
-- **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The catch of the GSAs holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea area is divided by their sea area:
+- **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The GSAs holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea area are used, and each GSA's catch per km² counts by how much of the region lies in it:
 
 $$
-c_{region} = \frac{\sum_{g \in G} C_g}{\sum_{g \in G} A_g}, \qquad C_{region} = c_{region}\, A_{region}
+c_{f,region} = \sum_{g \in G} w_g\, \frac{C_{f,g}}{A_g}, \qquad w_g = \frac{O_g}{\sum_{h \in G} O_h}, \qquad C_{f,region} = c_{f,region}\, A_{region}
 $$
 
-where $C_g$ is the catch (t/year) reported for GSA $g$, $A_g$ its sea area (km²), $G$ the GSAs used, $c_{region}$ the catch per km² applied in the region (Ecopath_L, Ecopath_Di, F) and $A_{region}$ the region's model area, so $C_{region}$ is the region's total catch (`region_scale` = $A_{region} / \sum_{g \in G} A_g$). ASSUMPTION: catch per km² is the same inside the region as in its GSAs; a region on a fishing ground (or in a closed area) will differ.
+where $C_{f,g}$ is the catch (t/year) of FG $f$ in GSA $g$, $A_g$ the GSA's sea area (km²), $O_g$ the area of the region inside GSA $g$ (km²), $G$ the GSAs used, $c_{f,region}$ the catch per km² applied in the region (Ecopath_L, Ecopath_Di, Catches_Ecosim, F) and $A_{region}$ the region's model area. A region lying 80 % in GSA 6 and 20 % in GSA 7 takes 0.8 of GSA 6's catch per km² and 0.2 of GSA 7's, whatever the size of the two GSAs.
+
+GFCM and Sea Around Us report catch by FAO division and country, not by GSA, so $C_{f,g}$ is not known directly. The pooled catch of the used GSAs, $C_f$, is split among them with each FG's share of STECF FDI landings + discards by GSA, $s_{f,g}$:
+
+$$
+c_{f,region} = \frac{C_f}{\sum_{g \in G} A_g}\, k_f, \qquad k_f = \sum_{g \in G} w_g\, \frac{s_{f,g}}{A_g / \sum_{h \in G} A_h}
+$$
+
+$k_f = 1$ when the region lies in one GSA, or when FDI has no catch of the FG in these GSAs (catch then assumed spread like area). Juvenile stanzas take their adult's $k_f$. The weights, FDI shares and $k_f$ per FG are in `fisheries/custom_catch_overlap_weights_REVIEW.csv`. ASSUMPTIONS: FDI's split of an FG's catch among GSAs (2013 onwards) also held in the Ecopath years, and catch per km² is the same everywhere inside a GSA, so a region on a fishing ground (or in a closed area) will differ.
 - **P/B, Q/B, diets, validation (03–05)** read the region's workbook and files, so they follow its biomass and species composition.
 
 ::: {.callout-warning}
