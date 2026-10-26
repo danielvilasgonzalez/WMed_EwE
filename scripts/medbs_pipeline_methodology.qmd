@@ -438,6 +438,8 @@ tagList(
     var data = null;
     try { data = JSON.parse(document.getElementById('wm-gsa-geojson').textContent); } catch (e) {}
     var layer = null, rect = null;
+    var CUSTOM_BG = { fillOpacity: 0.05, color: '#b8c4cc', weight: 1, fillColor: '#d5dde3' };
+    function isCustom() { return $('input[name="area_mode"]:checked').val() === 'custom'; }
     function style(f) {
       var g = f.properties.gsa_num, on = checked().indexOf(g) !== -1, uns = UNSURVEYED.indexOf(g) !== -1;
       return { color: on ? '#0b4f6c' : '#8a99a6', weight: on ? 1.5 : 1,
@@ -456,8 +458,11 @@ tagList(
             if (i === -1) s.push(g); else s.splice(i, 1);
             setGsas(s);
           });
-          l.on('mouseover', function () { l.setStyle({ weight: 3 }); });
-          l.on('mouseout', function () { layer.resetStyle(l); });
+          // Custom region: GSAs are only a faint background - hovering must not
+          // repaint them in the GSA-selection colours (resetStyle used the
+          // selection style, so hovered GSAs looked selected)
+          l.on('mouseover', function () { if (!isCustom()) l.setStyle({ weight: 3 }); });
+          l.on('mouseout', function () { l.setStyle(isCustom() ? CUSTOM_BG : style(f)); });
         }
       }).addTo(map);
       map.fitBounds(layer.getBounds(), { padding: [10, 10] });
@@ -476,7 +481,7 @@ tagList(
       if (rect) { map.removeLayer(rect); rect = null; }
       if (shapeLayer) { map.removeLayer(shapeLayer); shapeLayer = null; }
       var custom = $('input[name="area_mode"]:checked').val() === 'custom';
-      if (layer) layer.setStyle(custom ? { fillOpacity: 0.05, color: '#b8c4cc', weight: 1 } : style);
+      if (layer) layer.setStyle(custom ? CUSTOM_BG : style);
       if (!custom) { if (layer) layer.setStyle(style); return; }
       if ($('input[name="custom_type"]:checked').val() === 'shapefile') {
         if (shapeData) {
@@ -490,7 +495,7 @@ tagList(
         rect = L.rectangle([[v[2], v[0]], [v[3], v[1]]], { color: '#d9480f', weight: 2, fillOpacity: 0.15 }).addTo(map);
       }
     }
-    $(document).on('change', 'input[name="gsas"]', function () { if (layer) layer.setStyle(style); });
+    $(document).on('change', 'input[name="gsas"]', function () { if (layer && !isCustom()) layer.setStyle(style); });
     $(document).on('change', 'input[name="area_mode"], input[name="custom_type"]', drawBox);
     function onShape(m) { shapeData = m.geojson ? JSON.parse(m.geojson) : null; drawBox(); }
     if (window.Shiny && Shiny.addCustomMessageHandler) Shiny.addCustomMessageHandler('wm-custom-shape', onShape);
