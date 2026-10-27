@@ -48,6 +48,27 @@
   NA_character_
 }
 
+## Home folder. On some Windows set-ups R's "~" does not expand (the
+## 2026-10-27 run wrote its outputs to C:/~/WMed_EwE_output), so on
+## Windows fall back to the user's Documents folder (where R puts "~"
+## normally), then the user profile.
+.wmed_home <- function() {
+  h <- gsub("\\\\", "/", path.expand("~"))
+  if (.Platform$OS.type == "windows" && (grepl("~", h, fixed = TRUE) || !dir.exists(h))) {
+    up <- Sys.getenv("USERPROFILE")
+    for (cand in c(file.path(up, "Documents"), up))
+      if (nzchar(up) && dir.exists(cand)) return(gsub("\\\\", "/", cand))
+  }
+  h
+}
+## "~/x" -> <home>/x with .wmed_home(); other paths unchanged
+.wmed_expand <- function(p) {
+  p <- gsub("\\\\", "/", p)
+  i <- !is.na(p) & grepl("^~(/|$)", p)
+  p[i] <- paste0(.wmed_home(), substring(p[i], 2))
+  p
+}
+
 ## Values of out_dir / pcloud_dir written in one config file
 .wmed_read_config <- function(f) {
   e <- new.env()
@@ -59,7 +80,7 @@
 
 wmed_find_paths <- function(git_dir = NULL) {
   if (is.null(git_dir) || is.na(git_dir)) git_dir <- .wmed_repo_root()
-  git_dir <- sub("/+$", "", path.expand(git_dir))
+  git_dir <- sub("/+$", "", .wmed_expand(git_dir))
   cfg_files <- c(file.path(git_dir, "config.local.R"), file.path(git_dir, "scripts", "config.local.R"),
                  file.path(git_dir, "config.R"), file.path(git_dir, "scripts", "config.R"))
   cfg_files <- cfg_files[file.exists(cfg_files)]
@@ -68,7 +89,7 @@ wmed_find_paths <- function(git_dir = NULL) {
     cand <- c(vapply(cfg, function(x) x[[name]], ""), extra)
     src <- c(basename(cfg_files), names(extra))
     keep <- !is.na(cand) & nzchar(cand)
-    cand <- path.expand(cand[keep]); src <- src[keep]
+    cand <- .wmed_expand(cand[keep]); src <- src[keep]
     hit <- which(dir.exists(cand))[1]
     if (is.na(hit)) list(path = NA_character_, from = NA_character_) else list(path = sub("/+$", "", cand[hit]), from = src[hit])
   }
@@ -79,7 +100,7 @@ wmed_find_paths <- function(git_dir = NULL) {
                              `pCloud Drive (volume)` = file.path("/Volumes/pCloud Drive", .wmed_pcloud_name)))
   od <- pick("out_dir", c(env = Sys.getenv("WMED_OUT_DIR")))
   if (is.na(od$path)) {
-    od <- list(path = file.path(path.expand("~"), "WMed_EwE_output"), from = "default (~/WMed_EwE_output)")
+    od <- list(path = file.path(.wmed_home(), "WMed_EwE_output"), from = "default (~/WMed_EwE_output)")
     dir.create(od$path, recursive = TRUE, showWarnings = FALSE)
   }
   ok <- !is.na(git_dir) && file.exists(file.path(git_dir, "scripts", "01_biomass.R")) && !is.na(pc$path) && dir.exists(od$path)

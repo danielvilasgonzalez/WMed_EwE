@@ -1315,7 +1315,7 @@ Paths below are relative to `pcloud_dir/data/` unless the Location column says o
 | 04 | `diet/MAISHA/`, `diet_reference_tables/`, `data_entry_metaweb_empty.xlsx` | `data/` and `data/Complementary data/` | diet sources, prey category rules, literature fallback | yes |
 | 05 | `WMed_EwE.xlsx`, `validation_reference_tables/` | `data/` and `data/Complementary data/` | 1995 model, crosswalk, other models | yes |
 | 01 | custom region shapefile | uploaded on the page → `out_dir/shapefiles/custom/<area name>/` | custom study area | custom runs |
-| downloaded | GFCM GSA shapefile, NOAA bathymetry, AquaMaps, ISIMIP3a COBALT, FishBase/SeaLifeBase | `out_dir/` caches | GSA polygons, depths, depth suitability, plankton, traits | first run |
+| downloaded | GFCM GSA shapefile, NOAA bathymetry (only if `BATHY_SOURCE = "noaa"` or as fallback), AquaMaps, ISIMIP3a COBALT, FishBase/SeaLifeBase | `out_dir/` caches | GSA polygons, depths, depth suitability, plankton, traits | first run |
 
 ::: {.callout-note}
 ### Species → FG table: `FG_WMed_2026.csv`
@@ -1325,7 +1325,7 @@ The species → functional group assignment comes from `FG_WMed_2026.csv` (pClou
 
 ::: {.callout-note}
 ### Two downloads happen automatically - no local file needed
-The GSA shapefile and the bathymetry raster aren't files you provide - both are fetched over the network the first time a script needs them (from GFCM's own Azure blob storage, and from NOAA respectively) and cached locally afterward (`gsa_shp_dir`/`GFCM_GSA_shp` for the shapefile; wherever `getNOAA.bathy()`'s own cache lands, keyed by the bounding box requested) so re-running the script doesn't re-download every time. This is also why `eval: false` on the code chunks throughout this document matters (@sec-configure) - reproducing this pipeline's actual output needs live network access at least once, which isn't guaranteed at render time.
+The GSA shapefile isn't a file you provide: it is downloaded from GFCM's Azure blob storage the first time and cached (`gsa_shp_dir`/`GFCM_GSA_shp`). The bathymetry comes from the **EMODnet Bathymetry DTM** [@emodnetbathy2022] tiles in pCloud, `data/Bathymetry/EMODnet_x<lon>_y<lat>.tif` (2° × 2° tiles, 6° W–16° E, 35–45° N, elevation in m, 1/8 arc-minute ≈ 230 m cells), averaged to 1 arc-minute for the strata areas - nothing is downloaded. `BATHY_SOURCE = "noaa"` uses NOAA ETOPO via `marmap::getNOAA.bathy()` [@pante2013] instead (the source until October 2026); each source is the other's fallback when it fails or does not cover an area. EMODnet was made the default because it needs no internet (on a Windows laptop the NOAA download failed and step 01 stopped) and is a finer, Europe-specific product built from survey soundings. The strata-area cache records its source (`strata_area_by_area.csv.bathy_source`) and is recomputed when `BATHY_SOURCE` changes; expect small differences between the two sources, mostly along the coast. This is also why `eval: false` on the code chunks throughout this document matters (@sec-configure) - reproducing this pipeline's actual output needs live network access at least once, which isn't guaranteed at render time.
 :::
 
 ```{r}
@@ -1336,10 +1336,10 @@ The GSA shapefile and the bathymetry raster aren't files you provide - both are 
 ## area's own extent (a GSA polygon or the custom region), so this
 ## downloads only the bathymetry actually needed, not the whole
 ## Mediterranean every time.
-bathy <- marmap::getNOAA.bathy(lon1 = bbox["xmin"], lon2 = bbox["xmax"],
-                                lat1 = bbox["ymin"], lat2 = bbox["ymax"],
-                                resolution = 1, keep = TRUE)
-bathy_r <- marmap::as.raster(bathy)
+## wmed_get_bathy(): EMODnet tiles (BATHY_SOURCE = "emodnet", default) or
+## NOAA ETOPO via marmap::getNOAA.bathy() ("noaa"), the other as fallback
+bathy_r <- wmed_get_bathy(bbox["xmin"], bbox["xmax"], bbox["ymin"], bbox["ymax"],
+                          resolution = 1, as = "raster")
 ```
 
 ---
@@ -1605,7 +1605,7 @@ $$D_{\text{area}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{area}}}, \qqua
 
 where $h$ is a depth stratum, $A_h$ its area (km²), $A_{area} = \sum_h A_h$ the area of the GSA or custom region, $n_{samples,h}$ the number of hauls in stratum $h$ and $\bar D_h$ their mean density.
 
-The stratum area shares are computed from **bathymetry**, not from sample counts - a NOAA bathymetry raster is downloaded, clipped to the area's own polygon (a GSA boundary, or the custom region from @sec-area-definition - `compute_strata_area_by_area()` doesn't need to know which), and each cell's real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.
+The stratum area shares are computed from **bathymetry**, not from sample counts - a bathymetry raster (the EMODnet DTM tiles by default, `BATHY_SOURCE`) is read, clipped to the area's own polygon (a GSA boundary, or the custom region from @sec-area-definition - `compute_strata_area_by_area()` doesn't need to know which), and each cell's real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.
 
 ```{r}
 #| label: strata-area-and-weighted-estimator
@@ -1863,7 +1863,7 @@ $$
 A_{model} = \sum_{g,h} A_{g,h} = 175{,}660\ \text{km}^2
 $$
 
-where $g$ is a GSA, $h$ a depth stratum and $A_{g,h}$ the stratum area (km²); here the MEDITS 10–800 m strata of GSAs 1, 2, 5, 6, 7, 8, 9, 10 and 11 (`strata_area_by_area.csv`, bathymetry from NOAA ETOPO via `marmap`; [@pante2013]). Habitats shallower than 10 m (most of the seagrass, lagoons) are outside this area by construction.
+where $g$ is a GSA, $h$ a depth stratum and $A_{g,h}$ the stratum area (km²); here the MEDITS 10–800 m strata of GSAs 1, 2, 5, 6, 7, 8, 9, 10 and 11 (`strata_area_by_area.csv`, bathymetry from the EMODnet DTM [@emodnetbathy2022], or NOAA ETOPO via `marmap` [@pante2013] with `BATHY_SOURCE = "noaa"`). Habitats shallower than 10 m (most of the seagrass, lagoons) are outside this area by construction.
 
 ### Equations
 

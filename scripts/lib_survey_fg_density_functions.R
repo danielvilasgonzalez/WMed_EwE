@@ -2224,19 +2224,114 @@ compute_fg_densities_by_stratum <- function(dt, strata = TRUE) {
 ## are NOT equal-area (they shrink toward the poles), which matters
 ## when areas span different latitudes.
 
+## =================================================================
+## Bathymetry: EMODnet (default) or NOAA ETOPO
+## =================================================================
+## BATHY_SOURCE (set in run_pipeline_demo.R; default "emodnet"):
+##   "emodnet" - EMODnet Bathymetry DTM tiles kept in pCloud
+##               (data/Bathymetry/EMODnet_x<lon>_y<lat>.tif: 2 x 2 degree
+##               tiles, elevation in m, negative at sea, 1/8 arc-minute
+##               cells, ~230 m), averaged to the requested resolution.
+##               No download, so a run does not depend on NOAA's server
+##               (on 2026-10-27 a Windows laptop could not reach it and
+##               step 01 stopped), and EMODnet is the finer, Europe-
+##               specific product (built from survey soundings).
+##   "noaa"    - NOAA ETOPO via marmap::getNOAA.bathy() (downloaded), the
+##               source used until 2026-10-27.
+## The other source is the fallback when the first one fails or does not
+## cover the box (EMODnet tiles here: 6 W - 16 E, 35 - 45 N).
+## Changing the source changes the strata areas a little (mostly along the
+## coast), so the strata-area cache records its source and is recomputed
+## when it differs.
+
+## EMODnet tiles cropped to a box and averaged to `resolution` arc-minutes.
+## NULL when no tile covers the box; attribute "coverage" = share of the
+## box covered by tiles.
+local_bathy_raster <- function(bbox, resolution = 1,
+                               dir = get0("BATHY_LOCAL_DIR", envir = .GlobalEnv,
+                                          ifnotfound = if (exists("pcloud_dir", envir = .GlobalEnv)) file.path(get("pcloud_dir", envir = .GlobalEnv), "data", "Bathymetry") else NA)) {
+  if (is.na(dir) || !dir.exists(dir)) return(NULL)
+  f <- list.files(dir, pattern = "^EMODnet_x[+-]?[0-9]+_y[+-]?[0-9]+\\.tif$", full.names = TRUE)
+  if (!length(f)) return(NULL)
+  x0 <- as.numeric(sub("^EMODnet_x([+-]?[0-9]+)_y.*$", "\\1", basename(f)))
+  y0 <- as.numeric(sub("^EMODnet_x[+-]?[0-9]+_y([+-]?[0-9]+)\\.tif$", "\\1", basename(f)))
+  use <- x0 < bbox[["xmax"]] & x0 + 2 > bbox[["xmin"]] & y0 < bbox[["ymax"]] & y0 + 2 > bbox[["ymin"]]
+  if (!any(use)) return(NULL)
+  ext <- raster::extent(bbox[["xmin"]], bbox[["xmax"]], bbox[["ymin"]], bbox[["ymax"]])
+  tiles <- lapply(f[use], function(p) {
+    r <- raster::raster(p)
+    r <- tryCatch(raster::crop(r, ext), error = function(e) NULL)
+    if (is.null(r)) return(NULL)
+    fact <- max(1L, round((resolution / 60) / raster::res(r)[1]))
+    if (fact > 1) r <- raster::aggregate(r, fact = fact, fun = mean, na.rm = TRUE)
+    r
+  })
+  tiles <- Filter(Negate(is.null), tiles)
+  if (!length(tiles)) return(NULL)
+  out <- if (length(tiles) == 1) tiles[[1]] else do.call(raster::merge, c(tiles, list(tolerance = 0.5)))
+  covered <- sum(pmax(0, pmin(x0[use] + 2, bbox[["xmax"]]) - pmax(x0[use], bbox[["xmin"]])) *
+                   pmax(0, pmin(y0[use] + 2, bbox[["ymax"]]) - pmax(y0[use], bbox[["ymin"]])))
+  attr(out, "coverage") <- min(1, covered / ((bbox[["xmax"]] - bbox[["xmin"]]) * (bbox[["ymax"]] - bbox[["ymin"]])))
+  out
+}
+
+## RasterLayer -> marmap "bathy" matrix (rows = longitude, columns =
+## latitude, both increasing), the shape getNOAA.bathy() returns.
+.raster_to_bathy <- function(r) {
+  m <- t(raster::as.matrix(r)); m <- m[, ncol(m):1, drop = FALSE]
+  rownames(m) <- raster::xFromCol(r, seq_len(ncol(r)))
+  colnames(m) <- rev(raster::yFromRow(r, seq_len(nrow(r))))
+  class(m) <- "bathy"
+  m
+}
+
+## Drop-in for marmap::getNOAA.bathy(): same first arguments, returns a
+## "bathy" matrix (as = "bathy") or a RasterLayer (as = "raster"), or NULL
+## when neither source works. Attribute "wmed_source" = "emodnet"/"noaa".
+wmed_get_bathy <- function(lon1, lon2, lat1, lat2, resolution = 1, keep = FALSE, as = c("bathy", "raster"),
+                           source = get0("BATHY_SOURCE", envir = .GlobalEnv, ifnotfound = "emodnet")) {
+  as <- match.arg(as)
+  bb <- c(xmin = min(lon1, lon2), xmax = max(lon1, lon2), ymin = min(lat1, lat2), ymax = max(lat1, lat2))
+  get_emodnet <- function(min_cov) {
+    r <- tryCatch(local_bathy_raster(bb, resolution), error = function(e) {
+      message("  EMODnet bathymetry failed: ", conditionMessage(e)); NULL })
+    if (is.null(r) || attr(r, "coverage") < min_cov) return(NULL)
+    if (attr(r, "coverage") < 0.999)
+      message("  WARNING: the EMODnet tiles cover ", round(100 * attr(r, "coverage")), "% of this box - the rest gets no depth.")
+    r
+  }
+  get_noaa <- function() {
+    if (isTRUE(getOption("wmed.noaa_bathy_failed"))) return(NULL)   # one failed download per R session is enough (each can take minutes)
+    if (!requireNamespace("marmap", quietly = TRUE)) return(NULL)
+    tryCatch(marmap::as.raster(marmap::getNOAA.bathy(lon1 = bb[["xmin"]], lon2 = bb[["xmax"]], lat1 = bb[["ymin"]], lat2 = bb[["ymax"]],
+                                                     resolution = resolution, keep = keep)),
+             error = function(e) { message("  NOAA bathymetry download failed: ", conditionMessage(e))
+               options(wmed.noaa_bathy_failed = TRUE); NULL })
+  }
+  ## EMODnet first needs (almost) full coverage; as the fallback after
+  ## NOAA failed, any coverage is better than none
+  steps <- if (identical(source, "noaa"))
+    list(noaa = get_noaa, emodnet = function() get_emodnet(0)) else
+    list(emodnet = function() get_emodnet(0.999), noaa = get_noaa, emodnet = function() get_emodnet(0))
+  for (k in seq_along(steps)) {
+    r <- steps[[k]]()
+    if (is.null(r)) next
+    src <- names(steps)[k]
+    if (!identical(src, source)) message("  Bathymetry: using ", src, " (", source, " not available for this box).")
+    out <- if (as == "raster") r else .raster_to_bathy(r)
+    attr(out, "wmed_source") <- src
+    return(out)
+  }
+  NULL
+}
+
 compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 1) {
   if (nrow(area_poly) == 0) return(NULL)
   bbox <- sf::st_bbox(area_poly)
   
-  bathy <- tryCatch(
-    marmap::getNOAA.bathy(lon1 = bbox["xmin"], lon2 = bbox["xmax"],
-                          lat1 = bbox["ymin"], lat2 = bbox["ymax"],
-                          resolution = resolution),
-    error = function(e) { message("  Bathymetry download failed: ", conditionMessage(e)); NULL }
-  )
-  if (is.null(bathy)) return("download_failed")   # told apart from an area with no cells in the strata (NULL below)
-  
-  bathy_r <- marmap::as.raster(bathy)
+  bathy_r <- wmed_get_bathy(bbox["xmin"], bbox["xmax"], bbox["ymin"], bbox["ymax"], resolution = resolution, as = "raster")
+  if (is.null(bathy_r)) return("download_failed")   # told apart from an area with no cells in the strata (NULL below)
+  bathy_src <- attr(bathy_r, "wmed_source")
   bathy_r <- raster::reclassify(bathy_r, cbind(0, Inf, NA), right = FALSE)
   bathy_r <- raster::mask(bathy_r, as(area_poly, "Spatial"))
   area_r <- raster::area(bathy_r)
@@ -2274,7 +2369,9 @@ compute_strata_area_for_polygon <- function(area_poly, strata_def, resolution = 
   strata_areas <- bathy_dt[, .(area_km2 = sum(cell_area_km2, na.rm = TRUE)), by = Stratum]
   strata_areas[, prop := area_km2 / sum(area_km2)]
   setorder(strata_areas, Stratum)
-  strata_areas[, .(Stratum, area_km2, prop)]
+  out <- strata_areas[, .(Stratum, area_km2, prop)]
+  setattr(out, "bathy_source", bathy_src)   # setattr: attr<- would break data.table's := later
+  out
 }
 
 compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_def,
@@ -2336,23 +2433,34 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     ## a single-band cache written without a Stratum column (MEDIAS 10-200 m
     ## fallback) is valid when strata_def has one band
     single_band_ok <- !"Stratum" %in% names(cached) && nrow(want) == 1
-    if ((single_band_ok || (identical(as.numeric(have_strata), as.numeric(sort(want$Stratum))) && bounds_ok)) &&
+    ## Bathymetry source: a cache without the column was made with NOAA
+    ## (kept in a small side file, <cache>.bathy_source, so the table itself
+    ## keeps its columns)
+    want_src <- get0("BATHY_SOURCE", envir = .GlobalEnv, ifnotfound = "emodnet")
+    src_file <- paste0(cache_path, ".bathy_source")
+    cached_src <- if (file.exists(src_file)) trimws(readLines(src_file, warn = FALSE)) else "noaa"
+    src_ok <- want_src %in% cached_src
+    if (!src_ok) message("Cached strata areas in ", cache_path, " were computed from ", paste(cached_src, collapse = "/"),
+                         " bathymetry; BATHY_SOURCE is '", want_src, "' - recomputing.")
+    if (src_ok && (single_band_ok || (identical(as.numeric(have_strata), as.numeric(sort(want$Stratum))) && bounds_ok)) &&
         all(area_ids %in% cached$AreaID)) {
       return(cached)
     }
-    message("Cached strata areas in ", cache_path, " do not match the current strata definition (cache strata: ",
+    if (src_ok) message("Cached strata areas in ", cache_path, " do not match the current strata definition (cache strata: ",
             paste(have_strata, collapse = ","), "; expected: ", paste(sort(want$Stratum), collapse = ","),
             ") or miss an area - recomputing (the old file is kept as ", basename(cache_path), ".stale).")
     file.copy(cache_path, paste0(cache_path, ".stale"), overwrite = TRUE)
   }
   
-  message("Computing strata areas via bathymetry for ", length(area_ids), " area(s)",
-          " (slow - downloads bathymetry once per area)...")
+  message("Computing strata areas via bathymetry (BATHY_SOURCE = '", get0("BATHY_SOURCE", envir = .GlobalEnv, ifnotfound = "emodnet"),
+          "') for ", length(area_ids), " area(s)...")
+  used_src <- character(0)
   results <- lapply(area_ids, function(a) {
     message(" Processing area ", a, "...")
     poly <- area_shp[area_shp[[area_id_col]] == a, ]
     res <- compute_strata_area_for_polygon(poly, strata_def, resolution)
     if (identical(res, "download_failed")) return(res)
+    if (!is.null(res)) used_src <<- c(used_src, attr(res, "bathy_source"))
     if (!is.null(res)) res[, AreaID := a]
     res
   })
@@ -2364,8 +2472,9 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
   ## the model area (311,669 instead of ~650,000 km2) and dropped their
   ## biomass. Now the run stops and nothing is written.
   if (length(failed_ids) > 0)
-    stop("Bathymetry (NOAA ETOPO via marmap) could not be downloaded for area(s) ", paste(failed_ids, collapse = ", "),
-         " - no internet connection? Nothing was saved to ", if (is.null(cache_path)) "the cache" else cache_path,
+    stop("No bathymetry for area(s) ", paste(failed_ids, collapse = ", "),
+         ": no EMODnet tile in pCloud data/Bathymetry covers them and the NOAA download failed (no internet, or an",
+         " old marmap - install.packages('marmap')). Nothing was saved to ", if (is.null(cache_path)) "the cache" else cache_path,
          ". Check the connection and run again.", call. = FALSE)
   
   strata_depth_bounds <- unique(as.data.table(strata_def)[, .(Stratum = stratum_num,
@@ -2383,7 +2492,9 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     on_disk <- copy(strata_area_by_area)
     if (!identical(area_id_label, "AreaID")) setnames(on_disk, "AreaID", area_id_label)
     safe_fwrite(on_disk, cache_path)
-    message("Saved to ", cache_path, " - delete this file to force recomputation.")
+    writeLines(unique(used_src), paste0(cache_path, ".bathy_source"))
+    message("Saved to ", cache_path, " (bathymetry: ", paste(unique(used_src), collapse = " + "),
+            ") - delete this file to force recomputation.")
   }
   strata_area_by_area
 }

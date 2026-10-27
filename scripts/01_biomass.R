@@ -121,8 +121,10 @@ while (sink.number() > 0) sink()
 ##     "far out").
 ## (5) Stratified mean per GSA (Cochran 1977, Sampling Techniques):
 ##     D_s,g,y = sum_h A_g,h dbar_s,g,h,y / sum_h A_g,h,
-##     A_g,h = stratum area from bathymetry (GEBCO/NOAA ETOPO via marmap;
-##     Pante & Simon-Bouhet 2013, PLoS ONE 8:e73051).
+##     A_g,h = stratum area from bathymetry (BATHY_SOURCE: EMODnet
+##     Bathymetry DTM tiles in pCloud by default, EMODnet Bathymetry
+##     Consortium 2022; or NOAA ETOPO via marmap, Pante & Simon-Bouhet
+##     2013, PLoS ONE 8:e73051).
 ## (6) Region (model area): D_s,y = sum_g A_g D_s,g,y / sum_g A_g.
 ## (7) FG density: D_f,y = sum_{s in f} D_s,y (FG_WMed_2026.csv).
 ## (8) MEDIAS acoustic (Leonori et al. 2021, Medit. Mar. Sci. 22:
@@ -436,6 +438,11 @@ message("This script will write its outputs to:\n  out_dir  = ", out_dir, "\n  p
 if (exists("MODEL_GSAS", envir = .GlobalEnv, inherits = FALSE) && length(MODEL_GSAS)) FILTER_AREAS <- MODEL_GSAS
 if (!exists("FILTER_AREAS",  envir = .GlobalEnv, inherits = FALSE)) FILTER_AREAS  <- if (AREA_MODE == "custom") NULL else 1:12        # GSA (1-11 Western Med + 12 Northern Tunisia)
 if (!exists("STRATA",        envir = .GlobalEnv, inherits = FALSE)) STRATA        <- TRUE         # function attribute: strata
+## Bathymetry for the depth-stratum areas (and the depth cuts in 01b):
+## "emodnet" = EMODnet tiles in pCloud data/Bathymetry (no download),
+## "noaa" = NOAA ETOPO downloaded with marmap. Each is the other's
+## fallback (lib_survey_fg_density_functions.R, wmed_get_bathy()).
+if (!exists("BATHY_SOURCE",  envir = .GlobalEnv, inherits = FALSE)) assign("BATHY_SOURCE", "emodnet", envir = .GlobalEnv)
 if (!exists("YEAR_ECOPATH",  envir = .GlobalEnv, inherits = FALSE)) YEAR_ECOPATH  <- 1994:1996     # function attribute: year_ecopath
 ## TS_YEARS' default last year used to be the hardcoded literal 2023,
 ## which silently went stale as soon as a newer MEDITS year was added to
@@ -600,6 +607,19 @@ FISHBASE_TAXONOMY_CACHE_PATH <- file.path(out_dir, "fishbase_taxonomy_cache.rds"
 ## fallback for whatever FishBase/SeaLifeBase left with no rank filled
 ## in; FishBase/SeaLifeBase stays the first authority wherever it resolves a name.
 WORMS_TAXONOMY_CACHE_PATH <- file.path(out_dir, "worms_taxonomy_cache.rds")
+
+## Shared copy of both taxonomy caches in pCloud (data/taxonomy_cache), so
+## a laptop with a new output folder does not download all of FishBase,
+## SeaLifeBase and WoRMS again (slow, and the step where a Windows run
+## with R 4.2 stopped without an error on 2026-10-27). Read from pCloud
+## when out_dir has no cache; written back below after the taxonomy
+## fallback whenever out_dir's cache is newer.
+TAXONOMY_CACHE_SHARED_DIR <- file.path(pcloud_dir, "data", "taxonomy_cache")
+for (.f in c(FISHBASE_TAXONOMY_CACHE_PATH, WORMS_TAXONOMY_CACHE_PATH)) {
+  .sh <- file.path(TAXONOMY_CACHE_SHARED_DIR, basename(.f))
+  if (!file.exists(.f) && file.exists(.sh) && file.copy(.sh, .f))
+    message("[taxonomy cache] ", basename(.f), " copied from pCloud (", TAXONOMY_CACHE_SHARED_DIR, ").")
+}
 
 ## OPT-IN, default FALSE - see lib_aquamaps_depth_extension.R's own header
 ## for the full rationale/assumption/caveats. MEDITS_STRATA below only
@@ -1031,6 +1051,15 @@ message(sum(non_taxon, na.rm = TRUE), " non-taxon row(s) (egg-capsule, or a lite
         " name - Sea ball/Leaves of Posidonia oceanica, shell debris) excluded from the taxonomy fallback attempt.")
 
 dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "both", cache_path = FISHBASE_TAXONOMY_CACHE_PATH, worms_cache_path = WORMS_TAXONOMY_CACHE_PATH)
+## Taxonomy caches -> pCloud (see TAXONOMY_CACHE_SHARED_DIR above)
+tryCatch({
+  dir.create(TAXONOMY_CACHE_SHARED_DIR, recursive = TRUE, showWarnings = FALSE)
+  for (.f in c(FISHBASE_TAXONOMY_CACHE_PATH, WORMS_TAXONOMY_CACHE_PATH)) {
+    .sh <- file.path(TAXONOMY_CACHE_SHARED_DIR, basename(.f))
+    if (file.exists(.f) && (!file.exists(.sh) || file.mtime(.f) > file.mtime(.sh)) && file.copy(.f, .sh, overwrite = TRUE))
+      message("[taxonomy cache] ", basename(.f), " saved to pCloud for the other laptops.")
+  }
+}, error = function(e) message("[taxonomy cache] could not copy to pCloud: ", conditionMessage(e)))
 
 ## --- Seed FG rules: REMOVED ENTIRELY ------------------------
 ## The 4 rules that survived the previous re-audit (Holothuroidea ->

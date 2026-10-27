@@ -2120,7 +2120,7 @@ PLANKTON_ALLOCATION <- list(
 ## Ecopath_B is expressed over. Without it the mean ran over the whole
 ## West Med bbox (open ocean, African coast), which is far more
 ## oligotrophic than the shelf/slope the model covers. Bathymetry from
-## marmap (NOAA ETOPO, same source as compute_strata_area_by_area());
+## wmed_get_bathy() (EMODnet or NOAA ETOPO, BATHY_SOURCE; same source as compute_strata_area_by_area());
 ## if that download fails the mask falls back to the polygons only.
 ## GSAs the model area actually covers: the ones with MEDITS strata area
 ## (strata_area_by_area), NOT all of FILTER_AREAS - FILTER_AREAS = 1:11
@@ -2159,7 +2159,7 @@ PLANKTON_ALLOCATION <- list(
     dmin <- if (exists("MEDITS_STRATA")) min(MEDITS_STRATA$depth_min) else 10
     dmax <- if (exists("MEDITS_STRATA")) max(MEDITS_STRATA$depth_max) else 800
   }
-  bathy <- tryCatch(marmap::getNOAA.bathy(lon1 = min(lon) - 0.1, lon2 = max(lon) + 0.1,
+  bathy <- tryCatch(wmed_get_bathy(lon1 = min(lon) - 0.1, lon2 = max(lon) + 0.1,
                                           lat1 = min(lat) - 0.1, lat2 = max(lat) + 0.1, resolution = 2),
                     error = function(e) { message("[Plankton domain] Bathymetry download failed (", conditionMessage(e),
                                                   ") - masking by GSA polygons only, no depth filter."); NULL })
@@ -2871,7 +2871,7 @@ EUSEAMAP_AREA_CACHE <- file.path(BENTHIC_REF_DIR, paste0("euseamap2025_seagrass_
   bb <- c(min(xy[, 1]) - 0.05, max(xy[, 1]) + 0.05, min(xy[, 2]) - 0.05, max(xy[, 2]) + 0.05)
   bathy <- NULL
   for (res in c(0.25, 1)) {
-    bathy <- tryCatch(marmap::getNOAA.bathy(bb[1], bb[2], bb[3], bb[4], resolution = res, keep = FALSE),
+    bathy <- tryCatch(wmed_get_bathy(bb[1], bb[2], bb[3], bb[4], resolution = res),
                       error = function(e) NULL)
     if (!is.null(bathy)) break
   }
@@ -2965,8 +2965,8 @@ compute_mediseh_posidonia_area <- function(tif, area_shp, area_id_col, areas, p_
     hit <- is.finite(pv) & pv >= p_min
     a_all <- sum(av[hit])
     dv <- rep(Inf, length(pv))
-    bathy <- tryCatch(marmap::getNOAA.bathy(bb[["xmin"]], bb[["xmax"]], bb[["ymin"]], bb[["ymax"]], resolution = 0.25, keep = FALSE), error = function(e) NULL)
-    if (!is.null(bathy)) dv <- -raster::values(raster::resample(marmap::as.raster(bathy), rm, method = "ngb"))
+    bathy <- tryCatch(wmed_get_bathy(bb[["xmin"]], bb[["xmax"]], bb[["ymin"]], bb[["ymax"]], resolution = 0.25, as = "raster"), error = function(e) NULL)
+    if (!is.null(bathy)) dv <- -raster::values(raster::resample(bathy, rm, method = "ngb"))
     a_deep <- sum(av[hit & is.finite(dv) & dv >= min_depth])
     hh <- hit & is.finite(dv) & dv > 0
     if (any(hh)) {
