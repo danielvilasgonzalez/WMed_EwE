@@ -244,6 +244,18 @@ if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) {
                                            asfis_file = if (exists("asfis_file")) asfis_file else NULL, update = GFCM_SAF_UPDATE)
   if (is.null(.gfcm_all)) STOCK_ASSESSMENT_SOURCE <- "RAM"
 }
+## Other stock assessments of FG species (outside the model GSAs, or
+## overlapping a stock in use; GFCM SAFs + RAM Legacy): review CSV only,
+## not used in the model (lib_gfcm_saf_online.R, gfcm_saf_other_stocks()).
+## GFCM_SAF_OTHER_STOCKS = FALSE skips it (the first run downloads their PDFs).
+if (!exists("GFCM_SAF_OTHER_STOCKS", envir = .GlobalEnv, inherits = FALSE)) GFCM_SAF_OTHER_STOCKS <- TRUE
+if (isTRUE(GFCM_SAF_OTHER_STOCKS)) {
+  if (!exists("gfcm_saf_other_stocks", mode = "function")) source(file.path(git_dir, "scripts/lib_gfcm_saf_online.R"), local = TRUE)
+  tryCatch(gfcm_saf_other_stocks(pcloud_dir, file.path(csv_out_dir, "stock_assessments_other_FG_species.csv"), FILTER_AREAS,
+                                 if (exists("dataframe2")) dataframe2 else fg_lookup_safe,
+                                 asfis_file = if (exists("asfis_file")) asfis_file else NULL),
+           error = function(e) message("[GFCM SAF other stocks] skipped: ", conditionMessage(e)))
+}
 STAR_RAMLEGACY_DIR <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) dirname(.gfcm_all) else file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy")
 star_ram_path <- if (identical(STOCK_ASSESSMENT_SOURCE, "GFCM")) .gfcm_all else file.path(STAR_RAMLEGACY_DIR, "combined_medbs_star_ramlegacy.csv")
 message("[Stock assessments] source = ", STOCK_ASSESSMENT_SOURCE, " (", star_ram_path, ")")

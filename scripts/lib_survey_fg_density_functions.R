@@ -560,6 +560,7 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
   if (!requireNamespace("rfishbase", quietly = TRUE)) {
     stop("rfishbase not installed - required for taxonomy_source='fishbase' or 'both'.")
   }
+  servers_ok <- 0L   # how many of the two FishBase servers were read (see fetch_taxonomy_fishbase())
   fetch_one_server <- function(server) {
     for (attempt in seq_len(max_retries)) {
       ## load_taxa() has NEVER taken a species-name filter argument (old
@@ -580,7 +581,7 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
       ## the sink()ed run log (2026-10-08). Captured and discarded here.
       tax <- tryCatch({ .tx <- NULL; invisible(utils::capture.output(.tx <- rfishbase::load_taxa(server = server)))
                         as.data.table(.tx) }, error = function(e) e)
-      if (!inherits(tax, "error")) return(tax)
+      if (!inherits(tax, "error")) { servers_ok <<- servers_ok + 1L; return(tax) }
       if (attempt < max_retries) {
         message("  rfishbase::load_taxa() failed on server '", server, "' (attempt ", attempt, "/", max_retries,
                 "): ", conditionMessage(tax), " - retrying in ", 2^attempt, "s.")
@@ -656,7 +657,7 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
   }), fill = TRUE)
   not_found <- data.table(ScientificName = species_names, Genus = NA_character_, Family = NA_character_,
                           Order = NA_character_, Class = NA_character_, Phylum = NA_character_)
-  if (is.null(results) || nrow(results) == 0) return(not_found)
+  if (is.null(results) || nrow(results) == 0) return(setattr(not_found, "servers_ok", servers_ok))
   
   ## fishbase and sealifebase are disjoint in practice (a species is one
   ## or the other), but if a name genuinely comes back from both, keep
@@ -672,6 +673,7 @@ fetch_taxonomy_fishbase_uncached <- function(species_names, max_retries = 3) {
   ## SeaLifeBase again on every future run just because it has no row here).
   still_missing <- setdiff(species_names, results$ScientificName)
   if (length(still_missing) > 0) results <- rbindlist(list(results, not_found[ScientificName %in% still_missing]))
+  setattr(results, "servers_ok", servers_ok)
   results
 }
 
@@ -700,8 +702,15 @@ fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
   ## exchange for never permanently trusting a "not found" that was
   ## actually just a broken fetch.
   rank_cols <- c("Genus", "Family", "Order", "Class", "Phylum")
+  ## Since 2026-10-27 a "not found" row is trusted for TAXONOMY_RECHECK_DAYS
+  ## (default 30) when it was written after BOTH FishBase servers were read
+  ## fine (checked_on column): re-querying ~100 truly unknown names cost
+  ## ~2 min every run, because it means downloading FishBase's whole
+  ## taxonomy tables again. Older rows (no checked_on) are re-queried once.
+  recheck_days <- get0("TAXONOMY_RECHECK_DAYS", envir = .GlobalEnv, ifnotfound = 30)
   resolved_cache_names <- if (!is.null(cache) && nrow(cache) > 0) {
-    cache[rowSums(!is.na(cache[, ..rank_cols])) > 0, ScientificName]
+    fresh_nf <- if ("checked_on" %in% names(cache)) !is.na(cache$checked_on) & (Sys.Date() - as.Date(cache$checked_on)) <= recheck_days else FALSE
+    cache[rowSums(!is.na(cache[, ..rank_cols])) > 0 | fresh_nf, ScientificName]
   } else character(0)
   already_cached <- intersect(species_names, resolved_cache_names)
   to_query <- setdiff(species_names, already_cached)
@@ -714,6 +723,10 @@ fetch_taxonomy_fishbase <- function(species_names, cache_path = NULL) {
   }
   
   fresh_result <- if (length(to_query) > 0) fetch_taxonomy_fishbase_uncached(to_query) else NULL
+  ## stamp the rows of this fetch only when both servers were read, so a
+  ## broken download is never trusted as "not found"
+  if (!is.null(fresh_result) && nrow(fresh_result))
+    fresh_result[, checked_on := if (identical(attr(fresh_result, "servers_ok"), 2L)) as.character(Sys.Date()) else NA_character_]
   
   ## Drop any stale row for a name we just re-queried (it's either
   ## replaced by fresh_result or, if that still came back all-NA,
@@ -2260,10 +2273,17 @@ bathy_mosaic <- function(resolution = 1, dir) {
   nm <- paste0("EMODnet_WMed_", format(resolution), "arcmin.tif")
   od <- get0("out_dir", envir = .GlobalEnv, ifnotfound = NA)
   places <- c(file.path(dir, nm), if (!is.na(od)) file.path(od, "bathymetry", nm))
-  hit <- places[file.exists(places)][1]
-  if (!is.na(hit)) return(raster::raster(hit))
   tl <- .bathy_tiles(dir)
   if (!nrow(tl)) return(NULL)
+  hit <- places[file.exists(places)][1]
+  if (!is.na(hit)) {
+    m <- raster::raster(hit)
+    ## rebuilt when tiles were added outside it (e.g. downloaded below)
+    e <- raster::extent(m)
+    if (e@xmin <= min(tl$x0) + 1e-6 && e@xmax >= max(tl$x0) + 2 - 1e-6 &&
+        e@ymin <= min(tl$y0) + 1e-6 && e@ymax >= max(tl$y0) + 2 - 1e-6) return(m)
+    message("  New EMODnet tiles found - rebuilding ", nm, ".")
+  }
   message("  Building the EMODnet depth raster at ", resolution, " arc-minute from ", nrow(tl),
           " tiles (once; saved as ", nm, ")...")
   cell <- resolution / 60
@@ -2285,6 +2305,34 @@ bathy_mosaic <- function(resolution = 1, dir) {
   out
 }
 
+## Missing 2 x 2 degree tiles for a box are downloaded from the EMODnet
+## Bathymetry WCS (DTM, mean depth, GeoTIFF at the same 1/8 arc-minute as
+## the tiles in pCloud) into the same folder with the same names, e.g.
+## for GSA 10, which reaches past 16 E where the original tiles stop.
+## Each tile is downloaded once; a failed download just leaves the gap
+## (NOAA is then used for that box, as before).
+.download_emodnet_tiles <- function(bbox, dir) {
+  xs <- seq(floor(bbox[["xmin"]] / 2) * 2, ceiling(bbox[["xmax"]] / 2) * 2 - 2, by = 2)
+  ys <- seq(floor((bbox[["ymin"]] - 1) / 2) * 2 + 1, ceiling(bbox[["ymax"]] / 2) * 2 + 1, by = 2)   # tiles start at odd latitudes (35, 37, ...)
+  ys <- ys[ys < bbox[["ymax"]] & ys + 2 > bbox[["ymin"]]]
+  tl <- .bathy_tiles(dir)
+  got <- 0L
+  for (x in xs) for (y in ys) {
+    if (nrow(tl[x0 == x & y0 == y])) next
+    f <- file.path(dir, sprintf("EMODnet_x%+d_y%+d.tif", x, y))
+    url <- sprintf(paste0("https://ows.emodnet-bathymetry.eu/wcs?service=wcs&version=1.0.0&request=getcoverage",
+                          "&coverage=emodnet:mean&crs=EPSG:4326&BBOX=%d,%d,%d,%d&format=image/tiff",
+                          "&interpolation=nearest&resx=0.00208333&resy=0.00208333"), x, y, x + 2, y + 2)
+    message("  Downloading EMODnet bathymetry tile ", basename(f), " ...")
+    tmp <- tempfile(fileext = ".tif")
+    ok <- tryCatch({ utils::download.file(url, tmp, mode = "wb", quiet = TRUE)
+      r <- raster::raster(tmp); is.finite(raster::cellStats(r, "min")) }, error = function(e) FALSE, warning = function(w) FALSE)
+    if (isTRUE(ok) && file.copy(tmp, f, overwrite = TRUE)) got <- got + 1L else message("  ... failed (left out).")
+    unlink(tmp)
+  }
+  got
+}
+
 ## EMODnet depth for a box: cropped from bathy_mosaic(). NULL when no tile
 ## covers the box; attribute "coverage" = share of the box with tiles.
 local_bathy_raster <- function(bbox, resolution = 1,
@@ -2293,6 +2341,15 @@ local_bathy_raster <- function(bbox, resolution = 1,
   if (is.na(dir) || !dir.exists(dir)) return(NULL)
   tl <- .bathy_tiles(dir)
   if (!nrow(tl)) return(NULL)
+  ## any part of the box without a tile -> try to download the tile
+  .cov <- function(tl) { u <- tl$x0 < bbox[["xmax"]] & tl$x0 + 2 > bbox[["xmin"]] & tl$y0 < bbox[["ymax"]] & tl$y0 + 2 > bbox[["ymin"]]
+    sum(pmax(0, pmin(tl$x0[u] + 2, bbox[["xmax"]]) - pmax(tl$x0[u], bbox[["xmin"]])) *
+          pmax(0, pmin(tl$y0[u] + 2, bbox[["ymax"]]) - pmax(tl$y0[u], bbox[["ymin"]]))) /
+      ((bbox[["xmax"]] - bbox[["xmin"]]) * (bbox[["ymax"]] - bbox[["ymin"]])) }
+  if (.cov(tl) < 0.999 && !isTRUE(getOption("wmed.emodnet_download_failed")) &&
+      isTRUE(get0("BATHY_DOWNLOAD_TILES", envir = .GlobalEnv, ifnotfound = TRUE))) {
+    if (.download_emodnet_tiles(bbox, dir) > 0) tl <- .bathy_tiles(dir) else options(wmed.emodnet_download_failed = TRUE)
+  }
   use <- tl$x0 < bbox[["xmax"]] & tl$x0 + 2 > bbox[["xmin"]] & tl$y0 < bbox[["ymax"]] & tl$y0 + 2 > bbox[["ymin"]]
   if (!any(use)) return(NULL)
   m <- bathy_mosaic(resolution, dir)

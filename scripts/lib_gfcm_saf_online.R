@@ -360,3 +360,87 @@ update_gfcm_saf_assessments <- function(pcloud_dir, review_dir, model_gsas, asfi
           "see gfcm_saf_parse_REVIEW.csv). Written to ", all_path)
   all_path
 }
+
+## =================================================================
+## Other stock assessments of FG species (review only, not used in the model)
+## =================================================================
+## Every stock assessment of a species listed in the FG table that the
+## model does NOT use: GFCM SAFs whose stock area is outside the model GSAs
+## (e.g. hake in the Adriatic, the whole-Med stocks), SAFs inside the model
+## GSAs that overlap a newer or larger stock of the same species, and RAM
+## Legacy stocks of the same species. Each is read the same way as the
+## stocks in use (newest SAF with a readable table, PDFs cached in
+## data/fisheries/GFCM_SAF/pdf, so only new PDFs are downloaded) and written
+## to one CSV, one row per stock x year, with why_not_used. Nothing from it
+## enters the model; it is there to compare with, or to borrow from by hand.
+## fg_species: data.table with ScientificName, FG_num, FG_name.
+gfcm_saf_other_stocks <- function(pcloud_dir, out_csv, model_gsas, fg_species, asfis_file = NULL,
+                                  ram_path = file.path(pcloud_dir, "data/fisheries/STAR_RAMLegacy/combined_medbs_star_ramlegacy.csv")) {
+  saf_dir <- file.path(pcloud_dir, "data/fisheries/GFCM_SAF")
+  all_path <- file.path(saf_dir, "gfcm_saf_stock_assessments_ALL.csv")
+  fg <- unique(as.data.table(fg_species)[!is.na(ScientificName) & nzchar(ScientificName), .(species = trimws(ScientificName), FG_num, FG_name)])
+  used <- if (file.exists(all_path)) fread(all_path, encoding = "UTF-8")[use_for_biomass %in% TRUE, unique(stock_key)] else character(0)
+  in_model <- function(g) { v <- floor(suppressWarnings(as.numeric(trimws(unlist(strsplit(as.character(g), "[,;]")))))); length(v) > 0 && !anyNA(v) && all(v %in% model_gsas) }
+  why <- function(inside) fifelse(inside, "inside the model GSAs but overlaps a newer or larger stock of the same species that is used",
+                                  "stock area outside the model GSAs")
+  rows <- list()
+  ## --- GFCM SAFs
+  if (requireNamespace("pdftools", quietly = TRUE) && requireNamespace("xml2", quietly = TRUE)) {
+    lst <- tryCatch(gfcm_saf_list_online(), error = function(e) NULL)
+    if (is.null(asfis_file) || !file.exists(asfis_file))
+      asfis_file <- head(list.files(file.path(pcloud_dir, "data"), pattern = "^ASFIS_sp_.*\\.csv$", recursive = TRUE, full.names = TRUE), 1)
+    if (!is.null(lst) && nrow(lst) && length(asfis_file) && file.exists(asfis_file)) {
+      sp <- unique(fread(asfis_file, encoding = "UTF-8")[, .(code = Alpha3_Code, species = Scientific_Name, common_name = English_name)])
+      saf <- merge(gfcm_saf_parse_names(lst), sp[!duplicated(code)], by = "code")
+      saf <- saf[species %in% fg$species & !stock_key %in% used]
+      saf[, inside := vapply(gsa, in_model, logical(1))]
+      setorder(saf, stock_key, -ref_year, -folder_year)
+      message("[GFCM SAF other stocks] ", uniqueN(saf$stock_key), " other stock(s) of ", uniqueN(saf$species),
+              " FG species - reading their newest SAF (only new PDFs are downloaded)...")
+      pdf_dir <- file.path(saf_dir, "pdf")
+      for (k in unique(saf$stock_key)) {
+        tries <- head(saf[stock_key == k], 1 + GFCM_SAF_MAX_BACK)
+        got <- NULL; last_status <- NA_character_
+        for (i in seq_len(nrow(tries))) {
+          s <- tries[i]
+          r <- tryCatch(if (gfcm_saf_download(s$url, file.path(pdf_dir, basename(s$name)))) gfcm_saf_parse_pdf(file.path(pdf_dir, basename(s$name)), s$ref_year)
+                        else list(status = "download failed", data = NULL), error = function(e) list(status = conditionMessage(e), data = NULL))
+          last_status <- r$status
+          if (identical(r$status, "ok")) {
+            got <- r$data[, `:=`(stock_key = k, species = s$species, common_name = s$common_name, gsa = s$gsa, ref_year = s$ref_year,
+                                 biomass_type = r$type, column = r$label, page = r$page, url = s$url, parse_status = "ok", inside = s$inside)]
+            break
+          }
+        }
+        rows[[k]] <- if (!is.null(got)) got[, source := "GFCM SAF (online)"] else
+          tries[1, .(source = "GFCM SAF (online)", stock_key = k, species, common_name, gsa, ref_year, url,
+                     parse_status = paste0("no value read: ", last_status), inside)]
+      }
+    } else message("[GFCM SAF other stocks] GFCM website or ASFIS species list not available - GFCM SAFs skipped.")
+  }
+  ## --- RAM Legacy
+  if (file.exists(ram_path)) {
+    ram <- fread(ram_path, encoding = "UTF-8")
+    if (all(c("stock_key", "species", "gsa") %in% names(ram))) {
+      ram <- ram[species %in% fg$species & !stock_key %in% used]
+      if (nrow(ram)) {
+        ram[, inside := vapply(as.character(gsa), in_model, logical(1))]
+        ram[, `:=`(source = paste0("RAM Legacy: ", source), parse_status = "RAM Legacy table")]
+        rows[["RAM"]] <- ram
+      }
+    }
+  }
+  out <- rbindlist(rows, fill = TRUE)
+  if (!nrow(out)) { message("[GFCM SAF other stocks] none found."); return(invisible(NULL)) }
+  out[, why_not_used := why(inside)][, inside := NULL]
+  out <- merge(out, fg, by = "species", all.x = TRUE, allow.cartesian = TRUE)
+  first <- intersect(c("FG_num", "FG_name", "species", "common_name", "stock_key", "gsa", "source", "ref_year", "year",
+                       "biomass", "biomass_type", "catches", "why_not_used", "parse_status"), names(out))
+  setcolorder(out, first)
+  setorderv(out, intersect(c("FG_num", "species", "stock_key", "year"), names(out)))
+  dir.create(dirname(out_csv), recursive = TRUE, showWarnings = FALSE)
+  fwrite(out, out_csv)
+  message("[GFCM SAF other stocks] ", uniqueN(out$stock_key), " stock(s) of ", uniqueN(out$species), " FG species not used by the model (",
+          out[parse_status == "ok", uniqueN(stock_key)], " with a biomass series read from the SAF) -> ", out_csv)
+  invisible(out_csv)
+}
