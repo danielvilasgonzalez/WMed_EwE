@@ -2272,17 +2272,26 @@ compute_fg_densities_by_stratum <- function(dt, strata = TRUE) {
 bathy_mosaic <- function(resolution = 1, dir) {
   nm <- paste0("EMODnet_WMed_", format(resolution), "arcmin.tif")
   od <- get0("out_dir", envir = .GlobalEnv, ifnotfound = NA)
-  places <- c(file.path(dir, nm), if (!is.na(od)) file.path(od, "bathymetry", nm))
+  shared <- file.path(dir, nm)                                              # pCloud copy, for the other laptops
+  local <- if (!is.na(od)) file.path(od, "bathymetry", nm) else shared       # working copy on this laptop
   tl <- .bathy_tiles(dir)
   if (!nrow(tl)) return(NULL)
-  hit <- places[file.exists(places)][1]
-  if (!is.na(hit)) {
-    m <- raster::raster(hit)
-    ## rebuilt when tiles were added outside it (e.g. downloaded below)
-    e <- raster::extent(m)
-    if (e@xmin <= min(tl$x0) + 1e-6 && e@xmax >= max(tl$x0) + 2 - 1e-6 &&
-        e@ymin <= min(tl$y0) + 1e-6 && e@ymax >= max(tl$y0) + 2 - 1e-6) return(m)
-    message("  New EMODnet tiles found - rebuilding ", nm, ".")
+  covers <- function(m) { e <- raster::extent(m)
+    e@xmin <= min(tl$x0) + 1e-6 && e@xmax >= max(tl$x0) + 2 - 1e-6 && e@ymin <= min(tl$y0) + 1e-6 && e@ymax >= max(tl$y0) + 2 - 1e-6 }
+  ## Read once per R session into memory: re-reading the file from pCloud
+  ## Drive for every GSA failed ("Cannot create a RasterLayer object from
+  ## this file") while pCloud was still uploading it (2026-10-27).
+  key <- paste0("wmed.bathy_mosaic_", format(resolution))
+  m <- getOption(key)
+  if (!is.null(m) && covers(m)) return(m)
+  if (!file.exists(local) && file.exists(shared) && !identical(local, shared)) {
+    dir.create(dirname(local), recursive = TRUE, showWarnings = FALSE)
+    try(file.copy(shared, local), silent = TRUE)
+  }
+  if (file.exists(local)) {
+    m <- tryCatch(raster::readAll(raster::raster(local)), error = function(e) NULL)
+    if (!is.null(m) && covers(m)) { options(stats::setNames(list(m), key)); return(m) }
+    if (!is.null(m)) message("  New EMODnet tiles found - rebuilding ", nm, ".")
   }
   message("  Building the EMODnet depth raster at ", resolution, " arc-minute from ", nrow(tl),
           " tiles (once; saved as ", nm, ")...")
@@ -2297,11 +2306,14 @@ bathy_mosaic <- function(resolution = 1, dir) {
     raster::resample(r, raster::crop(template, raster::extent(tl$x0[k], tl$x0[k] + 2, tl$y0[k], tl$y0[k] + 2)), method = "bilinear")
   })
   out <- if (length(pieces) == 1) pieces[[1]] else do.call(raster::merge, pieces)
-  for (pl in places) {
+  if (!raster::inMemory(out)) out <- raster::readAll(out)
+  for (pl in unique(c(local, shared))) {   # whole metres, compressed: small file in pCloud
     ok <- tryCatch({ dir.create(dirname(pl), recursive = TRUE, showWarnings = FALSE)
-      raster::writeRaster(out, pl, overwrite = TRUE, datatype = "INT2S", options = c("COMPRESS=DEFLATE", "PREDICTOR=2")); TRUE }, error = function(e) FALSE)   # whole metres, compressed: small file in pCloud
-    if (ok) { message("  Saved ", pl); return(raster::raster(pl)) }
+      raster::writeRaster(out, pl, overwrite = TRUE, datatype = "INT2S", options = c("COMPRESS=DEFLATE", "PREDICTOR=2")); TRUE },
+      error = function(e) FALSE)
+    if (ok) message("  Saved ", pl)
   }
+  options(stats::setNames(list(out), key))
   out
 }
 
