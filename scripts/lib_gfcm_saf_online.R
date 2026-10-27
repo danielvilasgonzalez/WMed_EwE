@@ -231,7 +231,14 @@ gfcm_saf_parse_words <- function(words, ref_year) {
        data = dt[is.finite(biomass) & biomass > 0], page = best$page, label = label, type = best$type)
 }
 gfcm_saf_parse_pdf <- function(pdf, ref_year) {
-  pg <- tryCatch(pdftools::pdf_data(pdf), error = function(e) NULL)
+  ## poppler prints harmless "PDF error: Bad annotation destination" lines
+  ## for broken links inside many SAF PDFs (the text is read fine): they are
+  ## captured and dropped here so they don't flood the console and the log
+  pg <- NULL
+  ## (pdftools relays them with message(); suppressMessages() drops them
+  ## before the page's or the log's own message handlers see them)
+  invisible(utils::capture.output(pg <- suppressMessages(tryCatch(pdftools::pdf_data(pdf), error = function(e) NULL)),
+                                  type = "output"))
   if (is.null(pg)) return(list(status = "PDF could not be read", data = NULL))
   words <- rbindlist(lapply(seq_along(pg), function(i) if (nrow(pg[[i]])) data.table(page = i, x = pg[[i]]$x, y = pg[[i]]$y, width = pg[[i]]$width, text = pg[[i]]$text)))
   if (!nrow(words)) return(list(status = "no text in PDF (scanned?)", data = NULL))
