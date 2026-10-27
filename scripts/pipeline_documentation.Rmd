@@ -70,7 +70,7 @@ pre, code {
   overflow-x: auto;
   max-width: 100%;
 }
-/* mermaid diagrams (see medbs_pipeline_methodology.qmd for the same look):
+/* mermaid diagrams (see WMed-EwEbuilder.qmd for the same look):
    don't let the pre-wrap rule above touch them - mermaid.js replaces the
    div's contents with an SVG at render time */
 div.mermaid {
@@ -179,7 +179,7 @@ knits cleanly either way. To populate them for real:
 Four **other** diagrams in this document (the pipeline flow, the
 FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon
 dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**,
-in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams
+in the same style as `WMed-EwEbuilder.qmd`'s own diagrams
 (same `flowchart LR` layout, the same gray/purple/teal/coral `classDef`
 palette). They show the code's own logic — which function calls which,
 which sheet gets written by what, which fallback branch runs when — built
@@ -198,7 +198,7 @@ The diagram below is a schematic of the actual script/function call
 structure documented in this document — which script produces which
 intermediate file, and which workbook sheets each one writes. It is not a
 plot of any survey data or model output (same diagram style as
-`medbs_pipeline_methodology.qmd`'s "Pipeline flow" section).
+`WMed-EwEbuilder.qmd`'s "Pipeline flow" section).
 
 ```{=html}
 <div class="mermaid">
@@ -276,7 +276,7 @@ Two more files are **not** part of the numbered pipeline, but support it:
   by the numbered scripts, no top-level driver code of their own.
 * `export_gsa_boundaries.R` and `fig_WMed_basemap.R` — standalone cartography
   utilities, not required by the numbered pipeline. `export_gsa_boundaries.R`
-  in particular produces the GeoJSON embedded in `medbs_pipeline_methodology.qmd`'s
+  in particular produces the GeoJSON embedded in `WMed-EwEbuilder.qmd`'s
   interactive map.
 
 # Run order and dependencies
@@ -1456,7 +1456,7 @@ own — every symbol below is a function definition only.
 Every observed species runs through this cascade, in order, until it
 resolves to a Functional Group or falls through to manual review — the
 diagram shows the actual fallback order implemented in the code below
-(same style as `medbs_pipeline_methodology.qmd`'s `@sec-fg-matching`
+(same style as `WMed-EwEbuilder.qmd`'s `@sec-fg-matching`
 diagram; each stage only attempts species the previous one left
 unmatched).
 
@@ -1806,7 +1806,7 @@ the result for web embedding via
 `rmapshaper::ms_simplify(keep = 0.05, keep_shapes = TRUE)` (keeps small
 polygons like Alboran Island, GSA 2, from being deleted outright), and writes
 `gsa_boundaries.geojson` — the file embedded in
-`medbs_pipeline_methodology.qmd`'s interactive Leaflet map.
+`WMed-EwEbuilder.qmd`'s interactive Leaflet map.
 
 ## `fig_WMed_basemap.R`
 
@@ -1874,7 +1874,7 @@ literature models from elsewhere in the basin).
 
 ---
 
-# Methodology document — `medbs_pipeline_methodology.qmd`
+# Methodology document — `WMed-EwEbuilder.qmd`
 
 A Quarto methodology write-up (`format: html`, all R chunks `eval: false` —
 illustrative, not executed at render time) documenting

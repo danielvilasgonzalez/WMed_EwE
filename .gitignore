@@ -72,3 +72,7 @@ scripts/qmd_out_dir.txt
 config.local.R
 scripts/config.local.R
 scripts/medbs_pipeline_methodology.html
+scripts/medbs_pipeline_methodology_files/
+## the page (WMed-EwEbuilder.qmd) is rendered on each laptop - its HTML and _files are not committed
+scripts/WMed-EwEbuilder.html
+scripts/WMed-EwEbuilder_files/

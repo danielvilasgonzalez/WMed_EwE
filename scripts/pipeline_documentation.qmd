@@ -75,7 +75,7 @@ pre, code {
   overflow-x: auto;
   max-width: 100%;
 }
-/* mermaid diagrams (see medbs_pipeline_methodology.qmd for the same look):
+/* mermaid diagrams (see WMed-EwEbuilder.qmd for the same look):
    don't let the pre-wrap rule above touch them - mermaid.js replaces the
    div's contents with an SVG at render time */
 div.mermaid {
@@ -148,7 +148,7 @@ Several sections below embed a figure via a small `safe_include_graphics()` help
 2.  Copy the named `.png` from that script's `<out_dir>/plots/` into a `figures/` folder next to this `.Rmd`, keeping the same filename.
 3.  Re-knit.
 
-Four **other** diagrams in this document (the pipeline flow, the FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**, in the same style as `medbs_pipeline_methodology.qmd`'s own diagrams (same `flowchart LR` layout, the same gray/purple/teal/coral `classDef` palette). They show the code's own logic — which function calls which, which sheet gets written by what, which fallback branch runs when — built directly from the script and library contents described here, not from any survey or model output. Being plain text (Mermaid syntax rendered via `mermaid.js` from a CDN), they always render, with or without a connection to the pCloud drive — unlike the `safe_include_graphics()` placeholders above. They do need a connection *to the Mermaid CDN* at view time to draw the SVG in the browser; `rmarkdown::html_document(self_contained = TRUE)` inlines the `<script>` tags instead if that CDN is unreachable from wherever the HTML is opened.
+Four **other** diagrams in this document (the pipeline flow, the FG-matching cascade, the workbook sheet assembly, and the PB/QB taxon dispatch diagrams) are a different kind of figure: **Mermaid flowcharts**, in the same style as `WMed-EwEbuilder.qmd`'s own diagrams (same `flowchart LR` layout, the same gray/purple/teal/coral `classDef` palette). They show the code's own logic — which function calls which, which sheet gets written by what, which fallback branch runs when — built directly from the script and library contents described here, not from any survey or model output. Being plain text (Mermaid syntax rendered via `mermaid.js` from a CDN), they always render, with or without a connection to the pCloud drive — unlike the `safe_include_graphics()` placeholders above. They do need a connection *to the Mermaid CDN* at view time to draw the SVG in the browser; `rmarkdown::html_document(self_contained = TRUE)` inlines the `<script>` tags instead if that CDN is unreachable from wherever the HTML is opened.
 
 # Pipeline overview
 
@@ -201,7 +201,7 @@ Library files (no driver code): `lib_survey_fg_density_functions.R` (survey dens
 
 # Detailed methodology per output block — B, C, L, Di, M, TRAITS, F, PB, QB, DIET
 
-Full equations with references are in `medbs_pipeline_methodology.qmd` (sections Biomass, Fisheries, PB/QB, Diet, Validation) and in the `NOTATION, EQUATIONS AND DATA SOURCES` header at the top of each script. This section summarises each block and where its code lives.
+Full equations with references are in `WMed-EwEbuilder.qmd` (sections Biomass, Fisheries, PB/QB, Diet, Validation) and in the `NOTATION, EQUATIONS AND DATA SOURCES` header at the top of each script. This section summarises each block and where its code lives.
 
 | Block | What it is | Primary source(s) | Key caveat |
 |----|----|----|----|
@@ -884,7 +884,7 @@ Sourced by `01_biomass.R`, `02_fisheries.R`, `03_pbqb-traits.R` and `04_diets.R`
 
 ## FG-matching functions
 
-Every observed species runs through this cascade, in order, until it resolves to a Functional Group or falls through to manual review — the diagram shows the actual fallback order implemented in the code below (same style as `medbs_pipeline_methodology.qmd`'s `@sec-fg-matching` diagram; each stage only attempts species the previous one left unmatched).
+Every observed species runs through this cascade, in order, until it resolves to a Functional Group or falls through to manual review — the diagram shows the actual fallback order implemented in the code below (same style as `WMed-EwEbuilder.qmd`'s `@sec-fg-matching` diagram; each stage only attempts species the previous one left unmatched).
 
 ```{=html}
 <div class="mermaid">
@@ -1075,7 +1075,7 @@ Each column is a best-effort summary (distinct values `" | "`-joined when a FG d
 
 **Main and reference diet matrices (2026-10-14).** Main matrix (`Ecopath_diet`), decided per predator FG: an FG with records in the metaweb xlsx (`data_entry_metaweb_empty.xlsx`, DATA_ENTRY) takes its diet only from it; an FG without records takes it from MAISHA + FishBase/SeaLifeBase, then EcoBase. Reference matrix: MAISHA + FishBase/SeaLifeBase for every predator FG. Both are written side by side in `diet/diet_matrix_main_vs_reference.xlsx` (Main, Reference, Main_minus_Reference, Source) to tune the main matrix by hand. Metaweb rows use one metric per study (IRI > %W > %Vol > isotope mixing model > %N > %F > presence) and the same prey → FG rules as the other sources; generic metaweb groups are mapped by the rules at the top of `fishbase_food_category_to_fg.csv`.
 
-See [DIET — Ecopath_diet sheet / diet matrix](#diet-ecopath_diet-sheet-diet-matrix) above and `medbs_pipeline_methodology.qmd` (Diet Matrix) for the equations. In short: tier per predator FG (metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase); study proportions by the first available metric; prey → FG by species, then taxonomic rank (equal split), then food category (biomass split), then a WoRMS second pass (`worms_diet_prey_cache.rds`); eggs and larvae → zooplankton; detritus dropped for TL ≥ 3; studies averaged; species weighted by biomass share; columns renormalised to 1.
+See [DIET — Ecopath_diet sheet / diet matrix](#diet-ecopath_diet-sheet-diet-matrix) above and `WMed-EwEbuilder.qmd` (Diet Matrix) for the equations. In short: tier per predator FG (metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase); study proportions by the first available metric; prey → FG by species, then taxonomic rank (equal split), then food category (biomass split), then a WoRMS second pass (`worms_diet_prey_cache.rds`); eggs and larvae → zooplankton; detritus dropped for TL ≥ 3; studies averaged; species weighted by biomass share; columns renormalised to 1.
 
 ## Outputs (in `output/diet/`)
 
@@ -1140,7 +1140,7 @@ All five scripts completed without errors, with identical results on both laptop
 
 ------------------------------------------------------------------------
 
-# Methodology document — `medbs_pipeline_methodology.qmd`
+# Methodology document — `WMed-EwEbuilder.qmd`
 
 A Quarto write-up of the method (R chunks `eval: false`, except the setup chunk that copies figures and outputs). It documents `lib_survey_fg_density_functions.R` and `01_biomass.R` in both `AREA_MODE`s (FG matching, study area, haul density, catchability, outliers, stratified and regional estimators, MEDIAS), then one section per script with its equations and references (Biomass with `01b`, Fisheries, PB/QB, Diet, Validation) and the status and open issues of the latest run. It embeds the GFCM GSA GeoJSON (from `export_gsa_boundaries.R`) in a Leaflet map with a client-side configuration generator. The setup chunk copies figures from `out_dir/plots/<block>/` (and `out_dir/<AREA_NAME>/plots/` for the custom example) into `figures/`, and key outputs into `downloads/`, so the rendered HTML is portable.
 
@@ -1170,7 +1170,7 @@ No longer used: `03_pbqb-traits.R` builds `species_df` itself (see Script 4, ste
 
 ### `export_gsa_boundaries.R`
 
-Standalone — does not need `01_biomass.R` or the shared library sourced first. Downloads the same GFCM GSA shapefile via the same URL and GSA-numbering fix (`SMU_CODE` 111/112 → 11). **Western-Med-specific as delivered:** restricts to GSA 1–11 — change the `gsa_num %in% 1:11` filter to any other GSA range to export a different region's boundaries. Simplifies the result for web embedding via `rmapshaper::ms_simplify(keep = 0.05, keep_shapes = TRUE)` (keeps small polygons like Alboran Island, GSA 2, from being deleted outright), and writes `gsa_boundaries.geojson` — the file embedded in `medbs_pipeline_methodology.qmd`'s interactive Leaflet map.
+Standalone — does not need `01_biomass.R` or the shared library sourced first. Downloads the same GFCM GSA shapefile via the same URL and GSA-numbering fix (`SMU_CODE` 111/112 → 11). **Western-Med-specific as delivered:** restricts to GSA 1–11 — change the `gsa_num %in% 1:11` filter to any other GSA range to export a different region's boundaries. Simplifies the result for web embedding via `rmapshaper::ms_simplify(keep = 0.05, keep_shapes = TRUE)` (keeps small polygons like Alboran Island, GSA 2, from being deleted outright), and writes `gsa_boundaries.geojson` — the file embedded in `WMed-EwEbuilder.qmd`'s interactive Leaflet map.
 
 ### `fig_WMed_basemap.R` (not in the repository)
 

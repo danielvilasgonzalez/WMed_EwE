@@ -1,6 +1,6 @@
 # References for the WMed EwE input infographic
 
-The master list is `scripts/references.bib`, numbered in the References section of `scripts/medbs_pipeline_methodology.qmd`. This file groups the same references by block of the workflow figure.
+The master list is `scripts/references.bib`, numbered in the References section of `scripts/WMed-EwEbuilder.qmd`. This file groups the same references by block of the workflow figure.
 
 Items marked **[verify]** are cited in the code by author, year and journal, but I could not check the full title or page range. Check them against the paper before the slide goes out.
 

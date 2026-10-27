@@ -15,7 +15,7 @@
 ## Order for pcloud_dir and out_dir (the first folder that EXISTS on this
 ## computer wins, so a path written for another laptop is skipped):
 ##   1. config.local.R  - this computer only (git-ignored; written by
-##                        medbs_pipeline_methodology.qmd or
+##                        WMed-EwEbuilder.qmd or
 ##                        run_pipeline_demo.R when you pick a folder)
 ##   2. config.R        - shared in the repo (Daniel's paths)
 ##   3. environment variables WMED_PCLOUD_DIR / WMED_OUT_DIR
@@ -26,7 +26,7 @@
 ##      and for out_dir ~/WMed_EwE_output (created if missing)
 ##
 ## Used by run_pipeline_demo.R, 01-05 (when run on their own) and
-## medbs_pipeline_methodology.qmd.
+## WMed-EwEbuilder.qmd.
 ## =================================================================
 
 .wmed_pcloud_name <- "EwE Western Med 2026"

@@ -7,7 +7,7 @@
 ## file sourced first. Downloads/loads the GSA shapefile exactly the
 ## same way that script does (same URL, same GSA-numbering fix), then
 ## exports a simplified GeoJSON small enough to embed in the
-## medbs_pipeline_methodology.qmd live map.
+## WMed-EwEbuilder.qmd live map.
 ## =============================================================
 
 pkgs <- c("sf", "rmapshaper")

@@ -169,6 +169,10 @@ wm_figure <- function(id, caption, name, script_hint) {
 ## in <git_dir>/scripts, and knitr runs in that folder.
 git_dir <- normalizePath("..")
 source(file.path(git_dir, "scripts", "wmed_paths.R"))
+## Every package the page and the pipeline use: installed here if missing
+## (a new laptop), only checked otherwise (about a second). Only rmarkdown,
+## knitr and shiny must already be there for the page to start rendering.
+source(file.path(git_dir, "scripts", "install_packages.R"))
 .wp <- wmed_find_paths(git_dir)
 message("git_dir: ", .wp$git_dir, "\npcloud_dir: ", .wp$pcloud_dir, "\nout_dir: ", .wp$out_dir)
 
@@ -204,7 +208,7 @@ if (!identical(.regen, "none")) {
 
 Pick the model area on the map, set the years and options, and click **Run pipeline**. The run (01 → 05) goes in the background with exactly the settings shown in the *Settings block* box; when it finishes, the plots at the bottom and the tables in the output folder are updated. A full run takes about 10 minutes (the first run after a change of GSAs needs internet for the bathymetry). The same settings block can be copied or downloaded to run the pipeline from the R console instead.
 
-This works when the document is opened with **Run Document** in RStudio (or `quarto serve medbs_pipeline_methodology.qmd` in a terminal). A plain HTML file opened from disk shows the page but cannot run R.
+This works when the document is opened with **Run Document** in RStudio (or `quarto serve WMed-EwEbuilder.qmd` in a terminal). A plain HTML file opened from disk shows the page but cannot run R.
 
 ```{r}
 #| label: run-ui
@@ -854,7 +858,7 @@ config_code <- reactive({
     if (!is.na(fg_path())) sprintf("FG_SPECIES_FILE  <- \"%s\"   # species -> FG table", .fwd(fg_path())),
     sprintf("APPLY_CATCHABILITY <- %s   # MEDITS catchability correction", tf(input$catch_q)),
     if (isTRUE(input$catch_q) && !is.na(catch_path())) sprintf("CATCHABILITY_FILE <- \"%s\"   # uploaded catchability table", .fwd(catch_path())))
-  head <- c(sprintf("## WMed-EwEbuilder settings - from medbs_pipeline_methodology.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
+  head <- c(sprintf("## WMed-EwEbuilder settings - from WMed-EwEbuilder.qmd, %s", format(Sys.time(), "%Y-%m-%d %H:%M")),
             "## Run from the scripts/ folder of the repo (folders found by wmed_paths.R).",
             "CLEAN_START      <- FALSE   # keep the settings below")
   if (identical(input$area_mode, "custom")) {

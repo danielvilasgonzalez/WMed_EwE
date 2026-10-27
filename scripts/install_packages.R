@@ -6,7 +6,7 @@
 ##
 ## Checks and installs every package the pipeline uses, on any laptop
 ## (macOS, Windows, Linux). run_pipeline_demo.R sources it at the start
-## of every run (and so does a run from medbs_pipeline_methodology.qmd):
+## of every run (and so does a run from WMed-EwEbuilder.qmd):
 ## when everything is installed it only checks (about a second); a new
 ## laptop gets everything installed before step 01 starts, instead of
 ## the run stopping halfway on a missing package. Can also be run on its

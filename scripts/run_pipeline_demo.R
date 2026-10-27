@@ -34,7 +34,7 @@ if (!exists("CLEAN_START", envir = .GlobalEnv, inherits = FALSE) || isTRUE(CLEAN
 options(warn = 1)
 ## RUN_STEPS: which scripts to run (1 = 01_biomass ... 5 = 05_validation).
 ## Default all; e.g. RUN_STEPS <- 5 redraws the validation plots from the
-## outputs already on disk (used by medbs_pipeline_methodology.qmd).
+## outputs already on disk (used by WMed-EwEbuilder.qmd).
 if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
 
 RUN_MODE <- "westmed_default"   # Western Mediterranean (GSAs 1-12, or a custom region inside them)
@@ -97,7 +97,7 @@ if (RUN_MODE == "westmed_default") {
   ##   MODEL_GSAS, coast to bottom (depths outside 10-800 m filled with
   ##   AquaMaps); "medits_10_800" = only the 10-800 m MEDITS strata.
   ## A value already set before this file is sourced wins (e.g. from
-  ## medbs_pipeline_methodology.qmd's params, with CLEAN_START <- FALSE).
+  ## WMed-EwEbuilder.qmd's params, with CLEAN_START <- FALSE).
   .set_default <- function(name, value) if (!exists(name, envir = .GlobalEnv, inherits = FALSE)) assign(name, value, envir = .GlobalEnv)
   .set_default("MODEL_GSAS",       1:12)
   .set_default("MODEL_AREA_BASIS", "whole_gsa")
@@ -186,7 +186,7 @@ if (.custom_run) {
 ## and names the step and its log. 05 is optional and never stops the run.
 .t0 <- Sys.time()
 ## Progress file (set WMED_PROGRESS_FILE, as the Run button of
-## medbs_pipeline_methodology.qmd does): one line when a step starts and
+## WMed-EwEbuilder.qmd does): one line when a step starts and
 ## one when it ends, written with base::cat so the scripts' own logging
 ## cannot redirect it.
 .progress_file <- Sys.getenv("WMED_PROGRESS_FILE", "")

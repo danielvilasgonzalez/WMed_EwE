@@ -40,13 +40,15 @@ If the pCloud folder is somewhere else, RStudio asks you to pick it once and sav
 
 ## Interactive page
 
-`scripts/medbs_pipeline_methodology.qmd` is a Quarto/Shiny page. From it you can set the folders, model area and years, run the pipeline, watch its progress, and download the outputs. It also documents every method, equation and source.
+`scripts/WMed-EwEbuilder.qmd` is a Quarto/Shiny page. From it you can set the folders, model area and years, run the pipeline, watch its progress, and download the outputs. It also documents every method, equation and source.
 
 ```bash
-quarto serve scripts/medbs_pipeline_methodology.qmd
+quarto serve scripts/WMed-EwEbuilder.qmd
 ```
 
 In RStudio, you can instead open the file and click **Run Document**.
+
+On a new laptop only `rmarkdown`, `knitr` and `shiny` must be installed before the page can start (`install.packages(c("rmarkdown", "knitr", "shiny"))`); the page then installs every other package it and the pipeline need (`scripts/install_packages.R`). The page's HTML and `_files` folder are built on each laptop and are not committed.
 
 On the page you can:
 
@@ -69,7 +71,7 @@ Run in this order; each step reads files the earlier ones wrote. `run_pipeline_d
 | 4 | `04_diets.R` | **Diet matrix.** Sources in order: Mediterranean metaweb → MAISHA → FishBase/SeaLifeBase → EcoBase → literature fallback (`diet_literature_fallback.csv`). FG order follows the FG table. |
 | 5 | `05_validation.R` | **Validation.** Compares with the 1995 Western Med model and runs the EwE plausibility checks (P/Q, diet sums, cannibalism). Writes one summary table and one PDF of all plots. |
 
-Every method, equation, assumption and reference is in `scripts/medbs_pipeline_methodology.qmd`.
+Every method, equation, assumption and reference is in `scripts/WMed-EwEbuilder.qmd`.
 
 ## Main options
 
@@ -135,7 +137,7 @@ scripts/
   01_biomass.R  01b_biomass_unsurveyed.R  02_fisheries.R  03_pbqb-traits.R  04_diets.R  05_validation.R
   03b_ecobase.R                    # EcoBase fallbacks
   lib_*.R                          # shared functions (survey density, AquaMaps, FishBase diets, plankton, taxonomy)
-  medbs_pipeline_methodology.qmd   # interactive page + full method documentation
+  WMed-EwEbuilder.qmd   # interactive page + full method documentation
   references.bib, ieee.csl        # every reference of the pipeline; the page numbers them [1], [2]... in order of citation
   gsa_boundaries_westmed.geojson   # GSA 1-12 polygons for the page map
   additional/                      # one-off helpers and backups, not run by the pipeline
