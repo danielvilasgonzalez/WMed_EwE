@@ -910,6 +910,18 @@ run_note <- reactiveVal("")
   }
   isTRUE(tryCatch(tools::pskill(pid, 0L), error = function(e) FALSE))
 }
+## Text read from the run's files is made valid UTF-8 before it is shown:
+## a Windows message in the run's console (e.g. the Microsoft Store
+## "Python not found" text, in the system code page) is not UTF-8, and
+## one such line closed the page's connection ("Could not decode a text
+## frame as UTF-8") - the page went grey (2026-10-27).
+.utf8 <- function(x) {
+  bad <- !is.na(x) & !validUTF8(x)
+  if (any(bad)) x[bad] <- iconv(x[bad], "CP1252", "UTF-8", sub = "?")
+  bad <- !is.na(x) & !validUTF8(x)
+  if (any(bad)) x[bad] <- iconv(x[bad], "UTF-8", "UTF-8", sub = "?")
+  x
+}
 .settings_lines <- function() if (file.exists(.settings_file)) readLines(.settings_file, warn = FALSE) else character(0)
 
 ## Reopened page: pick up the last run started from here (finished, failed,
@@ -1049,13 +1061,13 @@ output$run_progress <- renderUI({
 output$run_status <- renderText({
   invalidateLater(5000)
   st <- run_state()
-  .tail30 <- function(f) if (file.exists(f)) tryCatch(paste(tail(readLines(f, warn = FALSE), 30), collapse = "\n"),
+  .tail30 <- function(f) if (file.exists(f)) tryCatch(paste(.utf8(tail(readLines(f, warn = FALSE), 30)), collapse = "\n"),
                                                     error = function(e) "") else ""
   tail_txt <- .tail30(.console)
   ## Windows: R start-up errors land in console_raw.txt (see the Run button)
   if (!nzchar(tail_txt) && st == "error") tail_txt <- .tail30(file.path(.run_dir, "console_raw.txt"))
   paste0("Status: ", st, "\nOutput folder: ", .out_dir,
-         if (st == "error" && file.exists(.status_file)) paste0("\n", readLines(.status_file, warn = FALSE)[1]) else "",
+         if (st == "error" && file.exists(.status_file)) paste0("\n", .utf8(readLines(.status_file, warn = FALSE)[1])) else "",
          if (nzchar(run_note())) paste0("\n", run_note()) else "",
          if (nzchar(tail_txt)) paste0("\n--- last lines ---\n", tail_txt) else "")
 })

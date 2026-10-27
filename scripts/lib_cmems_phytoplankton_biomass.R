@@ -107,15 +107,27 @@ CMEMS_VENV_DIR <- Sys.getenv("COPERNICUSMARINE_VENV", unset = path.expand("~/.co
   FALSE
 }
 
+## Sys.which() that ignores the Windows "App execution alias" stubs in
+## ...\WindowsApps\ (python.exe / python3.exe / pip.exe that only open the
+## Microsoft Store): on a Windows laptop without Python they made the run
+## try to build a virtualenv and pip-install, and step 01 hung (2026-10-27).
+.cmems_which <- function(name) {
+  p <- Sys.which(name)
+  if (.Platform$OS.type == "windows" && nzchar(p) && grepl("WindowsApps", p, ignore.case = TRUE)) "" else p
+}
+
 ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
   if (Sys.which("copernicusmarine") == "") .cmems_use_venv_if_present()
+  ## A run started from the page (Rscript, not interactive) never installs
+  ## Python packages itself: CMEMS is only a fallback / cross-check here.
+  if (!interactive() && !isTRUE(getOption("wmed.cmems_auto_install", FALSE))) auto_install <- FALSE
   if (Sys.which("copernicusmarine") != "") {
     message("[CMEMS diag] CLI check: ok (found on PATH at '", Sys.which("copernicusmarine"), "').")
     return(TRUE)
   }
   if (auto_install) {
     ## Preferred install route: a dedicated venv (works under Homebrew/PEP 668).
-    py_venv <- if (Sys.which("python3") != "") "python3" else NA
+    py_venv <- if (.cmems_which("python3") != "") "python3" else NA
     if (!is.na(py_venv)) {
       message("[CMEMS diag] CLI check: not found - creating a virtualenv at '", CMEMS_VENV_DIR,
               "' and installing copernicusmarine into it...")
@@ -139,7 +151,7 @@ ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
   }
   message("[CMEMS diag] CLI check: not found on PATH - attempting to install now via pip",
           " ('pip install copernicusmarine')...")
-  pip_bin <- if (Sys.which("pip3") != "") "pip3" else if (Sys.which("pip") != "") "pip" else NA
+  pip_bin <- if (.cmems_which("pip3") != "") "pip3" else if (.cmems_which("pip") != "") "pip" else NA
   if (is.na(pip_bin)) {
     message("[CMEMS diag] CLI check: FAILED - neither 'pip3' nor 'pip' found on PATH either.",
             " Install Python/pip first, or install copernicusmarine manually.")
@@ -155,7 +167,7 @@ ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
     ## '...' which is not on PATH"). Rather than give up, ask Python
     ## itself where its user-site bin directory is and add it to PATH
     ## for the rest of THIS R session if the binary is actually there.
-    py_bin <- if (Sys.which("python3") != "") "python3" else if (Sys.which("python") != "") "python" else NA
+    py_bin <- if (.cmems_which("python3") != "") "python3" else if (.cmems_which("python") != "") "python" else NA
     if (!is.na(py_bin)) {
       user_base <- tryCatch(system2(py_bin, c("-m", "site", "--user-base"), stdout = TRUE),
                             error = function(e) character(0))
@@ -212,6 +224,13 @@ ensure_copernicusmarine_credentials <- function(renviron_path = "~/.Renviron", f
   }
 
   message("[CMEMS diag] Credentials check: not set (COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD absent).")
+  ## Nobody can type a password into a run started from the page (Rscript):
+  ## a prompt there can wait forever. CMEMS is skipped instead.
+  if (!interactive()) {
+    message("[CMEMS diag] Not an interactive session - CMEMS skipped (it is only a fallback / cross-check).",
+            " Run 01 once from the R console to enter the Copernicus Marine login.")
+    return(NULL)
+  }
 
   have_rstudio_popup <- requireNamespace("rstudioapi", quietly = TRUE) &&
     tryCatch(isTRUE(rstudioapi::isAvailable()), error = function(e) FALSE)
