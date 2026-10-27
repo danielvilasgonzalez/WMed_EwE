@@ -28,8 +28,15 @@
   }
   p
 }
-ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
-  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
+## PNGs are drawn with ragg when installed: several times faster than the
+## default png() device, above all on Windows (where the 30-panel
+## coverage map took ~3 min instead of ~20 s on a Mac), same look.
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE) {
+  dots <- list(...)
+  if (is.null(dots$device) && grepl("\\.png$", filename, ignore.case = TRUE) && requireNamespace("ragg", quietly = TRUE))
+    dots$device <- ragg::agg_png
+  do.call(ggplot2::ggsave, c(list(filename, if (isTRUE(readable)) .readable(plot) else plot), dots, list(bg = bg)))
+}
 if (!exists("out_dir", envir = .GlobalEnv, inherits = FALSE)) local({
   d <- tryCatch(dirname(normalizePath(sys.frame(1)$ofile)), error = function(e) NA_character_)
   if (is.na(d)) d <- if (file.exists("wmed_paths.R")) getwd() else file.path(getwd(), "scripts")

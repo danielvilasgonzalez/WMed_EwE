@@ -26,8 +26,15 @@
   }
   p
 }
-ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE)
-  ggplot2::ggsave(filename, if (isTRUE(readable)) .readable(plot) else plot, ..., bg = bg)
+## PNGs are drawn with ragg when installed: several times faster than the
+## default png() device, above all on Windows (where the 30-panel
+## coverage map took ~3 min instead of ~20 s on a Mac), same look.
+ggsave <- function(filename, plot = ggplot2::last_plot(), ..., bg = "white", readable = TRUE) {
+  dots <- list(...)
+  if (is.null(dots$device) && grepl("\\.png$", filename, ignore.case = TRUE) && requireNamespace("ragg", quietly = TRUE))
+    dots$device <- ragg::agg_png
+  do.call(ggplot2::ggsave, c(list(filename, if (isTRUE(readable)) .readable(plot) else plot), dots, list(bg = bg)))
+}
 if (!exists("PLOT_DPI", envir = .GlobalEnv, inherits = FALSE)) PLOT_DPI <- 300
 
 ## --- Folders on any laptop (wmed_paths.R) ----------------------------------
@@ -344,6 +351,9 @@ assign("message", function(..., domain = NULL, appendLF = TRUE) {
   .orig_message(..., domain = domain, appendLF = appendLF)
 }, envir = .GlobalEnv)
 message("[Log] This run's console output is also being written to: ", .run_log_path)
+## Elapsed time at each step, to see where a slow laptop spends its time
+.wm_t0 <- Sys.time()
+.wm_tick <- function(label) message(sprintf("[time] %s: %.1f min since the start of 01", label, as.numeric(difftime(Sys.time(), .wm_t0, units = "mins"))))
 
 ## MEDITS_REFERENCE_DIR: hand-typed reference/lookup tables for this
 ## script, externalized to CSV so they're editable without touching code.
@@ -767,6 +777,7 @@ if (AREA_MODE == "westmed") {
   if (is.null(FILTER_AREAS)) FILTER_AREAS <- sort(unique(area_shp[[AREA_ID_COL]]))
 }
 
+.wm_tick("before STEP 2")
 ## =================================================================
 ## STEP 2: Input data - MEDITS-specific loading, reshaped into the
 ## standardized dataframe1/dataframe2 format
@@ -948,6 +959,7 @@ ggsave(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"), p_sample_m
        width = 16, height = 12, dpi = PLOT_DPI, bg = "white")
 .trim_png_rows(file.path(plot_dir, "survey_sample_coverage_map_by_year.png"))
 
+.wm_tick("before STEP 3")
 ## =================================================================
 ## STEP 3: Scientific name -> FG (direct match)
 ## =================================================================
@@ -1000,6 +1012,7 @@ dt[, c("FG_num_override", "FG_name_override", "override_ScientificName") := NULL
 
 message("After manual overrides: ", dt[!is.na(FG_num), uniqueN(ScientificName)], " species matched.")
 
+.wm_tick("before STEP 4")
 ## =================================================================
 ## STEP 4: Maximize FG assignment via taxonomy fallback
 ## =================================================================
@@ -1204,6 +1217,7 @@ if (length(still_missing_taxonomy) > 0) {
 ## loaded, not just whatever GSAs FILTER_AREAS happens to be set to.
 snapshot_full_extent_species(dt, species_taxonomy, "MEDITS", csv_out_dir)
 
+.wm_tick("before STEP 5")
 ## =================================================================
 ## STEP 5: densities (biomass/effort), mean/sum across species within
 ## FG, by year/strata/area
@@ -1440,6 +1454,7 @@ n_samples_by_area <- dt[
   AreaID %in% FILTER_AREAS,
   .(n_samples = uniqueN(SampleID)), by = .(AreaID, Year)]
 
+.wm_tick("before STEP 6")
 ## =================================================================
 ## STEP 6: weight densities per stratum -> FG, year, area
 ## =================================================================
@@ -1490,6 +1505,7 @@ medits_replicate_dt <- dt[!is.na(Stratum)][
 fg_cv_log_medits <- compute_cv_log_by_fg(medits_replicate_dt, "fg_density")
 fg_cv_log_medits[, Survey := "MEDITS"]
 
+.wm_tick("before STEP 7")
 ## =================================================================
 ## STEP 7: weight densities per area -> FG, year (region-wide)
 ## =================================================================
@@ -1505,6 +1521,7 @@ species_density_regional <- weight_species_by_area(per_group_sp, n_samples_by_st
                                                    impute_unsampled = SURVEY_IMPUTE_UNSAMPLED_CELLS,
                                                    denominator_cells = MODEL_SURVEY_CELLS)
 
+.wm_tick("before STEP 7b")
 ## =================================================================
 ## STEP 7b: AquaMaps shallow/deep depth adjustment (OPT-IN - see
 ## APPLY_AQUAMAPS_DEPTH_ADJUSTMENT above and lib_aquamaps_depth_
@@ -1767,6 +1784,7 @@ if (isTRUE(STRATA) && (!is.na(ECOSIM_HAUL_CAP_Q) || ECOSIM_MIN_AREA_COVERAGE > 0
   rm(.raw, .cov, .ts_regional)
 }
 
+.wm_tick("before STEP 8")
 ## =================================================================
 ## STEP 8: plots (MEDITS)
 ## =================================================================
@@ -1831,6 +1849,7 @@ if (STRATA) {
          width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 }
 
+.wm_tick("before STEP 9")
 ## =================================================================
 ## STEP 9: MEDIAS acoustic survey + GFCM stock-assessment biomass +
 ## the MEDITS/MEDIAS/stock-assessment priority combine. Every data
@@ -3158,6 +3177,7 @@ if (identical(SMALL_PELAGIC_SERIES_MODE, "per_gsa_acoustic") && exists("acoustic
   fg_cv_log_combined <- copy(fg_cv_log_medits)[, .(FG_num, cv_log)]
 }
 
+.wm_tick("before STEP 10")
 ## =================================================================
 ## STEP 10: Excel export - fg_index_regional_combined/species_density_
 ## regional_combined/fg_cv_log_combined feed the SAME FG_spp_Ecopath/
@@ -3262,6 +3282,7 @@ if (!is.null(ecobase_sheet_dt) && nrow(ecobase_sheet_dt) > 0) {
   upsert_workbook_sheets(list(Ecobase = ecobase_sheet_dt), file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
 }
 
+.wm_tick("before STEP 11")
 ## =================================================================
 ## STEP 11: Complete FG_spp_Ecopath / FG_lookup sheets.
 ##
@@ -3984,6 +4005,7 @@ build_fg_references_sheet(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"),
                           diet_csv_dir      = file.path(out_dir, "diet"))
 append_reference_columns_to_final_sheets(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
 
+.wm_tick("before STEP 13")
 ## =================================================================
 ## STEP 13: trim ecopath_ecosim_inputs.xlsx down to EXACTLY the 9 final
 ## target sheets (info, FG_spp, Ecopath_B, Ecopath_L, Ecopath_Di,
@@ -4013,6 +4035,7 @@ trim_workbook_to_final_sheets(file.path(out_dir, "ecopath_ecosim_inputs.xlsx"))
 ## =================================================================
 build_full_fg_species_catalog(csv_out_dir)
 
+.wm_tick("before STEP 15")
 ## =================================================================
 ## STEP 15: completeness check - which FGs have NO Ecopath_B biomass
 ## at all (per project decision: "print the FGs at the end of the

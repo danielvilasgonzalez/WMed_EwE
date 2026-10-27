@@ -41,7 +41,7 @@ wmed_check_packages <- function(quiet = FALSE) {
   cran <- c(
     ## core (01-05)
     "data.table", "readr", "dplyr", "tidyr", "ggplot2", "stringr", "purrr", "tibble", "rlang",
-    "openxlsx", "readxl", "scales", "patchwork", "ggrepel", "progress", "png", "zip",
+    "openxlsx", "readxl", "scales", "patchwork", "ggrepel", "progress", "png", "zip", "ragg",
     ## spatial
     "sf", "raster", "terra", "marmap", "maps", "rnaturalearth", "rnaturalearthdata", "rmapshaper",
     ## web data and taxonomy

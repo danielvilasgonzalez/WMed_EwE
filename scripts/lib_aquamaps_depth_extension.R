@@ -183,7 +183,65 @@ split_scientific_name <- function(scientific_name) {
   ids[!is.na(ids) & nzchar(ids)]
 }
 
+## =================================================================
+## Shared AquaMaps cache (pCloud data/aquamaps_cache): the two lookups
+## this pipeline needs from the ~2 GB AquaMaps database - species name ->
+## SpeciesID, and SpeciesID -> depth envelope - are saved as two small
+## CSVs and reused, so a laptop that already has every species cached
+## never installs aquamapsdata or downloads the database (on the Windows
+## laptop that download made step 01 take hours). Only names/IDs not in
+## the cache go to the database, and they are added to the cache.
+## Written to out_dir/aquamaps_cache when pCloud cannot be written.
+## Delete the files to rebuild them from the database.
+## =================================================================
+.am_cache_dirs <- function() {
+  pc <- get0("pcloud_dir", envir = .GlobalEnv, ifnotfound = NA)
+  od <- get0("out_dir", envir = .GlobalEnv, ifnotfound = NA)
+  c(if (!is.na(pc)) file.path(pc, "data", "aquamaps_cache"), if (!is.na(od)) file.path(od, "aquamaps_cache"))
+}
+.am_cache_read <- function(name, chr_cols) {
+  for (d in .am_cache_dirs()) {
+    f <- file.path(d, name)
+    if (file.exists(f)) return(tryCatch(fread(f, colClasses = list(character = chr_cols)), error = function(e) NULL))
+  }
+  NULL
+}
+.am_cache_write <- function(dt, name) {
+  for (d in .am_cache_dirs()) {
+    ok <- tryCatch({ dir.create(d, recursive = TRUE, showWarnings = FALSE); fwrite(dt, file.path(d, name)); TRUE },
+                   error = function(e) FALSE)
+    if (ok) return(invisible(TRUE))
+  }
+  invisible(FALSE)
+}
+.am_db_ready <- FALSE
+.am_need_db <- function() if (!isTRUE(.am_db_ready)) { ensure_aquamaps_db(); .am_db_ready <<- TRUE }
+
 resolve_aquamaps_species_ids <- function(scientific_names) {
+  scientific_names <- unique(scientific_names[!is.na(scientific_names) & scientific_names != ""])
+  cache <- .am_cache_read("aquamaps_species_ids.csv", c("ScientificName", "SpeciesID", "match_method"))
+  if (is.null(cache)) cache <- data.table(ScientificName = character(0), SpeciesID = character(0), match_method = character(0))
+  miss <- setdiff(scientific_names, cache$ScientificName)
+  if (length(miss)) {
+    message("[AquaMaps] ", length(scientific_names) - length(miss), " of ", length(scientific_names),
+            " species from the shared cache; looking up ", length(miss), " in the AquaMaps database.")
+    .am_need_db()
+    new <- .resolve_aquamaps_species_ids_db(miss)
+    ## not cached when EVERY lookup failed (a database problem, not 'no match')
+    if (any(new$match_method != "unmatched")) {
+      cache <- unique(rbind(cache, new[, .(ScientificName, SpeciesID = as.character(SpeciesID), match_method)]), by = "ScientificName")
+      .am_cache_write(cache, "aquamaps_species_ids.csv")
+    }
+    out <- rbind(cache[ScientificName %in% setdiff(scientific_names, miss)], new[, .(ScientificName, SpeciesID = as.character(SpeciesID), match_method)])
+  } else {
+    message("[AquaMaps] all ", length(scientific_names), " species from the shared cache (no database needed).")
+    out <- cache[ScientificName %in% scientific_names]
+  }
+  out[is.na(SpeciesID) | SpeciesID == "", SpeciesID := NA_character_]
+  out
+}
+
+.resolve_aquamaps_species_ids_db <- function(scientific_names) {
   scientific_names <- unique(scientific_names[!is.na(scientific_names) & scientific_names != ""])
   results <- vector("list", length(scientific_names))
   ## Captured once, not per-species: if am_search_exact()/am_search_fuzzy()
@@ -322,10 +380,23 @@ fetch_aquamaps_depth_envelope <- function(species_id_lookup) {
     envelope <- data.table(SpeciesID = character(0), DepthMin = numeric(0),
                            DepthPrefMin = numeric(0), DepthPrefMax = numeric(0), DepthMax = numeric(0))
   } else {
-    hspen <- aquamapsdata::am_hspen()
-    envelope <- as.data.table(
-      dplyr::collect(dplyr::filter(hspen, SpeciesID %in% matched_ids))
-    )[, .(SpeciesID = as.character(SpeciesID), DepthMin, DepthPrefMin, DepthPrefMax, DepthMax)]
+    ## shared cache first (see .am_cache_dirs()), database only for new IDs
+    ecache <- .am_cache_read("aquamaps_depth_envelopes.csv", "SpeciesID")
+    if (is.null(ecache)) ecache <- data.table(SpeciesID = character(0), DepthMin = numeric(0), DepthPrefMin = numeric(0),
+                                              DepthPrefMax = numeric(0), DepthMax = numeric(0))
+    new_ids <- setdiff(unique(as.character(matched_ids)), ecache$SpeciesID)
+    if (length(new_ids)) {
+      .am_need_db()
+      hspen <- aquamapsdata::am_hspen()
+      got <- as.data.table(
+        dplyr::collect(dplyr::filter(hspen, SpeciesID %in% new_ids))
+      )[, .(SpeciesID = as.character(SpeciesID), DepthMin, DepthPrefMin, DepthPrefMax, DepthMax)]
+      ## IDs with no HSPEN row are cached as all-NA, so they are not asked again
+      got <- rbind(got, data.table(SpeciesID = setdiff(new_ids, got$SpeciesID)), fill = TRUE)
+      ecache <- unique(rbind(ecache, got, fill = TRUE), by = "SpeciesID")
+      .am_cache_write(ecache, "aquamaps_depth_envelopes.csv")
+    }
+    envelope <- ecache[SpeciesID %in% as.character(matched_ids)]
   }
   out <- merge(species_id_lookup, envelope, by = "SpeciesID", all.x = TRUE)
   n_no_envelope <- out[!is.na(SpeciesID) & is.na(DepthMin), .N]
@@ -640,7 +711,8 @@ apply_aquamaps_depth_adjustment <- function(dt, per_group_fg, per_group_sp, n_sa
   ## per-sample density (compute_species_anchor_stratum_density()), not
   ## an area-weighted composite across all 5 real strata, so the area
   ## table that composite needed is no longer used here.
-  ensure_aquamaps_db()
+  ## the database is opened only if a species is not in the shared cache
+  ## (resolve_aquamaps_species_ids() / fetch_aquamaps_depth_envelope())
   
   species_names <- sort(unique(dt$ScientificName[!is.na(dt$ScientificName) & dt$ScientificName != ""]))
   id_lookup <- resolve_aquamaps_species_ids(species_names)
