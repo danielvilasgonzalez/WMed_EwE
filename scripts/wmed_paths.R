@@ -61,6 +61,20 @@
   }
   h
 }
+## Broken HOME on Windows (e.g. HOME set to "~"): repaired for this R
+## session and everything it starts (the pipeline's Rscript, git, package
+## caches), so no user has to change Windows settings. Windows' own
+## default for HOME is the user profile (C:/Users/<name>). The Windows
+## setting itself is not changed.
+local({
+  if (.Platform$OS.type != "windows") return(invisible())
+  h <- Sys.getenv("HOME"); up <- Sys.getenv("USERPROFILE")
+  if (nzchar(h) && (grepl("~", h, fixed = TRUE) || !dir.exists(h)) && nzchar(up) && dir.exists(up)) {
+    Sys.setenv(HOME = gsub("\\\\", "/", up))
+    message("[wmed_paths] HOME was '", h, "' (not a folder) - using ", Sys.getenv("HOME"), " for this R session.")
+  }
+})
+
 ## "~/x" -> <home>/x with .wmed_home(); other paths unchanged
 .wmed_expand <- function(p) {
   p <- gsub("\\\\", "/", p)
