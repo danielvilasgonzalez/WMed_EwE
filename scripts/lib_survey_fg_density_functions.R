@@ -2244,33 +2244,64 @@ compute_fg_densities_by_stratum <- function(dt, strata = TRUE) {
 ## coast), so the strata-area cache records its source and is recomputed
 ## when it differs.
 
-## EMODnet tiles cropped to a box and averaged to `resolution` arc-minutes.
-## NULL when no tile covers the box; attribute "coverage" = share of the
-## box covered by tiles.
+## One EMODnet depth raster for the whole Western Med at `resolution`
+## arc-minutes (1 for the strata areas): built ONCE from the 2 x 2 degree
+## tiles (each tile averaged to the grid, all tiles on one common grid)
+## and saved next to them as EMODnet_WMed_<res>arcmin.tif, so every later
+## run - on any laptop with pCloud - only reads one small file and crops
+## it per GSA (seconds). Saved to out_dir/bathymetry instead when the
+## pCloud folder cannot be written. Delete the file to rebuild it.
+.bathy_tiles <- function(dir) {
+  f <- list.files(dir, pattern = "^EMODnet_x[+-]?[0-9]+_y[+-]?[0-9]+\\.tif$", full.names = TRUE)
+  data.table(f = f, x0 = as.numeric(sub("^EMODnet_x([+-]?[0-9]+)_y.*$", "\\1", basename(f))),
+             y0 = as.numeric(sub("^EMODnet_x[+-]?[0-9]+_y([+-]?[0-9]+)\\.tif$", "\\1", basename(f))))
+}
+bathy_mosaic <- function(resolution = 1, dir) {
+  nm <- paste0("EMODnet_WMed_", format(resolution), "arcmin.tif")
+  od <- get0("out_dir", envir = .GlobalEnv, ifnotfound = NA)
+  places <- c(file.path(dir, nm), if (!is.na(od)) file.path(od, "bathymetry", nm))
+  hit <- places[file.exists(places)][1]
+  if (!is.na(hit)) return(raster::raster(hit))
+  tl <- .bathy_tiles(dir)
+  if (!nrow(tl)) return(NULL)
+  message("  Building the EMODnet depth raster at ", resolution, " arc-minute from ", nrow(tl),
+          " tiles (once; saved as ", nm, ")...")
+  cell <- resolution / 60
+  template <- raster::raster(raster::extent(min(tl$x0), max(tl$x0) + 2, min(tl$y0), max(tl$y0) + 2),
+                             resolution = cell, crs = "+proj=longlat +datum=WGS84 +no_defs")
+  pieces <- lapply(seq_len(nrow(tl)), function(k) {
+    r <- raster::raster(tl$f[k])
+    fact <- max(1L, round(cell / raster::res(r)[1]))
+    if (fact > 1) r <- raster::aggregate(r, fact = fact, fun = mean, na.rm = TRUE)
+    ## resampled onto the tile's own part of the common grid, so all pieces line up
+    raster::resample(r, raster::crop(template, raster::extent(tl$x0[k], tl$x0[k] + 2, tl$y0[k], tl$y0[k] + 2)), method = "bilinear")
+  })
+  out <- if (length(pieces) == 1) pieces[[1]] else do.call(raster::merge, pieces)
+  for (pl in places) {
+    ok <- tryCatch({ dir.create(dirname(pl), recursive = TRUE, showWarnings = FALSE)
+      raster::writeRaster(out, pl, overwrite = TRUE); TRUE }, error = function(e) FALSE)
+    if (ok) { message("  Saved ", pl); return(raster::raster(pl)) }
+  }
+  out
+}
+
+## EMODnet depth for a box: cropped from bathy_mosaic(). NULL when no tile
+## covers the box; attribute "coverage" = share of the box with tiles.
 local_bathy_raster <- function(bbox, resolution = 1,
                                dir = get0("BATHY_LOCAL_DIR", envir = .GlobalEnv,
                                           ifnotfound = if (exists("pcloud_dir", envir = .GlobalEnv)) file.path(get("pcloud_dir", envir = .GlobalEnv), "data", "Bathymetry") else NA)) {
   if (is.na(dir) || !dir.exists(dir)) return(NULL)
-  f <- list.files(dir, pattern = "^EMODnet_x[+-]?[0-9]+_y[+-]?[0-9]+\\.tif$", full.names = TRUE)
-  if (!length(f)) return(NULL)
-  x0 <- as.numeric(sub("^EMODnet_x([+-]?[0-9]+)_y.*$", "\\1", basename(f)))
-  y0 <- as.numeric(sub("^EMODnet_x[+-]?[0-9]+_y([+-]?[0-9]+)\\.tif$", "\\1", basename(f)))
-  use <- x0 < bbox[["xmax"]] & x0 + 2 > bbox[["xmin"]] & y0 < bbox[["ymax"]] & y0 + 2 > bbox[["ymin"]]
+  tl <- .bathy_tiles(dir)
+  if (!nrow(tl)) return(NULL)
+  use <- tl$x0 < bbox[["xmax"]] & tl$x0 + 2 > bbox[["xmin"]] & tl$y0 < bbox[["ymax"]] & tl$y0 + 2 > bbox[["ymin"]]
   if (!any(use)) return(NULL)
-  ext <- raster::extent(bbox[["xmin"]], bbox[["xmax"]], bbox[["ymin"]], bbox[["ymax"]])
-  tiles <- lapply(f[use], function(p) {
-    r <- raster::raster(p)
-    r <- tryCatch(raster::crop(r, ext), error = function(e) NULL)
-    if (is.null(r)) return(NULL)
-    fact <- max(1L, round((resolution / 60) / raster::res(r)[1]))
-    if (fact > 1) r <- raster::aggregate(r, fact = fact, fun = mean, na.rm = TRUE)
-    r
-  })
-  tiles <- Filter(Negate(is.null), tiles)
-  if (!length(tiles)) return(NULL)
-  out <- if (length(tiles) == 1) tiles[[1]] else do.call(raster::merge, c(tiles, list(tolerance = 0.5)))
-  covered <- sum(pmax(0, pmin(x0[use] + 2, bbox[["xmax"]]) - pmax(x0[use], bbox[["xmin"]])) *
-                   pmax(0, pmin(y0[use] + 2, bbox[["ymax"]]) - pmax(y0[use], bbox[["ymin"]])))
+  m <- bathy_mosaic(resolution, dir)
+  if (is.null(m)) return(NULL)
+  cell <- resolution / 60
+  out <- raster::crop(m, raster::extent(bbox[["xmin"]] - cell, bbox[["xmax"]] + cell, bbox[["ymin"]] - cell, bbox[["ymax"]] + cell))
+  if (all(is.na(raster::values(out)))) return(NULL)
+  covered <- sum(pmax(0, pmin(tl$x0[use] + 2, bbox[["xmax"]]) - pmax(tl$x0[use], bbox[["xmin"]])) *
+                   pmax(0, pmin(tl$y0[use] + 2, bbox[["ymax"]]) - pmax(tl$y0[use], bbox[["ymin"]])))
   attr(out, "coverage") <- min(1, covered / ((bbox[["xmax"]] - bbox[["xmin"]]) * (bbox[["ymax"]] - bbox[["ymin"]])))
   out
 }
@@ -2439,7 +2470,7 @@ compute_strata_area_by_area <- function(area_ids, area_shp, area_id_col, strata_
     want_src <- get0("BATHY_SOURCE", envir = .GlobalEnv, ifnotfound = "emodnet")
     src_file <- paste0(cache_path, ".bathy_source")
     cached_src <- if (file.exists(src_file)) trimws(readLines(src_file, warn = FALSE)) else "noaa"
-    src_ok <- want_src %in% cached_src
+    src_ok <- all(cached_src == want_src)   # a cache partly made with the other source is redone
     if (!src_ok) message("Cached strata areas in ", cache_path, " were computed from ", paste(cached_src, collapse = "/"),
                          " bathymetry; BATHY_SOURCE is '", want_src, "' - recomputing.")
     if (src_ok && (single_band_ok || (identical(as.numeric(have_strata), as.numeric(sort(want$Stratum))) && bounds_ok)) &&

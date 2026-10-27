@@ -75,6 +75,11 @@ if (length(.missing)) stop("[run_pipeline_demo.R] These folders do not exist on 
 if (any(!file.exists(.scripts))) stop("[run_pipeline_demo.R] Missing in git_dir:\n  ",
                                       paste(.scripts[!file.exists(.scripts)], collapse = "\n  "), call. = FALSE)
 
+## Packages: install_packages.R checks every package the pipeline uses and
+## installs what is missing (a new laptop gets everything before step 01
+## starts; on a ready laptop this takes about a second).
+source(file.path(git_dir, "scripts", "install_packages.R"))
+
 ## ---- 2. Run settings -----------------------------------------------
 if (RUN_MODE == "westmed_default") {
   ## Western Med model. Model area and years are set here (all scripts

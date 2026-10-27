@@ -345,7 +345,7 @@ tagList(
     uiOutput("area_summary")),
 
   ## Functional groups ----------------------------------------------------
-  .card("FG", "Functional groups (species \u2192 FG table)", "\U0001F41F",
+  .card("2", "Food web structure: species and FG table", "\U0001F41F",
     fluidRow(
       column(6, selectInput("fg_file", "FG file in the pCloud data folder (FG_SPECIES_FILE)", choices = NULL, width = "100%")),
       column(6, fileInput("fg_upload", "or upload a csv", accept = ".csv", width = "100%",
@@ -354,11 +354,11 @@ tagList(
 
   ## 2. Years and options --------------------------------------------------
   fluidRow(
-    column(6, .card("2", "Years", "\U0001F4C5",
+    column(6, .card("3", "Years", "\U0001F4C5",
       sliderInput("ecopath_years", "Ecopath baseline (YEAR_ECOPATH)", min = 1990, max = 2023, value = c(1994, 1996), step = 1, sep = "", width = "100%"),
       sliderInput("ts_years", "Ecosim biomass series (TS_YEARS)", min = 1990, max = 2023, value = c(1995, 2023), step = 1, sep = "", width = "100%"),
       tags$div(class = "wm-help", "Catch, landings, discards and effort (02) follow these years: from the first Ecopath or Ecosim year to the last Ecosim year."))),
-    column(6, .card("3", "Options", "\u2699\ufe0f",
+    column(6, .card("4", "Options", "\u2699\ufe0f",
       .switch("strata", "Strata-weighted density (STRATA)", "Off = simple mean density instead of the depth-stratum (area-weighted) estimator.", TRUE),
       .switch("drop_outliers", "Remove flagged outlier hauls (DROP_OUTLIERS)", "Off = outliers are only reported in survey_outliers_flagged.csv.", TRUE),
       .switch("normalize_ts", "Ecosim series as relative index (NORMALIZE_TS)", "Off = raw density (t/km\u00b2) instead of first value = 1.", TRUE),
@@ -376,7 +376,7 @@ tagList(
                    choices = c("All 01-05" = "1:5", "Only 01 biomass (and maps)" = "1", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
 
   ## 4. Run ----------------------------------------------------------------
-  .card("4", "Run", "\u25B6\ufe0f",
+  .card("5", "Run", "\u25B6\ufe0f",
     fluidRow(
       column(5,
         actionButton("run", "Run pipeline", class = "btn-primary", icon = icon("play")),
@@ -394,7 +394,7 @@ tagList(
         textOutput("config_text", container = function(...) tags$pre(class = "wm-config", ...))))),
 
   ## Results ---------------------------------------------------------------
-  .card("5", "Results", "\U0001F4CA",
+  .card("6", "Results", "\U0001F4CA",
     tags$div(class = "wm-downloads mb-3",
       tags$strong("Download the outputs: "),
       downloadButton("dl_workbook", "Ecopath/Ecosim inputs (.xlsx)", class = "btn-sm btn-primary"),
@@ -950,15 +950,27 @@ observeEvent(input$run, {
     "res <- tryCatch({ cat('--- Step 1/5: 01_biomass.R\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); ",
     "source('01_biomass.R'); cat('--- Step 1/5 done\\n', file = Sys.getenv('WMED_PROGRESS_FILE'), append = TRUE); 'done' }, ",
     "error = function(e) paste('error:', conditionMessage(e)))"), body)
-  code <- paste(c(sprintf("writeLines(as.character(Sys.getpid()), '%s')", .fwd(.pid_file)), sub("^source\\(\"run_pipeline_demo.R\"\\)$",
+  ## Windows: the run writes its own console.txt through an R connection.
+  ## With system2(stdout = file) Windows keeps that file locked while the
+  ## run goes, so this page could not read it ("cannot open the
+  ## connection") and the box stayed empty. Every message is flushed at
+  ## once so the box is live; system2's own output (R start-up errors
+  ## only) goes to console_raw.txt.
+  win_head <- if (.Platform$OS.type == "windows") c(
+    sprintf(".wm_con <- file('%s', open = 'wt')", .fwd(.console)),
+    "sink(.wm_con); sink(.wm_con, type = 'message')",
+    "globalCallingHandlers(message = function(m) { cat(conditionMessage(m), file = .wm_con); flush(.wm_con); invokeRestart('muffleMessage') })")
+  win_tail <- if (.Platform$OS.type == "windows") "flush(.wm_con); sink(type = 'message'); sink(); close(.wm_con)"
+  code <- paste(c(sprintf("writeLines(as.character(Sys.getpid()), '%s')", .fwd(.pid_file)), win_head, sub("^source\\(\"run_pipeline_demo.R\"\\)$",
                       "res <- tryCatch({ source('run_pipeline_demo.R'); 'done' }, error = function(e) paste('error:', conditionMessage(e)))", body),
-                  sprintf("writeLines(res, '%s')", .fwd(.status_file))), collapse = "\n")
+                  win_tail, sprintf("writeLines(res, '%s')", .fwd(.status_file))), collapse = "\n")
   old <- setwd(file.path(.git_dir, "scripts")); on.exit(setwd(old))
   ## The run's code goes in a file: on Windows a multi-line "Rscript -e" does
   ## not survive the command line (cmd.exe), so the run never started there.
   .run_script <- file.path(.run_dir, "run.R")
   writeLines(code, .run_script)
-  system2(file.path(R.home("bin"), "Rscript"), shQuote(.fwd(.run_script)), wait = FALSE, stdout = .console, stderr = .console)
+  .out_file <- if (.Platform$OS.type == "windows") file.path(.run_dir, "console_raw.txt") else .console
+  system2(file.path(R.home("bin"), "Rscript"), shQuote(.fwd(.run_script)), wait = FALSE, stdout = .out_file, stderr = .out_file)
   run_state("running"); run_started(Sys.time()); run_finished(NULL); run_note(""); step_seen(list())
   run_steps(eval(parse(text = input$steps)))
   showNotification(if (custom) paste0("Pipeline started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
@@ -1033,7 +1045,11 @@ output$run_progress <- renderUI({
 output$run_status <- renderText({
   invalidateLater(5000)
   st <- run_state()
-  tail_txt <- if (file.exists(.console)) paste(tail(readLines(.console, warn = FALSE), 30), collapse = "\n") else ""
+  .tail30 <- function(f) if (file.exists(f)) tryCatch(paste(tail(readLines(f, warn = FALSE), 30), collapse = "\n"),
+                                                    error = function(e) "") else ""
+  tail_txt <- .tail30(.console)
+  ## Windows: R start-up errors land in console_raw.txt (see the Run button)
+  if (!nzchar(tail_txt) && st == "error") tail_txt <- .tail30(file.path(.run_dir, "console_raw.txt"))
   paste0("Status: ", st, "\nOutput folder: ", .out_dir,
          if (st == "error" && file.exists(.status_file)) paste0("\n", readLines(.status_file, warn = FALSE)[1]) else "",
          if (nzchar(run_note())) paste0("\n", run_note()) else "",

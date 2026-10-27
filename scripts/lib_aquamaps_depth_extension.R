@@ -88,8 +88,15 @@ ensure_aquamaps_db <- function() {
   if (!requireNamespace("aquamapsdata", quietly = TRUE)) {
     message("[AquaMaps] 'aquamapsdata' package not installed - installing from GitHub",
             " (raquamaps/aquamapsdata)...")
-    if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
-    devtools::install_github("raquamaps/aquamapsdata", dependencies = TRUE)
+    ## r-universe binary first, then the GitHub source archive; never
+    ## install_github(), which fails with "401 Bad credentials" when the
+    ## laptop has an expired GitHub token saved (install_packages.R)
+    tryCatch(install.packages("aquamapsdata", repos = c("https://raquamaps.r-universe.dev", getOption("repos"))),
+             error = function(e) NULL)
+    if (!requireNamespace("aquamapsdata", quietly = TRUE)) {
+      if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+      remotes::install_url("https://github.com/raquamaps/aquamapsdata/archive/HEAD.tar.gz", upgrade = "never")
+    }
   }
   suppressPackageStartupMessages(library(aquamapsdata))
   ## force = FALSE (never TRUE here) - this is a ~2GB/~10GB-unpacked

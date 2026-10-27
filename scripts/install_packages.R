@@ -2,99 +2,99 @@
 ## (biomass, fisheries, P/B, Q/B, traits and diets). This file: install_packages.R
 ## =================================================================
 ## install_packages.R
+## Created by: Daniel Vilas
 ##
-## Run this ONCE (or after a fresh R install) before running any of
-## the pipeline scripts. Two tiers:
-##   1) plain CRAN packages every script's own "install any missing
-##      packages" block would eventually pull in anyway - installed
-##      here up front so the FIRST real pipeline run doesn't stall
-##      partway through on a package prompt.
-##   2) three packages that MUST come from GitHub/a dev build, not
-##      the CRAN release - 03_pbqb-traits.R checks for these exact
-##      version/export requirements itself and stop()s with the same
-##      install command if it finds the wrong build, so this section
-##      just does that up front instead of failing mid-run.
+## Checks and installs every package the pipeline uses, on any laptop
+## (macOS, Windows, Linux). run_pipeline_demo.R sources it at the start
+## of every run (and so does a run from medbs_pipeline_methodology.qmd):
+## when everything is installed it only checks (about a second); a new
+## laptop gets everything installed before step 01 starts, instead of
+## the run stopping halfway on a missing package. Can also be run on its
+## own: source("install_packages.R").
+##
+## - CRAN packages: installed from CRAN (binaries on Windows/macOS).
+## - Packages not on CRAN (rfishbase >= 4, duckdbfs, aquamapsdata,
+##   ramlegacy): installed from r-universe (binaries, no GitHub login),
+##   and if that fails from the GitHub source archive without the GitHub
+##   API. remotes::install_github() is NOT used: it sends any GitHub token
+##   saved on the laptop, and an expired one fails with "HTTP error 401
+##   Bad credentials" even for these public repos (Windows, 2026-10-27).
+## - Optional (FishLife) is only reported.
+## - R older than 4.3 gets a warning: some packages no longer build
+##   binaries for it, so installs fall back to source and can fail.
 ## =================================================================
 
-## --- 1) CRAN packages -------------------------------------------------
-cran_pkgs <- c(
-  "data.table", "readr", "dplyr", "tidyr", "ggplot2", "stringr",
-  "marmap", "raster", "terra", "sf", "openxlsx", "readxl", "maps",
-  "scales", "rnaturalearth", "rnaturalearthdata", "httr", "jsonlite",
-  "progress", "patchwork", "purrr", "arrow",
-  ## optional but recommended - each gated behind its own
-  ## requireNamespace() check in the scripts, with a graceful
-  ## skip-with-message if you choose not to install them:
-  "TropFishR", "ggrepel", "remotes", "devtools",
-  ## used by 01b, 04, the interactive page and the helpers
-  "ncdf4", "png", "xml2", "pdftools", "zip", "tibble", "rlang", "worrms", "emodnet.wfs",
-  "rmapshaper", "getPass", "rstudioapi", "shiny", "knitr", "rmarkdown"
-)
-new_cran <- cran_pkgs[!cran_pkgs %in% installed.packages()[, "Package"]]
-if (length(new_cran) > 0) {
-  message("Installing ", length(new_cran), " CRAN package(s): ", paste(new_cran, collapse = ", "))
-  install.packages(new_cran)
-} else {
-  message("All CRAN packages already installed.")
+wmed_check_packages <- function(quiet = FALSE) {
+  say <- function(...) if (!quiet) message("[packages] ", ...)
+  ## A run started with Rscript has no CRAN mirror set ("@CRAN@") and
+  ## install.packages() would stop asking for one
+  repos <- getOption("repos")
+  if (is.null(repos) || !length(repos) || any(repos %in% c("@CRAN@", "")))
+    options(repos = c(CRAN = "https://cloud.r-project.org"))
+  if (getRversion() < "4.3.0")
+    warning("[packages] R ", getRversion(), " is old: some packages have no binaries for it any more. ",
+            "Install R 4.4 or newer from https://cran.r-project.org if an install below fails.", call. = FALSE)
+
+  have <- rownames(utils::installed.packages())
+
+  ## --- CRAN ----------------------------------------------------------
+  cran <- c(
+    ## core (01-05)
+    "data.table", "readr", "dplyr", "tidyr", "ggplot2", "stringr", "purrr", "tibble", "rlang",
+    "openxlsx", "readxl", "scales", "patchwork", "ggrepel", "progress", "png", "zip",
+    ## spatial
+    "sf", "raster", "terra", "marmap", "maps", "rnaturalearth", "rnaturalearthdata", "rmapshaper",
+    ## web data and taxonomy
+    "httr", "jsonlite", "xml2", "pdftools", "worrms", "emodnet.wfs", "arrow", "duckdb", "ncdf4",
+    "DBI", "RSQLite", "dbplyr",
+    ## P/B, Q/B
+    "TropFishR",
+    ## the interactive page and helpers
+    "shiny", "knitr", "rmarkdown", "htmltools", "rstudioapi", "getPass", "remotes")
+  miss <- setdiff(cran, have)
+  if (length(miss)) {
+    say("installing ", length(miss), " CRAN package(s): ", paste(miss, collapse = ", "))
+    utils::install.packages(miss)
+    have <- rownames(utils::installed.packages())
+    still <- setdiff(miss, have)
+    if (length(still)) warning("[packages] could not install: ", paste(still, collapse = ", "),
+                               " - see the messages above.", call. = FALSE)
+  }
+
+  ## --- not on CRAN -----------------------------------------------------
+  ## name, r-universe, GitHub owner/repo, and a test that the right build is installed
+  extra <- list(
+    list(pkg = "rfishbase", univ = "https://ropensci.r-universe.dev", gh = "ropensci/rfishbase",
+         ok = function() utils::packageVersion("rfishbase") >= "4.0.0"),
+    list(pkg = "duckdbfs", univ = "https://cboettig.r-universe.dev", gh = "cboettig/duckdbfs",
+         ok = function() exists("duckdb_config", where = asNamespace("duckdbfs"))),
+    list(pkg = "aquamapsdata", univ = "https://raquamaps.r-universe.dev", gh = "raquamaps/aquamapsdata",
+         ok = function() TRUE),
+    list(pkg = "ramlegacy", univ = "https://ropensci.r-universe.dev", gh = "ropensci/ramlegacy",
+         ok = function() TRUE))
+  for (x in extra) {
+    good <- x$pkg %in% have && isTRUE(tryCatch(x$ok(), error = function(e) FALSE))
+    if (good) next
+    say("installing ", x$pkg, " (not on CRAN, or too old there)...")
+    tryCatch(utils::install.packages(x$pkg, repos = c(x$univ, getOption("repos"))),
+             error = function(e) say("  r-universe failed: ", conditionMessage(e)))
+    good <- isTRUE(tryCatch({ requireNamespace(x$pkg, quietly = TRUE) && x$ok() }, error = function(e) FALSE))
+    if (!good) {
+      say("  trying the GitHub source archive of ", x$gh, "...")
+      tryCatch(remotes::install_url(paste0("https://github.com/", x$gh, "/archive/HEAD.tar.gz"), upgrade = "never"),
+               error = function(e) say("  GitHub archive failed: ", conditionMessage(e)))
+      good <- isTRUE(tryCatch({ requireNamespace(x$pkg, quietly = TRUE) && x$ok() }, error = function(e) FALSE))
+    }
+    if (!good) warning("[packages] ", x$pkg, " is still missing or too old. Install it by hand: ",
+                       "install.packages('", x$pkg, "', repos = c('", x$univ, "', getOption('repos')))", call. = FALSE)
+  }
+
+  ## --- optional ----------------------------------------------------------
+  if (!"FishLife" %in% have)
+    say("FishLife not installed (optional: phylogenetic P/B, Q/B fallback). Needs build tools; ",
+        "install with remotes::install_url('https://github.com/James-Thorson-NOAA/FishLife/archive/HEAD.tar.gz').")
+  say("all required packages are installed.")
+  invisible(TRUE)
 }
 
-## --- 2) GitHub/dev-build packages - CRAN releases will NOT work ------
-
-## rfishbase >= 4.0.0 - CRAN releases predate the architecture rfishbase
-## 4+ needs (pre-4.0 crashes on basic calls like species()).
-rfishbase_version <- tryCatch(packageVersion("rfishbase"), error = function(e) NULL)
-if (is.null(rfishbase_version) || rfishbase_version < "4.0.0") {
-  message("Installing rfishbase from GitHub (ropensci/rfishbase) - CRAN version is too old...")
-  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-  remotes::install_github("ropensci/rfishbase")
-} else {
-  message("rfishbase ", as.character(rfishbase_version), " already installed (>= 4.0.0, OK).")
-}
-
-## duckdbfs with duckdb_config exported - rfishbase 4+ requires this
-## export; CRAN's 0.1.0 release lacks it, only the GitHub dev build has it.
-duckdbfs_ok <- requireNamespace("duckdbfs", quietly = TRUE) &&
-  exists("duckdb_config", where = asNamespace("duckdbfs"))
-if (!duckdbfs_ok) {
-  message("Installing duckdbfs from GitHub (cboettig/duckdbfs) - CRAN version is missing duckdb_config...")
-  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-  remotes::install_github("cboettig/duckdbfs")
-} else {
-  message("duckdbfs already installed with duckdb_config exported (OK).")
-}
-
-## FishLife - optional but recommended: without it, species with no
-## direct FishBase growth studies fall through to the trophic-level-
-## only Gascuel fallback instead of FishLife's phylogenetic estimate.
-if (!requireNamespace("FishLife", quietly = TRUE)) {
-  message("FishLife not installed (optional). To enable the phylogenetic PB/QB fallback:")
-  message("  devtools::install_github('james-thorson/FishLife', dep = TRUE)")
-} else {
-  message("FishLife already installed (OK).")
-}
-
-## aquamapsdata - AquaMaps depth envelopes (01 pseudo-strata, 01b habitat
-## depth factor). GitHub only. The ~2 GB database itself is downloaded the
-## first time 01_biomass.R uses it.
-if (!requireNamespace("aquamapsdata", quietly = TRUE)) {
-  message("Installing aquamapsdata from GitHub (raquamaps/aquamapsdata)...")
-  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-  remotes::install_github("raquamaps/aquamapsdata", dependencies = TRUE)
-} else {
-  message("aquamapsdata already installed (OK).")
-}
-
-## ramlegacy - only needed to rebuild the stock-assessment table
-## (combine_STAR_RAMlegacy.R); the pipeline reads the CSV it wrote.
-if (!requireNamespace("ramlegacy", quietly = TRUE)) {
-  ok <- tryCatch({ install.packages("ramlegacy"); requireNamespace("ramlegacy", quietly = TRUE) }, error = function(e) FALSE)
-  if (!isTRUE(ok)) { if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes"); remotes::install_github("ropensci/ramlegacy") }
-}
-
-## --- 3) Restart reminder ----------------------------------------------
-message(
-  "\nDone. If rfishbase or duckdbfs were just (re)installed above, RESTART R\n",
-  "completely (quit and reopen, not just clear the workspace/environment) before\n",
-  "running any pipeline script - both packages have been observed to misbehave\n",
-  "if loaded fresh in the same session they were just installed in."
-)
+wmed_check_packages()
