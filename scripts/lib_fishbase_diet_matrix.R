@@ -85,7 +85,8 @@ if (!exists("DIET_CATEGORY_SPLIT")) DIET_CATEGORY_SPLIT <- "biomass"   # "biomas
 .fb_call <- function(fn, ..., server) {
   if (!requireNamespace("rfishbase", quietly = TRUE)) return(data.table())
   if (!exists(fn, where = asNamespace("rfishbase"), inherits = FALSE)) return(data.table())
-  tryCatch(as.data.table(do.call(get(fn, envir = asNamespace("rfishbase")), list(..., server = server))),
+  fetch <- function() as.data.table(do.call(get(fn, envir = asNamespace("rfishbase")), list(..., server = server)))
+  tryCatch(if (exists("fishbase_memo")) fishbase_memo(fn, server, list(...), fetch) else fetch(),   # shared FishBase snapshot (lib_survey_fg_density_functions.R)
            error = function(e) { message("[Diet sources] rfishbase::", fn, "(server = '", server, "') failed: ",
                                          conditionMessage(e)); data.table() })
 }

@@ -90,6 +90,21 @@ gel_effective_depth <- function(strata_area_by_area, Z) {
 
 ## MAREDAT macrozooplankton: per-cell median carbon (mg C/m3), 0-z_max m
 read_maredat_macrozoo_wmed <- function(data_dir, bbox = c(-6, 16, 35, 45), z_max = 350) {
+  ## Small Western Med extract (all depths to 1000 m, box 6 W - 16 E,
+  ## 35 - 45 N) kept next to the data: once it exists the 1.4 GB global
+  ## NetCDF is not needed any more and can be deleted from pCloud.
+  ext_f <- file.path(data_dir, "maredat_macrozoo_wmed_extract.csv")
+  ext_box <- c(-6, 16, 35, 45)
+  .summ <- function(w) {
+    w <- w[!is.na(c_mgC_m3) & lon >= bbox[1] & lon <= bbox[2] & lat >= bbox[3] & lat <= bbox[4] & depth <= z_max]
+    if (!nrow(w)) return(w[, .(lon, lat, c_mgC_m3, n_obs = integer())])
+    w[, .(c_mgC_m3 = stats::median(c_mgC_m3), n_obs = .N), by = .(lon, lat)]
+  }
+  if (file.exists(ext_f) && bbox[1] >= ext_box[1] && bbox[2] <= ext_box[2] && bbox[3] >= ext_box[3] && bbox[4] <= ext_box[4] && z_max <= 1000) {
+    w <- fread(ext_f)
+    message("  MAREDAT: Western Med extract ", basename(ext_f), " (", nrow(w), " values)")
+    return(.summ(w))
+  }
   zip <- file.path(data_dir, "PANGAEA.777398_PDI-1453-1455.zip")
   url <- "https://store.pangaea.de/Publications/ESSD_Special_Issue-MAREDAT/PANGAEA.777398_%28PDI-1453-1455%29.zip"
   nc_files <- list.files(data_dir, "\\.nc$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
@@ -115,6 +130,8 @@ read_maredat_macrozoo_wmed <- function(data_dir, bbox = c(-6, 16, 35, 45), z_max
   lonn <- dn[grepl("LON", dn)][1]; latn <- dn[grepl("LAT", dn)][1]; depn <- dn[grepl("DEP", dn)][1]
   setnames(grid, c(lonn, latn, depn), c("lon", "lat", "depth"))
   grid[lon > 180, lon := lon - 360]
+  tryCatch(fwrite(grid[!is.na(c_mgC_m3) & lon >= ext_box[1] & lon <= ext_box[2] & lat >= ext_box[3] & lat <= ext_box[4] & depth <= 1000,
+                       .(lon, lat, depth, c_mgC_m3)], ext_f), error = function(e) NULL)
   w <- grid[!is.na(c_mgC_m3) & lon >= bbox[1] & lon <= bbox[2] & lat >= bbox[3] & lat <= bbox[4] & depth <= z_max]
   message("  MAREDAT (", basename(f), ", variable ", vname, "): ", nrow(w), " non-missing values in the Western Med box, ",
           uniqueN(w[, .(lon, lat)]), " cells")

@@ -638,7 +638,8 @@ fetch_fishbase_diet_for_species <- function(species_names) {
   
   fetch_one <- function(fn_name, ..., server) {
     if (!exists(fn_name, where = asNamespace("rfishbase"), inherits = FALSE)) return(data.table())
-    tryCatch(as.data.table(do.call(get(fn_name, envir = asNamespace("rfishbase")), list(..., server = server))),
+    tryCatch(fishbase_memo(fn_name, server, list(...),   # shared FishBase snapshot (lib_survey_fg_density_functions.R)
+                           function() as.data.table(do.call(get(fn_name, envir = asNamespace("rfishbase")), list(..., server = server)))),
              error = function(e) {
                message("[04_diets.R] rfishbase::", fn_name, "(server = '", server, "') failed: ", conditionMessage(e))
                data.table()

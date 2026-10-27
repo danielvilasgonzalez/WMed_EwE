@@ -2299,7 +2299,7 @@ bathy_mosaic <- function(resolution = 1, dir) {
   out <- if (length(pieces) == 1) pieces[[1]] else do.call(raster::merge, pieces)
   for (pl in places) {
     ok <- tryCatch({ dir.create(dirname(pl), recursive = TRUE, showWarnings = FALSE)
-      raster::writeRaster(out, pl, overwrite = TRUE); TRUE }, error = function(e) FALSE)
+      raster::writeRaster(out, pl, overwrite = TRUE, datatype = "INT2S", options = c("COMPRESS=DEFLATE", "PREDICTOR=2")); TRUE }, error = function(e) FALSE)   # whole metres, compressed: small file in pCloud
     if (ok) { message("  Saved ", pl); return(raster::raster(pl)) }
   }
   out
@@ -6058,4 +6058,51 @@ compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pai
     message("[Multistanza age split - MEDITS TC] TC.csv matched but produced no usable juvenile proportion.")
   }
   result
+}
+
+## =================================================================
+## FishBase / SeaLifeBase snapshot (shared in pCloud, small)
+## =================================================================
+## rfishbase reads a WHOLE FishBase table for every call (downloaded the
+## first time on each laptop) and then keeps our ~1,400 species. Each
+## call's RESULT - only our species' rows - is saved compressed (xz) in
+## pCloud data/fishbase_snapshot/ and reused by every laptop for
+## FISHBASE_SNAPSHOT_DAYS (default 30), then fetched again. A call is
+## identified by function, server and arguments (species list sorted), so
+## a changed FG species list fetches again. Empty results (often a failed
+## download) are never saved. Files not refreshed for twice that period
+## are deleted, so the folder stays at a few MB. FISHBASE_SNAPSHOT_DAYS = 0
+## turns it off. Saved to out_dir/fishbase_snapshot when pCloud cannot be
+## written.
+.snapshot_dirs <- function(sub) {
+  pc <- get0("pcloud_dir", envir = .GlobalEnv, ifnotfound = NA)
+  od <- get0("out_dir", envir = .GlobalEnv, ifnotfound = NA)
+  c(if (!is.na(pc)) file.path(pc, "data", sub), if (!is.na(od)) file.path(od, sub))
+}
+fishbase_memo <- function(fn_name, server, args, fetch) {
+  days <- get0("FISHBASE_SNAPSHOT_DAYS", envir = .GlobalEnv, ifnotfound = 30)
+  if (!isTRUE(days > 0) || !requireNamespace("rlang", quietly = TRUE)) return(fetch())
+  args <- lapply(args, function(a) if (is.character(a)) sort(unique(a)) else a)
+  stem <- paste0(gsub("[^A-Za-z0-9]+", "_", sub("^.*::", "", fn_name)), "_", server, "_")
+  nm <- paste0(stem, rlang::hash(list(fn_name, server, args)), ".rds")
+  dirs <- .snapshot_dirs("fishbase_snapshot")
+  for (d in dirs) {
+    f <- file.path(d, nm)
+    if (file.exists(f) && as.numeric(difftime(Sys.time(), file.mtime(f), units = "days")) <= days) {
+      res <- tryCatch(readRDS(f), error = function(e) NULL)
+      if (data.table::is.data.table(res)) res <- data.table::setalloccol(res)   # := works on it afterwards
+      if (!is.null(res)) return(res)
+    }
+  }
+  res <- fetch()
+  if (NROW(res) > 0) for (d in dirs) {
+    ok <- tryCatch({ dir.create(d, recursive = TRUE, showWarnings = FALSE)
+      saveRDS(res, file.path(d, nm), compress = "xz")
+      old <- list.files(d, pattern = "\\.rds$", full.names = TRUE)
+      old <- old[as.numeric(difftime(Sys.time(), file.mtime(old), units = "days")) > 2 * days]
+      if (length(old)) unlink(old)
+      TRUE }, error = function(e) FALSE)
+    if (ok) break
+  }
+  res
 }

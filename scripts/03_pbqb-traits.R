@@ -513,6 +513,10 @@ make_stage_tracker <- function(stages, use_gui = TRUE) {
 }
 
 STAGE_PB <- make_stage_tracker(PIPELINE_STAGES, use_gui = USE_GUI_PROGRESS)
+## Elapsed minutes at each stage in the log, to see where a slow laptop spends its time
+.wm_t0_03 <- Sys.time()
+.wm_tick03 <- function(label) message(sprintf("[time] %s done: %.1f min since the start of 03", label,
+                                              as.numeric(difftime(Sys.time(), .wm_t0_03, units = "mins"))))
 message(strrep("=", 70))
 message("Starting pipeline - ", length(PIPELINE_STAGES), " stages",
         if (USE_GUI_PROGRESS) " (GUI progress window, if available)" else " (console progress bar)")
@@ -726,6 +730,7 @@ stopifnot(all(c("Species", "FG", "Biomass") %in% names(species_df)))
 if (!"Yield" %in% names(species_df)) species_df[, Yield := NA_real_]
 sp_list <- unique(species_df$Species)
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Load species_df")))
+.wm_tick03("Load species_df")
 
 ## =================================================================
 ## Fishing mortality (F = Yield/Biomass) - TWO possible attachment
@@ -1222,7 +1227,8 @@ if (length(unresolved) > 0) {
   ## falls back to the original slower but known-correct one-name-at-a-
   ## time loop rather than risk a silent mismatch.
   valid_names <- data.table(Species = character(), valid_name = character())
-  syn_all <- tryCatch(rfishbase::synonyms(unique_terms), error = function(e) {
+  syn_all <- tryCatch(fishbase_memo("rfishbase::synonyms", "fishbase", list(unique_terms),   # shared FishBase snapshot
+                                    function() rfishbase::synonyms(unique_terms)), error = function(e) {
     message("  rfishbase::synonyms() batched call (", length(unique_terms), " name(s) in one request) failed: ",
             conditionMessage(e), " - falling back to the slower one-name-at-a-time loop.")
     NULL
@@ -1340,6 +1346,7 @@ species_df <- merge(species_df, taxonomy, by = "Species", all.x = TRUE)
 message("\nDispatch group counts:")
 print(species_df[, .N, by = dispatch_group])
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Taxonomic classification (FishBase/SeaLifeBase)")))
+.wm_tick03("Taxonomic classification (FishBase/SeaLifeBase)")
 
 ## Growth parameters and related fetches are restricted to fish groups
 ## only (no invertebrates): growth params (Loo/K/Winfinity/tmax, via rfishbase::popgrowth()),
@@ -1512,8 +1519,9 @@ extract_provenance <- function(best_dt, param_type, refno_candidates = c("RefNo"
       valid_ref_nos <- unique(ref_nos[idx])
       
       ref_meta <- tryCatch(
-        as.data.table(rfishbase::references(codes = valid_ref_nos, server = srv,
-                                            fields = c("RefNo", "Author", "Year", "Title"))),
+        fishbase_memo("rfishbase::references", srv, list(valid_ref_nos),   # shared FishBase snapshot
+                      function() as.data.table(rfishbase::references(codes = valid_ref_nos, server = srv,
+                                                                     fields = c("RefNo", "Author", "Year", "Title")))),
         error = function(e) {
           message("  rfishbase::references() lookup failed for '", param_type, "' (server = ",
                   srv, "): ", conditionMessage(e))
@@ -1807,8 +1815,11 @@ fetch_chunked <- function(fun, sp_list, server, ...) {
 }
 
 fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
+  fun_label <- paste(deparse(substitute(fun)), collapse = "")   # e.g. rfishbase::popgrowth, the snapshot key
   assign(".last_fetch_error", NULL, envir = .GlobalEnv)
-  fb <- retry_fetch(function() as.data.table(fun(sp_list, server = "fishbase", ...)))
+  ## fishbase_memo(): shared FishBase snapshot in pCloud (lib_survey_fg_density_functions.R)
+  fb <- retry_fetch(function() fishbase_memo(fun_label, "fishbase", list(sp_list, ...),
+                                             function() as.data.table(fun(sp_list, server = "fishbase", ...))))
   if (nrow(fb) == 0) .stop_if_network("FishBase")
   if (nrow(fb) == 0 && length(sp_list) > 1) {
     message("Batch fetch (fishbase) returned nothing - fetching in chunks of ", FETCH_CHUNK_SIZE,
@@ -1825,7 +1836,8 @@ fetch_both <- function(fun, sp_list, ..., fishbase_only = FALSE) {
   if (fishbase_only) return(fb)
   
   assign(".last_fetch_error", NULL, envir = .GlobalEnv)
-  slb <- retry_fetch(function() as.data.table(fun(sp_list, server = "sealifebase", ...)))
+  slb <- retry_fetch(function() fishbase_memo(fun_label, "sealifebase", list(sp_list, ...),
+                                              function() as.data.table(fun(sp_list, server = "sealifebase", ...))))
   if (nrow(slb) == 0) .stop_if_network("SeaLifeBase")
   if (nrow(slb) == 0 && length(sp_list) > 1) {
     message("Batch fetch (sealifebase) returned nothing - fetching in chunks of ", FETCH_CHUNK_SIZE, " species...")
@@ -1935,6 +1947,7 @@ message("Coverage - Ecology: ", sp_traits[!is.na(Ecology), .N], "/", length(sp_l
         " | Exploitation_status: ", sp_traits[!is.na(Exploitation_status), .N], "/", length(sp_list),
         " (field: ", ifelse(is.na(importance_col), "NONE FOUND", importance_col), ")")
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a: species() traits")))
+.wm_tick03("Fetch 2a: species() traits")
 
 ## --- 2a2. Occurrence status (native/introduced/questionable in the ---
 ## Western Mediterranean) - via rfishbase::country(), FishBase/
@@ -1981,6 +1994,7 @@ occurrence_traits <- tryCatch({
 message("Coverage - Occurrence_status: ", nrow(occurrence_traits), "/", length(sp_list),
         " species have at least one Western Med country record.")
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2a2: occurrence status")))
+.wm_tick03("Fetch 2a2: occurrence status")
 
 ## --- 2b. Growth params (Loo, K, Winfinity) - Mediterranean/recent-prioritized
 ## FISH ONLY (sp_list_fish, not sp_list) - see the comment right after
@@ -2014,6 +2028,7 @@ growth_traits <- if (nrow(growth_best) > 0) growth_best[, .(
 growth_provenance <- extract_provenance(growth_best, "growth (Loo/K/Winf/tmax)",
                                         refno_candidates = c("PopGrowthRef", "RefNo", "MainRefNo"))
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2b: growth params")))
+.wm_tick03("Fetch 2b: growth params")
 
 ## --- 2c. Length-weight a/b params - same prioritization ---------------
 ## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
@@ -2028,6 +2043,7 @@ lw_traits <- if (nrow(lw_best) > 0) lw_best[, .(
 lw_provenance <- extract_provenance(lw_best, "length-weight (a/b)",
                                     refno_candidates = c("LWRef", "PopLWRef", "LengthWeightRef", "RefNo", "MainRefNo"))
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2c: length-weight a/b")))
+.wm_tick03("Fetch 2c: length-weight a/b")
 
 ## --- 2d. Maturity: Lm (length at maturity), needed for Froese-Binohlan
 ## FISH ONLY (sp_list_fish) - same reasoning as 2b above.
@@ -2047,6 +2063,7 @@ maturity_provenance <- extract_provenance(maturity_best, "maturity (Lm/Tmat)",
 message("Coverage - Lm (length at maturity): ", maturity_traits[!is.na(Lm), .N], "/", length(sp_list_fish),
         " fish species (field: ", ifelse(is.na(lm_col), "NONE FOUND", lm_col), ")")
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2d: maturity")))
+.wm_tick03("Fetch 2d: maturity")
 
 ## --- 2e. Ecology: trophic level ---------------------------------------
 ecol <- fetch_both(rfishbase::ecology, sp_list)
@@ -2055,6 +2072,7 @@ ecol_traits <- if (nrow(ecol) > 0) unique(ecol[, .(
   Species, TrophicLevel = if (!is.na(tl_col)) get(tl_col) else NA_real_
 )], by = "Species") else data.table(Species = character(), TrophicLevel = numeric())
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2e: ecology/trophic level")))
+.wm_tick03("Fetch 2e: ecology/trophic level")
 
 ## --- 2f. Swimming: aspect ratio (fish-specific caudal-fin morphology -
 ## SeaLifeBase never has this, so skip that call entirely rather than
@@ -2070,6 +2088,7 @@ swim_traits <- if (nrow(swim) > 0) unique(swim[, .(
   Species, AspectRatio = if (!is.na(ar_col)) get(ar_col) else NA_real_
 )], by = "Species") else data.table(Species = character(), AspectRatio = numeric())
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Fetch 2f: swimming/aspect ratio")))
+.wm_tick03("Fetch 2f: swimming/aspect ratio")
 
 ## --- assemble ----------------------------------------------------------
 species_df <- Reduce(function(x, y) merge(x, y, by = "Species", all.x = TRUE),
@@ -2153,6 +2172,7 @@ print(species_df[, .(
   AspectRatio = sum(!is.na(AspectRatio)), Longevity = sum(!is.na(Longevity)), Depth = sum(!is.na(Depth))
 ), by = dispatch_group])
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Assemble + derive traits (Froese-Binohlan)")))
+.wm_tick03("Assemble + derive traits (Froese-Binohlan)")
 
 ## Fill gaps in the RAW TRAITS themselves (before any formula runs) by
 ## taxonomic proximity - local donors within species_df first, external
@@ -2171,6 +2191,7 @@ print(species_df[, .(
   Longevity = sum(!is.na(Longevity))
 ), by = dispatch_group])
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Raw-trait gap filling")))
+.wm_tick03("Raw-trait gap filling")
 
 ## =================================================================
 ## FISH: Pauly (1980) M [Eq. 9] -> FishLife (phylogenetic imputation,
@@ -2333,6 +2354,35 @@ fetch_fishlife <- function(taxonomy_dt) {
   out
 }
 
+## FishLife results per species, cached in the shared FishBase snapshot
+## folder (fishlife_results.rds, a few hundred KB): FishLife draws a plot
+## for every species, which is the slow part (minutes for ~400 species).
+## Only species (with their taxonomy) not in the cache are computed; the
+## cache is redone when the installed FishLife version changes.
+fetch_fishlife_cached <- function(taxonomy_dt) {
+  if (!nrow(taxonomy_dt) || !requireNamespace("FishLife", quietly = TRUE)) return(fetch_fishlife(taxonomy_dt))
+  ver <- as.character(utils::packageVersion("FishLife"))
+  key <- function(d) d[, paste(Species, Genus, Family, Order, Class, sep = "|")]
+  taxonomy_dt <- copy(taxonomy_dt)[, .key := key(.SD)]
+  dirs <- .snapshot_dirs("fishbase_snapshot")
+  cache <- NULL
+  for (d in dirs) { f <- file.path(d, "fishlife_results.rds")
+    if (file.exists(f)) { cache <- tryCatch(readRDS(f), error = function(e) NULL); break } }
+  if (is.null(cache) || !identical(attr(cache, "fishlife_version"), ver)) cache <- data.table(.key = character(0))
+  todo <- taxonomy_dt[!.key %in% cache$.key]
+  if (nrow(todo)) {
+    message("FishLife: ", nrow(taxonomy_dt) - nrow(todo), " species from the cache, computing ", nrow(todo), ".")
+    new <- fetch_fishlife(todo[, .(Species, Genus, Family, Order, Class)])
+    new <- merge(todo[, .(Species, .key)], new, by = "Species", all.x = TRUE)   # unresolved species cached too (all NA)
+    cache <- unique(rbind(cache, new, fill = TRUE), by = ".key")
+    setattr(cache, "fishlife_version", ver)
+    for (d in dirs) if (isTRUE(tryCatch({ dir.create(d, recursive = TRUE, showWarnings = FALSE)
+      saveRDS(cache, file.path(d, "fishlife_results.rds"), compress = "xz"); TRUE }, error = function(e) FALSE))) break
+  } else message("FishLife: all ", nrow(taxonomy_dt), " species from the cache.")
+  out <- cache[.key %in% taxonomy_dt$.key][, .key := NULL]
+  out[rowSums(!is.na(out[, !"Species"])) > 0]   # same as fetch_fishlife(): only resolved species
+}
+
 ## TropFishR::M_empirical() - bundles several established, distinct M
 ## estimators beyond Pauly (1980), including Then et al. (2015), which
 ## its own paper identifies as the best-performing empirical estimator
@@ -2417,7 +2467,7 @@ calc_fish <- function(out) {
   ## computing every method for every species, so they're genuinely
   ## comparable against Pauly/Hoenig/Then/etc., not just a fallback
   ## chain that skips FishLife whenever direct data already exists -----
-  fl <- fetch_fishlife(out[, .(Species, Genus, Family, Order, Class)])
+  fl <- fetch_fishlife_cached(out[, .(Species, Genus, Family, Order, Class)])
   if (nrow(fl) > 0) out <- merge(out, fl, by = "Species", all.x = TRUE)
   for (col in c("Loo_fishlife", "K_fishlife", "M_FishLife_2023", "Winf_fishlife")) {
     if (!col %in% names(out)) out[, (col) := NA_real_]
@@ -2782,6 +2832,7 @@ results <- rbindlist(list(
   if (nrow(species_df[dispatch_group == "invertebrate"]) > 0) calc_invertebrate(species_df[dispatch_group == "invertebrate"])
 ), fill = TRUE)
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Calculate PB/QB (all groups)")))
+.wm_tick03("Calculate PB/QB (all groups)")
 
 ## Merge the raw traits (Loo/K/Winf/Longevity/TrophicLevel/AspectRatio/
 ## Depth/Temp) back onto `results` by Species - calc_fish()/
@@ -2960,6 +3011,7 @@ if (n_fg_no_F > 0) {
   print(fg_weighted[n_species_with_F == 0, .(FG, FG_name, PB_FG, n_species_total)])
 }
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Aggregate to FG level")))
+.wm_tick03("Aggregate to FG level")
 
 ## =================================================================
 ## Export
@@ -3340,6 +3392,7 @@ trim_workbook_to_final_sheets(ECOPATH_WORKBOOK_PATH)
 ## own PB_method/QB_method and per-method PB_*/QB_* columns, filtered to
 ## dispatch_group == "fish", the same data this block used in place.
 invisible(STAGE_PB$tick(tokens = list(stage_name = "Export CSVs")))
+.wm_tick03("Export CSVs")
 
 ## =================================================================
 ## OUTPUT 1: Reference/provenance table - which study (Locality, Year)

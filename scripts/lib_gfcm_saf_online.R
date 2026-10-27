@@ -397,14 +397,28 @@ gfcm_saf_other_stocks <- function(pcloud_dir, out_csv, model_gsas, fg_species, a
       setorder(saf, stock_key, -ref_year, -folder_year)
       message("[GFCM SAF other stocks] ", uniqueN(saf$stock_key), " other stock(s) of ", uniqueN(saf$species),
               " FG species - reading their newest SAF (only new PDFs are downloaded)...")
+      ## To save pCloud space these PDFs are NOT kept: each is read from a
+      ## temporary file and only what was read is cached (by file name) in
+      ## data/fisheries/GFCM_SAF/other_stocks_read_cache.rds, so a PDF is
+      ## downloaded again only when GFCM publishes a new one.
+      cache_f <- file.path(saf_dir, "other_stocks_read_cache.rds")
+      rcache <- if (file.exists(cache_f)) tryCatch(readRDS(cache_f), error = function(e) list()) else list()
       pdf_dir <- file.path(saf_dir, "pdf")
       for (k in unique(saf$stock_key)) {
         tries <- head(saf[stock_key == k], 1 + GFCM_SAF_MAX_BACK)
         got <- NULL; last_status <- NA_character_
         for (i in seq_len(nrow(tries))) {
           s <- tries[i]
-          r <- tryCatch(if (gfcm_saf_download(s$url, file.path(pdf_dir, basename(s$name)))) gfcm_saf_parse_pdf(file.path(pdf_dir, basename(s$name)), s$ref_year)
-                        else list(status = "download failed", data = NULL), error = function(e) list(status = conditionMessage(e), data = NULL))
+          fname <- basename(s$name)
+          r <- rcache[[fname]]
+          if (is.null(r)) {
+            kept <- file.path(pdf_dir, fname)   # a PDF already kept for the stocks in use is read in place
+            tmp <- if (file.exists(kept)) kept else tempfile(fileext = ".pdf")
+            r <- tryCatch(if (file.exists(kept) || gfcm_saf_download(s$url, tmp)) gfcm_saf_parse_pdf(tmp, s$ref_year)
+                          else list(status = "download failed", data = NULL), error = function(e) list(status = conditionMessage(e), data = NULL))
+            if (!identical(tmp, kept)) unlink(tmp)
+            if (!identical(r$status, "download failed")) rcache[[fname]] <- r
+          }
           last_status <- r$status
           if (identical(r$status, "ok")) {
             got <- r$data[, `:=`(stock_key = k, species = s$species, common_name = s$common_name, gsa = s$gsa, ref_year = s$ref_year,
@@ -416,6 +430,7 @@ gfcm_saf_other_stocks <- function(pcloud_dir, out_csv, model_gsas, fg_species, a
           tries[1, .(source = "GFCM SAF (online)", stock_key = k, species, common_name, gsa, ref_year, url,
                      parse_status = paste0("no value read: ", last_status), inside)]
       }
+      tryCatch(saveRDS(rcache, cache_f, compress = "xz"), error = function(e) NULL)
     } else message("[GFCM SAF other stocks] GFCM website or ASFIS species list not available - GFCM SAFs skipped.")
   }
   ## --- RAM Legacy
