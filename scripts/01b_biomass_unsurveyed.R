@@ -2478,6 +2478,12 @@ ISIMIP_BASE_URL <- "https://files.isimip.org/ISIMIP3a/InputData/climate/ocean/ob
 .isimip_get_file <- function(var) {
   dir.create(ISIMIP_CACHE_DIR, recursive = TRUE, showWarnings = FALSE)
   candidates <- list(c("annual", "15arcmin"), c("annual", "60arcmin"), c("monthly", "60arcmin"))
+  ## a file already downloaded (any of the candidates) is used before any
+  ## download is tried: the failed annual-file attempts cost time every run
+  for (cnd in candidates) {
+    dest <- file.path(ISIMIP_CACHE_DIR, sprintf("gfdl-mom6-cobalt2_obsclim_%s_%s_global_%s_1961_2010.nc", var, cnd[2], cnd[1]))
+    if (file.exists(dest) && file.size(dest) > 1e5) return(dest)
+  }
   for (cnd in candidates) {
     fname <- sprintf("gfdl-mom6-cobalt2_obsclim_%s_%s_global_%s_1961_2010.nc", var, cnd[2], cnd[1])
     dest <- file.path(ISIMIP_CACHE_DIR, fname)
@@ -2547,12 +2553,37 @@ fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
   ## the cache is per model-area basis (the COBALT domain mean depends on it)
   out_csv_path <- file.path(out_dir, paste0("isimip3a_cobalt2_plankton_detritus_timeseries",
                                             if (identical(get0("MODEL_AREA_BASIS", ifnotfound = "medits_10_800"), "whole_gsa")) "_wholegsa" else "", ".csv"))
+  ## Shared copy of the result in pCloud (data/plankton_cache, ~20 KB): a
+  ## laptop without it would download ~500 MB of ISIMIP files, and without
+  ## Python (Copernicus) it cannot compute Detritus at all, so it recomputed
+  ## on every run (Windows, 2026-10-27). Used when the local copy is missing
+  ## or has no Detritus; written there whenever a complete one is computed.
+  shared_csv <- if (exists("pcloud_dir")) file.path(pcloud_dir, "data", "plankton_cache", basename(out_csv_path)) else NA_character_
+  if (!force_refresh && !is.na(shared_csv) && file.exists(shared_csv) &&
+      (!file.exists(out_csv_path) || !"Detritus" %in% fread(out_csv_path)$TargetGroup)) {
+    .sh <- tryCatch(fread(shared_csv), error = function(e) NULL)
+    if (!is.null(.sh) && "Detritus" %in% .sh$TargetGroup) {
+      fwrite(.sh, out_csv_path)
+      message("[ISIMIP] Using the shared result ", shared_csv, " (computed on another laptop; force_refresh = TRUE to recompute).")
+      return(invisible(.sh))
+    }
+  }
   if (!force_refresh && file.exists(out_csv_path)) {
     .cached <- fread(out_csv_path)
     ## a cache written while offline can miss Detritus (euphotic depth from
     ## Copernicus failed); it is then recomputed (2026-10-14)
     if ("Detritus" %in% .cached$TargetGroup) {
       message("[ISIMIP] Using cached ", out_csv_path, " (force_refresh = TRUE to recompute).")
+      if (!is.na(shared_csv) && !file.exists(shared_csv))   # share it with the other laptops
+        tryCatch({ dir.create(dirname(shared_csv), recursive = TRUE, showWarnings = FALSE); fwrite(.cached, shared_csv) }, error = function(e) NULL)
+      return(invisible(.cached))
+    }
+    ## Detritus needs the Copernicus Marine tool (Python). Without it (e.g. a
+    ## Windows laptop with no Python) a recompute gives the same result
+    ## without Detritus again, so the cache is used as it is - Detritus then
+    ## comes from the usual fallback (EE). Saves the recompute on every run.
+    if (Sys.which("copernicusmarine") == "" && !(exists("CMEMS_VENV_DIR") && dir.exists(CMEMS_VENV_DIR))) {
+      message("[ISIMIP] Using cached ", out_csv_path, " without Detritus (no Copernicus Marine tool on this computer to add it).")
       return(invisible(.cached))
     }
     message("[ISIMIP] Cached ", out_csv_path, " has no Detritus rows (written offline?) - recomputing.")
@@ -2619,6 +2650,8 @@ fetch_isimip_cobalt_plankton_biomass <- function(out_dir, force_refresh = FALSE,
           paste(sprintf("%s %.2f t WW/km2", base$TargetGroup, base$B), collapse = "; "),
           if (f_macro == 0) " | MacroZooplankton: no plankton-model Ecopath_B (field minimum / EE instead)" else "")
   (if (exists("safe_fwrite")) safe_fwrite else fwrite)(out, out_csv_path)
+  if (!is.na(shared_csv) && "Detritus" %in% out$TargetGroup)   # complete result -> pCloud for the other laptops
+    tryCatch({ dir.create(dirname(shared_csv), recursive = TRUE, showWarnings = FALSE); fwrite(out, shared_csv) }, error = function(e) NULL)
   out
 }
 

@@ -264,8 +264,35 @@ update_gfcm_saf_assessments <- function(pcloud_dir, review_dir, model_gsas, asfi
     message("[GFCM SAF] offline - ", if (file.exists(all_path)) "using the last downloaded table." else "falling back to RAM Legacy.")
     return(if (file.exists(all_path)) all_path else NULL)
   }
+  ## Which kinds of files GFCM publishes next to the SAF PDFs (e.g. the STAR
+  ## Excel tables, which could be read directly instead of the PDFs):
+  ## counted by file type and listed in gfcm_saf_online_file_types_REVIEW.csv
+  tryCatch({
+    ## the whole public data folder, not only SAFs/ (STAR tables may sit elsewhere)
+    lst_all <- tryCatch(gfcm_saf_list_online(prefix = "5.Data/"), error = function(e) lst)
+    if (is.null(lst_all) || !nrow(lst_all)) lst_all <- lst
+    ext <- tolower(tools::file_ext(lst_all$name))
+    ft <- data.table(name = lst_all$name, type = ifelse(nzchar(ext), ext, "(none)"))
+    ftc <- ft[, .N, by = type][order(-N)]
+    message("[GFCM SAF] files in the GFCM public data folder by type: ", paste0(ftc$type, " ", ftc$N, collapse = ", "),
+            " (gfcm_saf_online_file_types_REVIEW.csv)")
+    dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
+    fwrite(ft[order(type, name)], file.path(review_dir, "gfcm_saf_online_file_types_REVIEW.csv"))
+  }, error = function(e) NULL)
   saf <- gfcm_saf_parse_names(lst)
   saf <- saf[vapply(gsa, function(g) { v <- .saf_gsa_int(g); length(v) > 0 && !anyNA(v) && all(v %in% model_gsas) }, logical(1))]
+  ## Nothing new on the GFCM website for these GSAs since the last read
+  ## (same SAF files, same model GSAs, same hand-transcribed table): the
+  ## table written then is reused instead of reading every PDF again
+  ## (minutes on a slow laptop). Delete gfcm_saf_listing_read.txt to force it.
+  list_path <- file.path(saf_dir, "gfcm_saf_listing_read.txt")
+  sig <- c(paste("GSAs:", paste(sort(model_gsas), collapse = ",")),
+           paste("hand:", if (file.exists(hand_path)) unname(tools::md5sum(hand_path)) else "none"),
+           paste("ram:", if (file.exists(ram_path)) unname(tools::md5sum(ram_path)) else "none"), sort(saf$name))
+  if (file.exists(all_path) && file.exists(list_path) && identical(readLines(list_path, warn = FALSE), sig)) {
+    message("[GFCM SAF] no new SAF on the GFCM website for these GSAs since the last read - using ", all_path)
+    return(all_path)
+  }
   message("[GFCM SAF] ", nrow(lst), " files online; ", nrow(saf), " SAF(s) of ", uniqueN(saf$stock_key), " stock(s) inside GSAs ",
           paste(model_gsas, collapse = ","), ".")
   setorder(saf, stock_key, -ref_year, -folder_year)
@@ -361,6 +388,7 @@ update_gfcm_saf_assessments <- function(pcloud_dir, review_dir, model_gsas, asfi
   dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
   fwrite(review[order(stock_key, -ref_year)], file.path(review_dir, "gfcm_saf_parse_REVIEW.csv"))
   fwrite(out, all_path)
+  tryCatch(writeLines(sig, list_path), error = function(e) NULL)
   message("[GFCM SAF] ", out[parse_status == "ok", uniqueN(stock_key)], " stock(s) read from the GFCM PDFs (",
           out[parse_status == "ok" & use_for_biomass == TRUE, uniqueN(stock_key)], " used for biomass, the rest overlap a newer or larger stock); ",
           review[, uniqueN(stock_key)] - out[parse_status == "ok", uniqueN(stock_key)], " stock(s) without a readable table (",

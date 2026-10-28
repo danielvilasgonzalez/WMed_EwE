@@ -227,8 +227,11 @@ resolve_aquamaps_species_ids <- function(scientific_names) {
             " species from the shared cache; looking up ", length(miss), " in the AquaMaps database.")
     .am_need_db()
     new <- .resolve_aquamaps_species_ids_db(miss)
-    ## not cached when EVERY lookup failed (a database problem, not 'no match')
-    if (any(new$match_method != "unmatched")) {
+    ## cached once the database passed ensure_aquamaps_db()'s live test
+    ## query: a species with no AquaMaps match is then a real 'no match',
+    ## and caching it stops every later run (on every laptop) from opening
+    ## the 2 GB database for it again
+    if (isTRUE(.am_db_ready) || any(new$match_method != "unmatched")) {
       cache <- unique(rbind(cache, new[, .(ScientificName, SpeciesID = as.character(SpeciesID), match_method)]), by = "ScientificName")
       .am_cache_write(cache, "aquamaps_species_ids.csv")
     }

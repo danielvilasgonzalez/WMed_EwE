@@ -1175,7 +1175,11 @@ validation_plots[["13_ecosim_ts_assessment"]] <- tryCatch({
   ggplot(d, aes(Year, series, fill = flag != "ok")) + geom_tile() +
     scale_fill_manual(values = c(`FALSE` = "grey55", `TRUE` = "firebrick"), labels = c("ok", "flagged")) +
     labs(title = "Ecosim time series: years with data", subtitle = "Red = flagged (few years, gap > 5 years, CV > 1 or jump > 5x) - see ecosim_ts_assessment_REVIEW.csv",
-         x = NULL, y = NULL, fill = NULL) + theme_minimal(base_size = 6) + theme(legend.position = "bottom")
+         x = NULL, y = NULL, fill = NULL) + theme_minimal(base_size = 9) +
+    ## one row per series (often 60+): small y labels on the fixed-size PDF
+    ## page; the PNG is drawn taller with larger labels (STEP C below)
+    theme(legend.position = "bottom", axis.text.y = element_text(size = 5), plot.title = element_text(size = 12),
+          plot.subtitle = element_text(size = 8))
 }, error = function(e) { message("[05_validation.R plot] Time series assessment skipped - ", conditionMessage(e)); NULL })
 
 ## (c) Unsurveyed FGs vs other models: this model's Ecopath_B (t WW/km2 of
@@ -1768,7 +1772,17 @@ if (length(validation_plots) == 0) {
     ## exists at its own original path, so just skip it.
     if (nm %in% names(embedded_png_pages)) next
     ht <- if (nm %in% c("01b_biomass_vs_old_model_by_fg", "01c_biomass_vs_old_model_as_published", "16_pedigree")) 14 else if (nm == "15_prebal") 5 else 7
-    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), validation_plots[[nm]], width = 10, height = ht, dpi = PLOT_DPI, bg = "white", limitsize = FALSE),
+    p_save <- validation_plots[[nm]]; readable <- TRUE
+    if (identical(nm, "13_ecosim_ts_assessment")) {
+      ## height grows with the number of series so every y label fits at a
+      ## readable size (the general minimum text size made 60+ labels overlap)
+      n_series <- tryCatch(length(unique(p_save$data$series)), error = function(e) 60L)
+      ht <- max(7, 0.16 * n_series + 2)
+      p_save <- p_save + theme(axis.text.y = element_text(size = 8), axis.text.x = element_text(size = 9))
+      readable <- FALSE
+    }
+    tryCatch(ggsave(file.path(plot_dir, paste0(nm, ".png")), p_save, width = 10, height = ht, dpi = PLOT_DPI, bg = "white",
+                    limitsize = FALSE, readable = readable),
              error = function(e) NULL)
   }
   message("\n[05_validation.R] STEP C - ", length(validation_plots), " page(s) written to '", VALIDATION_PLOTS_PDF,

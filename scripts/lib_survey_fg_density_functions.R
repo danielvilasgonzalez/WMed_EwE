@@ -6093,10 +6093,17 @@ compute_multistanza_age_proportion_from_medits_tc <- function(multistanza_fg_pai
 }
 fishbase_memo <- function(fn_name, server, args, fetch) {
   days <- get0("FISHBASE_SNAPSHOT_DAYS", envir = .GlobalEnv, ifnotfound = 30)
-  if (!isTRUE(days > 0) || !requireNamespace("rlang", quietly = TRUE)) return(fetch())
-  args <- lapply(args, function(a) if (is.character(a)) sort(unique(a)) else a)
+  if (!isTRUE(days > 0)) return(fetch())
+  ## The key is an md5 of plain text (function, server, sorted arguments), the
+  ## same on every computer and R version. rlang::hash() of the R objects
+  ## differed between the Mac (R 4.5) and Windows (R 4.2), so each laptop
+  ## fetched FishBase again and saved its own copy (2026-10-27).
+  txt <- paste(c(sub("^.*::", "", fn_name), server,
+                 vapply(args, function(a) paste(sort(unique(as.character(a))), collapse = "\x1f"), "")), collapse = "\x1e")
+  tf <- tempfile(); writeBin(charToRaw(enc2utf8(txt)), tf)
+  key <- unname(tools::md5sum(tf)); unlink(tf)
   stem <- paste0(gsub("[^A-Za-z0-9]+", "_", sub("^.*::", "", fn_name)), "_", server, "_")
-  nm <- paste0(stem, rlang::hash(list(fn_name, server, args)), ".rds")
+  nm <- paste0(stem, "v2_", key, ".rds")
   dirs <- .snapshot_dirs("fishbase_snapshot")
   for (d in dirs) {
     f <- file.path(d, nm)
