@@ -3356,12 +3356,45 @@ plot_fg_timeseries_by_area <- function(fg_index, title = "FG density by area", y
     guides(color = guide_legend(override.aes = list(linewidth = 3, alpha = 1)))
 }
 
+## Uncertainty of the survey index from haul-to-haul variability: the
+## stratified-mean variance (Cochran 1977, Sampling Techniques, eq. 5.6)
+## per year and FG over the sampled (AreaID x Stratum) cells,
+##   mean_y = sum_c W_c m_c,  Var_y = sum_c W_c^2 s_c^2 / n_c,  W_c = A_c / sum A,
+## with m_c and s_c^2 the mean and variance of the FG density over ALL n_c
+## hauls of cell c (hauls without the FG count as 0: computed from the sums
+## over the hauls with it). CV_y = sqrt(Var_y) / mean_y. Returns
+## data.table(Year, FG_num, cv_index, n_hauls). Covers sampling variability
+## only - not catchability, imputation of unsampled cells, or model error.
+compute_survey_index_cv <- function(dt, n_samples_by_stratum, strata_area_by_area) {
+  rep <- as.data.table(dt)[!is.na(Stratum) & !is.na(FG_num) & !is.na(Density),
+                           .(x = sum(Density, na.rm = TRUE)), by = .(SampleID, AreaID, Stratum, Year, FG_num)]
+  s <- rep[, .(S1 = sum(x), S2 = sum(x^2)), by = .(AreaID, Stratum, Year, FG_num)]
+  ns <- as.data.table(n_samples_by_stratum)[!is.na(n_samples) & n_samples > 0, .(AreaID, Stratum, Year, n_samples)]
+  w <- unique(as.data.table(strata_area_by_area)[!is.na(area_km2) & area_km2 > 0, .(AreaID, Stratum, area_km2)])
+  cells <- merge(ns, w, by = c("AreaID", "Stratum"))
+  cells[, W := area_km2 / sum(area_km2), by = Year]
+  s <- merge(s, cells, by = c("AreaID", "Stratum", "Year"))
+  s[, `:=`(m = S1 / n_samples, v = fifelse(n_samples > 1, pmax(0, (S2 - S1^2 / n_samples) / (n_samples - 1)), NA_real_))]
+  out <- s[, .(mean_y = sum(W * m), var_y = sum(W^2 * v / n_samples, na.rm = TRUE), n_hauls = sum(n_samples)), by = .(Year, FG_num)]
+  out[, cv_index := fifelse(mean_y > 0, sqrt(var_y) / mean_y, NA_real_)]
+  out[, .(Year, FG_num, cv_index, n_hauls)]
+}
+
+## cv_dt (optional, from compute_survey_index_cv()): shaded 95 % interval
+## around each line, lognormal: index x exp(+-1.96 sqrt(log(1 + CV^2))).
 plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, region-wide",
                                         y_lab = "Area-weighted density", top_n_fg = 40,
-                                        normalize = FALSE) {
+                                        normalize = FALSE, cv_dt = NULL) {
   fg_totals <- fg_index_regional[, .(tot = sum(mean_density, na.rm = TRUE)), by = FG_name]
   top_fg <- fg_totals[order(-tot)][seq_len(min(top_n_fg, .N)), FG_name]
-  plot_data <- as_tibble(fg_index_regional[FG_name %in% top_fg])
+  pd <- copy(as.data.table(fg_index_regional)[FG_name %in% top_fg])
+  has_ci <- !is.null(cv_dt) && nrow(cv_dt) > 0 && "FG_num" %in% names(pd)
+  if (has_ci) {
+    pd <- merge(pd, as.data.table(cv_dt)[, .(Year, FG_num, cv_index)], by = c("Year", "FG_num"), all.x = TRUE)
+    pd[, sdlog := sqrt(log(1 + cv_index^2))]
+    pd[, `:=`(lo = mean_density * exp(-1.96 * sdlog), hi = mean_density * exp(1.96 * sdlog))]
+  }
+  plot_data <- as_tibble(pd)
   
   ## normalize = TRUE rescales each FG's own series to its first
   ## NON-ZERO value (that value becomes 1, every other year relative to
@@ -3376,10 +3409,12 @@ plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, 
   if (normalize) {
     setDT(plot_data)
     setorder(plot_data, FG_name, Year)
-    plot_data[, mean_density := {
+    plot_data[, ref := {
       first_nonzero <- mean_density[which(!is.na(mean_density) & mean_density != 0)[1]]
-      if (is.na(first_nonzero) || length(first_nonzero) == 0) mean_density else mean_density / first_nonzero
+      if (is.na(first_nonzero) || length(first_nonzero) == 0) 1 else first_nonzero
     }, by = FG_name]
+    plot_data[, mean_density := mean_density / ref]
+    if (has_ci) plot_data[, `:=`(lo = lo / ref, hi = hi / ref)]
     plot_data <- as_tibble(plot_data)
     y_lab <- paste0(y_lab, " (relative to first non-zero value = 1)")
   }
@@ -3389,9 +3424,11 @@ plot_fg_timeseries_regional <- function(fg_index_regional, title = "FG density, 
   ## as one unbroken line, using label_wrap_gen() ggplot2 already ships
   ## for exactly this.
   ggplot(plot_data, aes(x = Year, y = mean_density)) +
+    (if (has_ci) geom_ribbon(aes(ymin = lo, ymax = hi), fill = "steelblue", alpha = 0.2, na.rm = TRUE) else NULL) +
     geom_line(linewidth = 0.6, alpha = 0.8, colour = "steelblue") +
     facet_wrap(vars(FG_name), scales = "free_y", labeller = label_wrap_gen(width = 22)) +
-    labs(title = title, x = "Year", y = y_lab) +
+    labs(title = title, x = "Year", y = y_lab,
+         caption = if (has_ci) "Band: 95 % interval from haul-to-haul sampling variability (stratified variance, Cochran 1977)." else NULL) +
     theme_minimal(base_size = 11) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1),
           strip.text = element_text(size = 7))

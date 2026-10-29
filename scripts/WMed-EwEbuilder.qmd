@@ -22,10 +22,10 @@ format:
         <link rel="icon" type="image/png" href="images/wmed_ewebuilder_icon_map4.png">
     include-before-body:
       text: |
-        <div class="wm-toplogos" style="display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:.6rem 1.2rem .2rem;max-width:1400px;margin:0 auto">
-          <img src="images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" style="height:100px;width:auto">
-          <a href="https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments" target="_blank" rel="noopener"><img src="images/imares_logo.png" alt="iMARES - Integrated Marine Ecosystem Assessments" style="height:80px;width:auto"></a>
-        </div>
+          <div class="wm-toplogos" style="display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:.6rem 1.2rem .2rem;max-width:1400px;margin:0 auto">
+            <img src="images/wmed_ewebuilder_logo_map4.png" alt="WMed-EwEbuilder" style="height:100px;width:auto">
+            <a href="https://icm.csic.es/en/research-group/imares-integrated-marine-ecosystem-assessments" target="_blank" rel="noopener"><img src="images/imares_logo.png" alt="iMARES - Integrated Marine Ecosystem Assessments" style="height:80px;width:auto"></a>
+          </div>
 params:
   ## Inputs of the pipeline run done by this document. Change a value and
   ## click Render: the pipeline reruns with these values and the HTML shows
@@ -51,6 +51,9 @@ execute:
                    # which is exactly the case freeze:auto can't detect (it only checks
                    # whether the .qmd's OWN code changed, not files it reads at render
                    # time) - so this doc always re-executes fully, every render
+editor: 
+  markdown: 
+    wrap: 72
 ---
 
 ```{=html}
@@ -206,9 +209,17 @@ if (!identical(.regen, "none")) {
 
 ## Configure and run the pipeline {#sec-configure}
 
-Pick the model area on the map, set the years and options, and click **Run pipeline**. The run (01 → 05) goes in the background with exactly the settings shown in the *Settings block* box; when it finishes, the plots at the bottom and the tables in the output folder are updated. A full run takes about 10 minutes (the first run after a change of GSAs needs internet for the bathymetry). The same settings block can be copied or downloaded to run the pipeline from the R console instead.
+Pick the model area on the map, set the years and options, and click
+**Run pipeline**. The run (01 → 05) goes in the background with exactly
+the settings shown in the *Settings block* box; when it finishes, the
+plots at the bottom and the tables in the output folder are updated. A
+full run takes about 10 minutes (the first run after a change of GSAs
+needs internet for the bathymetry). The same settings block can be
+copied or downloaded to run the pipeline from the R console instead.
 
-This works when the document is opened with **Run Document** in RStudio (or `quarto serve WMed-EwEbuilder.qmd` in a terminal). A plain HTML file opened from disk shows the page but cannot run R.
+This works when the document is opened with **Run Document** in RStudio
+(or `quarto serve WMed-EwEbuilder.qmd` in a terminal). A plain HTML file
+opened from disk shows the page but cannot run R.
 
 ```{r}
 #| label: run-ui
@@ -344,7 +355,7 @@ tagList(
             fluidRow(column(6, numericInput("bbox_xmin", "Lon min", 2, step = 0.1)), column(6, numericInput("bbox_xmax", "Lon max", 8, step = 0.1))),
             fluidRow(column(6, numericInput("bbox_ymin", "Lat min", 38, step = 0.1)), column(6, numericInput("bbox_ymax", "Lat max", 42, step = 0.1)))),
           tags$div(class = "alert alert-info py-2 small",
-                   "A custom region runs all steps (01-05) for that region; outputs go to their own subfolder, out_dir/<area name>. Biomass comes from the hauls inside the region (FGs the survey cannot measure take the Western Med density per km\u00b2, so run the Western Med first); catch comes from the GSA(s) the region overlaps, per km\u00b2; P/B, Q/B, F and diets then follow the region's own biomass and species shares.")))),
+                   "A custom region runs the ticked scripts (normally all, 01-05) for that region; outputs go to their own subfolder, out_dir/<area name>. Biomass comes from the hauls inside the region (FGs the survey cannot measure take the Western Med density per km\u00b2, so run the Western Med first); catch comes from the GSA(s) the region overlaps, per km\u00b2; P/B, Q/B, F and diets then follow the region's own biomass and species shares.")))),
     tags$hr(),
     uiOutput("area_summary")),
 
@@ -376,8 +387,13 @@ tagList(
       conditionalPanel("input.catch_q",
         fileInput("catch_upload", "Own catchability table (CATCHABILITY_FILE, optional)", accept = ".csv", width = "100%",
                   placeholder = "csv with ScientificName and q")),
-      radioButtons("steps", "Scripts to run", inline = TRUE,
-                   choices = c("All 01-05" = "1:5", "Only 01 biomass (and maps)" = "1", "02-05 (keep biomass)" = "2:5", "Only 05 validation" = "5"), selected = "1:5")))),
+      checkboxGroupInput("steps_chk", "Scripts to run (RUN_STEPS)", inline = TRUE,
+                         choices = c("01 biomass" = 1, "02 fisheries" = 2, "03 P/B, Q/B" = 3, "04 diets" = 4, "05 validation" = 5),
+                         selected = 1:5),
+      tags$div(class = "mb-2",
+        actionLink("steps_all", "all"), " \u00b7 ", actionLink("steps_none", "none"), " \u00b7 ",
+        actionLink("steps_after1", "02-05 (keep biomass)"), " \u00b7 ", actionLink("steps_only5", "only 05")),
+      uiOutput("steps_check")))),
 
   ## 4. Run ----------------------------------------------------------------
   .card("5", "Run", "\u25B6\ufe0f",
@@ -844,6 +860,83 @@ output$area_summary <- renderUI({
 ## Paths written into R code must use "/" - on Windows a path such as
 ## C:\Users\... inside "..." is read as escape codes (\U) and the run fails.
 .fwd <- function(p) gsub("\\\\", "/", p)
+## --- Which scripts to run ---------------------------------------------------
+## Tick boxes 01-05 -> RUN_STEPS. A later script reads what the earlier ones
+## wrote to the output folder, so a script can run alone only if those files
+## are already there (from an earlier run). What each one reads:
+##   02: ecopath_ecosim_inputs.xlsx (Ecopath_B) and biomass_proportion_by_species_fg.csv, from 01
+##   03: biomass_proportion_by_species_fg.csv from 01; F_by_fg.csv from 02
+##   04: ecopath_ecosim_inputs.xlsx and biomass_proportion_by_species_fg.csv, from 01
+##        (03's P/B, Q/B only feed the references sheet - used if present)
+##   05: ecopath_ecosim_inputs.xlsx from 01; F_by_fg.csv from 02
+steps_sel <- reactive(sort(as.integer(input$steps_chk)))
+steps_txt <- reactive({
+  s <- steps_sel()
+  if (!length(s)) "integer(0)"
+  else if (length(s) == 1) as.character(s)
+  else if (all(diff(s) == 1)) paste0(min(s), ":", max(s))
+  else paste0("c(", paste(s, collapse = ", "), ")")
+})
+observeEvent(input$steps_all,    updateCheckboxGroupInput(session, "steps_chk", selected = 1:5))
+observeEvent(input$steps_none,   updateCheckboxGroupInput(session, "steps_chk", selected = character(0)))
+observeEvent(input$steps_after1, updateCheckboxGroupInput(session, "steps_chk", selected = 2:5))
+observeEvent(input$steps_only5,  updateCheckboxGroupInput(session, "steps_chk", selected = 5))
+.step_needs <- list(
+  `2` = list(list(1, "ecopath_ecosim_inputs.xlsx"), list(1, "biomass/biomass_proportion_by_species_fg.csv")),
+  `3` = list(list(1, "biomass/biomass_proportion_by_species_fg.csv"), list(2, "fisheries/F_by_fg.csv")),
+  `4` = list(list(1, "ecopath_ecosim_inputs.xlsx"), list(1, "biomass/biomass_proportion_by_species_fg.csv")),
+  `5` = list(list(1, "ecopath_ecosim_inputs.xlsx"), list(2, "fisheries/F_by_fg.csv")))
+.step_out <- c(`1` = "biomass", `2` = "fisheries", `3` = "pbqb-traits", `4` = "diet", `5` = "validation")
+## settings lines that change results (no comments, RUN_STEPS, CLEAN_START or source())
+.result_settings <- function(x) {
+  x <- trimws(sub("#.*$", "", x[!grepl("^\\s*##", x)]))
+  x[nzchar(x) & !grepl("^(RUN_STEPS|CLEAN_START)\\b|^source\\(", x)]
+}
+steps_problems <- reactive({
+  s <- steps_sel()
+  if (is.na(.out_dir)) return(list(missing = character(0), stale = character(0), changed = character(0)))
+  od <- file.path(.out_dir, if (identical(input$area_mode, "custom")) gsub("[^A-Za-z0-9_-]", "_", input$area_name) else "")
+  missing <- character(0)
+  for (k in s) for (nd in .step_needs[[as.character(k)]]) {
+    p <- nd[[1]]; f <- nd[[2]]
+    if (!(p %in% s) && !file.exists(file.path(od, f)))
+      missing <- c(missing, sprintf("%s needs %s from %s, which is not in the output folder yet - tick %s too.",
+                                    .step_names[k], basename(f), .step_names[p], .step_names[p]))
+  }
+  ## later scripts left unticked whose outputs on disk came from the old run of an earlier ticked one
+  stale <- character(0)
+  if (length(s)) {
+    later <- setdiff(seq_len(5), s)
+    later <- later[later > min(s)]
+    later <- later[dir.exists(file.path(od, .step_out[as.character(later)]))]
+    if (length(later)) stale <- sprintf("The outputs of %s on disk will still come from the previous run, so they won't match the new %s.",
+                                        paste(.step_names[later], collapse = ", "), .step_names[min(s)])
+  }
+  ## skipped earlier scripts: were their outputs made with the same settings?
+  changed <- character(0)
+  if (length(s) && min(s) > 1 && file.exists(.settings_file)) {
+    old <- .result_settings(.settings_lines()); new <- .result_settings(config_code())
+    diff_new <- setdiff(new, old)
+    if (length(diff_new)) changed <- diff_new
+  }
+  list(missing = unique(missing), stale = stale, changed = changed)
+})
+output$steps_check <- renderUI({
+  pr <- steps_problems()
+  out <- list()
+  if (length(pr$missing))
+    out <- c(out, list(tags$div(class = "alert alert-danger py-1 px-2 mb-1 small", lapply(pr$missing, tags$div))))
+  if (length(pr$stale))
+    out <- c(out, list(tags$div(class = "alert alert-warning py-1 px-2 mb-1 small", pr$stale)))
+  if (length(pr$changed))
+    out <- c(out, list(tags$div(class = "alert alert-warning py-1 px-2 mb-1 small",
+      tags$div(sprintf("Settings differ from the last run (%s), whose outputs the unticked earlier scripts would reuse. Changed or new:",
+                       format(file.mtime(.settings_file), "%d %b %H:%M"))),
+      tags$code(style = "white-space: pre-wrap; font-size: .8rem;", paste(pr$changed, collapse = "\n")),
+      tags$div("Tick the earlier scripts too if those settings should apply to them."))))
+  tagList(out)
+})
+
 config_code <- reactive({
   yr <- function(v) paste0(v[1], ":", v[2])
   tf <- function(x) if (isTRUE(x)) "TRUE" else "FALSE"
@@ -863,7 +956,7 @@ config_code <- reactive({
             "CLEAN_START      <- FALSE   # keep the settings below")
   if (identical(input$area_mode, "custom")) {
     c(head,
-      sprintf("RUN_STEPS        <- %s", input$steps),
+      sprintf("RUN_STEPS        <- %s", steps_txt()),
       "AREA_MODE        <- \"custom\"",
       sprintf("AREA_NAME        <- \"%s\"", gsub("[^A-Za-z0-9_-]", "_", input$area_name)),
       if (identical(input$custom_type, "shapefile")) c(
@@ -874,11 +967,11 @@ config_code <- reactive({
         sprintf("CUSTOM_BBOX      <- c(xmin = %s, xmax = %s, ymin = %s, ymax = %s)",
                 input$bbox_xmin, input$bbox_xmax, input$bbox_ymin, input$bbox_ymax)),
       common,
-      "## all steps run for the region; catch (02) from the GSA(s) it overlaps, weighted by overlap",
+      "## the ticked steps run for the region; catch (02) from the GSA(s) it overlaps, weighted by overlap",
       "source(\"run_pipeline_demo.R\")")
   } else {
     c(head,
-      sprintf("RUN_STEPS        <- %s", input$steps),
+      sprintf("RUN_STEPS        <- %s", steps_txt()),
       sprintf("MODEL_GSAS       <- c(%s)", paste(sort(as.numeric(input$gsas)), collapse = ", ")),
       sprintf("MODEL_AREA_BASIS <- \"%s\"", input$basis),
       common,
@@ -956,6 +1049,10 @@ observeEvent(input$run, {
   if (custom && identical(input$custom_type, "shapefile") && is.null(custom_shape())) {
     showNotification("Upload the region file first.", type = "error"); return() }
   if (!custom && !length(input$gsas)) { showNotification("Select at least one GSA.", type = "error"); return() }
+  if (!length(steps_sel())) { showNotification("Tick at least one script to run.", type = "error"); return() }
+  .chk <- steps_problems()
+  if (length(.chk$missing)) {
+    showNotification(paste(c("Can't start:", .chk$missing), collapse = " "), type = "error", duration = 15); return() }
   unlink(c(.status_file, .progress_file, .console, .pid_file))
   writeLines(config_code(), .settings_file)
   Sys.setenv(WMED_PROGRESS_FILE = .progress_file)   # inherited by the Rscript process
@@ -988,7 +1085,7 @@ observeEvent(input$run, {
   .out_file <- if (.Platform$OS.type == "windows") file.path(.run_dir, "console_raw.txt") else .console
   system2(file.path(R.home("bin"), "Rscript"), shQuote(.fwd(.run_script)), wait = FALSE, stdout = .out_file, stderr = .out_file)
   run_state("running"); run_started(Sys.time()); run_finished(NULL); run_note(""); step_seen(list())
-  run_steps(eval(parse(text = input$steps)))
+  run_steps(steps_sel())
   showNotification(if (custom) paste0("Pipeline started for '", input$area_name, "' - outputs in out_dir/", input$area_name, ".")
                    else "Pipeline started - progress is shown below the button.", duration = 8)
 })
@@ -1016,7 +1113,8 @@ output$run_progress <- renderUI({
   invalidateLater(3000)
   st <- run_state()
   if (identical(st, "idle")) {
-    steps <- eval(parse(text = input$steps))
+    steps <- steps_sel()
+    if (!length(steps)) return(tags$small(class = "text-danger", "Tick at least one script."))
     return(tags$small(class = "text-muted", sprintf("Expected run time about %.0f min (%s).", sum(.step_min[steps]),
                                                    paste(.step_names[steps], collapse = ", "))))
   }
@@ -1261,7 +1359,7 @@ output$results <- renderUI({
 ```
 
 | Input | Script variable | Effect |
-|---|---|---|
+|------------------------|------------------------|------------------------|
 | GSAs (map, checkboxes) | `MODEL_GSAS` (→ `FILTER_AREAS`) | GSAs of the model area (default 1-12). Survey data only from these GSAs; GSAs 3, 4 and 12 (no MEDITS) take the survey density per km² of the others (assumption). Catch kept for every coastal state of these GSAs. |
 | Area basis | `MODEL_AREA_BASIS` | `whole_gsa`: A_model is the whole sea area of the GSAs, coast to bottom. `medits_10_800`: only the 10-800 m MEDITS strata. |
 | Custom region | `AREA_MODE = "custom"`, `AREA_NAME`, `CUSTOM_AREA_TYPE`, `CUSTOM_SHAPEFILE_PATH` or `CUSTOM_BBOX` | A region from an uploaded shapefile (.zip, or .shp + .shx + .dbf + .prj), GeoJSON, GeoPackage or KML, or a lon/lat box, instead of GSAs. Runs all steps (01–05) for that region; outputs in `out_dir/<AREA_NAME>/` (@sec-area-definition, Approach B). Catch: the GSA(s) holding ≥ 5 % of the region (`custom_gsa_overlap.csv`), per km² of their sea area. |
@@ -1272,34 +1370,85 @@ output$results <- renderUI({
 | Remove outliers | `DROP_OUTLIERS` (default `TRUE`) | Flagged outlier hauls removed, or only reported in `survey_outliers_flagged.csv`. |
 | Relative Ecosim series | `NORMALIZE_TS` (default `TRUE`) | Ecosim series as an index (first value = 1) or raw density. |
 | Fill missing Ecopath_B | `ECOPATH_B_FILL_MODE`, `ECOPATH_B_FILL_YEARS` (default on, 1995-2000) | An FG with no biomass in the Ecopath years gets its mean over these years (else the nearest year with data); off = nearest single year only. Expanding FGs always get 0.00001 t/km². |
-| Scripts to run | `RUN_STEPS` | `1:5` all; `2:5` reuses the biomass on disk; `5` redraws the validation only. |
+| Scripts to run | `RUN_STEPS` | Tick any of 01–05 (`1:5` all; `2:5` reuses the biomass on disk; `5` redraws the validation only; e.g. `c(1, 5)`). A script left unticked is not rerun: the ticked ones read its outputs from the previous run. The page stops a run when a ticked script needs a file that is not there yet, and warns when later outputs on disk will no longer match, or when the settings differ from those of the last run. |
 
-The model-area figure in the summary is a preview from the simplified map polygons (about 1 % above the real value); the A_model used in the outputs is the one 01 computes and writes to `model_area_by_gsa.csv`.
+The model-area figure in the summary is a preview from the simplified
+map polygons (about 1 % above the real value); the A_model used in the
+outputs is the one 01 computes and writes to `model_area_by_gsa.csv`.
 
----
+------------------------------------------------------------------------
 
 ## Overview
 
-This tool builds the inputs of Ecopath with Ecosim (EwE) models of the Western Mediterranean: biomass per Functional Group (FG) for the Ecopath baseline and the Ecosim time series, catch, landings, discards and effort by fleet, fishing mortality, P/B and Q/B, the diet matrix, and a validation against the 1995 Western Mediterranean model. It runs as five R scripts (01 biomass, 02 fisheries, 03 P/B and Q/B, 04 diets, 05 validation) from the page above, or from the R console, and writes everything to one Excel workbook plus review tables.
+This tool builds the inputs of Ecopath with Ecosim (EwE) models of the
+Western Mediterranean: biomass per Functional Group (FG) for the Ecopath
+baseline and the Ecosim time series, catch, landings, discards and
+effort by fleet, fishing mortality, P/B and Q/B, the diet matrix, and a
+validation against the 1995 Western Mediterranean model. It runs as five
+R scripts (01 biomass, 02 fisheries, 03 P/B and Q/B, 04 diets, 05
+validation) from the page above, or from the R console, and writes
+everything to one Excel workbook plus review tables.
 
-**Biomass first:** the starting point is a time series of biomass density per Functional Group — how much of each modeled group is really out there, year by year, for whichever region and time window is configured. Everything else in the wider pipeline (catches, mortality, production, diet) is expressed relative to this density, so getting it right — correctly weighted by survey stratum and area, not just averaged naively — is what lets the rest of the model be trusted.
+**Biomass first:** the starting point is a time series of biomass
+density per Functional Group — how much of each modeled group is really
+out there, year by year, for whichever region and time window is
+configured. Everything else in the wider pipeline (catches, mortality,
+production, diet) is expressed relative to this density, so getting it
+right — correctly weighted by survey stratum and area, not just averaged
+naively — is what lets the rest of the model be trusted.
 
 The biomass step has two layers:
 
-1. **A shared, survey-agnostic function library** (`lib_survey_fg_density_functions.R`) - the statistical logic (strata weighting, area weighting, outlier detection, catchability correction) that doesn't depend on which survey or which study area boundary is being used.
-2. **One Step-1 driver script, `01_biomass.R`,** that reads the survey's raw files, reshapes them into the library's standardized input format and calls the shared functions. `AREA_MODE` picks the study area:
-   - `AREA_MODE = "westmed"` (default) - MEDITS bottom-trawl data, study area defined by the official GFCM GSA polygons (`MODEL_GSAS`, set in `run_pipeline_demo.R` with the years; default GSAs 1–12, the Western Med with Northern Tunisia; MEDITS/MEDIAS data exist for GSAs 1, 2, 5–11). Also incorporates MEDIAS acoustic survey data (@sec-medias), combined with MEDITS into a single density index, and sources `01b_biomass_unsurveyed.R` for the groups the surveys cannot measure (@sec-biomass). Outputs in `out_dir/biomass/` and `out_dir/plots/biomass/`.
-   - `AREA_MODE = "custom"` - the same MEDITS data with a custom boundary (a shapefile or other polygon file uploaded on the page, a lon/lat box, or a custom GSA grouping; `CUSTOM_AREA_TYPE`) - useful when the same survey supports a different EwE model with its own footprint. MEDITS-only. Outputs in `out_dir/<AREA_NAME>/` (default `custom_region`), so the two modes never overwrite each other.
+1.  **A shared, survey-agnostic function library**
+    (`lib_survey_fg_density_functions.R`) - the statistical logic
+    (strata weighting, area weighting, outlier detection, catchability
+    correction) that doesn't depend on which survey or which study area
+    boundary is being used.
+2.  **One Step-1 driver script, `01_biomass.R`,** that reads the
+    survey's raw files, reshapes them into the library's standardized
+    input format and calls the shared functions. `AREA_MODE` picks the
+    study area:
+    - `AREA_MODE = "westmed"` (default) - MEDITS bottom-trawl data,
+      study area defined by the official GFCM GSA polygons
+      (`MODEL_GSAS`, set in `run_pipeline_demo.R` with the years;
+      default GSAs 1–12, the Western Med with Northern Tunisia;
+      MEDITS/MEDIAS data exist for GSAs 1, 2, 5–11). Also incorporates
+      MEDIAS acoustic survey data (@sec-medias), combined with MEDITS
+      into a single density index, and sources
+      `01b_biomass_unsurveyed.R` for the groups the surveys cannot
+      measure (@sec-biomass). Outputs in `out_dir/biomass/` and
+      `out_dir/plots/biomass/`.
+    - `AREA_MODE = "custom"` - the same MEDITS data with a custom
+      boundary (a shapefile or other polygon file uploaded on the page,
+      a lon/lat box, or a custom GSA grouping; `CUSTOM_AREA_TYPE`) -
+      useful when the same survey supports a different EwE model with
+      its own footprint. MEDITS-only. Outputs in `out_dir/<AREA_NAME>/`
+      (default `custom_region`), so the two modes never overwrite each
+      other.
 
-Code chunks throughout are **not executed** when this document renders (`eval: false`) - they're shown for reference alongside the explanation, since the pipeline depends on external data files and network access (bathymetry downloads, WoRMS taxonomy lookups) not available at render time. Run the source `.R` scripts directly to reproduce the actual numbers. (The figures are the exception: each one is loaded from your output folder when the page opens, so it always shows the latest run; a figure whose script has not run yet shows a short note instead.)
+Code chunks throughout are **not executed** when this document renders
+(`eval: false`) - they're shown for reference alongside the explanation,
+since the pipeline depends on external data files and network access
+(bathymetry downloads, WoRMS taxonomy lookups) not available at render
+time. Run the source `.R` scripts directly to reproduce the actual
+numbers. (The figures are the exception: each one is loaded from your
+output folder when the page opens, so it always shows the latest run; a
+figure whose script has not run yet shows a short note instead.)
 
 The pipeline covers several conceptually distinct problems in sequence:
 
-1. **Which Functional Group does each species belong to?** (@sec-fg-matching)
-2. **What study area am I actually working with?** (@sec-area-definition)
-3. **Given catch and effort, what's the correctly-standardized density for each haul?** (@sec-density, including catchability correction and outlier removal)
-4. **Given that, what's the correctly-weighted density estimate for each FG?** (@sec-strata-weighted, @sec-regional)
-5. **For the westmed script specifically: how does a second, structurally different survey (acoustic, not trawl) get folded into the same index?** (@sec-medias)
+1.  **Which Functional Group does each species belong to?**
+    (@sec-fg-matching)
+2.  **What study area am I actually working with?**
+    (@sec-area-definition)
+3.  **Given catch and effort, what's the correctly-standardized density
+    for each haul?** (@sec-density, including catchability correction
+    and outlier removal)
+4.  **Given that, what's the correctly-weighted density estimate for
+    each FG?** (@sec-strata-weighted, @sec-regional)
+5.  **For the westmed script specifically: how does a second,
+    structurally different survey (acoustic, not trawl) get folded into
+    the same index?** (@sec-medias)
 
 ### Pipeline flow
 
@@ -1310,24 +1459,40 @@ The pipeline covers several conceptually distinct problems in sequence:
 wm_repo_figure("fig-flow-overview", r"---(Workflow: the species-to-Functional-Group table and the data sources feed four blocks (1 biomass, 2 fisheries, 3 P/B, Q/B and traits, 4 diets) that produce the EwE input. Click to zoom.)---", "ewe_infography.jpg")
 ```
 
-Some density steps are conditional: catchability correction only runs if a catchability table is provided, strata weighting only if `strata = TRUE` (otherwise a simple mean density is used instead), and area weighting is only meaningful with more than one area in scope (with a single custom region, it still runs but is mathematically a formality - see @sec-regional).
+Some density steps are conditional: catchability correction only runs if
+a catchability table is provided, strata weighting only if
+`strata = TRUE` (otherwise a simple mean density is used instead), and
+area weighting is only meaningful with more than one area in scope (with
+a single custom region, it still runs but is mathematically a
+formality - see @sec-regional).
 
-Problems 3 and 4 are the most statistically subtle - a naive average across hauls, or treating every survey estimate as if the gear caught 100% of what was present, can be quietly wrong in ways that matter for the final model.
+Problems 3 and 4 are the most statistically subtle - a naive average
+across hauls, or treating every survey estimate as if the gear caught
+100% of what was present, can be quietly wrong in ways that matter for
+the final model.
 
----
+------------------------------------------------------------------------
 
 ## Input files {#sec-inputs}
 
-The pipeline reads from three folders, found on each computer by `scripts/wmed_paths.R`:
+The pipeline reads from three folders, found on each computer by
+`scripts/wmed_paths.R`:
 
-- `git_dir`: the GitHub repository (code, `scripts/`, the workflow figure).
-- `pcloud_dir`: the shared pCloud folder `EwE Western Med 2026` (all input data). Located from `config.local.R`, then `config.R`, then the standard pCloud Drive place (macOS `~/pCloud Drive/`, Windows `P:/`, Linux `~/pCloudDrive/`).
-- `out_dir`: the outputs on your own computer (default `~/WMed_EwE_output`), plus the caches downloaded on the first run.
+- `git_dir`: the GitHub repository (code, `scripts/`, the workflow
+  figure).
+- `pcloud_dir`: the shared pCloud folder `EwE Western Med 2026` (all
+  input data). Located from `config.local.R`, then `config.R`, then the
+  standard pCloud Drive place (macOS `~/pCloud Drive/`, Windows `P:/`,
+  Linux `~/pCloudDrive/`).
+- `out_dir`: the outputs on your own computer (default
+  `~/WMed_EwE_output`), plus the caches downloaded on the first run.
 
-Paths below are relative to `pcloud_dir/data/` unless the Location column says otherwise. `Complementary data/` holds the hand-made reference tables, each with a citation per row.
+Paths below are relative to `pcloud_dir/data/` unless the Location
+column says otherwise. `Complementary data/` holds the hand-made
+reference tables, each with a citation per row.
 
 | Step | File or folder | Location | Used for | Required |
-|---|---|---|---|---|
+|---------------|---------------|---------------|---------------|---------------|
 | all | `FG_WMed_2026.csv` | `data/` | species → FG table (`FG_SPECIES_FILE`) | yes |
 | all | `ASFIS_sp_2026.1.csv` | `data/Complementary data/` | FAO 3-alpha code → scientific name (MEDIAS, GFCM, SAFs) | yes |
 | 01 | `TA.csv`, `TB.csv`, `TC.csv`, `TM_list_(April_2019).xlsx` | `data/Medits_Medias_JRC2026/2024_MEDBSsurvey/Demersal/` | MEDITS hauls, catches, length frequencies, species codes | yes |
@@ -1349,15 +1514,40 @@ Paths below are relative to `pcloud_dir/data/` unless the Location column says o
 | 01 | custom region shapefile | uploaded on the page → `out_dir/shapefiles/custom/<area name>/` | custom study area | custom runs |
 | downloaded | GFCM GSA shapefile, NOAA bathymetry (only if `BATHY_SOURCE = "noaa"` or as fallback), AquaMaps, ISIMIP3a COBALT, FishBase/SeaLifeBase | `out_dir/` caches | GSA polygons, depths, depth suitability, plankton, traits | first run |
 
-::: {.callout-note}
+::: callout-note
 ### Species → FG table: `FG_WMed_2026.csv`
-The species → functional group assignment comes from `FG_WMed_2026.csv` (pCloud `data` folder), built and reviewed for the EwE Western Mediterranean model. One row per species, with its `FG_number` and `FG_name` (plus `Genus`, `Family`, `Order`, `Class`, `Phylum`, `source` and `status`). Scripts 01-04 all read it. Another file with the same columns can be chosen or uploaded in the *Functional groups* card (@sec-configure), which sets `FG_SPECIES_FILE` for the run.
+
+The species → functional group assignment comes from `FG_WMed_2026.csv`
+(pCloud `data` folder), built and reviewed for the EwE Western
+Mediterranean model. One row per species, with its `FG_number` and
+`FG_name` (plus `Genus`, `Family`, `Order`, `Class`, `Phylum`, `source`
+and `status`). Scripts 01-04 all read it. Another file with the same
+columns can be chosen or uploaded in the *Functional groups* card
+(@sec-configure), which sets `FG_SPECIES_FILE` for the run.
 :::
 
-
-::: {.callout-note}
+::: callout-note
 ### Two downloads happen automatically - no local file needed
-The GSA shapefile isn't a file you provide: it is downloaded from GFCM's Azure blob storage the first time and cached (`gsa_shp_dir`/`GFCM_GSA_shp`). The bathymetry comes from the **EMODnet Bathymetry DTM** [@emodnetbathy2022] tiles in pCloud, `data/Bathymetry/EMODnet_x<lon>_y<lat>.tif` (2° × 2° tiles, 6° W–16° E, 35–45° N, elevation in m, 1/8 arc-minute ≈ 230 m cells), averaged to 1 arc-minute for the strata areas - nothing is downloaded. `BATHY_SOURCE = "noaa"` uses NOAA ETOPO via `marmap::getNOAA.bathy()` [@pante2013] instead (the source until October 2026); each source is the other's fallback when it fails or does not cover an area. EMODnet was made the default because it needs no internet (on a Windows laptop the NOAA download failed and step 01 stopped) and is a finer, Europe-specific product built from survey soundings. The strata-area cache records its source (`strata_area_by_area.csv.bathy_source`) and is recomputed when `BATHY_SOURCE` changes; expect small differences between the two sources, mostly along the coast. This is also why `eval: false` on the code chunks throughout this document matters (@sec-configure) - reproducing this pipeline's actual output needs live network access at least once, which isn't guaranteed at render time.
+
+The GSA shapefile isn't a file you provide: it is downloaded from GFCM's
+Azure blob storage the first time and cached
+(`gsa_shp_dir`/`GFCM_GSA_shp`). The bathymetry comes from the **EMODnet
+Bathymetry DTM** [@emodnetbathy2022] tiles in pCloud,
+`data/Bathymetry/EMODnet_x<lon>_y<lat>.tif` (2° × 2° tiles, 6° W–16° E,
+35–45° N, elevation in m, 1/8 arc-minute ≈ 230 m cells), averaged to 1
+arc-minute for the strata areas - nothing is downloaded.
+`BATHY_SOURCE = "noaa"` uses NOAA ETOPO via `marmap::getNOAA.bathy()`
+[@pante2013] instead (the source until October 2026); each source is the
+other's fallback when it fails or does not cover an area. EMODnet was
+made the default because it needs no internet (on a Windows laptop the
+NOAA download failed and step 01 stopped) and is a finer,
+Europe-specific product built from survey soundings. The strata-area
+cache records its source (`strata_area_by_area.csv.bathy_source`) and is
+recomputed when `BATHY_SOURCE` changes; expect small differences between
+the two sources, mostly along the coast. This is also why `eval: false`
+on the code chunks throughout this document matters (@sec-configure) -
+reproducing this pipeline's actual output needs live network access at
+least once, which isn't guaranteed at render time.
 :::
 
 ```{r}
@@ -1374,15 +1564,23 @@ bathy_r <- wmed_get_bathy(bbox["xmin"], bbox["xmax"], bbox["ymin"], bbox["ymax"]
                           resolution = 1, as = "raster")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Functional Group matching {#sec-fg-matching}
 
-Every species caught in a haul needs to be assigned to one of the model's Functional Groups before its biomass can contribute to an FG-level index. This happens in stages, each one only attempting species the previous stage couldn't resolve - and at every stage, an **ambiguous** match (a species or taxonomic rank that could plausibly belong to more than one FG) is flagged for manual review rather than guessed.
+Every species caught in a haul needs to be assigned to one of the
+model's Functional Groups before its biomass can contribute to an
+FG-level index. This happens in stages, each one only attempting species
+the previous stage couldn't resolve - and at every stage, an
+**ambiguous** match (a species or taxonomic rank that could plausibly
+belong to more than one FG) is flagged for manual review rather than
+guessed.
 
 ### Stage 1 - Direct species-level match
 
-The MEDITS species code is translated to a scientific name via the MEDITS taxonomic list (`TM_list`), then matched directly against the FG reference table.
+The MEDITS species code is translated to a scientific name via the
+MEDITS taxonomic list (`TM_list`), then matched directly against the FG
+reference table.
 
 ```{r}
 #| label: direct-match
@@ -1390,11 +1588,23 @@ fg_lookup_safe <- prepare_fg_lookup(dataframe2)
 dt <- match_species_to_fg(dataframe1, fg_lookup_safe)
 ```
 
-`prepare_fg_lookup()` also resolves **stanza splits** here - a species appearing in more than one FG, where every one of those FGs is exclusive to that single species (a life-stage split, e.g. juvenile/adult), is reduced to one FG automatically. This is a structural rule (detected from the FG table's own shape), not a text-pattern match on words like "juv." - so it works regardless of the wording convention any given FG scheme happens to use. A species spanning multiple FGs where at least one of those FGs also contains *other* species is a genuinely different, ambiguous case and is excluded from automatic matching entirely.
+`prepare_fg_lookup()` also resolves **stanza splits** here - a species
+appearing in more than one FG, where every one of those FGs is exclusive
+to that single species (a life-stage split, e.g. juvenile/adult), is
+reduced to one FG automatically. This is a structural rule (detected
+from the FG table's own shape), not a text-pattern match on words like
+"juv." - so it works regardless of the wording convention any given FG
+scheme happens to use. A species spanning multiple FGs where at least
+one of those FGs also contains *other* species is a genuinely different,
+ambiguous case and is excluded from automatic matching entirely.
 
 ### Stage 1b - Nominate subspecies
 
-Some scientific names are trinomials for the nominate subspecies, where the subspecies epithet repeats the species epithet by taxonomic convention (e.g. "Diplodus sargus sargus" is the nominate subspecies of "Diplodus sargus"). These fail a direct match if the FG reference only has the binomial form.
+Some scientific names are trinomials for the nominate subspecies, where
+the subspecies epithet repeats the species epithet by taxonomic
+convention (e.g. "Diplodus sargus sargus" is the nominate subspecies of
+"Diplodus sargus"). These fail a direct match if the FG reference only
+has the binomial form.
 
 ```{r}
 #| label: nominate-subspecies
@@ -1403,33 +1613,67 @@ dt <- match_nominate_subspecies_fg(dt, fg_lookup_safe)
 
 ### Stage 2 - Manual overrides
 
-MEDITS species codes that are not in the MEDITS taxonomic list are assigned by hand in `medits_manual_overrides.csv` (`Complementary data/medits_reference_tables/`; columns `species_code`, `taxon_name`, `taxon_rank`). Add a row there to assign or correct a code; the run then matches that name to an FG like any other.
+MEDITS species codes that are not in the MEDITS taxonomic list are
+assigned by hand in `medits_manual_overrides.csv`
+(`Complementary data/medits_reference_tables/`; columns `species_code`,
+`taxon_name`, `taxon_rank`). Add a row there to assign or correct a
+code; the run then matches that name to an FG like any other.
 
 ### Stage 3 - Taxonomy fallback (genus to class)
 
-For species with a resolved scientific name but no FG match, the taxonomy of the species is looked up in FishBase/SeaLifeBase and, when missing there, WoRMS [@worms2026; @chamberlain2023] (`taxonomy_source = "both"`, cached in `FISHBASE_TAXONOMY_CACHE_PATH` and `WORMS_TAXONOMY_CACHE_PATH`). Ranks are tried from the most specific: genus, family, order, class. Phylum is not used (too broad).
+For species with a resolved scientific name but no FG match, the
+taxonomy of the species is looked up in FishBase/SeaLifeBase and, when
+missing there, WoRMS [@worms2026; @chamberlain2023]
+(`taxonomy_source = "both"`, cached in `FISHBASE_TAXONOMY_CACHE_PATH`
+and `WORMS_TAXONOMY_CACHE_PATH`). Ranks are tried from the most
+specific: genus, family, order, class. Phylum is not used (too broad).
 
 ```{r}
 #| label: taxonomy-fallback
 dt <- fallback_match_fg_by_taxonomy(dt, fg_lookup_safe, taxonomy_source = "worms")
 ```
 
-**Safety rule**, applied at every rank: a taxonomic value is only used for fallback matching if it maps to **exactly one** FG among all species already in the reference table.
+**Safety rule**, applied at every rank: a taxonomic value is only used
+for fallback matching if it maps to **exactly one** FG among all species
+already in the reference table.
 
 $$\text{rank value is safe to use} \iff \left| \{\, FG_i : \text{species}_i \text{ shares this rank value} \,\} \right| = 1$$
 
-A genus spanning multiple FGs (e.g. containing both a small pelagic species and a large predatory one) is too ecologically diverse to assign safely, and is excluded rather than assigned to whichever FG happens to come up first. Ranks are tried in order of specificity - a genus-level match always wins over a broader but explicit order-level rule for the same species, since rank specificity takes priority over whether a mapping happened to be data-driven or explicitly stated.
+A genus spanning multiple FGs (e.g. containing both a small pelagic
+species and a large predatory one) is too ecologically diverse to assign
+safely, and is excluded rather than assigned to whichever FG happens to
+come up first. Ranks are tried in order of specificity - a genus-level
+match always wins over a broader but explicit order-level rule for the
+same species, since rank specificity takes priority over whether a
+mapping happened to be data-driven or explicitly stated.
 
 Two more rules in `fallback_match_fg_by_taxonomy()`:
 
-- FGs whose name matches `exclude_fg_regex` (default `commercial|jellyfish|suprabenthos|macrozooplankton`, so also the "Other commercial…" and "No commercial…" FGs) are never a fallback target: they are defined by a species list or by commercial status, not by taxonomy, so a relative of one of their species is not evidence of membership.
-- An FG holding a single species cannot be reached through an order or class match (`single_species_fg_broad_ranks`); only a genus or family match can assign a new species to it.
+- FGs whose name matches `exclude_fg_regex` (default
+  `commercial|jellyfish|suprabenthos|macrozooplankton`, so also the
+  "Other commercial…" and "No commercial…" FGs) are never a fallback
+  target: they are defined by a species list or by commercial status,
+  not by taxonomy, so a relative of one of their species is not evidence
+  of membership.
+- An FG holding a single species cannot be reached through an order or
+  class match (`single_species_fg_broad_ranks`); only a genus or family
+  match can assign a new species to it.
 
-With `allow_majority_vote = TRUE` (default `FALSE`), a rank value shared by several FGs goes to the FG holding most of its species, unless two FGs tie.
+With `allow_majority_vote = TRUE` (default `FALSE`), a rank value shared
+by several FGs goes to the FG holding most of its species, unless two
+FGs tie.
 
 ### Species not in the FG file
 
-A species with no FG after stages 1–3 (for example a new species in a later survey year, or one missing from `FG_WMed_2026.csv`) is **not** assigned by any built-in rule. It is left out of the FG biomass and written to `survey_unmatched_for_manual_review.csv` (MEDITS) and `medias_unmatched_for_manual_review.csv` (MEDIAS), with its taxonomy, number of hauls and mean density, most frequent first. To include it, add it to the FG file (or a code to `medits_manual_overrides.csv`) and rerun. Catch data use the same approach: unmatched species are listed in `species_fg_matched.csv` (02).
+A species with no FG after stages 1–3 (for example a new species in a
+later survey year, or one missing from `FG_WMed_2026.csv`) is **not**
+assigned by any built-in rule. It is left out of the FG biomass and
+written to `survey_unmatched_for_manual_review.csv` (MEDITS) and
+`medias_unmatched_for_manual_review.csv` (MEDIAS), with its taxonomy,
+number of hauls and mean density, most frequent first. To include it,
+add it to the FG file (or a code to `medits_manual_overrides.csv`) and
+rerun. Catch data use the same approach: unmatched species are listed in
+`species_fg_matched.csv` (02).
 
 ### Match-rate reporting
 
@@ -1439,17 +1683,26 @@ taxonomy_context <- attr(dt, "still_unresolved_taxonomy")
 still_unmatched <- summarize_unresolved_species(dt, taxonomy = taxonomy_context)
 ```
 
-`summarize_unresolved_species()` reports mean biomass and appearance count alongside taxonomy for whatever remains genuinely unmatched, so manual review can be prioritized - a species appearing in hundreds of samples with real biomass matters more than a one-off trace appearance.
+`summarize_unresolved_species()` reports mean biomass and appearance
+count alongside taxonomy for whatever remains genuinely unmatched, so
+manual review can be prioritized - a species appearing in hundreds of
+samples with real biomass matters more than a one-off trace appearance.
 
----
+------------------------------------------------------------------------
 
 ## Study area definition {#sec-area-definition}
 
-Every function downstream of FG matching needs to know which "area" each sample belongs to, and needs a polygon layer to compute stratum areas from bathymetry. The shared library doesn't assume this has to be a set of official GSA polygons - it just needs *some* polygon layer with an ID column. Two approaches are covered here.
+Every function downstream of FG matching needs to know which "area" each
+sample belongs to, and needs a polygon layer to compute stratum areas
+from bathymetry. The shared library doesn't assume this has to be a set
+of official GSA polygons - it just needs *some* polygon layer with an ID
+column. Two approaches are covered here.
 
 ### Approach A - GFCM GSA polygons
 
-The official GFCM GSA shapefile is downloaded once and cached. MEDITS' own `area` field already gives each haul's GSA directly, so no spatial join is needed.
+The official GFCM GSA shapefile is downloaded once and cached. MEDITS'
+own `area` field already gives each haul's GSA directly, so no spatial
+join is needed.
 
 ```{r}
 #| label: gsa-area-setup
@@ -1470,9 +1723,21 @@ wm_figure("fig-gsa-coverage", r"---(Sample coverage by GSA. selected_areas highl
 
 ### Approach B - a custom boundary (bounding box or arbitrary shapefile)
 
-The same MEDITS raw data can instead be restricted to a custom footprint that doesn't correspond to any GSA code - a simple bounding box, or a shapefile for a different EwE model's own boundary.
+The same MEDITS raw data can instead be restricted to a custom footprint
+that doesn't correspond to any GSA code - a simple bounding box, or a
+shapefile for a different EwE model's own boundary.
 
-**Built-in example.** `scripts/example_regions/cetacean_migration_corridor_RD699_2018.shp` is the Mediterranean cetacean migration corridor (*Corredor de migración de cetáceos del Mediterráneo*), a Spanish Marine Protected Area between the Catalan–Valencian coast and the Balearic Islands. Its boundary is built from the 16 vertices in Real Decreto 699/2018 (BOE-A-2018-9034, art. 1.3, ETRS89); its area in ETRS89 / UTM 31N, 46,385.7 km², matches the area stated in the decree. On the page, *Use the example* loads it as the custom region. The same area is WDPA site 555596226 on Protected Planet; the WDPA polygon is not bundled because its terms do not allow redistribution.
+**Built-in example.**
+`scripts/example_regions/cetacean_migration_corridor_RD699_2018.shp` is
+the Mediterranean cetacean migration corridor (*Corredor de migración de
+cetáceos del Mediterráneo*), a Spanish Marine Protected Area between the
+Catalan–Valencian coast and the Balearic Islands. Its boundary is built
+from the 16 vertices in Real Decreto 699/2018 (BOE-A-2018-9034, art.
+1.3, ETRS89); its area in ETRS89 / UTM 31N, 46,385.7 km², matches the
+area stated in the decree. On the page, *Use the example* loads it as
+the custom region. The same area is WDPA site 555596226 on Protected
+Planet; the WDPA polygon is not bundled because its terms do not allow
+redistribution.
 
 ```{r}
 #| label: custom-area-setup
@@ -1488,13 +1753,29 @@ dataframe1 <- filter_samples_by_area(dataframe1, area_filter = CUSTOM_BBOX, filt
 dataframe1[, AreaID := 1]
 ```
 
-`filter_samples_by_area(filter_type = "shapefile")` works the same way, but takes an `sf` polygon (or a path to one) instead of a bounding box - for a real, non-rectangular model boundary.
+`filter_samples_by_area(filter_type = "shapefile")` works the same way,
+but takes an `sf` polygon (or a path to one) instead of a bounding box -
+for a real, non-rectangular model boundary.
 
-::: {.callout-note}
+::: callout-note
 ### The sample coverage map shows the full survey context, not just the custom box
-`plot_sample_map()` computes its display extent from the **union** of `area_shp`'s own bounding box and the sample points' own Lat/Lon distribution - not `area_shp`'s bbox alone. Passing it the full, unfiltered survey data (before `filter_samples_by_area()` runs) means the map zooms out to show the complete MEDITS distribution across the whole survey region, with the custom area's contour highlighted within that context via `selected_areas` - not a tight, context-free zoom into just the small box itself. Points inside vs. outside the selected area are shown in different colors either way.
 
-A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it can genuinely overlap land. `land_on_top = TRUE` draws the land basemap *after* the intensity fill rather than before, so any part of the box that's actually land is visibly masked - only marine area should read as part of the study region, and a rectangle has no way to exclude land on its own.
+`plot_sample_map()` computes its display extent from the **union** of
+`area_shp`'s own bounding box and the sample points' own Lat/Lon
+distribution - not `area_shp`'s bbox alone. Passing it the full,
+unfiltered survey data (before `filter_samples_by_area()` runs) means
+the map zooms out to show the complete MEDITS distribution across the
+whole survey region, with the custom area's contour highlighted within
+that context via `selected_areas` - not a tight, context-free zoom into
+just the small box itself. Points inside vs. outside the selected area
+are shown in different colors either way.
+
+A plain bounding box, unlike the GFCM GSA polygons, is not
+coastline-aware - it can genuinely overlap land. `land_on_top = TRUE`
+draws the land basemap *after* the intensity fill rather than before, so
+any part of the box that's actually land is visibly masked - only marine
+area should read as part of the study region, and a rectangle has no way
+to exclude land on its own.
 :::
 
 ```{r}
@@ -1504,56 +1785,111 @@ A plain bounding box, unlike the GFCM GSA polygons, is not coastline-aware - it 
 wm_figure("fig-custom-coverage", r"---(Sample coverage within a custom bounding-box region, independent of GSA lines entirely.)---", "custom_survey_sample_coverage_map.png", r"---(01_biomass.R (AREA_MODE = "custom"))---")
 ```
 
-With only one custom area, `AreaID` is set to `1` for every retained sample - there's no sub-division unless the boundary is itself split into multiple named sub-zones. Every function further downstream (strata weighting, area weighting, Excel export) works identically either way; they only ever see whatever `AreaID`/`area_shp` combination they're given, never assuming GSA-specific structure.
-
+With only one custom area, `AreaID` is set to `1` for every retained
+sample - there's no sub-division unless the boundary is itself split
+into multiple named sub-zones. Every function further downstream (strata
+weighting, area weighting, Excel export) works identically either way;
+they only ever see whatever `AreaID`/`area_shp` combination they're
+given, never assuming GSA-specific structure.
 
 ### Running the whole pipeline for a custom region
 
-A custom region runs all five steps, with every output in `out_dir/<AREA_NAME>/`, because the region's own biomass changes everything after it: the species shares inside each FG (used to weight P/B, Q/B and diets), F = C/B, and the diet split by prey biomass.
+A custom region runs all five steps, with every output in
+`out_dir/<AREA_NAME>/`, because the region's own biomass changes
+everything after it: the species shares inside each FG (used to weight
+P/B, Q/B and diets), F = C/B, and the diet split by prey biomass.
 
-- **Biomass (01).** Hauls inside the region give the survey FGs. The other FGs are filled from the main Western Med run (run it first; listed in `custom_fg_biomass_from_westmed_REVIEW.csv`):
-  - *Mapped habitats* follow the habitat map (`westmed_posidonia_coralligenous.shp`: EUSeaMap Posidonia MB252/MB2522 and coralligenous MC151/MC251; dead mattes MB2523 excluded):
+- **Biomass (01).** Hauls inside the region give the survey FGs. The
+  other FGs are filled from the main Western Med run (run it first;
+  listed in `custom_fg_biomass_from_westmed_REVIEW.csv`):
+  - *Mapped habitats* follow the habitat map
+    (`westmed_posidonia_coralligenous.shp`: EUSeaMap Posidonia
+    MB252/MB2522 and coralligenous MC151/MC251; dead mattes MB2523
+    excluded):
 
-    $$
-    B_{region} = \frac{B_{WM}\, A_{WM}\; a_{hab,region} / a_{hab,WM}}{A_{region}}
-    $$
+    $$B_{region} = \frac{B_{WM}\, A_{WM}\; a_{hab,region} / a_{hab,WM}}{A_{region}}
+    $$$$B_{region} = \frac{B_{WM}\, A_{WM}\; a_{hab,region} / a_{hab,WM}}{A_{region}}$$
 
-    where $B_{WM}$ is the FG's Western Med biomass (t/km²), $A_{WM}$ the Western Med model area, $a_{hab,region}$ and $a_{hab,WM}$ the mapped habitat area (km²) inside the region and inside the Western Med GSAs, and $A_{region}$ the region's model area. Posidonia and Cymodocea follow the Posidonia map, Macroalgae and Corals and gorgonians the coralligenous map. No mapped habitat in the region gives $B = 0$ (FG absent). Shares are in `custom_habitat_map_share.csv`.
-  - *Other FGs* (megafauna, plankton, groups MEDITS does not sample) take the Western Med density per km² (ASSUMPTION).
-  - The species shares inside these FGs come from the Western Med run, so P/B and Q/B (03) stay biomass-weighted averages of the species, $P/B_f = \sum_{s \in f} p_{s|f}\, P/B_s$ with $p_{s|f}$ the species' share of the FG biomass in the region, and the diets (04) are weighted the same way.
-- **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The GSAs holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea area are used, and each GSA's catch per km² counts by how much of the region lies in it:
+    where $B_{WM}$ is the FG's Western Med biomass (t/km²), $A_{WM}$ the
+    Western Med model area, $a_{hab,region}$ and $a_{hab,WM}$ the mapped
+    habitat area (km²) inside the region and inside the Western Med
+    GSAs, and $A_{region}$ the region's model area. Posidonia and
+    Cymodocea follow the Posidonia map, Macroalgae and Corals and
+    gorgonians the coralligenous map. No mapped habitat in the region
+    gives $B = 0$ (FG absent). Shares are in
+    `custom_habitat_map_share.csv`.
 
-$$
-c_{f,region} = \sum_{g \in G} w_g\, \frac{C_{f,g}}{A_g}, \qquad w_g = \frac{O_g}{\sum_{h \in G} O_h}, \qquad C_{f,region} = c_{f,region}\, A_{region}
-$$
+  - *Other FGs* (megafauna, plankton, groups MEDITS does not sample)
+    take the Western Med density per km² (ASSUMPTION).
 
-where $C_{f,g}$ is the catch (t/year) of FG $f$ in GSA $g$, $A_g$ the GSA's sea area (km²), $O_g$ the area of the region inside GSA $g$ (km²), $G$ the GSAs used, $c_{f,region}$ the catch per km² applied in the region (Ecopath_L, Ecopath_Di, Catches_Ecosim, F) and $A_{region}$ the region's model area. A region lying 80 % in GSA 6 and 20 % in GSA 7 takes 0.8 of GSA 6's catch per km² and 0.2 of GSA 7's, whatever the size of the two GSAs.
+  - The species shares inside these FGs come from the Western Med run,
+    so P/B and Q/B (03) stay biomass-weighted averages of the species,
+    $P/B_f = \sum_{s \in f} p_{s|f}\, P/B_s$ with $p_{s|f}$ the species'
+    share of the FG biomass in the region, and the diets (04) are
+    weighted the same way.
+- **Catch (02).** Catch is reported per GSA (or wider), so 01 intersects
+  the region with the GFCM GSAs (`custom_gsa_overlap.csv`). The GSAs
+  holding at least `CUSTOM_CATCH_MIN_SHARE` (5 %) of the region's sea
+  area are used, and each GSA's catch per km² counts by how much of the
+  region lies in it:
 
-GFCM and Sea Around Us report catch by FAO division and country, not by GSA, so $C_{f,g}$ is not known directly. The pooled catch of the used GSAs, $C_f$, is split among them with each FG's share of STECF FDI landings + discards by GSA, $s_{f,g}$:
+$$c_{f,region} = \sum_{g \in G} w_g\, \frac{C_{f,g}}{A_g}, \qquad w_g = \frac{O_g}{\sum_{h \in G} O_h}, \qquad C_{f,region} = c_{f,region}\, A_{region}$$
 
-$$
-c_{f,region} = \frac{C_f}{\sum_{g \in G} A_g}\, k_f, \qquad k_f = \sum_{g \in G} w_g\, \frac{s_{f,g}}{A_g / \sum_{h \in G} A_h}
-$$
+where $C_{f,g}$ is the catch (t/year) of FG $f$ in GSA $g$, $A_g$ the
+GSA's sea area (km²), $O_g$ the area of the region inside GSA $g$ (km²),
+$G$ the GSAs used, $c_{f,region}$ the catch per km² applied in the
+region (Ecopath_L, Ecopath_Di, Catches_Ecosim, F) and $A_{region}$ the
+region's model area. A region lying 80 % in GSA 6 and 20 % in GSA 7
+takes 0.8 of GSA 6's catch per km² and 0.2 of GSA 7's, whatever the size
+of the two GSAs.
 
-$k_f = 1$ when the region lies in one GSA, or when FDI has no catch of the FG in these GSAs (catch then assumed spread like area). Juvenile stanzas take their adult's $k_f$. The weights, FDI shares and $k_f$ per FG are in `fisheries/custom_catch_overlap_weights_REVIEW.csv`. ASSUMPTIONS: FDI's split of an FG's catch among GSAs (2013 onwards) also held in the Ecopath years, and catch per km² is the same everywhere inside a GSA, so a region on a fishing ground (or in a closed area) will differ.
-- **P/B, Q/B, diets, validation (03–05)** read the region's workbook and files, so they follow its biomass and species composition.
+GFCM and Sea Around Us report catch by FAO division and country, not by
+GSA, so $C_{f,g}$ is not known directly. The pooled catch of the used
+GSAs, $C_f$, is split among them with each FG's share of STECF FDI
+landings + discards by GSA, $s_{f,g}$:
 
-::: {.callout-warning}
+$$c_{f,region} = \frac{C_f}{\sum_{g \in G} A_g}\, k_f, \qquad k_f = \sum_{g \in G} w_g\, \frac{s_{f,g}}{A_g / \sum_{h \in G} A_h}$$
+
+$k_f = 1$ when the region lies in one GSA, or when FDI has no catch of
+the FG in these GSAs (catch then assumed spread like area). Juvenile
+stanzas take their adult's $k_f$. The weights, FDI shares and $k_f$ per
+FG are in `fisheries/custom_catch_overlap_weights_REVIEW.csv`.
+ASSUMPTIONS: FDI's split of an FG's catch among GSAs (2013 onwards) also
+held in the Ecopath years, and catch per km² is the same everywhere
+inside a GSA, so a region on a fishing ground (or in a closed area) will
+differ. - **P/B, Q/B, diets, validation (03–05)** read the region's
+workbook and files, so they follow its biomass and species composition.
+
+::: callout-warning
 ### Review the borrowed biomass when the region is smaller than a GSA
-The FGs filled from the Western Med run (megafauna, plankton, groups MEDITS does not sample) assume the Western Med density per km² holds in the region. The smaller the region, the less likely that is: a coastal bay, a canyon or an offshore bank can hold much more or much less of these groups than the Western Med average. When the region is smaller than the smallest GSA it overlaps, 01 prints a warning and marks these FGs *REVIEW* in `custom_fg_biomass_from_westmed_REVIEW.csv`, and 05 counts them in `validation_summary_ALL.csv`. Replace them with local values where you have them. Their pedigree is 0.2 (from another area) and the mapped habitats 0.4, so the pedigree plot shows them too.
+
+The FGs filled from the Western Med run (megafauna, plankton, groups
+MEDITS does not sample) assume the Western Med density per km² holds in
+the region. The smaller the region, the less likely that is: a coastal
+bay, a canyon or an offshore bank can hold much more or much less of
+these groups than the Western Med average. When the region is smaller
+than the smallest GSA it overlaps, 01 prints a warning and marks these
+FGs *REVIEW* in `custom_fg_biomass_from_westmed_REVIEW.csv`, and 05
+counts them in `validation_summary_ALL.csv`. Replace them with local
+values where you have them. Their pedigree is 0.2 (from another area)
+and the mapped habitats 0.4, so the pedigree plot shows them too.
 :::
 
----
+------------------------------------------------------------------------
 
 ## Per-haul density and corrections {#sec-density}
 
 ### Swept area
 
-Trawl catch weight on its own isn't comparable between hauls - a haul that swept more seafloor will naturally catch more, independent of true fish density. Standardizing to a **density** (weight per unit area swept) is what makes hauls comparable at all.
+Trawl catch weight on its own isn't comparable between hauls - a haul
+that swept more seafloor will naturally catch more, independent of true
+fish density. Standardizing to a **density** (weight per unit area
+swept) is what makes hauls comparable at all.
 
 $$A_{\text{swept}} = \text{distance towed} \times \text{net wing opening}$$
 
-so the haul density is $d = C / A_{swept}$, with $C$ the catch of the species in the haul (kg) and $A_{swept}$ in km².
+so the haul density is $d = C / A_{swept}$, with $C$ the catch of the
+species in the haul (kg) and $A_{swept}$ in km².
 
 ```{r}
 #| label: swept-area
@@ -1567,11 +1903,17 @@ ta_swept <- ta %>%
 dt <- compute_sample_densities(dt)   # Density := Biomass / Effort
 ```
 
-The unit for `wing_opening` (decimetres, not metres) isn't documented directly in the raw data - confirmed by cross-checking against `vertical_opening`, a constant 20 across hauls using the standard MEDITS GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73's real vertical opening; 20 *metres* would be absurd for a bottom trawl.
+The unit for `wing_opening` (decimetres, not metres) isn't documented
+directly in the raw data - confirmed by cross-checking against
+`vertical_opening`, a constant 20 across hauls using the standard MEDITS
+GOC73 trawl gear. 20 decimetres = 2.0m matches GOC73's real vertical
+opening; 20 *metres* would be absurd for a bottom trawl.
 
 ### Depth-stratum assignment
 
-MEDITS is a stratified-random survey design: the sampling area within each GSA (or custom region) is divided into 5 standard bathymetric strata.
+MEDITS is a stratified-random survey design: the sampling area within
+each GSA (or custom region) is divided into 5 standard bathymetric
+strata.
 
 ```{r}
 #| label: stratum-from-depth
@@ -1583,15 +1925,27 @@ MEDITS_STRATA <- data.table(
 dt <- assign_depth_stratum(dt, MEDITS_STRATA)
 ```
 
-`assign_depth_stratum()` supports three input shapes: no `Stratum` column at all (fully derived from depth), a `Stratum` column already fully populated (used as-is, no derivation attempted), or a *partially* populated one - existing values are kept, only the missing ones are derived from depth. Hauls with a mean depth outside 10-800m don't belong to any of the 5 standard strata and are excluded from the strata-weighted index, rather than force-assigned to whichever edge stratum happens to be closest.
+`assign_depth_stratum()` supports three input shapes: no `Stratum`
+column at all (fully derived from depth), a `Stratum` column already
+fully populated (used as-is, no derivation attempted), or a *partially*
+populated one - existing values are kept, only the missing ones are
+derived from depth. Hauls with a mean depth outside 10-800m don't belong
+to any of the 5 standard strata and are excluded from the
+strata-weighted index, rather than force-assigned to whichever edge
+stratum happens to be closest.
 
 ### Catchability correction
 
-Trawl surveys don't catch 100% of what's actually in the swept area - some individuals escape under, over, or around the net. The raw survey density is a systematic *underestimate* of true density by an amount that varies by species. Catchability ($q$, typically $0 < q \le 1$) corrects this:
+Trawl surveys don't catch 100% of what's actually in the swept area -
+some individuals escape under, over, or around the net. The raw survey
+density is a systematic *underestimate* of true density by an amount
+that varies by species. Catchability ($q$, typically $0 < q \le 1$)
+corrects this:
 
 $$D_{\text{true}} = \frac{D_{\text{raw}}}{q}$$
 
-where $D_{raw}$ is the survey density (catch / swept area, kg/km²), $q$ the species catchability and $D_{true}$ the corrected density.
+where $D_{raw}$ is the survey density (catch / swept area, kg/km²), $q$
+the species catchability and $D_{true}$ the corrected density.
 
 ```{r}
 #| label: catchability
@@ -1603,41 +1957,91 @@ dt <- apply_catchability_correction(
 )
 ```
 
-Real catchability tables mix true species binomials with broader taxonomic-group entries (e.g. "Isopoda", "Hydrozoa" - order/class names) and genus-level "spp" entries ("Cirolana spp", meaning any species in that genus). `apply_catchability_correction()` classifies each table entry by its apparent level from its text shape and resolves species against it in order of specificity - genus before order, order before phylum - so a genus-level match always wins over a broader but explicit rule for the same species. For species matching nothing in the table at any level, a **taxonomic-proximity fallback** looks for other species already in the table sharing genus, then family, then order, and borrows the average of their $q$ rather than falling straight to a generic default.
+Real catchability tables mix true species binomials with broader
+taxonomic-group entries (e.g. "Isopoda", "Hydrozoa" - order/class names)
+and genus-level "spp" entries ("Cirolana spp", meaning any species in
+that genus). `apply_catchability_correction()` classifies each table
+entry by its apparent level from its text shape and resolves species
+against it in order of specificity - genus before order, order before
+phylum - so a genus-level match always wins over a broader but explicit
+rule for the same species. For species matching nothing in the table at
+any level, a **taxonomic-proximity fallback** looks for other species
+already in the table sharing genus, then family, then order, and borrows
+the average of their $q$ rather than falling straight to a generic
+default.
 
-`exempt_fg_names`/`exempt_species` force $q=1$ (no correction) regardless of anything else resolved - for groups a bottom trawl isn't designed to sample representatively at all (pelagic, planktonic, seagrass/algae FGs), where "catchability" as a concept doesn't apply the same way.
+`exempt_fg_names`/`exempt_species` force $q=1$ (no correction)
+regardless of anything else resolved - for groups a bottom trawl isn't
+designed to sample representatively at all (pelagic, planktonic,
+seagrass/algae FGs), where "catchability" as a concept doesn't apply the
+same way.
 
 ### Sample-level outlier detection
 
-A single anomalous haul (a recording error, misidentification or unit mismatch) can distort a year's FG density. `remove_sample_outliers_haul()` (`OUTLIER_METHOD = "haul"`, default) screens each species × haul **before** any aggregation, so only that one observation is affected.
+A single anomalous haul (a recording error, misidentification or unit
+mismatch) can distort a year's FG density.
+`remove_sample_outliers_haul()` (`OUTLIER_METHOD = "haul"`, default)
+screens each species × haul **before** any aggregation, so only that one
+observation is affected.
 
-$$
-\text{flag}_{s,k} \iff \log(1 + d_{s,k}) > Q_3 + 3\,\text{IQR}
-$$
+$$\text{flag}_{s,k} \iff \log(1 + d_{s,k}) > Q_3 + 3\,\text{IQR}$$
 
-where $d_{s,k}$ is the density of species $s$ in haul $k$, and $Q_3$ and IQR are the third quartile and interquartile range of $\log(1+d)$ over the **positive** hauls of the same species in the same GSA, depth stratum and year (pooled over strata when that cell has fewer than 10 positive hauls; not judged with fewer). The factor 3 is Tukey's "far out" fence [@tukey1977].
+where $d_{s,k}$ is the density of species $s$ in haul $k$, and $Q_3$ and
+IQR are the third quartile and interquartile range of $\log(1+d)$ over
+the **positive** hauls of the same species in the same GSA, depth
+stratum and year (pooled over strata when that cell has fewer than 10
+positive hauls; not judged with fewer). The factor 3 is Tukey's "far
+out" fence [@tukey1977].
 
-- Only high values are flagged; zeros and low catches are the normal shape of trawl data.
-- If 2 or more hauls of the same species in the same GSA × year cross the fence, none is flagged: that is a real aggregation or a good year.
+- Only high values are flagged; zeros and low catches are the normal
+  shape of trawl data.
+- If 2 or more hauls of the same species in the same GSA × year cross
+  the fence, none is flagged: that is a real aggregation or a good year.
 - A whole year is never removed.
 
-This is **not** a rule of the MEDITS protocol: the MEDITS manual [@medits2017] sets how hauls are made and recorded, not how to screen densities. The IQR fence follows the boxplot convention of the MEDITS quality-check tools (RoME), with a stricter fence (3 IQR instead of 1.5) and high values only. In the 2026-10-22 run it flagged 0.98 % of observations (5,130 of 525,426).
+This is **not** a rule of the MEDITS protocol: the MEDITS manual
+[@medits2017] sets how hauls are made and recorded, not how to screen
+densities. The IQR fence follows the boxplot convention of the MEDITS
+quality-check tools (RoME), with a stricter fence (3 IQR instead of 1.5)
+and high values only. In the 2026-10-22 run it flagged 0.98 % of
+observations (5,130 of 525,426).
 
-`DROP_OUTLIERS = FALSE` reports flagged observations without removing them. Each flagged observation (species, GSA, year, haul, value, typical value) is written to `survey_outliers_flagged.csv`; `survey_outlier_diagnostic.png` and the validation report show their effect.
+`DROP_OUTLIERS = FALSE` reports flagged observations without removing
+them. Each flagged observation (species, GSA, year, haul, value, typical
+value) is written to `survey_outliers_flagged.csv`;
+`survey_outlier_diagnostic.png` and the validation report show their
+effect.
 
----
+------------------------------------------------------------------------
 
 ## Strata-weighted density (within an area) {#sec-strata-weighted}
 
-This is the central statistical correction in the pipeline. A **simple mean density across all hauls in an area** implicitly assumes every haul represents an equal share of that area's seafloor - but different strata are sampled with different numbers of hauls *and* cover different fractions of the total area, so an unweighted mean would be biased toward whichever stratum happened to get more hauls that year, independent of how much of the area it actually represents.
+This is the central statistical correction in the pipeline. A **simple
+mean density across all hauls in an area** implicitly assumes every haul
+represents an equal share of that area's seafloor - but different strata
+are sampled with different numbers of hauls *and* cover different
+fractions of the total area, so an unweighted mean would be biased
+toward whichever stratum happened to get more hauls that year,
+independent of how much of the area it actually represents.
 
-The standard stratified-survey estimator instead computes a per-stratum mean, then weights each stratum's contribution by its **true share of the area's total surveyable area** (not its share of hauls):
+The standard stratified-survey estimator instead computes a per-stratum
+mean, then weights each stratum's contribution by its **true share of
+the area's total surveyable area** (not its share of hauls):
 
 $$D_{\text{area}} = \sum_{h} \bar{D}_h \times \frac{A_h}{A_{\text{area}}}, \qquad \bar{D}_h = \frac{\sum \text{density in stratum } h}{n_{\text{samples},\,h}}$$
 
-where $h$ is a depth stratum, $A_h$ its area (km²), $A_{area} = \sum_h A_h$ the area of the GSA or custom region, $n_{samples,h}$ the number of hauls in stratum $h$ and $\bar D_h$ their mean density.
+where $h$ is a depth stratum, $A_h$ its area (km²),
+$A_{area} = \sum_h A_h$ the area of the GSA or custom region,
+$n_{samples,h}$ the number of hauls in stratum $h$ and $\bar D_h$ their
+mean density.
 
-The stratum area shares are computed from **bathymetry**, not from sample counts - a bathymetry raster (the EMODnet DTM tiles by default, `BATHY_SOURCE`) is read, clipped to the area's own polygon (a GSA boundary, or the custom region from @sec-area-definition - `compute_strata_area_by_area()` doesn't need to know which), and each cell's real area (latitude-corrected, since grid cells shrink toward the poles) is summed within each depth stratum.
+The stratum area shares are computed from **bathymetry**, not from
+sample counts - a bathymetry raster (the EMODnet DTM tiles by default,
+`BATHY_SOURCE`) is read, clipped to the area's own polygon (a GSA
+boundary, or the custom region from @sec-area-definition -
+`compute_strata_area_by_area()` doesn't need to know which), and each
+cell's real area (latitude-corrected, since grid cells shrink toward the
+poles) is summed within each depth stratum.
 
 ```{r}
 #| label: strata-area-and-weighted-estimator
@@ -1650,9 +2054,18 @@ per_group_fg <- compute_fg_densities_by_stratum(dt, strata = STRATA)
 fg_index <- weight_by_strata(per_group_fg, n_samples_by_stratum, strata_area_by_area)
 ```
 
-::: {.callout-note}
+::: callout-note
 ### `n_samples` must come from the full dataset, never a species/FG-filtered subset
-`per_group_fg` deliberately does **not** compute its own sample count - a species/FG-specific count would only include samples where that group had non-zero catch, understating true sampling effort (a sample where a species was genuinely absent still counts toward the denominator in a proper mean-density estimator, contributing a true zero). The one correct source of `n_samples` is `n_samples_by_stratum`, computed from the *full* `dt` (every species/FG together). Using the wrong source here was confirmed, via a hand-calculated test, to produce up to a 4x overestimate for a species caught in only 1 of 4 hauls at a stratum.
+
+`per_group_fg` deliberately does **not** compute its own sample count -
+a species/FG-specific count would only include samples where that group
+had non-zero catch, understating true sampling effort (a sample where a
+species was genuinely absent still counts toward the denominator in a
+proper mean-density estimator, contributing a true zero). The one
+correct source of `n_samples` is `n_samples_by_stratum`, computed from
+the *full* `dt` (every species/FG together). Using the wrong source here
+was confirmed, via a hand-calculated test, to produce up to a 4x
+overestimate for a species caught in only 1 of 4 hauls at a stratum.
 :::
 
 ```{r}
@@ -1664,64 +2077,207 @@ wm_figure("fig-strata-timeseries", r"---(Density index by Functional Group and a
 
 ## Region-wide aggregation (across areas) {#sec-regional}
 
-@sec-strata-weighted gives a correctly-weighted density **per area**. Combining multiple areas into a single region-wide estimate has exactly the same weighting problem one level up: areas differ substantially in total surveyable area, so a simple mean of per-area densities would implicitly treat a small area as equally representative of the region as a large one.
+@sec-strata-weighted gives a correctly-weighted density **per area**.
+Combining multiple areas into a single region-wide estimate has exactly
+the same weighting problem one level up: areas differ substantially in
+total surveyable area, so a simple mean of per-area densities would
+implicitly treat a small area as equally representative of the region as
+a large one.
 
-A single-stage estimator combining every (area, stratum) cell directly - using each cell's **absolute** area, not its proportion within its own area - avoids any double-weighting error from compounding two separate weighting stages:
+A single-stage estimator combining every (area, stratum) cell directly -
+using each cell's **absolute** area, not its proportion within its own
+area - avoids any double-weighting error from compounding two separate
+weighting stages:
 
 $$D_{\text{region}} = \frac{\sum_{a,h} \bar{D}_{a,h} \, A_{a,h}}{\sum_{a,h} A_{a,h}}$$
 
-where $a$ is an area (GSA), $h$ a depth stratum, $\bar D_{a,h}$ the mean haul density in that cell and $A_{a,h}$ its area (km²).
+where $a$ is an area (GSA), $h$ a depth stratum, $\bar D_{a,h}$ the mean
+haul density in that cell and $A_{a,h}$ its area (km²).
 
 ```{r}
 #| label: regional-estimator
 fg_index_regional <- weight_by_area(fg_index)
 ```
 
-This is the version used for Ecopath/Ecosim-facing outputs - the per-area index (@sec-strata-weighted) is retained separately for area-level plots and comparisons, where seeing individual areas is the point.
+This is the version used for Ecopath/Ecosim-facing outputs - the
+per-area index (@sec-strata-weighted) is retained separately for
+area-level plots and comparisons, where seeing individual areas is the
+point.
 
-**Zero catches count.** The sum in the denominator runs over **every cell sampled in that year**, whether or not the FG was caught there; a cell without the FG contributes $\bar{D}_{a,h} = 0$. Dividing only by the area where the FG was caught would ignore the zeros and inflate patchy or depth-restricted FGs (median ×1.7 across MEDITS FGs, up to ×90 for groupers). The same rule applies to the species index (`weight_species_by_area()`) and to MEDIAS (denominator = area of all GSAs surveyed that year). Cells not sampled in a year are left out of both sums, so the estimate is the mean over the sampled area.
+**Zero catches count.** The sum in the denominator runs over **every
+cell sampled in that year**, whether or not the FG was caught there; a
+cell without the FG contributes $\bar{D}_{a,h} = 0$. Dividing only by
+the area where the FG was caught would ignore the zeros and inflate
+patchy or depth-restricted FGs (median ×1.7 across MEDITS FGs, up to ×90
+for groupers). The same rule applies to the species index
+(`weight_species_by_area()`) and to MEDIAS (denominator = area of all
+GSAs surveyed that year). Cells not sampled in a year are left out of
+both sums, so the estimate is the mean over the sampled area.
 
-**GSAs and strata not sampled in a year** (`SURVEY_IMPUTE_UNSAMPLED_CELLS` = TRUE, `impute_unsampled_cells()`). Every valid haul is kept; only outliers are removed.
+**GSAs and strata not sampled in a year**
+(`SURVEY_IMPUTE_UNSAMPLED_CELLS` = TRUE, `impute_unsampled_cells()`).
+Every valid haul is kept; only outliers are removed.
 
-- **Unsampled GSA.** A GSA with no haul in a year is left out of that year. The density is the biomass of the sampled GSAs divided by the area of those GSAs: $D_y = \sum_{c \in G_y} m_{c,y} A_c / \sum_{c \in G_y} A_c$, where $G_y$ is the set of cells of the GSAs sampled in year $y$. Nothing is interpolated into a GSA from other GSAs. Examples: GSA 5 in 1994, 2000 and 2003; 2022, when only GSAs 7–8 were sampled.
-- **Unsampled stratum inside a sampled GSA.** It is filled from the same GSA with a multiplicative stratum × year model fitted on that GSA's sampled cells: $\hat m_{c,y} = a_c\, b_{g,y}$. Here $a_c$ is the cell level and $b_{g,y}$ the year level of GSA $g$, fitted by alternating least squares. This is the classic missing-cell estimate of a two-way layout [@yates1933], in multiplicative form.
+- **Unsampled GSA.** A GSA with no haul in a year is left out of that
+  year. The density is the biomass of the sampled GSAs divided by the
+  area of those GSAs:
+  $D_y = \sum_{c \in G_y} m_{c,y} A_c / \sum_{c \in G_y} A_c$, where
+  $G_y$ is the set of cells of the GSAs sampled in year $y$. Nothing is
+  interpolated into a GSA from other GSAs. Examples: GSA 5 in 1994, 2000
+  and 2003; 2022, when only GSAs 7–8 were sampled.
+- **Unsampled stratum inside a sampled GSA.** It is filled from the same
+  GSA with a multiplicative stratum × year model fitted on that GSA's
+  sampled cells: $\hat m_{c,y} = a_c\, b_{g,y}$. Here $a_c$ is the cell
+  level and $b_{g,y}$ the year level of GSA $g$, fitted by alternating
+  least squares. This is the classic missing-cell estimate of a two-way
+  layout [@yates1933], in multiplicative form.
 - **Partial-coverage years** are kept (`ECOSIM_MIN_AREA_COVERAGE` = 0).
-- ASSUMPTION: the mean over the sampled GSAs represents the year. In a year with few GSAs (2022: 14 % of the area), the value reflects those GSAs only. The spike filter still applies.
+- ASSUMPTION: the mean over the sampled GSAs represents the year. In a
+  year with few GSAs (2022: 14 % of the area), the value reflects those
+  GSAs only. The spike filter still applies.
 
-**Model area (`MODEL_AREA_BASIS = "whole_gsa"`, `MODEL_GSAS = 1:12`).** $A_{model}$ is the whole sea area of GSAs 1–12, from the coast to the bottom: GSAs 1–11 (Western Mediterranean) plus GSA 12 (Northern Tunisia), which the MSFD includes in the Western Mediterranean subregion (GSA polygons ≈ 843,000 km²; GSAs 3 Southern Alboran ≈ 22,300 km², 4 Algeria ≈ 129,800 km² and 12 Northern Tunisia ≈ 38,300 km² included; the exact value is computed from NOAA bathymetry at run time and written to `model_area_by_gsa.csv`). MEDITS and MEDIAS survey GSAs 1, 2, 5–11 only. ASSUMPTION (project decision): the survey density per km² of the surveyed GSAs holds for GSAs 3, 4 and 12, so it is applied to the whole $A_{model}$; for small pelagics the unsurveyed GSAs take the median shelf density of the surveyed ones, and the MEDIAS shelf ratio uses the 10–200 m shelf of all model GSAs. Catch of every coastal state of the model GSAs is kept (Spain, France, Italy, Morocco, Algeria, Tunisia). Tunisia's catch is its GFCM catch in the Western Med divisions (37.1.1–37.1.3, i.e. GSA 12); its effort, like Algeria's and Morocco's, is taken as is from the FishMIP Western Mediterranean Sea region file (`effort_histsoc_1841_2017_western-mediterranean-sea.parquet`), which is already clipped to that region, so no further scaling is applied (`EFFORT_SCALE_BY_WESTMED_SHARE` can scale a country by its GFCM catch share in 37.1.1–37.1.3 if a national effort file is used instead). ASSUMPTION: the FishMIP region boundary matches GSAs 1–12; Morocco's Atlantic effort is outside that region. Tunisia's fleets are the GSA 12 fleets of `fleet_register_taxonomy.csv` (Artisanal, Longlines, Purse seiners, Trawls n.e.i., plus Recreational), with Tunisia's gear map in `gear_to_fleettype.csv`; like Morocco and Algeria it has no FDI data, so its fleet shares come from the GFCM fleet register or SAU, and its effort technology-creep multiplier is 0.7 (`tech_creep_country_multiplier.csv`). `MODEL_GSAS` and `MODEL_AREA_BASIS` are set in `run_pipeline_demo.R` with the years; the default is the whole Western Med, and any subset of GSAs filters the area, the survey data and the catch countries together. MEDITS measures 10–800 m. The other depths get AquaMaps pseudo-strata: 0–10 m, 800–1000 m and 1000 m to the seafloor (3,785 m, the deepest point of the Western Med, in the Vavilov Basin of the Tyrrhenian Sea), each scaled from the nearest real stratum by the species' AquaMaps depth suitability. All bands enter the numerator, and the denominator is the whole area of the GSAs sampled that year:
+**Model area (`MODEL_AREA_BASIS = "whole_gsa"`, `MODEL_GSAS = 1:12`).**
+$A_{model}$ is the whole sea area of GSAs 1–12, from the coast to the
+bottom: GSAs 1–11 (Western Mediterranean) plus GSA 12 (Northern
+Tunisia), which the MSFD includes in the Western Mediterranean subregion
+(GSA polygons ≈ 843,000 km²; GSAs 3 Southern Alboran ≈ 22,300 km², 4
+Algeria ≈ 129,800 km² and 12 Northern Tunisia ≈ 38,300 km² included; the
+exact value is computed from NOAA bathymetry at run time and written to
+`model_area_by_gsa.csv`). MEDITS and MEDIAS survey GSAs 1, 2, 5–11 only.
+ASSUMPTION (project decision): the survey density per km² of the
+surveyed GSAs holds for GSAs 3, 4 and 12, so it is applied to the whole
+$A_{model}$; for small pelagics the unsurveyed GSAs take the median
+shelf density of the surveyed ones, and the MEDIAS shelf ratio uses the
+10–200 m shelf of all model GSAs. Catch of every coastal state of the
+model GSAs is kept (Spain, France, Italy, Morocco, Algeria, Tunisia).
+Tunisia's catch is its GFCM catch in the Western Med divisions
+(37.1.1–37.1.3, i.e. GSA 12); its effort, like Algeria's and Morocco's,
+is taken as is from the FishMIP Western Mediterranean Sea region file
+(`effort_histsoc_1841_2017_western-mediterranean-sea.parquet`), which is
+already clipped to that region, so no further scaling is applied
+(`EFFORT_SCALE_BY_WESTMED_SHARE` can scale a country by its GFCM catch
+share in 37.1.1–37.1.3 if a national effort file is used instead).
+ASSUMPTION: the FishMIP region boundary matches GSAs 1–12; Morocco's
+Atlantic effort is outside that region. Tunisia's fleets are the GSA 12
+fleets of `fleet_register_taxonomy.csv` (Artisanal, Longlines, Purse
+seiners, Trawls n.e.i., plus Recreational), with Tunisia's gear map in
+`gear_to_fleettype.csv`; like Morocco and Algeria it has no FDI data, so
+its fleet shares come from the GFCM fleet register or SAU, and its
+effort technology-creep multiplier is 0.7
+(`tech_creep_country_multiplier.csv`). `MODEL_GSAS` and
+`MODEL_AREA_BASIS` are set in `run_pipeline_demo.R` with the years; the
+default is the whole Western Med, and any subset of GSAs filters the
+area, the survey data and the catch countries together. MEDITS measures
+10–800 m. The other depths get AquaMaps pseudo-strata: 0–10 m, 800–1000
+m and 1000 m to the seafloor (3,785 m, the deepest point of the Western
+Med, in the Vavilov Basin of the Tyrrhenian Sea), each scaled from the
+nearest real stratum by the species' AquaMaps depth suitability. All
+bands enter the numerator, and the denominator is the whole area of the
+GSAs sampled that year:
 $$\bar D_y = \frac{\sum_{g \in G_y}\sum_{s} \bar D_{g,s,y} A_{g,s}}{\sum_{g \in G_y}\sum_{s} A_{g,s}}, \quad s \in \{0\text{–}10, \text{MEDITS strata}, 800\text{–}1000, 1000\text{–}3785\}$$
-where $y$ is the year, $G_y$ the set of GSAs with data in year $y$, $s$ a depth stratum, $\bar D_{g,s,y}$ the mean density in GSA $g$, stratum $s$ and year $y$, and $A_{g,s}$ the stratum area (km²).
+where $y$ is the year, $G_y$ the set of GSAs with data in year $y$, $s$
+a depth stratum, $\bar D_{g,s,y}$ the mean density in GSA $g$, stratum
+$s$ and year $y$, and $A_{g,s}$ the stratum area (km²).
 
-Ecopath_B, catch per km², F and every 01b group use this same $A_{model}$ (`model_area_by_gsa.csv` is read by 02, 03 and 05; the COBALT plankton mean covers all depths of the GSAs). Alternative: `MODEL_AREA_BASIS = "medits_10_800"` uses only the 10–800 m MEDITS strata (175,660 km² for the surveyed GSAs), with pseudo-strata down to 1000 m.
+Ecopath_B, catch per km², F and every 01b group use this same
+$A_{model}$ (`model_area_by_gsa.csv` is read by 02, 03 and 05; the
+COBALT plankton mean covers all depths of the GSAs). Alternative:
+`MODEL_AREA_BASIS = "medits_10_800"` uses only the 10–800 m MEDITS
+strata (175,660 km² for the surveyed GSAs), with pseudo-strata down to
+1000 m.
 
-**FGs with no biomass in the Ecopath years.** When an FG has no biomass (missing or 0) in `YEAR_ECOPATH` (1994–1996), its Ecopath_B is the mean of its values over `ECOPATH_B_FILL_YEARS` (default 1995–2000, every year with data in that window, zeros included):
+**FGs with no biomass in the Ecopath years.** When an FG has no biomass
+(missing or 0) in `YEAR_ECOPATH` (1994–1996), its Ecopath_B is the mean
+of its values over `ECOPATH_B_FILL_YEARS` (default 1995–2000, every year
+with data in that window, zeros included):
 $$B_f = \frac{1}{|Y_f|}\sum_{y \in Y_f} \bar D_{f,y}, \quad Y_f = \{y \in 1995\ldots2000 : \bar D_{f,y} \text{ available}\}$$
-where $f$ is the FG, $\bar D_{f,y}$ its regional density in year $y$ (t/km²) and $|Y_f|$ the number of years with data;
-used when $B_f > 0$. If the window has no positive mean, the nearest single year with data is used (the earlier rule). Which rule filled each FG is in `ecopath_B_baseline_year_borrowed_REVIEW.csv` (`borrowed_how`). `ECOPATH_B_FILL_MODE = "nearest"` restores the earlier rule. The **Expanding** FGs (range-expanding species, rare or absent at the baseline) are never filled from other years: they get the minimal biomass `ECOPATH_B_EXPANDING_MIN` = 0.00001 t/km² so Ecopath keeps the group, and get no F (catch divided by a placeholder biomass is not a fishing mortality).
+where $f$ is the FG, $\bar D_{f,y}$ its regional density in year $y$
+(t/km²) and $|Y_f|$ the number of years with data; used when $B_f > 0$.
+If the window has no positive mean, the nearest single year with data is
+used (the earlier rule). Which rule filled each FG is in
+`ecopath_B_baseline_year_borrowed_REVIEW.csv` (`borrowed_how`).
+`ECOPATH_B_FILL_MODE = "nearest"` restores the earlier rule. The
+**Expanding** FGs (range-expanding species, rare or absent at the
+baseline) are never filled from other years: they get the minimal
+biomass `ECOPATH_B_EXPANDING_MIN` = 0.00001 t/km² so Ecopath keeps the
+group, and get no F (catch divided by a placeholder biomass is not a
+fishing mortality).
 
-**Depth strata.** Bathymetry cells are assigned to strata with `findInterval()` on the stratum lower bounds, so every stratum, including the deepest (501–800 m) and the AquaMaps bands below 800 m, gets its own area.
+**Depth strata.** Bathymetry cells are assigned to strata with
+`findInterval()` on the stratum lower bounds, so every stratum,
+including the deepest (501–800 m) and the AquaMaps bands below 800 m,
+gets its own area.
 
-**AquaMaps occurrence outside the sampled depths.** Every biomass except MEDIAS, stock assessments, plankton models and mapped habitats is extended to depths its source did not sample, scaled by AquaMaps depth suitability:
+**AquaMaps occurrence outside the sampled depths.** Every biomass except
+MEDIAS, stock assessments, plankton models and mapped habitats is
+extended to depths its source did not sample, scaled by AquaMaps depth
+suitability:
 
-- *MEDITS* (`lib_aquamaps_depth_extension.R`): pseudo-strata 0–10 m and 800–1000 m, each anchored to the adjacent real stratum's measured density × the suitability ratio. Species with no AquaMaps match at species level take the median envelope of their AquaMaps congeners (`match_method = "genus"`, ASSUMPTION: congeners share a depth range). Before this, 341 of 989 species had no envelope.
-- *Literature depth-band densities* (`lit_aquamaps_extension()` in 01b): a density measured over $[z_1, z_2]$ is extended to the other depth bands of the same domain as $D_k = D\, S_k / S_{band}$. Here $S$ is the group's mean AquaMaps suitability over a band (species from `Habitat_species`, else the FG's species), with no double counting between rows of the same group. `LIT_AQUAMAPS_EXTEND = FALSE` switches this off.
+- *MEDITS* (`lib_aquamaps_depth_extension.R`): pseudo-strata 0–10 m and
+  800–1000 m, each anchored to the adjacent real stratum's measured
+  density × the suitability ratio. Species with no AquaMaps match at
+  species level take the median envelope of their AquaMaps congeners
+  (`match_method = "genus"`, ASSUMPTION: congeners share a depth range).
+  Before this, 341 of 989 species had no envelope.
+- *Literature depth-band densities* (`lit_aquamaps_extension()` in 01b):
+  a density measured over $[z_1, z_2]$ is extended to the other depth
+  bands of the same domain as $D_k = D\, S_k / S_{band}$. Here $S$ is
+  the group's mean AquaMaps suitability over a band (species from
+  `Habitat_species`, else the FG's species), with no double counting
+  between rows of the same group. `LIT_AQUAMAPS_EXTEND = FALSE` switches
+  this off.
 
-**Strata-area caches.** `compute_strata_area_by_area()` reuses a cached CSV only when its strata numbers and depth bounds match the current strata definition and it covers every area. Otherwise it recomputes and keeps the old file as `.stale`. The cache of 2026-10-05 had 4 real strata: stratum 4 carried the 201–800 m area and there was no stratum 5, so every 501–800 m haul was dropped. The AquaMaps cache had the 800–3785 m area under an 800–1000 m label.
+**Strata-area caches.** `compute_strata_area_by_area()` reuses a cached
+CSV only when its strata numbers and depth bounds match the current
+strata definition and it covers every area. Otherwise it recomputes and
+keeps the old file as `.stale`. The cache of 2026-10-05 had 4 real
+strata: stratum 4 carried the 201–800 m area and there was no stratum 5,
+so every 501–800 m haul was dropped. The AquaMaps cache had the 800–3785
+m area under an 800–1000 m label.
 
-**Ecosim trend hygiene** (`01_biomass.R`, STEP 7c and the export). Three rules applied only to the year-to-year shape of the B series, not to `Ecopath_B`:
+**Ecosim trend hygiene** (`01_biomass.R`, STEP 7c and the export). Three
+rules applied only to the year-to-year shape of the B series, not to
+`Ecopath_B`:
 
-1. *Haul cap* (`ECOSIM_HAUL_CAP_Q` = 0.95). Each haul's FG density is capped at the 95th percentile of that FG's positive hauls in the same GSA × stratum over all years (only where there are ≥ 10 positive hauls). The capped index $I^{cap}$ is built with the same estimator, and its shape is carried over as $I^{new}_{f,y} = I_{f,y}\, s_{f,y}\, \overline{I_f}^{EP} / \overline{I_f s_f}^{EP}$, with $s_{f,y} = I^{cap}_{f,y}/I^{raw}_{f,y}$ and $\overline{\cdot}^{EP}$ the 1994–1996 mean. So `Ecopath_B` is unchanged. Capping lowers absolute densities by construction, which is why it is not applied to the baseline. `ecosim_haul_cap_effect_REVIEW.csv` lists, per FG, how much the 1994–1996 mean would fall if capped. A ratio ≫ 1 means the baseline rests on a few very large hauls (e.g. commercial small demersal fish, ×6 from one 1995 haul of *Gymnammodytes cicerelus*).
-2. *Area coverage* (`ECOSIM_MIN_AREA_COVERAGE`, default 0 = off). A year whose sampled strata cover less than this share of the model area would be left blank. It is off because the area-adjusted index (an unsampled GSA is dropped from both numerator and area) already handles partial years (2022: GSAs 7–8 only, 14 %; 2023: 60 %). The 1994–1996 years are never blanked. Coverage by year: `survey_area_coverage_by_year.csv`.
-3. *Spike filter* (`ECOSIM_SPIKE_FILTER` = TRUE, `flag_ts_upward_spikes()`). In every B series (survey, model, literature), a year is blanked when $\log x_y - \text{median}(\log x_{\text{4 nearest years}}) > \max(3 \cdot 1.4826\,\text{MAD}, \log 3)$. This is a one-sided Hampel filter [@hampel1974; @pearson2002]. ASSUMPTION: the window, the 3 MAD and the 3-fold floor are judgment choices. Dips are kept. Removed values: `ecosim_ts_spikes_removed_REVIEW.csv`.
+1.  *Haul cap* (`ECOSIM_HAUL_CAP_Q` = 0.95). Each haul's FG density is
+    capped at the 95th percentile of that FG's positive hauls in the
+    same GSA × stratum over all years (only where there are ≥ 10
+    positive hauls). The capped index $I^{cap}$ is built with the same
+    estimator, and its shape is carried over as
+    $I^{new}_{f,y} = I_{f,y}\, s_{f,y}\, \overline{I_f}^{EP} / \overline{I_f s_f}^{EP}$,
+    with $s_{f,y} = I^{cap}_{f,y}/I^{raw}_{f,y}$ and
+    $\overline{\cdot}^{EP}$ the 1994–1996 mean. So `Ecopath_B` is
+    unchanged. Capping lowers absolute densities by construction, which
+    is why it is not applied to the baseline.
+    `ecosim_haul_cap_effect_REVIEW.csv` lists, per FG, how much the
+    1994–1996 mean would fall if capped. A ratio ≫ 1 means the baseline
+    rests on a few very large hauls (e.g. commercial small demersal
+    fish, ×6 from one 1995 haul of *Gymnammodytes cicerelus*).
+2.  *Area coverage* (`ECOSIM_MIN_AREA_COVERAGE`, default 0 = off). A
+    year whose sampled strata cover less than this share of the model
+    area would be left blank. It is off because the area-adjusted index
+    (an unsampled GSA is dropped from both numerator and area) already
+    handles partial years (2022: GSAs 7–8 only, 14 %; 2023: 60 %). The
+    1994–1996 years are never blanked. Coverage by year:
+    `survey_area_coverage_by_year.csv`.
+3.  *Spike filter* (`ECOSIM_SPIKE_FILTER` = TRUE,
+    `flag_ts_upward_spikes()`). In every B series (survey, model,
+    literature), a year is blanked when
+    $\log x_y - \text{median}(\log x_{\text{4 nearest years}}) > \max(3 \cdot 1.4826\,\text{MAD}, \log 3)$.
+    This is a one-sided Hampel filter [@hampel1974; @pearson2002].
+    ASSUMPTION: the window, the 3 MAD and the 3-fold floor are judgment
+    choices. Dips are kept. Removed values:
+    `ecosim_ts_spikes_removed_REVIEW.csv`.
 
-Effect of each rule, tested against the 1995 model's series (simplified MEDITS index without q):
+Effect of each rule, tested against the 1995 model's series (simplified
+MEDITS index without q):
 
-| Version | FGs with a spike > 10× the series median | Negative r with the old model | Median r |
-|---|---|---|---|
+| Version | FGs with a spike \> 10× the series median | Negative r with the old model | Median r |
+|------------------|------------------|------------------|------------------|
 | Zeros not counted | 11 | 22 | −0.05 |
 | Zeros counted | 8 | 24 | −0.03 |
-| + haul cap + coverage | 4 | 20 | 0.02 |
-| + spike filter | 3 | 20 | 0.05 |
+| \+ haul cap + coverage | 4 | 20 | 0.02 |
+| \+ spike filter | 3 | 20 | 0.05 |
 
 The effect on the full pipeline is in 05 block 12.
 
@@ -1732,28 +2288,66 @@ The effect on the full pipeline is in 05 block 12.
 wm_figure("fig-regional-timeseries", r"---(Region-wide, area-weighted density index by Functional Group.)---", "survey_fg_density_timeseries_regional.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
 ```
 
-For the custom-region example (@sec-area-definition, Approach B), this step is mathematically a formality with only one area in scope - `weight_by_area()` still runs the same formula, it just sums over one area's worth of cells, so the result is identical to the per-area index above. It's kept in the pipeline anyway so both examples produce the same Excel structure - if the custom boundary is later split into its own named sub-zones, this step becomes meaningful again with no other code changing.
+For the custom-region example (@sec-area-definition, Approach B), this
+step is mathematically a formality with only one area in scope -
+`weight_by_area()` still runs the same formula, it just sums over one
+area's worth of cells, so the result is identical to the per-area index
+above. It's kept in the pipeline anyway so both examples produce the
+same Excel structure - if the custom boundary is later split into its
+own named sub-zones, this step becomes meaningful again with no other
+code changing.
 
----
+------------------------------------------------------------------------
 
 ## MEDIAS acoustic survey {#sec-medias}
 
-Everything from @sec-fg-matching through @sec-regional describes **MEDITS**, the demersal trawl survey - but `01_biomass.R` (`AREA_MODE = "westmed"`) also incorporates **MEDIAS**, the acoustic survey, and combines the two into a single density index rather than keeping them as separate Ecopath/Ecosim sheets. MEDIAS is specifically relevant for small pelagics (sardine, anchovy) that a bottom trawl doesn't sample well but an acoustic survey does.
+Everything from @sec-fg-matching through @sec-regional describes
+**MEDITS**, the demersal trawl survey - but `01_biomass.R`
+(`AREA_MODE = "westmed"`) also incorporates **MEDIAS**, the acoustic
+survey, and combines the two into a single density index rather than
+keeping them as separate Ecopath/Ecosim sheets. MEDIAS is specifically
+relevant for small pelagics (sardine, anchovy) that a bottom trawl
+doesn't sample well but an acoustic survey does.
 
-::: {.callout-important}
+::: callout-important
 ### MEDIAS is not part of the sample coverage map (@sec-area-definition)
-MEDITS data arrives per-haul, with a real lat/lon for every sample - that's what @sec-area-definition's sample coverage map plots. MEDIAS data arrives **already aggregated** by country/GSA/year/species (no individual acoustic transect coordinates in the files this pipeline reads) - there's no per-point geometry to plot for it, so the coverage map only ever shows MEDITS. This isn't a bug or an oversight to fix; it's a structural difference in what the two source files actually contain.
+
+MEDITS data arrives per-haul, with a real lat/lon for every sample -
+that's what @sec-area-definition's sample coverage map plots. MEDIAS
+data arrives **already aggregated** by country/GSA/year/species (no
+individual acoustic transect coordinates in the files this pipeline
+reads) - there's no per-point geometry to plot for it, so the coverage
+map only ever shows MEDITS. This isn't a bug or an oversight to fix;
+it's a structural difference in what the two source files actually
+contain.
 :::
 
-MEDIAS differs from MEDITS in several ways that matter for interpreting the combined result, not just in data source:
+MEDIAS differs from MEDITS in several ways that matter for interpreting
+the combined result, not just in data source:
 
-- **No strata weighting, no catchability correction.** @sec-strata-weighted and the catchability step in @sec-density don't apply here - there's no per-haul depth to stratify by, and MEDIAS' own acoustic backscatter-to-biomass conversion already accounts for detectability in a way a MEDITS-style catchability table doesn't map onto.
-- **A fixed 10-200m depth band**, per the MEDIAS Handbook [@medias2025] - the acoustic sampling design's own minimum (10m isobath) and maximum (200m echo-sounding limit), not a modeling choice made in this pipeline.
-- **Official reporting convention is t/nm²** (tons per square nautical mile), not the kg/km² MEDITS density work uses elsewhere in this pipeline - converted to t/km² before combining with MEDITS (`KM2_PER_NM2` conversion constant), so the two indices are on a comparable footing before averaging.
+- **No strata weighting, no catchability correction.**
+  @sec-strata-weighted and the catchability step in @sec-density don't
+  apply here - there's no per-haul depth to stratify by, and MEDIAS' own
+  acoustic backscatter-to-biomass conversion already accounts for
+  detectability in a way a MEDITS-style catchability table doesn't map
+  onto.
+- **A fixed 10-200m depth band**, per the MEDIAS Handbook
+  [@medias2025] - the acoustic sampling design's own minimum (10m
+  isobath) and maximum (200m echo-sounding limit), not a modeling choice
+  made in this pipeline.
+- **Official reporting convention is t/nm²** (tons per square nautical
+  mile), not the kg/km² MEDITS density work uses elsewhere in this
+  pipeline - converted to t/km² before combining with MEDITS
+  (`KM2_PER_NM2` conversion constant), so the two indices are on a
+  comparable footing before averaging.
 
 ### Loading and FG matching
 
-Raw abundance/biomass CSVs are collapsed to country/GSA/year/species (summing across length classes, replicate-checked to decide `sum()` vs `mean()` for collapsing raw records), then species codes are resolved to scientific names via the ASFIS species list (FAO's own code table) rather than MEDITS' own species-code system:
+Raw abundance/biomass CSVs are collapsed to country/GSA/year/species
+(summing across length classes, replicate-checked to decide `sum()` vs
+`mean()` for collapsing raw records), then species codes are resolved to
+scientific names via the ASFIS species list (FAO's own code table)
+rather than MEDITS' own species-code system:
 
 ```{r}
 #| label: medias-load-match
@@ -1765,11 +2359,18 @@ acoustic_matched <- match_nominate_subspecies_fg(acoustic_matched, fg_lookup_saf
 acoustic_matched <- fallback_match_fg_by_taxonomy(acoustic_matched, fg_lookup_safe, taxonomy_source = "worms")
 ```
 
-Once resolved to `ScientificName`, matching reuses the exact same `fg_lookup_safe` and the exact same Stage 1/1b/3 functions from @sec-fg-matching - a species matched here and a species matched in MEDITS go through identical logic, they just start from a different species-code system (ASFIS vs. MEDITS' own).
+Once resolved to `ScientificName`, matching reuses the exact same
+`fg_lookup_safe` and the exact same Stage 1/1b/3 functions from
+@sec-fg-matching - a species matched here and a species matched in
+MEDITS go through identical logic, they just start from a different
+species-code system (ASFIS vs. MEDITS' own).
 
 ### Area denominator
 
-MEDIAS density needs a country/GSA-level survey area (NM²), which - unlike MEDITS' bathymetry-derived stratum areas (@sec-strata-weighted) - primarily comes from each reporting institute's own published figure, the MEDIAS Handbook's Table 1:
+MEDIAS density needs a country/GSA-level survey area (NM²), which -
+unlike MEDITS' bathymetry-derived stratum areas (@sec-strata-weighted) -
+primarily comes from each reporting institute's own published figure,
+the MEDIAS Handbook's Table 1:
 
 ```{r}
 #| label: medias-area
@@ -1781,12 +2382,23 @@ MEDIAS_HANDBOOK_AREAS <- data.table(
 )
 ```
 
-::: {.callout-warning}
+::: callout-warning
 ### Handbook areas are hand-transcribed - verify against your own institute's reports
-These six rows were transcribed from the MEDIAS Handbook [@medias2025] and restricted to entries plausibly overlapping the Western Med (`FILTER_AREAS`, GSA 1-11) - Adriatic/Black Sea entries were left out as out of scope, not because they don't exist. Verify against your own institute's current MEDIAS survey reports before trusting these for anything beyond this pipeline's own internal density calculation - handbook figures can be revised between editions.
+
+These six rows were transcribed from the MEDIAS Handbook [@medias2025]
+and restricted to entries plausibly overlapping the Western Med
+(`FILTER_AREAS`, GSA 1-11) - Adriatic/Black Sea entries were left out as
+out of scope, not because they don't exist. Verify against your own
+institute's current MEDIAS survey reports before trusting these for
+anything beyond this pipeline's own internal density calculation -
+handbook figures can be revised between editions.
 :::
 
-For any country/GSA combination *not* covered by Table 1, the pipeline falls back to a bathymetry-derived 10-200m area estimate - reusing `compute_strata_area_by_area()` from @sec-strata-weighted with a single depth stratum spanning MEDIAS' own sampling range, rather than duplicating that bathymetry logic:
+For any country/GSA combination *not* covered by Table 1, the pipeline
+falls back to a bathymetry-derived 10-200m area estimate - reusing
+`compute_strata_area_by_area()` from @sec-strata-weighted with a single
+depth stratum spanning MEDIAS' own sampling range, rather than
+duplicating that bathymetry logic:
 
 ```{r}
 #| label: medias-area-fallback
@@ -1800,7 +2412,12 @@ fallback_area_km2 <- compute_strata_area_by_area(
 
 ### Combining MEDITS and MEDIAS into one index
 
-Rather than write separate MEDIAS sheets, both surveys' FG-level and species-level density indices are stacked and **averaged** wherever they overlap on the same Year/FG (or Year/species) - this is the `species_density_regional_combined` object that everything from @sec-configure onward (`FG_spp_Ecopath`, `traits_ewe`, etc.) actually reads from, not MEDITS alone:
+Rather than write separate MEDIAS sheets, both surveys' FG-level and
+species-level density indices are stacked and **averaged** wherever they
+overlap on the same Year/FG (or Year/species) - this is the
+`species_density_regional_combined` object that everything from
+@sec-configure onward (`FG_spp_Ecopath`, `traits_ewe`, etc.) actually
+reads from, not MEDITS alone:
 
 ```{r}
 #| label: medias-combine
@@ -1819,25 +2436,45 @@ fg_index_regional_combined <- fg_index_combined_raw[
   , .(mean_density = mean(mean_density, na.rm = TRUE)), by = .(Year, FG_num, FG_name)]
 ```
 
-The species-level combination (`species_density_regional_combined`) follows the identical pattern - stack, flag genuine species/Year overlaps (typically a small pelagic taken in both an acoustic survey and incidentally in demersal trawl catches), then average.
+The species-level combination (`species_density_regional_combined`)
+follows the identical pattern - stack, flag genuine species/Year
+overlaps (typically a small pelagic taken in both an acoustic survey and
+incidentally in demersal trawl catches), then average.
 
-::: {.callout-note}
+::: callout-note
 ### Averaging on overlap is a modeling choice, not a statistical inevitability
-When both surveys report a density for the same FG (or species) and year, this pipeline takes a simple, unweighted mean of the two. An alternative - weighting by each survey's own sampling effort or estimated precision, rather than treating both estimates as equally trustworthy - would be a defensible different choice. The overlap is flagged and printed specifically so this default doesn't apply invisibly to combinations where the two surveys substantially disagree.
+
+When both surveys report a density for the same FG (or species) and
+year, this pipeline takes a simple, unweighted mean of the two. An
+alternative - weighting by each survey's own sampling effort or
+estimated precision, rather than treating both estimates as equally
+trustworthy - would be a defensible different choice. The overlap is
+flagged and printed specifically so this default doesn't apply invisibly
+to combinations where the two surveys substantially disagree.
 :::
 
----
+------------------------------------------------------------------------
 
 ## MEDITS biomass by depth stratum
 
-A direct ecological sanity check on the strata-weighting logic itself: for each FG, plot its **raw per-sample density** (deliberately *before* area-weighting, since area-weighting is about scaling to a population estimate, not about revealing where a species actually lives) across the 5 depth strata.
+A direct ecological sanity check on the strata-weighting logic itself:
+for each FG, plot its **raw per-sample density** (deliberately *before*
+area-weighting, since area-weighting is about scaling to a population
+estimate, not about revealing where a species actually lives) across the
+5 depth strata.
 
 ```{r}
 #| label: depth-profile-validation
 p_profile <- plot_strata_profile(fg_index, MEDITS_STRATA)
 ```
 
-If the pipeline is working correctly, FGs known to live in deep water should show density concentrated toward the deeper strata, and coastal/shallow FGs should concentrate toward the shallow ones. A flat profile, or an unexpected peak for a well-documented species, is worth investigating directly - it could point at a stratum-coding issue, a swept-area problem, or a species-matching error further upstream, rather than being dismissed as noise.
+If the pipeline is working correctly, FGs known to live in deep water
+should show density concentrated toward the deeper strata, and
+coastal/shallow FGs should concentrate toward the shallow ones. A flat
+profile, or an unexpected peak for a well-documented species, is worth
+investigating directly - it could point at a stratum-coding issue, a
+swept-area problem, or a species-matching error further upstream, rather
+than being dismissed as noise.
 
 ```{r}
 #| label: show-fig-depth-profile
@@ -1848,7 +2485,9 @@ wm_figure("fig-depth-profile", r"---(Depth-strata density profile by Functional 
 
 ## Sample coverage map
 
-Before (or alongside) the density calculations, `plot_sample_map()` gives a direct visual and geometric check on the input data itself - independent of anything FG- or density-related.
+Before (or alongside) the density calculations, `plot_sample_map()`
+gives a direct visual and geometric check on the input data itself -
+independent of anything FG- or density-related.
 
 ```{r}
 #| label: sample-map
@@ -1856,12 +2495,29 @@ p_sample_map <- plot_sample_map(dataframe1, area_shp, area_id_col = AREA_ID_COL,
                                   title = "Sample coverage", selected_areas = FILTER_AREAS)
 ```
 
-This does more than plot points - it performs concrete geometric checks and reports them directly:
+This does more than plot points - it performs concrete geometric checks
+and reports them directly:
 
-- **CRS is validated explicitly**, not assumed: `area_shp` and the sample points are both transformed to a common, known CRS before plotting rather than relying on automatic layer alignment, and the function errors clearly if `area_shp` has no CRS defined at all (rather than silently producing a badly misplaced polygon layer).
-- **Points genuinely outside every polygon** (even after correct CRS alignment) are counted and listed - this distinguishes a real projection problem (should resolve to ~0 once fixed) from genuine bad coordinate data (stays nonzero regardless).
-- **Points inside vs. outside the selected study area specifically** are shown in different colors - a point can be a perfectly valid coordinate in a real, neighboring GSA and still be outside this particular analysis's scope, which is a different question from "is this a valid coordinate at all".
-- **The selected study area's outer contour** is drawn in bold, using a rasterize-then-repolygonize technique rather than a plain `st_union()` - real shapefiles are rarely perfectly topologically snapped at shared boundaries, and a plain union can leave a visible seam artifact at the join between adjacent polygons that a coarser raster grid smooths over.
+- **CRS is validated explicitly**, not assumed: `area_shp` and the
+  sample points are both transformed to a common, known CRS before
+  plotting rather than relying on automatic layer alignment, and the
+  function errors clearly if `area_shp` has no CRS defined at all
+  (rather than silently producing a badly misplaced polygon layer).
+- **Points genuinely outside every polygon** (even after correct CRS
+  alignment) are counted and listed - this distinguishes a real
+  projection problem (should resolve to \~0 once fixed) from genuine bad
+  coordinate data (stays nonzero regardless).
+- **Points inside vs. outside the selected study area specifically** are
+  shown in different colors - a point can be a perfectly valid
+  coordinate in a real, neighboring GSA and still be outside this
+  particular analysis's scope, which is a different question from "is
+  this a valid coordinate at all".
+- **The selected study area's outer contour** is drawn in bold, using a
+  rasterize-then-repolygonize technique rather than a plain
+  `st_union()` - real shapefiles are rarely perfectly topologically
+  snapped at shared boundaries, and a plain union can leave a visible
+  seam artifact at the join between adjacent polygons that a coarser
+  raster grid smooths over.
 
 ```{r}
 #| label: show-fig-sample-map
@@ -1870,7 +2526,10 @@ This does more than plot points - it performs concrete geometric checks and repo
 wm_figure("fig-sample-map", r"---(Sample coverage map: land basemap, GSA polygons shaded by sampling intensity, selected-area contour in bold black, sample points colored by whether they fall inside or outside the selected study area.)---", "survey_sample_coverage_map.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
 ```
 
-`by_year = TRUE` produces the same map faceted by year - useful for spotting a coverage gap in one specific year that the all-years-combined map would mask, since every other year's samples overlaid on top of it can make a real gap look fine.
+`by_year = TRUE` produces the same map faceted by year - useful for
+spotting a coverage gap in one specific year that the all-years-combined
+map would mask, since every other year's samples overlaid on top of it
+can make a real gap look fine.
 
 ```{r}
 #| label: show-fig-sample-map-byyear
@@ -1879,28 +2538,38 @@ wm_figure("fig-sample-map", r"---(Sample coverage map: land basemap, GSA polygon
 wm_figure("fig-sample-map-byyear", r"---(Sample coverage faceted by year.)---", "survey_sample_coverage_map_by_year.png", r"---(01_biomass.R (AREA_MODE = "westmed"))---")
 ```
 
----
+------------------------------------------------------------------------
 
-Outputs are documented per script below (Biomass, Fisheries, P/B and Q/B, Diet matrix, Validation), followed by the [Known limitations](#sec-open-issues).
+Outputs are documented per script below (Biomass, Fisheries, P/B and
+Q/B, Diet matrix, Validation), followed by the [Known
+limitations](#sec-open-issues).
 
----
+------------------------------------------------------------------------
 
 ## Biomass (`01_biomass.R` + `01b_biomass_unsurveyed.R`) {#sec-biomass}
 
-`01_biomass.R` is the Step-1 script. It runs the survey method described above (MEDITS, plus MEDIAS when `AREA_MODE = "westmed"`) and then `source()`s `01b_biomass_unsurveyed.R` (`local = TRUE`) for every group a trawl or acoustic survey cannot measure. Together they write `Ecopath_B`, `FG_spp` and `Ecosim_ts`.
+`01_biomass.R` is the Step-1 script. It runs the survey method described
+above (MEDITS, plus MEDIAS when `AREA_MODE = "westmed"`) and then
+`source()`s `01b_biomass_unsurveyed.R` (`local = TRUE`) for every group
+a trawl or acoustic survey cannot measure. Together they write
+`Ecopath_B`, `FG_spp` and `Ecosim_ts`.
 
-**Model area.** Every density in every sheet (biomass, catch, landings, discards) is expressed per km² of the same area:
+**Model area.** Every density in every sheet (biomass, catch, landings,
+discards) is expressed per km² of the same area:
 
-$$
-A_{model} = \sum_{g,h} A_{g,h} = 175{,}660\ \text{km}^2
-$$
+$$A_{model} = \sum_{g,h} A_{g,h} = 175{,}660\ \text{km}^2$$
 
-where $g$ is a GSA, $h$ a depth stratum and $A_{g,h}$ the stratum area (km²); here the MEDITS 10–800 m strata of GSAs 1, 2, 5, 6, 7, 8, 9, 10 and 11 (`strata_area_by_area.csv`, bathymetry from the EMODnet DTM [@emodnetbathy2022], or NOAA ETOPO via `marmap` [@pante2013] with `BATHY_SOURCE = "noaa"`). Habitats shallower than 10 m (most of the seagrass, lagoons) are outside this area by construction.
+where $g$ is a GSA, $h$ a depth stratum and $A_{g,h}$ the stratum area
+(km²); here the MEDITS 10–800 m strata of GSAs 1, 2, 5, 6, 7, 8, 9, 10
+and 11 (`strata_area_by_area.csv`, bathymetry from the EMODnet DTM
+[@emodnetbathy2022], or NOAA ETOPO via `marmap` [@pante2013] with
+`BATHY_SOURCE = "noaa"`). Habitats shallower than 10 m (most of the
+seagrass, lagoons) are outside this area by construction.
 
 ### Equations
 
-| # | Quantity | Equation | Source |
-|---|---|---|---|
+| \# | Quantity | Equation | Source |
+|------------------|------------------|------------------|------------------|
 | 1 | Swept area per haul | $a_k = \text{distance}_k \times \text{wing opening}_k$ | MEDITS Handbook v9 [@medits2017; @bertrand2002] |
 | 2 | Haul density | $d_{s,k} = W_{s,k} / a_k$ | — |
 | 3 | Catchability | $d^{*}_{s,k} = d_{s,k} / q_s$, $q$ from `catchability_factors_ecotrans_medits_2021_spp.csv` (taxonomic cascade species → … → phylum; $q = 1$ for pelagic, planktonic, seagrass and algae FGs) | ECOTRANS MEDITS catchability table |
@@ -1912,63 +2581,124 @@ where $g$ is a GSA, $h$ a depth stratum and $A_{g,h}$ the stratum area (km²); h
 | 9 | Small pelagics per GSA | gaps: $D_{g,y} = D_{g,y_0}\,SSB_y/SSB_{y_0}$ (own-GSA assessment), else linear interpolation, else carried flat (ASSUMPTION) | GFCM/STECF assessments via RAM Legacy [@ricard2012]; pre-MEDIAS acoustics from GFCM SAFs and [@palomera2007] |
 | 10 | Ecopath / Ecosim | $B_f = \overline{D_{f,y}}_{\,y \in 1994\text{–}1996}$; $I_{f,y} = D_{f,y}/D_{f,1995}$ | [@christensen2005], EwE User Guide |
 
-**Zeros in Ecosim series.** In `Ecosim_ts` a year with no catch in the survey, no recorded catch or no recorded discards is left blank, not 0: Ecosim fitting would read a 0 as an observed zero. `Ecopath_B` also carries `Biomass_1994_1996` (the value in `Biomass`) and the biomass of the first Ecosim year (`Biomass_1995`).
+**Zeros in Ecosim series.** In `Ecosim_ts` a year with no catch in the
+survey, no recorded catch or no recorded discards is left blank, not 0:
+Ecosim fitting would read a 0 as an observed zero. `Ecopath_B` also
+carries `Biomass_1994_1996` (the value in `Biomass`) and the biomass of
+the first Ecosim year (`Biomass_1995`).
 
 ### Source priority per FG
 
 First available wins, per FG × year:
 
-1. A single-species stock assessment, for FGs the surveys do not measure (bluefin tuna, swordfish; `01b`, SOURCE A).
-2. MEDIAS acoustic density (pelagic FGs; sardine and anchovy via the per-GSA series, eq. 9).
-3. MEDITS density / $q$.
-4. For FGs the surveys cannot sample (`EXEMPT_FG_NAMES`): the cited literature, habitat-map or plankton-model value from `01b` (SOURCES B–D). These are never back-filled with survey bycatch. If none exists the FG stays empty and is listed in `fg_missing_ecopath_B_REVIEW.csv`.
+1.  A single-species stock assessment, for FGs the surveys do not
+    measure (bluefin tuna, swordfish; `01b`, SOURCE A).
+2.  MEDIAS acoustic density (pelagic FGs; sardine and anchovy via the
+    per-GSA series, eq. 9).
+3.  MEDITS density / $q$.
+4.  For FGs the surveys cannot sample (`EXEMPT_FG_NAMES`): the cited
+    literature, habitat-map or plankton-model value from `01b` (SOURCES
+    B–D). These are never back-filled with survey bycatch. If none
+    exists the FG stays empty and is listed in
+    `fg_missing_ecopath_B_REVIEW.csv`.
 
-EcoBase biomass (other published Mediterranean EwE models; [@colleter2015]) is evaluated and written to `ecobase_biomass_evaluation_NOT_INCORPORATED.csv`, but never written into `Ecopath_B` (project decision).
+EcoBase biomass (other published Mediterranean EwE models;
+[@colleter2015]) is evaluated and written to
+`ecobase_biomass_evaluation_NOT_INCORPORATED.csv`, but never written
+into `Ecopath_B` (project decision).
 
 ### Stock assessments from the GFCM website
 
-`STOCK_ASSESSMENT_SOURCE = "GFCM"` (default). GFCM publishes every validated Stock Assessment Form (SAF) [@gfcmsaf2026] as a PDF in a public folder (the files behind the "GFCM validated SAFs" browser on the GFCM stock assessment page). On each run `lib_gfcm_saf_online.R`:
+`STOCK_ASSESSMENT_SOURCE = "GFCM"` (default). GFCM publishes every
+validated Stock Assessment Form (SAF) [@gfcmsaf2026] as a PDF in a
+public folder (the files behind the "GFCM validated SAFs" browser on the
+GFCM stock assessment page). On each run `lib_gfcm_saf_online.R`:
 
-1. lists all SAF PDFs and reads species (FAO 3-alpha code → ASFIS name), GSAs and reference year from the file names;
-2. keeps stocks whose GSAs are all model GSAs, and downloads the newest SAF of each (cached in `data/fisheries/GFCM_SAF/pdf/`);
-3. reads the summary results table: the table with a year column and an SSB column (else total biomass), from the word positions in the PDF; values in tonnes. If the newest SAF has no such table, the two previous SAFs of the stock are tried;
-4. keeps a set of stocks that do not overlap: per species, the newest reference year, then the larger stock unit (hake GSAs 1-5-6-7 rather than hake GSA 1);
-5. stocks with no readable table take the hand-transcribed `gfcm_saf_stock_assessments.csv`, then RAM Legacy when no GFCM stock of the same species overlaps (`GFCM_SAF_FILL_FROM_RAM`).
+1.  lists all SAF PDFs and reads species (FAO 3-alpha code → ASFIS
+    name), GSAs and reference year from the file names;
+2.  keeps stocks whose GSAs are all model GSAs, and downloads the newest
+    SAF of each (cached in `data/fisheries/GFCM_SAF/pdf/`);
+3.  reads the summary results table: the table with a year column and an
+    SSB column (else total biomass), from the word positions in the PDF;
+    values in tonnes. If the newest SAF has no such table, the two
+    previous SAFs of the stock are tried;
+4.  keeps a set of stocks that do not overlap: per species, the newest
+    reference year, then the larger stock unit (hake GSAs 1-5-6-7 rather
+    than hake GSA 1);
+5.  stocks with no readable table take the hand-transcribed
+    `gfcm_saf_stock_assessments.csv`, then RAM Legacy when no GFCM stock
+    of the same species overlaps (`GFCM_SAF_FILL_FROM_RAM`).
 
-Output: `gfcm_saf_stock_assessments_ALL.csv` (column `use_for_biomass`) and `gfcm_saf_parse_REVIEW.csv` (per stock and SAF: status, page, column read, years). Offline, the last download is reused; with no earlier download the run falls back to RAM Legacy. `GFCM_SAF_UPDATE = FALSE` skips the online check.
+Output: `gfcm_saf_stock_assessments_ALL.csv` (column `use_for_biomass`)
+and `gfcm_saf_parse_REVIEW.csv` (per stock and SAF: status, page, column
+read, years). Offline, the last download is reused; with no earlier
+download the run falls back to RAM Legacy. `GFCM_SAF_UPDATE = FALSE`
+skips the online check.
 
-::: {.callout-warning}
+::: callout-warning
 ### Limits of the automatic reading
-- Data-limited assessments (SPiCT, CMSY, survey-based advice) and most small-pelagic SAFs give biomass only in figures; those stocks get no GFCM value. In a test on the 73 newest SAFs inside GSAs 1–12 (October 2026), about 30 had a readable SSB table, most of them demersal (hake, red mullet, striped red mullet, deep-water rose shrimp, blue and red shrimp, giant red shrimp, Norway lobster, blue whiting, Moroccan sardine).
-- A header that puts two quantities over one column is flagged "check: ambiguous header" and not used; a table that ends more than 2 years before the reference year is flagged too. Check `gfcm_saf_parse_REVIEW.csv` after each new download.
-- SAF tables are in tonnes; a column labelled kg or thousand tonnes is converted.
+
+- Data-limited assessments (SPiCT, CMSY, survey-based advice) and most
+  small-pelagic SAFs give biomass only in figures; those stocks get no
+  GFCM value. In a test on the 73 newest SAFs inside GSAs 1–12 (October
+  2026), about 30 had a readable SSB table, most of them demersal (hake,
+  red mullet, striped red mullet, deep-water rose shrimp, blue and red
+  shrimp, giant red shrimp, Norway lobster, blue whiting, Moroccan
+  sardine).
+- A header that puts two quantities over one column is flagged "check:
+  ambiguous header" and not used; a table that ends more than 2 years
+  before the reference year is flagged too. Check
+  `gfcm_saf_parse_REVIEW.csv` after each new download.
+- SAF tables are in tonnes; a column labelled kg or thousand tonnes is
+  converted.
 :::
 
 ### European hake stanzas from the stock assessment
 
-Hake is the only multi-stanza species. MEDITS catches mostly juveniles, so the stanza biomasses come from the hake stock assessments: by default the newest GFCM SAFs (GSAs 1-5-6-7 and the unit holding GSAs 9-11, GSAs 8-9-10-11 since 2023, from `gfcm_saf_stock_assessments_ALL.csv`); with `STOCK_ASSESSMENT_SOURCE = "RAM"` the STECF XSA assessments in RAM Legacy v4.44: GSA 1-5-6-7 (2003–2014), GSA 9-11 (2006–2014) and GSA 7 (1998–2012).
+Hake is the only multi-stanza species. MEDITS catches mostly juveniles,
+so the stanza biomasses come from the hake stock assessments: by default
+the newest GFCM SAFs (GSAs 1-5-6-7 and the unit holding GSAs 9-11, GSAs
+8-9-10-11 since 2023, from `gfcm_saf_stock_assessments_ALL.csv`); with
+`STOCK_ASSESSMENT_SOURCE = "RAM"` the STECF XSA assessments in RAM
+Legacy v4.44: GSA 1-5-6-7 (2003–2014), GSA 9-11 (2006–2014) and GSA 7
+(1998–2012).
 
-$$
-B_{adult} \approx SSB, \qquad B_{juv} = B_{adult}\,\frac{1-r}{r}, \quad r = SSB/TB = 0.42
-$$
+$$B_{adult} \approx SSB, \qquad B_{juv} = B_{adult}\,\frac{1-r}{r}, \quad r = SSB/TB = 0.42$$
 
-where $SSB$ is the spawning stock biomass and $TB$ the total biomass of the assessment (both t, divided by $A_{model}$), and $r$ their ratio; $B_{adult}$ and $B_{juv}$ are the adult and juvenile stanza biomasses (t/km²). $B_{adult}$ is back-cast to 1994–1996 with the MEDITS hake index (× 0.84). Result on the 2026-10-22 run (whole-GSA area): adult (FG 27) 0.0246 t/km², juvenile (FG 26) 0.034 t/km². Ecosim: adult = the 17 assessment years (1998–2014), other years blank; juvenile = MEDITS index scaled to $B_{juv}$. Written to `hake_stanza_stock_assessment_REVIEW.csv`; parameters in `multistanza_reference_tables/hake_multistanza_parameters.csv`.
+where $SSB$ is the spawning stock biomass and $TB$ the total biomass of
+the assessment (both t, divided by $A_{model}$), and $r$ their ratio;
+$B_{adult}$ and $B_{juv}$ are the adult and juvenile stanza biomasses
+(t/km²). $B_{adult}$ is back-cast to 1994–1996 with the MEDITS hake
+index (× 0.84). Result on the 2026-10-22 run (whole-GSA area): adult (FG
+27) 0.0246 t/km², juvenile (FG 26) 0.034 t/km². Ecosim: adult = the 17
+assessment years (1998–2014), other years blank; juvenile = MEDITS index
+scaled to $B_{juv}$. Written to
+`hake_stanza_stock_assessment_REVIEW.csv`; parameters in
+`multistanza_reference_tables/hake_multistanza_parameters.csv`.
 
 ### Groups the surveys cannot measure (`01b_biomass_unsurveyed.R`)
 
-::: {.callout-warning}
+::: callout-warning
 ### These values are for the whole Western Mediterranean
-The biomass of the groups below was estimated for the full model area (GSAs 1-12, coast to bottom). The sources (literature densities, habitat maps, ocean-model plankton fields, stock assessments of large pelagics and megafauna) describe the whole region, not single GSAs. If you filter the model area (fewer GSAs, or the 10-800 m basis), these values can change and may no longer represent the smaller area well: check them before using a filtered run.
+
+The biomass of the groups below was estimated for the full model area
+(GSAs 1-12, coast to bottom). The sources (literature densities, habitat
+maps, ocean-model plankton fields, stock assessments of large pelagics
+and megafauna) describe the whole region, not single GSAs. If you filter
+the model area (fewer GSAs, or the 10-800 m basis), these values can
+change and may no longer represent the smaller area well: check them
+before using a filtered run.
 :::
 
-Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12, whole GSA area); they change with the model area and years chosen.
+Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12,
+whole GSA area); they change with the model area and years chosen.
 
 | FG | Method | B | Sources | Assumptions (flagged in the code) |
-|---|---|---|---|---|
+|---------------|---------------|---------------|---------------|---------------|
 | Posidonia | $B = D_{DW}\, f_{season} / (DW{:}WW) \times A_{map} \times occ / A_{model}$, $D_{DW} = \sum_b A_b\, e^{a + b z_b} / \sum_b A_b$: leaf biomass fitted against depth ($\ln B = a + b z$) to the Western Med meadows in `posidonia_leaf_biomass_sites.csv` and averaged over the depth distribution of the mapped meadow (5 m bins); DW:WW = 0.2132; $A_{map}$ = EUSeaMap 2025 [@euseamap2025] meadow deeper than 10 m (or MEDISEH); $occ$ = 0.7; $f_{season}$ = 0.62 = annual mean / late-summer leaf biomass (the site values are summer samples; leaves are 40 % of shoot biomass in summer and 14 % in winter, so winter leaf biomass ≈ 0.24 × summer and the annual mean ≈ (1 + 0.24)/2) [@alcoverro2001]. Without the EUSeaMap depth histogram the fit is not used: $D_{DW}$ = 280 g DW/m² (2–4 m) × depth factor 0.6 | ≈ 4.3 (2026-10-23) | site values: [@azcarate2023; @pergent1997] (Marseille, Ischia, 10–20 m); Nueva Tabarca reserve, [@romero1998] (left out, `POSIDONIA_MPA_WEIGHT` = 0); DW:WW 0.2132 [@mateo1996]; maps: EUSeaMap 2025 MB252 + MB2522 [@euseamap2025]; MEDISEH [@scardi2013] | marine-reserve meadows left out (small and denser than the regional mean); 6 values, mostly summer; occupancy 0.7; $f_{season}$ assumes constant below-ground biomass |
 | Cymodocea | $B = D_{DW} / (DW{:}WW) \times A_{map} \times occ / A_{model}$; $D_{DW}$ = weighted mean of the sites in `habitat_biomass_sites.csv` = (155.2 + 82.1)/2 = 118.7 g DW/m²; DW:WW 0.24; $A_{map}$ 88 km²; $occ$ 0.47; no depth factor | ≈ 0.025 | [@mascaro2009] (Menorca, Alfacs Bay, 0.8–10 m); [@guidetti2002] with leaf share from [@cancemi2002]; Urbinu lagoon [@agostini2003] left out (lagoon); DW:WW [@zavodnik1998]; area and cover *Informe Mar Balear 2020* [@marbalear2020] + EUSeaMap [@euseamap2025] | area from the Balearic ratio (ASSUMPTION); Guidetti site to verify |
-| Macroalgae | $B = D_{DW} \times [f_{calc}/0.7405 + (1-f_{calc})/0.1376] \times A_{map} \times occ / A_{model}$; $D_{DW}$ = mean of shallow (1,650) and deep (1,600) coralligenous algal biomass = 1,625 g DW/m²; $f_{calc}$ 0.7; 325.05 km²; occ 0.4; no depth factor | 0.79 | [@ballesteros2006] (pp. 140, 143); DW:WW [@haberman2023]; EMODnet macroalgae EOV [@emodnetmacroalgae2025] | calcareous share 0.7 (conservative; ~90% coralline cover); occupancy 0.4; area is the ICES ecoregion |
-| Corals and gorgonians | $B = \overline{\sum(N_{col} \times AFDM_{col})} \div 0.143 \times f_z \times A_{map} / A_{model}$; mean of Cap de Creus (4.87) and Gulf of Naples (3.09) = 3.98 g AFDM/m² → 27.8 g WW/m² (living tissue) × $f_z$ × 1,442.4 km² | ≈ 0.048 × $f_z$ | [@coppari2019; @ferrigno2026] (ROV, ~1.8 km²); AFDM:WW 0.143 [@ricciardi1998]; EUSeaMap MC151/MC251 | both sites partly protected; *E. cavolini* uses the *E. singularis* AFDM per colony; skeleton not counted |
+| Macroalgae | $B = D_{DW} \times [f_{calc}/0.7405 + (1-f_{calc})/0.1376] \times A_{map} \times occ / A_{model}$; $D_{DW}$ = mean of shallow (1,650) and deep (1,600) coralligenous algal biomass = 1,625 g DW/m²; $f_{calc}$ 0.7; 325.05 km²; occ 0.4; no depth factor | 0.79 | [@ballesteros2006] (pp. 140, 143); DW:WW [@haberman2023]; EMODnet macroalgae EOV [@emodnetmacroalgae2025] | calcareous share 0.7 (conservative; \~90% coralline cover); occupancy 0.4; area is the ICES ecoregion |
+| Corals and gorgonians | $B = \overline{\sum(N_{col} \times AFDM_{col})} \div 0.143 \times f_z \times A_{map} / A_{model}$; mean of Cap de Creus (4.87) and Gulf of Naples (3.09) = 3.98 g AFDM/m² → 27.8 g WW/m² (living tissue) × $f_z$ × 1,442.4 km² | ≈ 0.048 × $f_z$ | [@coppari2019; @ferrigno2026] (ROV, \~1.8 km²); AFDM:WW 0.143 [@ricciardi1998]; EUSeaMap MC151/MC251 | both sites partly protected; *E. cavolini* uses the *E. singularis* AFDM per colony; skeleton not counted |
 | Large / small phytoplankton | ISIMIP3a GFDL-MOM6-COBALT2 obsclim, vertically integrated, mean over the domain; C:WW 1:9 (0.111) | ≈ 8.2 / 9.1 (5.70 / 6.30 with the earlier C:WW 0.16) | [@isimip3a_cobalt; @stock2020]; C:WW [@pauly1995] | model, not observation; C:WW 1:9 is the EwE convention, phytoplankton C:WW varies with cell size |
 | Meso and micro zooplankton | COBALT zmicro-vint + zmeso-vint, whole water column, level and trend; C:WW 0.07 micro, 0.09 meso | 29.6 | [@stock2020; @fenchel1983; @kiorboe2013]; field reference in `zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv` | the net value (0.87 t DM/km², 0–100 m, ≥ 250 µm; [@fernandez2023]) is a different quantity: COBALT integrates the whole column (mean 290 m) and includes microzooplankton |
 | Macro zooplankton | MAREDAT macrozooplankton (23 cells, 67 values in the Western Med box): median mg C/m³ (0–350 m) × $z_{eff}$ 214.5 m / 0.04 (C:WW) / 1000 | 3.15 | [@moriarty2013]; C:WW from [@molina2015] | C:WW 0.04 (krill would be 0.086, `MACRO_C_FRACTION_WW`); 1990s–2000s nets, sparse cells |
@@ -1979,22 +2709,58 @@ Values are Ecopath_B in t WW/km² of $A_{model}$ (833,178 km², GSAs 1–12, who
 | Swordfish | $B_{2018} = 0.72 \times B_{MSY}$ (JABBA) on the Mediterranean stock | 0.0205 | ICCAT SWO-MED assessment [@iccat2020swo] | 2018 ≠ 1995 |
 | Cetaceans, monk seal, seabirds, loggerhead turtle | survey density (ind/km²) × mean body mass, applied to the whole $A_{model}$ (`Model_area_density_t_km2`); `Scale_to_1995` multiplies by a trend ratio when one is published; monk seal and fin whale are counts | see `marine_megafauna_biomass.csv` | striped dolphin: 1991 survey, [@forcada1998]; fin whale: 1991 survey, [@forcada1996]; bottlenose dolphin, Risso's dolphin, pilot and beaked whales: ACCOBAMS ASI 2018–2019 [@panigada2024]; sperm whale: [@boisseau2024]; body mass of bottlenose, striped and Risso's dolphins: [@carlucci2024]; monk seal: [@johnson2006] (Monk Seal Fact Files); seabirds: [@pettex2017] (SAMM 2011–12) with the Scopoli's shearwater detection correction (× 3.89) from [@lambert2024]; loggerhead: [@dimatteo2022], summer 2018 count not corrected for turtles underwater (343,321 for the basin; a minimum) | striped dolphin and fin whale are 1991 surveys; the others are 2003–2019 surveys with no published trend to 1995 (`Scale_to_1995` = 1, flagged); seabird and turtle masses not from a primary source; little gull, gannet and auks excluded (not in the FG species list) |
 
-**Survey zeros do not override cited values.** In the source-priority rule (MEDIAS > MEDITS > stock assessment/cited value > survey-wide average) a MEDIAS or MEDITS density is used only when it is **> 0**. The zero-inclusive index gives explicit zeros for FGs the trawl survey effectively never catches (e.g. Swordfish, Detritus); those zeros never replace a cited value.
+**Survey zeros do not override cited values.** In the source-priority
+rule (MEDIAS \> MEDITS \> stock assessment/cited value \> survey-wide
+average) a MEDIAS or MEDITS density is used only when it is **\> 0**.
+The zero-inclusive index gives explicit zeros for FGs the trawl survey
+effectively never catches (e.g. Swordfish, Detritus); those zeros never
+replace a cited value.
 
-**Depth factor from AquaMaps.** For the habitat FGs without a depth factor in the CSV (currently Corals and gorgonians; Posidonia takes depth from the fit over the sites, so its factor is 1; Cymodocea and Macroalgae 1), $f_z = \sum_b A_b S(d_b) / \sum_b A_b \,/\, \bar S_{site}$: the mean AquaMaps depth suitability $S$ (0–1; [@kaschner2019]) of the FG's species over the mapped area in 5 m depth bins $b$, divided by the suitability at the depth where the density was measured. When that depth is not known, $\bar S_{site}$ = 1 (ASSUMPTION: the literature density is the density at the species' preferred depths). A factor in the CSV wins; the AquaMaps value is then written to `habitat_depth_factor_aquamaps_REVIEW.csv` only.
+**Depth factor from AquaMaps.** For the habitat FGs without a depth
+factor in the CSV (currently Corals and gorgonians; Posidonia takes
+depth from the fit over the sites, so its factor is 1; Cymodocea and
+Macroalgae 1),
+$f_z = \sum_b A_b S(d_b) / \sum_b A_b \,/\, \bar S_{site}$: the mean
+AquaMaps depth suitability $S$ (0–1; [@kaschner2019]) of the FG's
+species over the mapped area in 5 m depth bins $b$, divided by the
+suitability at the depth where the density was measured. When that depth
+is not known, $\bar S_{site}$ = 1 (ASSUMPTION: the literature density is
+the density at the species' preferred depths). A factor in the CSV wins;
+the AquaMaps value is then written to
+`habitat_depth_factor_aquamaps_REVIEW.csv` only.
 
-**Other FG files.** The estimates above are attached to FGs by name (the `FG_WMed_2026.csv` names). With another FG file, an estimate whose FG name is not found is not used. `unsurveyed_fg_not_matched_REVIEW.csv` lists every expected unsurveyed FG, whether it is in the FG file, whether it received a value, its method and the output file that holds the estimate, so it can be added by hand; the 01 log prints a warning when any is missing.
+**Other FG files.** The estimates above are attached to FGs by name (the
+`FG_WMed_2026.csv` names). With another FG file, an estimate whose FG
+name is not found is not used. `unsurveyed_fg_not_matched_REVIEW.csv`
+lists every expected unsurveyed FG, whether it is in the FG file,
+whether it received a value, its method and the output file that holds
+the estimate, so it can be added by hand; the 01 log prints a warning
+when any is missing.
 
-**B left for Ecopath (`ECOPATH_B_FROM_EE`).** Benthic mollusc, Other macro-benthos, Suprabenthos, Jellyfish and Salps get no B in `Ecopath_B`; their EE is set to 0.95 (`ECOPATH_B_EE_VALUE`) and Ecopath solves for B. The gelatinous / macrozooplankton FGs are added to this list automatically only when their dataset estimate is missing.
+**B left for Ecopath (`ECOPATH_B_FROM_EE`).** Benthic mollusc, Other
+macro-benthos, Suprabenthos, Jellyfish and Salps get no B in
+`Ecopath_B`; their EE is set to 0.95 (`ECOPATH_B_EE_VALUE`) and Ecopath
+solves for B. The gelatinous / macrozooplankton FGs are added to this
+list automatically only when their dataset estimate is missing.
 
-Small pelagics in 1994–1996 (eq. 9): sardine 1.448 t/km², anchovy 0.744 t/km² (`small_pelagics_per_gsa_series_REVIEW.csv`).
+Small pelagics in 1994–1996 (eq. 9): sardine 1.448 t/km², anchovy 0.744
+t/km² (`small_pelagics_per_gsa_series_REVIEW.csv`).
 
-::: {.callout-warning}
+::: callout-warning
 ### Known caveats
-- FGs with no Ecopath_B: the three "Expanding" FGs (a real baseline zero), Discards, and the five FGs left for Ecopath to estimate from EE (above).
-- Stock assessments applied domain-wide from fewer than half of the GSAs (giant red shrimp, blue and red shrimp, anglerfish, blue whiting, mullets) are listed in the log; their density comes from the assessed GSAs only.
-- 123 species in 7 FGs still use an even within-FG biomass split (`fg_species_biomass_needs_review.csv`).
-- Values from 2017–2021 surveys (bluefin tuna, cetaceans) stand in for 1995; the direction of the bias is documented in each `Source_citation`.
+
+- FGs with no Ecopath_B: the three "Expanding" FGs (a real baseline
+  zero), Discards, and the five FGs left for Ecopath to estimate from EE
+  (above).
+- Stock assessments applied domain-wide from fewer than half of the GSAs
+  (giant red shrimp, blue and red shrimp, anglerfish, blue whiting,
+  mullets) are listed in the log; their density comes from the assessed
+  GSAs only.
+- 123 species in 7 FGs still use an even within-FG biomass split
+  (`fg_species_biomass_needs_review.csv`).
+- Values from 2017–2021 surveys (bluefin tuna, cetaceans) stand in for
+  1995; the direction of the bias is documented in each
+  `Source_citation`.
 :::
 
 ### Output plots
@@ -2013,61 +2779,163 @@ wm_figure("fig-biomass-by-fg-source", r"---(Base-year biomass density by Functio
 wm_figure("fig-biomass-regional-ts", r"---(Regional FG density time series feeding the Ecosim_ts sheet.)---", "biomass_survey_fg_density_timeseries_regional.png", r"---(01_biomass.R)---")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Fisheries — Catches, Landings, Discards, Effort & F (`02_fisheries.R`) {#sec-fisheries}
 
-`02_fisheries.R` builds the FG × year catch series, its landings/discards split by fleet (`Ecopath_L`, `Ecopath_Di`), the effort series, and the fishing mortality $F$ used by `03_pbqb-traits.R`.
+`02_fisheries.R` builds the FG × year catch series, its
+landings/discards split by fleet (`Ecopath_L`, `Ecopath_Di`), the effort
+series, and the fishing mortality $F$ used by `03_pbqb-traits.R`.
 
 ### Catch domain
 
-Only catch from the coastal states of the model GSAs is kept (`GSA_COASTAL_STATE`, from GFCM Res. GFCM/33/2009/2): `TARGET_COUNTRIES` = Spain, France, Italy, Morocco, Algeria and Tunisia for GSAs 1–12 (override with `TARGET_COUNTRIES_OVERRIDE`). Catch by countries with no coast in the model GSAs (distant-water fleets) is left out; the 02 log lists the excluded tonnes by country. STECF FDI is filtered to the model GSAs; the fleet register, gear table and FishMIP effort are filtered to the target countries.
+Only catch from the coastal states of the model GSAs is kept
+(`GSA_COASTAL_STATE`, from GFCM Res. GFCM/33/2009/2): `TARGET_COUNTRIES`
+= Spain, France, Italy, Morocco, Algeria and Tunisia for GSAs 1–12
+(override with `TARGET_COUNTRIES_OVERRIDE`). Catch by countries with no
+coast in the model GSAs (distant-water fleets) is left out; the 02 log
+lists the excluded tonnes by country. STECF FDI is filtered to the model
+GSAs; the fleet register, gear table and FishMIP effort are filtered to
+the target countries.
 
 ### Equations
 
-Indices: $c$ country, $f$ FG, $l$ fleet (country × fleet type), $y$ year.
+Indices: $c$ country, $f$ FG, $l$ fleet (country × fleet type), $y$
+year.
 
-1. Species → FG: $C_{c,f,y} = \sum_{s \in f} C_{c,s,y}$. FAO "NEI" groups are split over candidate FGs in proportion to biomass, with an $F \le 1$ cap (below). "Marine molluscs nei" (3,814 t/yr in 1994–1996) is split over the commercial mollusc FGs in proportion to the mollusc catch the same country reported to species or group level in the same year, $C_{nei,f,c,y} = C_{nei,c,y}\,C_{id,f,c,y}/\sum_f C_{id,f,c,y}$ (fallback: the country's all-year shares, then all countries pooled; `mollusc_nei_split_by_country_year.csv`). In 1994–1996 the identified mollusc catch was about 44 % cephalopods and 56 % bivalves/gastropods.
-2. Catch source (`CATCH_FDI_FIRST`): for Spain, France and Italy the STECF FDI landings of the model GSAs are used directly in every Country × FG × year FDI reports (2014+); GFCM is used for the years before FDI (incl. 1994–1996) and for Morocco, Algeria and Tunisia. The pre-FDI GFCM years are scaled to the FDI level, $k_{c,f} = \sum C^{FDI} / \sum C^{GFCM}$ over 2014–2023, so the series has no step at 2014; factors > `MAX_CATCH_CALIBRATION_FACTOR` (10) are not applied (`catch_calibration_factor_capped_REVIEW.csv`).
-3. Gears with no model fleet (`FleetType = EXCLUDED`): $C \leftarrow C\,(1 - \text{share}_{excl,c,y})$, share from FDI (2014+) or SAU (earlier). The removed tonnes are in the 02 log.
-4. Discards: $Di = C \times r$, $r$ = FDI per-fleet discard ratio, else the FishMIP reported-vs-total ratio by FG × year; $L = C - Di$.
-5. ICCAT (bluefin tuna, swordfish, albacore): Task I nominal catch of the target countries, Mediterranean records only, scaled to the model GSAs by each country's FDI landings share inside them: $C^{ICCAT}_{c,sp} \times s_{c,sp}$. Shares in this run: Italy SWO 0.59, BFT 0.57, ALB 0.23; Spain BFT 0.95, SWO 0.89; France 1.
-6. Fleet split: $C_l = C_{c,f,y}\,p_{l,c,f,y}$; $p$ from FDI (2014+), SAU hindcast bias-corrected to FDI (earlier), else FDI multi-year mean, else country mix, else equal share (flagged). Target-country catch whose fleet cannot be resolved goes to the residual column "Target countries - fleet not resolved" (renamed on 2026-10-07; it no longer holds other countries' catch).
-7. Hake stanzas: juvenile share of the catch from MEDITS length frequencies (TC, 1994–1996, model GSAs), $L(a) = L_\infty(1 - e^{-K(a - t_0)})$ with $L_\infty$ = 110 cm, $K$ = 0.178 yr⁻¹, $t_0$ = 0 [@mellonduval2010], $W = aL^{3.035}$; juvenile = age < 2 yr ($L$ < 32.9 cm); landings are $L \ge$ MCRS 20 cm [@reg1967_2006; @reg2019_1022]. Result: 55.9 % of landings and 100 % of discards are juvenile (FG 26), applied at fleet level too.
-8. Effort (EU): $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$, $NE$ = Rousseau et al. nominal effort, $\kappa_c = \sum E^{FDI}/\sum NE$ over the overlap years. With `EFFORT_PRIMARY_SOURCE = "rousseau"` (default) this one formula is used for **every** year, so the series has no source change at 2014. FDI is used only for $\kappa_c$, for the days-per-tonne used in the fleet share $s_{l,y}$ (catch × days-per-tonne share, rescaled per fleet to the 2014–2016 FDI mean), and to carry the trend after Rousseau's last year: $E_y = E_{last}\,E^{FDI}_y / E^{FDI}_{last}$. FDI's own effort is kept as a check column (2014 Rousseau-based / FDI ratio ≈ 1.14 for France in this run). Before this change, stitching the hindcast to FDI at 2014 gave jumps of up to ×196.
-9. Technology creep (effective effort), compounded year by year from the base year $t_0$ = 2014 (first FDI year): $E'_t = E_t \prod_{y=t_0+1}^{t}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$ for $t > t_0$ and $E'_t = E_t \big/ \prod_{y=t}^{t_0-1}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$ for $t < t_0$; $E$ = nominal effort in kW × fishing days (FDI total over vessels, = mean kW × mean days × number of vessels; [@rousseau2024] nominal active effort), $r_{g,y}$ = annual creep rate (%) of gear $g$ in year $y$, $m_c$ = country multiplier (EU 1, Morocco/Algeria/Tunisia 0.7, ASSUMPTION), $m_s$ = sector multiplier. Creep is applied to the whole series, including the non-EU years after 2017 where the nominal effort is held at its 2017 value, so effective effort keeps rising. Ecosim uses effort relative to 1995, so the choice of $t_0$ changes the level but not the trend. Rates: $r$ = 0.79 %/yr bottom trawl and 2.0 %/yr other gears in 1994–2013 ([@damalas2015], quoted by [@tsagarakis2022]), 4.5 %/yr in 2014–2023 ([@palomares2019], $C\% = 13.8\,Y^{-0.511}$ at $Y$ = 9). Sector multiplier: industrial 1.0, artisanal/recreational 0.6 (ASSUMPTION).
-10. Ecopath: $L_{f,l} = \overline{L}_{y \in 1994\text{–}1996} / A_{model}$ (t/km²/yr, same $A_{model}$ as biomass).
-11. **Fishing mortality**: $F_f = (\bar C_f / A_{model}) / B_f$, with $B_f$ = the final `Ecopath_B` written by `01_biomass.R` (survey species density only for FGs without an Ecopath_B). Using the final Ecopath_B (not the survey density) keeps F consistent for groups whose biomass comes from `01b` (macrozooplankton, suprabenthos) and gives adult hake (FG 27) an F. The same $B_f$ is used by the NEI $F \le 1$ cap.
-12. Ecosim: catch series $C_{f,y}/A_{model}$; effort series relative to 1995.
+1.  Species → FG: $C_{c,f,y} = \sum_{s \in f} C_{c,s,y}$. FAO "NEI"
+    groups are split over candidate FGs in proportion to biomass, with
+    an $F \le 1$ cap (below). "Marine molluscs nei" (3,814 t/yr in
+    1994–1996) is split over the commercial mollusc FGs in proportion to
+    the mollusc catch the same country reported to species or group
+    level in the same year,
+    $C_{nei,f,c,y} = C_{nei,c,y}\,C_{id,f,c,y}/\sum_f C_{id,f,c,y}$
+    (fallback: the country's all-year shares, then all countries pooled;
+    `mollusc_nei_split_by_country_year.csv`). In 1994–1996 the
+    identified mollusc catch was about 44 % cephalopods and 56 %
+    bivalves/gastropods.
+2.  Catch source (`CATCH_FDI_FIRST`): for Spain, France and Italy the
+    STECF FDI landings of the model GSAs are used directly in every
+    Country × FG × year FDI reports (2014+); GFCM is used for the years
+    before FDI (incl. 1994–1996) and for Morocco, Algeria and Tunisia.
+    The pre-FDI GFCM years are scaled to the FDI level,
+    $k_{c,f} = \sum C^{FDI} / \sum C^{GFCM}$ over 2014–2023, so the
+    series has no step at 2014; factors \>
+    `MAX_CATCH_CALIBRATION_FACTOR` (10) are not applied
+    (`catch_calibration_factor_capped_REVIEW.csv`).
+3.  Gears with no model fleet (`FleetType = EXCLUDED`):
+    $C \leftarrow C\,(1 - \text{share}_{excl,c,y})$, share from FDI
+    (2014+) or SAU (earlier). The removed tonnes are in the 02 log.
+4.  Discards: $Di = C \times r$, $r$ = FDI per-fleet discard ratio, else
+    the FishMIP reported-vs-total ratio by FG × year; $L = C - Di$.
+5.  ICCAT (bluefin tuna, swordfish, albacore): Task I nominal catch of
+    the target countries, Mediterranean records only, scaled to the
+    model GSAs by each country's FDI landings share inside them:
+    $C^{ICCAT}_{c,sp} \times s_{c,sp}$. Shares in this run: Italy SWO
+    0.59, BFT 0.57, ALB 0.23; Spain BFT 0.95, SWO 0.89; France 1.
+6.  Fleet split: $C_l = C_{c,f,y}\,p_{l,c,f,y}$; $p$ from FDI (2014+),
+    SAU hindcast bias-corrected to FDI (earlier), else FDI multi-year
+    mean, else country mix, else equal share (flagged). Target-country
+    catch whose fleet cannot be resolved goes to the residual column
+    "Target countries - fleet not resolved" (renamed on 2026-10-07; it
+    no longer holds other countries' catch).
+7.  Hake stanzas: juvenile share of the catch from MEDITS length
+    frequencies (TC, 1994–1996, model GSAs),
+    $L(a) = L_\infty(1 - e^{-K(a - t_0)})$ with $L_\infty$ = 110 cm, $K$
+    = 0.178 yr⁻¹, $t_0$ = 0 [@mellonduval2010], $W = aL^{3.035}$;
+    juvenile = age \< 2 yr ($L$ \< 32.9 cm); landings are $L \ge$ MCRS
+    20 cm [@reg1967_2006; @reg2019_1022]. Result: 55.9 % of landings and
+    100 % of discards are juvenile (FG 26), applied at fleet level too.
+8.  Effort (EU): $E_{l,y} = NE_{c,y}\,\kappa_c\,s_{l,y}$, $NE$ =
+    Rousseau et al. nominal effort, $\kappa_c = \sum E^{FDI}/\sum NE$
+    over the overlap years. With `EFFORT_PRIMARY_SOURCE = "rousseau"`
+    (default) this one formula is used for **every** year, so the series
+    has no source change at 2014. FDI is used only for $\kappa_c$, for
+    the days-per-tonne used in the fleet share $s_{l,y}$ (catch ×
+    days-per-tonne share, rescaled per fleet to the 2014–2016 FDI mean),
+    and to carry the trend after Rousseau's last year:
+    $E_y = E_{last}\,E^{FDI}_y / E^{FDI}_{last}$. FDI's own effort is
+    kept as a check column (2014 Rousseau-based / FDI ratio ≈ 1.14 for
+    France in this run). Before this change, stitching the hindcast to
+    FDI at 2014 gave jumps of up to ×196.
+9.  Technology creep (effective effort), compounded year by year from
+    the base year $t_0$ = 2014 (first FDI year):
+    $E'_t = E_t \prod_{y=t_0+1}^{t}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$
+    for $t > t_0$ and
+    $E'_t = E_t \big/ \prod_{y=t}^{t_0-1}\left(1 + \frac{m_c\,m_s\,r_{g,y}}{100}\right)$
+    for $t < t_0$; $E$ = nominal effort in kW × fishing days (FDI total
+    over vessels, = mean kW × mean days × number of vessels;
+    [@rousseau2024] nominal active effort), $r_{g,y}$ = annual creep
+    rate (%) of gear $g$ in year $y$, $m_c$ = country multiplier (EU 1,
+    Morocco/Algeria/Tunisia 0.7, ASSUMPTION), $m_s$ = sector multiplier.
+    Creep is applied to the whole series, including the non-EU years
+    after 2017 where the nominal effort is held at its 2017 value, so
+    effective effort keeps rising. Ecosim uses effort relative to 1995,
+    so the choice of $t_0$ changes the level but not the trend. Rates:
+    $r$ = 0.79 %/yr bottom trawl and 2.0 %/yr other gears in 1994–2013
+    ([@damalas2015], quoted by [@tsagarakis2022]), 4.5 %/yr in 2014–2023
+    ([@palomares2019], $C\% = 13.8\,Y^{-0.511}$ at $Y$ = 9). Sector
+    multiplier: industrial 1.0, artisanal/recreational 0.6 (ASSUMPTION).
+10. Ecopath:
+    $L_{f,l} = \overline{L}_{y \in 1994\text{–}1996} / A_{model}$
+    (t/km²/yr, same $A_{model}$ as biomass).
+11. **Fishing mortality**: $F_f = (\bar C_f / A_{model}) / B_f$, with
+    $B_f$ = the final `Ecopath_B` written by `01_biomass.R` (survey
+    species density only for FGs without an Ecopath_B). Using the final
+    Ecopath_B (not the survey density) keeps F consistent for groups
+    whose biomass comes from `01b` (macrozooplankton, suprabenthos) and
+    gives adult hake (FG 27) an F. The same $B_f$ is used by the NEI
+    $F \le 1$ cap.
+12. Ecosim: catch series $C_{f,y}/A_{model}$; effort series relative to
+    1995.
 
 ### Data sources and references
 
 | Source | Role | Citation |
-|---|---|---|
+|------------------------|------------------------|------------------------|
 | FAO-GFCM capture production | bulk catch by country × species × division | [@gfcm2025capture] |
 | STECF FDI | EU catch, landings, discards, effort, capacity, model GSAs, 2014+ | [@stecffdi] |
 | Sea Around Us | catch by gear, pre-2014 fleet shares | [@sau2020], seaaroundus.org |
-| FishMIP / ISIMIP3a | effort and discard ratios | [@rousseau2024]|
+| FishMIP / ISIMIP3a | effort and discard ratios | [@rousseau2024] |
 | ICCAT Task I nominal catch; ST01 active vessels | BFT/SWO/ALB catch and gear split; vessel-size check of the gear → fleet mapping (2016+) | [@iccatt1nc] |
 | Stock assessments: GFCM Stock Assessment Forms (default) | stock biomass (SSB, else total biomass) for assessed single-species FGs; catch cross-check; hake stanza B | GFCM validated SAFs, read from the GFCM website on each run (`lib_gfcm_saf_online.R`); stocks with no readable table: hand-transcribed SAFs, then RAM Legacy [@ricard2012]. `STOCK_ASSESSMENT_SOURCE = "RAM"` uses RAM Legacy only |
 | `gear_to_fleettype.csv`, `fleet_register_taxonomy.csv` | gear → fleet type; excluded gears | project reference tables |
 
-::: {.callout-warning}
+::: callout-warning
 ### Known caveats
-- $F$ is one region-wide, all-gear rate per FG, applied to every species in the FG.
-- Rousseau effort correlates with FDI for France (r = 0.96) and Spain (0.95) but not Italy (r = −0.24, 2014–2017).
-- 9 of 80 FGs get less than half their landings from a named fleet; the rest is in the "fleet not resolved" column.
-- 564 catch rows (0 t) have no fleet share at all and are dropped from the fleet split.
-- 24 FGs with species assigned have zero catch in the whole series (`fg_missing_ecopath_L_Di_REVIEW.csv`).
+
+- $F$ is one region-wide, all-gear rate per FG, applied to every species
+  in the FG.
+- Rousseau effort correlates with FDI for France (r = 0.96) and Spain
+  (0.95) but not Italy (r = −0.24, 2014–2017).
+- 9 of 80 FGs get less than half their landings from a named fleet; the
+  rest is in the "fleet not resolved" column.
+- 564 catch rows (0 t) have no fleet share at all and are dropped from
+  the fleet split.
+- 24 FGs with species assigned have zero catch in the whole series
+  (`fg_missing_ecopath_L_Di_REVIEW.csv`).
 :::
 
 ### Review tables
 
-Three tables in `out_dir/fisheries/` show every matching decision of 02, with the rows to check first:
+Three tables in `out_dir/fisheries/` show every matching decision of 02,
+with the rows to check first:
 
-- `catch_species_to_fg_REVIEW.csv`: each catch species (GFCM, FDI, SAU names) and the FG it went to, with `match_method` (common name, FAO name, genus, broader taxon, NEI keyword) and `Split_weight`. `check` says *NOT MATCHED* (that catch is not used; add the species to the FG file), *split over n FGs*, *matched through a broader taxon* or *ok*.
-- `catch_split_REVIEW.csv`: every catch item spread over several FGs and the share each FG gets: species and NEI groups, Mollusca NEI split by the identified mollusc catch of the same country and year, and the NEI shares moved by the F cap.
-- `fleet_assignment_REVIEW.csv`: each country × source × raw gear (SAU gear, or FDI metier gear code and vessel length) and the fleet it was assigned to, the rule used (`gear_to_fleettype.csv`, `stecf_gear_to_fleettype.csv`, small vessel or SAU artisanal sector → Artisanal, or not mapped → Unclassified) and its catch. Unmapped gears come first; add them to the gear table to assign them.
+- `catch_species_to_fg_REVIEW.csv`: each catch species (GFCM, FDI, SAU
+  names) and the FG it went to, with `match_method` (common name, FAO
+  name, genus, broader taxon, NEI keyword) and `Split_weight`. `check`
+  says *NOT MATCHED* (that catch is not used; add the species to the FG
+  file), *split over n FGs*, *matched through a broader taxon* or *ok*.
+- `catch_split_REVIEW.csv`: every catch item spread over several FGs and
+  the share each FG gets: species and NEI groups, Mollusca NEI split by
+  the identified mollusc catch of the same country and year, and the NEI
+  shares moved by the F cap.
+- `fleet_assignment_REVIEW.csv`: each country × source × raw gear (SAU
+  gear, or FDI metier gear code and vessel length) and the fleet it was
+  assigned to, the rule used (`gear_to_fleettype.csv`,
+  `stecf_gear_to_fleettype.csv`, small vessel or SAU artisanal sector →
+  Artisanal, or not mapped → Unclassified) and its catch. Unmapped gears
+  come first; add them to the gear table to assign them.
 
 ### Output plots
 
@@ -2099,32 +2967,60 @@ wm_figure("fig-catches-per-fg", r"---(Total catch by Functional Group.)---", "pi
 wm_figure("fig-effort-by-fleet", r"---(Fishing effort by country and fleet (target countries only).)---", "05_effort_by_country_fleet.png", r"---(02_fisheries.R)---")
 ```
 
----
+------------------------------------------------------------------------
 
 ## PB/QB & Life-History Traits (`03_pbqb-traits.R` + `03b_ecobase.R`) {#sec-pbqb-traits}
 
-`03_pbqb-traits.R` computes P/B and Q/B per species by taxon group and aggregates them to FGs, weighted by biomass. Life-history data come from FishBase [@fishbase] and SeaLifeBase [@sealifebase] via `rfishbase` [@boettiger2012]. `03b_ecobase.R` supplies EcoBase values as a cross-check and gap-filler only. Equation numbers refer to the project protocol "Quick guide on how to calculate P/B and Q/B for EwE models".
+`03_pbqb-traits.R` computes P/B and Q/B per species by taxon group and
+aggregates them to FGs, weighted by biomass. Life-history data come from
+FishBase [@fishbase] and SeaLifeBase [@sealifebase] via `rfishbase`
+[@boettiger2012]. `03b_ecobase.R` supplies EcoBase values as a
+cross-check and gap-filler only. Equation numbers refer to the project
+protocol "Quick guide on how to calculate P/B and Q/B for EwE models".
 
 ### Equations
 
 | Group | P/B | Q/B |
-|---|---|---|
-| Fish | $P/B = Z = M + F$ [@allen1971]. $M$ priority: [@then2015] > [@pauly1980] ($\log_{10} M = -0.0066 - 0.279\log_{10}L_\infty + 0.6543\log_{10}K + 0.4634\log_{10}T$) > [@hoenig1983] > [@alverson1975] (via TropFishR; [@mildenberger2017]) > FishLife [@thorson2017] > [@gascuel2008] ($M = 2.31\,TL^{-1.72}e^{0.053T}$). $F$ from 02 (@sec-fisheries). | [@palomares1998]: $\log_{10} Q/B = 5.847 + 0.280\log_{10}Z - 0.152\log_{10}W_\infty - 1.360\,T' + 0.062A + 0.510h + 0.390d$, $T' = 1000/(T+273.15)$; no-$Z$ variant; [@christensen1992]; Q/P = 3 fallback |
+|------------------------|------------------------|------------------------|
+| Fish | $P/B = Z = M + F$ [@allen1971]. $M$ priority: [@then2015] \> [@pauly1980] ($\log_{10} M = -0.0066 - 0.279\log_{10}L_\infty + 0.6543\log_{10}K + 0.4634\log_{10}T$) \> [@hoenig1983] \> [@alverson1975] (via TropFishR; [@mildenberger2017]) \> FishLife [@thorson2017] \> [@gascuel2008] ($M = 2.31\,TL^{-1.72}e^{0.053T}$). $F$ from 02 (@sec-fisheries). | [@palomares1998]: $\log_{10} Q/B = 5.847 + 0.280\log_{10}Z - 0.152\log_{10}W_\infty - 1.360\,T' + 0.062A + 0.510h + 0.390d$, $T' = 1000/(T+273.15)$; no-$Z$ variant; [@christensen1992]; Q/P = 3 fallback |
 | Marine mammals | Siler survivorship [@barlow1991], else $20.19\,TL^{-3.26}e^{0.041T}$ [@gascuel2008] | $365 \times 0.1\,W^{0.8}/W$ [@innes1987; @trites1997], $W$ = mean body mass in kg (`homeotherm_mean_body_mass.csv`: [@carlucci2024], to be completed from [@tritespauly1998]; else FishBase/SeaLifeBase maximum mass, flagged) |
 | Seabirds | [@gascuel2008] | $365 \times 10^{-0.293 + 0.85\log_{10}W}/W$ [@nilsson1976], $W$ = mean body mass in g (to be completed from [@dunning2008]; else maximum mass, flagged) |
 | Invertebrates | [@tumbiolo1994]: $\log_{10}P = 0.24 + 0.96\log_{10}B - 0.21\log_{10}W_{max} + 0.03T - 0.16\log_{10}(z+1)$; [@brey1999] ($M_{max}$ at 4.5 kJ/g, ASSUMPTION); [@gascuel2008] fallback | $Q/B = 3\,P/B$ [@christensen2008] |
 | Primary producers | — | $Q/B = 0$ |
 
-FG level: $X_f = \sum_s B_s X_s / \sum_s B_s$. Missing species values are borrowed from the closest relative (genus > family > order > class).
+FG level: $X_f = \sum_s B_s X_s / \sum_s B_s$. Missing species values
+are borrowed from the closest relative (genus \> family \> order \>
+class).
 
-**Fishing mortality for non-fish FGs.** $P/B = Z = M + F$ [@allen1971] holds for every group, not only fish, as long as the empirical P/B is natural mortality. Fish species get $P/B = M + F$ inside `calc_fish()`. For invertebrate, mammal and seabird FGs the FG-level $F$ from `02_fisheries.R` (`F_by_fg.csv`) is added to the part of the FG whose P/B is natural mortality (Siler survivorship; Tumbiolo & Downing; Brey), $P/B_f = P/B^{emp}_f + F_f\,(1 - s_f)$, where $s_f$ is the biomass share of the FG whose P/B comes from the [@gascuel2008] equation: that equation was fitted to the P/B of published EwE models, i.e. total mortality, so it already includes fishing (all seabirds, and the fallback for mammals and invertebrates); and for invertebrates $Q/B_f = 3\,P/B_f$ is computed on that P/B, so a fished group's P/B includes its fishing mortality (otherwise Ecopath cannot balance it, e.g. coastal benthic cephalopods with $F$ = 0.85). ASSUMPTION: the empirical invertebrate P/B is treated as natural mortality.
+**Fishing mortality for non-fish FGs.** $P/B = Z = M + F$ [@allen1971]
+holds for every group, not only fish, as long as the empirical P/B is
+natural mortality. Fish species get $P/B = M + F$ inside `calc_fish()`.
+For invertebrate, mammal and seabird FGs the FG-level $F$ from
+`02_fisheries.R` (`F_by_fg.csv`) is added to the part of the FG whose
+P/B is natural mortality (Siler survivorship; Tumbiolo & Downing; Brey),
+$P/B_f = P/B^{emp}_f + F_f\,(1 - s_f)$, where $s_f$ is the biomass share
+of the FG whose P/B comes from the [@gascuel2008] equation: that
+equation was fitted to the P/B of published EwE models, i.e. total
+mortality, so it already includes fishing (all seabirds, and the
+fallback for mammals and invertebrates); and for invertebrates
+$Q/B_f = 3\,P/B_f$ is computed on that P/B, so a fished group's P/B
+includes its fishing mortality (otherwise Ecopath cannot balance it,
+e.g. coastal benthic cephalopods with $F$ = 0.85). ASSUMPTION: the
+empirical invertebrate P/B is treated as natural mortality.
 
-::: {.callout-warning}
+::: callout-warning
 ### Known caveats
-- The fish Q/B diet-type dummies ($h$, $d$) are fixed defaults, not taken from a diet classification.
-- `QB_InnesTrites_1987_1997` and `QB_NilssonNilsson_1976` are conventionally cited, not re-verified against the primary papers.
-- 28 of 68 FGs fall outside the 0.05–0.3 P/Q range; 8 FGs have no P/B or Q/B (3 Expanding FGs, corals and gorgonians, meso and micro zooplankton, Cymodocea, detritus, discards).
-- 23 FGs differ from the EcoBase average by more than 2× (mostly cephalopods, decapods, macrobenthos, suprabenthos, where the empirical value is lower).
+
+- The fish Q/B diet-type dummies ($h$, $d$) are fixed defaults, not
+  taken from a diet classification.
+- `QB_InnesTrites_1987_1997` and `QB_NilssonNilsson_1976` are
+  conventionally cited, not re-verified against the primary papers.
+- 28 of 68 FGs fall outside the 0.05–0.3 P/Q range; 8 FGs have no P/B or
+  Q/B (3 Expanding FGs, corals and gorgonians, meso and micro
+  zooplankton, Cymodocea, detritus, discards).
+- 23 FGs differ from the EcoBase average by more than 2× (mostly
+  cephalopods, decapods, macrobenthos, suprabenthos, where the empirical
+  value is lower).
 :::
 
 ### Output plots
@@ -2143,41 +3039,112 @@ wm_figure("fig-pb-qb-scatter", r"---(Chosen PB vs. QB by Functional Group.)---",
 wm_figure("fig-f-by-fg", r"---(Fishing mortality F by Functional Group, 1994-1996.)---", "F_by_fg.png", r"---(05_validation.R)---")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Diet Matrix (`04_diets.R`) {#sec-diets}
 
-`04_diets.R` builds the predator FG × prey FG diet matrix ($DC_{f,j}$, columns sum to 1; [@christensen2005]). It sources `lib_fishbase_diet_matrix.R` and `lib_worms_taxonomy_lookup.R`.
+`04_diets.R` builds the predator FG × prey FG diet matrix ($DC_{f,j}$,
+columns sum to 1; [@christensen2005]). It sources
+`lib_fishbase_diet_matrix.R` and `lib_worms_taxonomy_lookup.R`.
 
 ### Tiers (first available per predator FG)
 
-1. **Mediterranean trophic metaweb** [@collmetaweb] (`data_entry_metaweb_empty.xlsx`, `DATA_ENTRY`; codes resolved through its `Taxonomic_codes` and `Non_taxonomic_groups` tabs). One metric per study (study = reference × area × years × life stage × season), chosen by `diet_metric_priority.csv` (IRI [@pinkas1971] > %W > %Vol > stable-isotope mixing model > %N > %F > presence; [@hyslop1980]), normalised to 1. Since 2026-10-14 the rows go through the same prey → FG resolution, stage selection and biomass weighting as MAISHA and FishBase (`metaweb_diet_records()`); generic metaweb groups ("Pelagic fish", "Zooplankton", "Pelagic tunicates", ...) are placed by rules at the top of `fishbase_food_category_to_fg.csv`. The choice is made **per predator FG**: an FG with any metaweb record takes its diet only from the metaweb; FGs without one take it from tiers 2–4. The template is still empty, so for now every FG comes from tiers 2–4.
-2. **MAISHA** ([@vascotto2026], v1.2, OGS NODC, doi:10.13120/hwpn1e, CC-BY 4.0): Darwin Core Archive (`data/diet/MAISHA/MAISHA_DwC-A`); predator records (`occurrenceRemarks == "Predator"`) linked to prey through `associatedOccurrences`; gravimetric %, then numerical %, then frequency of occurrence from the extended measurement table; detritus kept as a prey item, unknown and debris dropped; studies tagged as Mediterranean by coordinates (lon −6 to 36.5, lat 30 to 46), and non-Mediterranean studies dropped for a predator that has Mediterranean ones.
-3. **FishBase / SeaLifeBase** diet tables [@fishbase; @sealifebase] (DIET, DIETITEMS, FOODITEMS), Mediterranean studies first; DietCode joins done per server because FishBase and SeaLifeBase codes collide.
-4. **EcoBase** diet matrices [@colleter2015] — the public web service exposes none, so this tier currently finds nothing.
+1.  **Mediterranean trophic metaweb** [@collmetaweb]
+    (`data_entry_metaweb_empty.xlsx`, `DATA_ENTRY`; codes resolved
+    through its `Taxonomic_codes` and `Non_taxonomic_groups` tabs). One
+    metric per study (study = reference × area × years × life stage ×
+    season), chosen by `diet_metric_priority.csv` (IRI [@pinkas1971] \>
+    %W \> %Vol \> stable-isotope mixing model \> %N \> %F \> presence;
+    [@hyslop1980]), normalised to 1. Since 2026-10-14 the rows go
+    through the same prey → FG resolution, stage selection and biomass
+    weighting as MAISHA and FishBase (`metaweb_diet_records()`); generic
+    metaweb groups ("Pelagic fish", "Zooplankton", "Pelagic tunicates",
+    ...) are placed by rules at the top of
+    `fishbase_food_category_to_fg.csv`. The choice is made **per
+    predator FG**: an FG with any metaweb record takes its diet only
+    from the metaweb; FGs without one take it from tiers 2–4. The
+    template is still empty, so for now every FG comes from tiers 2–4.
+2.  **MAISHA** ([@vascotto2026], v1.2, OGS NODC, doi:10.13120/hwpn1e,
+    CC-BY 4.0): Darwin Core Archive (`data/diet/MAISHA/MAISHA_DwC-A`);
+    predator records (`occurrenceRemarks == "Predator"`) linked to prey
+    through `associatedOccurrences`; gravimetric %, then numerical %,
+    then frequency of occurrence from the extended measurement table;
+    detritus kept as a prey item, unknown and debris dropped; studies
+    tagged as Mediterranean by coordinates (lon −6 to 36.5, lat 30 to
+    46), and non-Mediterranean studies dropped for a predator that has
+    Mediterranean ones.
+3.  **FishBase / SeaLifeBase** diet tables [@fishbase; @sealifebase]
+    (DIET, DIETITEMS, FOODITEMS), Mediterranean studies first; DietCode
+    joins done per server because FishBase and SeaLifeBase codes
+    collide.
+4.  **EcoBase** diet matrices [@colleter2015] — the public web service
+    exposes none, so this tier currently finds nothing.
 
-MAISHA and FishBase records are pooled per predator species and studies are averaged with equal weight.
+MAISHA and FishBase records are pooled per predator species and studies
+are averaged with equal weight.
 
-**Two matrices.** The *main* matrix (`Ecopath_diet`) follows the tiers above. A *reference* matrix (MAISHA, then FishBase/SeaLifeBase for species without MAISHA records) is built for **every** predator FG, whether or not the metaweb covers it. `diet/diet_matrix_main_vs_reference.xlsx` puts them side by side (sheets Main, Reference, Main_minus_Reference, Source; long form in `diet_main_vs_reference_REVIEW.csv`), so single values of the main matrix can be checked and tuned by hand against an independent estimate. After a hand change, the column must sum to 1 again.
+**Two matrices.** The *main* matrix (`Ecopath_diet`) follows the tiers
+above. A *reference* matrix (MAISHA, then FishBase/SeaLifeBase for
+species without MAISHA records) is built for **every** predator FG,
+whether or not the metaweb covers it.
+`diet/diet_matrix_main_vs_reference.xlsx` puts them side by side (sheets
+Main, Reference, Main_minus_Reference, Source; long form in
+`diet_main_vs_reference_REVIEW.csv`), so single values of the main
+matrix can be checked and tuned by hand against an independent estimate.
+After a hand change, the column must sum to 1 again.
 
 ### Prey → FG and aggregation
 
-$$
-p_{s,d,k} = v_k / \textstyle\sum_k v_k, \qquad DC_{s,j} = \frac{1}{n_s}\sum_d\sum_k p_{s,d,k}\,w_{k\to j}, \qquad DC_{f,j} = \frac{\sum_{s \in f} b_{s|f}\,DC_{s,j}}{\sum_{s \in f} b_{s|f}}
-$$
+$$p_{s,d,k} = v_k / \textstyle\sum_k v_k, \qquad DC_{s,j} = \frac{1}{n_s}\sum_d\sum_k p_{s,d,k}\,w_{k\to j}, \qquad DC_{f,j} = \frac{\sum_{s \in f} b_{s|f}\,DC_{s,j}}{\sum_{s \in f} b_{s|f}}$$
 
-Here $s$ is a predator species, $d$ one diet study of that species ($n_s$ studies in total), $k$ a prey item in that study with value $v_k$ (% weight, volume or frequency as reported), $p_{s,d,k}$ its share within the study, $j$ a prey FG, $DC_{s,j}$ the fraction of FG $j$ in the diet of species $s$, $f$ the predator FG and $DC_{f,j}$ its diet composition. $w_{k \to j}$ is the share of prey item $k$ assigned to FG $j$: prey species in `FG_WMed_2026.csv` → its FG; else the genus, family, order, class or phylum shared with model species → equal split over the FGs holding that taxon (`DIET_TAXON_SPLIT`); else a food-category rule (`diet_reference_tables/fishbase_food_category_to_fg.csv`, about 44 regex rules) → split by Ecopath B of the target FGs (`DIET_CATEGORY_SPLIT`, ASSUMPTION: prey taken in proportion to availability); else a second pass resolves the prey name through WoRMS and repeats the rank match (cache `diet/worms_diet_prey_cache.rds`). Fish eggs and larvae go to zooplankton. Detritus/debris items are dropped for predators with FishBase trophic level ≥ 3 (`DIET_DETRITUS_MAX_TL`, ASSUMPTION: digested remains, not detritus feeding). Non-food items are dropped and the study renormalised. $b_{s|f}$ = species share of FG biomass (`biomass_proportion_by_species_fg.csv` from 01).
+Here $s$ is a predator species, $d$ one diet study of that species
+($n_s$ studies in total), $k$ a prey item in that study with value $v_k$
+(% weight, volume or frequency as reported), $p_{s,d,k}$ its share
+within the study, $j$ a prey FG, $DC_{s,j}$ the fraction of FG $j$ in
+the diet of species $s$, $f$ the predator FG and $DC_{f,j}$ its diet
+composition. $w_{k \to j}$ is the share of prey item $k$ assigned to FG
+$j$: prey species in `FG_WMed_2026.csv` → its FG; else the genus,
+family, order, class or phylum shared with model species → equal split
+over the FGs holding that taxon (`DIET_TAXON_SPLIT`); else a
+food-category rule
+(`diet_reference_tables/fishbase_food_category_to_fg.csv`, about 44
+regex rules) → split by Ecopath B of the target FGs
+(`DIET_CATEGORY_SPLIT`, ASSUMPTION: prey taken in proportion to
+availability); else a second pass resolves the prey name through WoRMS
+and repeats the rank match (cache `diet/worms_diet_prey_cache.rds`).
+Fish eggs and larvae go to zooplankton. Detritus/debris items are
+dropped for predators with FishBase trophic level ≥ 3
+(`DIET_DETRITUS_MAX_TL`, ASSUMPTION: digested remains, not detritus
+feeding). Non-food items are dropped and the study renormalised.
+$b_{s|f}$ = species share of FG biomass
+(`biomass_proportion_by_species_fg.csv` from 01).
 
 ### Coverage of the diet sources
 
-- MAISHA: 496 predator records (417 inside the Mediterranean box), 9,801 prey records → 54 predator FGs, 230 species, 426 study records.
-- FishBase/SeaLifeBase: 48 predator FGs, 262 species, 389 study records (DIET 272, DIETITEMS 1,499, FOODITEMS 3,892 rows pulled for 1,084 species, cached).
-- Combined: 70 predator FGs, 492 species, 815 study records. Provenance: MAISHA + FishBase 54 FGs, FishBase/SeaLifeBase only 16, missing 3 (corals and gorgonians, meso and micro zooplankton, suprabenthos). 70 of 80 FGs have at least one cited diet study.
-- All predator columns sum to 1. Cannibalism above 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114.
+- MAISHA: 496 predator records (417 inside the Mediterranean box), 9,801
+  prey records → 54 predator FGs, 230 species, 426 study records.
+- FishBase/SeaLifeBase: 48 predator FGs, 262 species, 389 study records
+  (DIET 272, DIETITEMS 1,499, FOODITEMS 3,892 rows pulled for 1,084
+  species, cached).
+- Combined: 70 predator FGs, 492 species, 815 study records. Provenance:
+  MAISHA + FishBase 54 FGs, FishBase/SeaLifeBase only 16, missing 3
+  (corals and gorgonians, meso and micro zooplankton, suprabenthos). 70
+  of 80 FGs have at least one cited diet study.
+- All predator columns sum to 1. Cannibalism above 0.1: jellyfish 0.497,
+  other macro-benthos 0.156, benthic mollusc 0.114.
 - Unassigned prey item types: 58 (`*_unassigned_items_REVIEW.csv`).
-- Technical note: on a pCloud drive, files that are not fully downloaded can crash `data.table::fread` (memory-mapping error, "R bomb"). `lib_fishbase_diet_matrix.R` therefore copies the MAISHA files and cached FishBase tables to a local temporary file before reading them (`.fread_local()`).
+- Technical note: on a pCloud drive, files that are not fully downloaded
+  can crash `data.table::fread` (memory-mapping error, "R bomb").
+  `lib_fishbase_diet_matrix.R` therefore copies the MAISHA files and
+  cached FishBase tables to a local temporary file before reading them
+  (`.fread_local()`).
 
-Outputs: `diet/Metaweb/`, `diet/MAISHA/` and `diet/FishBase/` (each source alone), `diet/reference_diet_matrix_fg_long.csv` / `_wide.csv` (reference matrix, all FGs), `diet/diet_matrix_main_vs_reference.xlsx` and `diet_main_vs_reference_REVIEW.csv`, `diet_provenance_by_predator_fg.csv`, `diet_references_by_fg.csv`, `diet_composition_ewe.csv` (EwE import format).
+Outputs: `diet/Metaweb/`, `diet/MAISHA/` and `diet/FishBase/` (each
+source alone), `diet/reference_diet_matrix_fg_long.csv` / `_wide.csv`
+(reference matrix, all FGs), `diet/diet_matrix_main_vs_reference.xlsx`
+and `diet_main_vs_reference_REVIEW.csv`,
+`diet_provenance_by_predator_fg.csv`, `diet_references_by_fg.csv`,
+`diet_composition_ewe.csv` (EwE import format).
 
 ### Output plots
 
@@ -2188,68 +3155,140 @@ Outputs: `diet/Metaweb/`, `diet/MAISHA/` and `diet/FishBase/` (each source alone
 wm_figure("fig-diet-matrix-heatmap", r"---(Diet-composition matrix: prey FG in rows, predator FG in columns (Ecopath layout).)---", "diet_matrix_heatmap.png", r"---(04_diets.R)---")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Validation (`05_validation.R`) {#sec-validation}
 
-`05_validation.R` reads what 01–04 wrote; it does not change any input sheet.
+`05_validation.R` reads what 01–04 wrote; it does not change any input
+sheet.
 
 ### STEP A — comparison with the 1995 Western Mediterranean model
 
-Reference: the "estimates" sheet of `WMed_EwE.xlsx` [@wmed1995model], model area $A_{old}$ = 846,002 km². Old groups are matched to new FGs through `validation_reference_tables/old_to_new_fg_crosswalk.csv` (33 rows): several old groups → one new FG are summed (P/B and Q/B biomass-weighted); one old group → several new FGs is compared with the sum of the new FGs.
+Reference: the "estimates" sheet of `WMed_EwE.xlsx` [@wmed1995model],
+model area $A_{old}$ = 846,002 km². Old groups are matched to new FGs
+through `validation_reference_tables/old_to_new_fg_crosswalk.csv` (33
+rows): several old groups → one new FG are summed (P/B and Q/B
+biomass-weighted); one old group → several new FGs is compared with the
+sum of the new FGs.
 
-$$
-\text{ratio} = X_{new}/X_{old}, \qquad X_{old}^{(A_{new})} = X_{old}\,A_{old}/A_{new}, \qquad \text{ratio}_{same\ total} = X_{new}/X_{old}^{(A_{new})}
-$$
+$$\text{ratio} = X_{new}/X_{old}, \qquad X_{old}^{(A_{new})} = X_{old}\,A_{old}/A_{new}, \qquad \text{ratio}_{same\ total} = X_{new}/X_{old}^{(A_{new})}$$
 
-where $X$ is B (t/km²), P/B or Q/B (1/year) of an FG, $X_{new}$ this model's value, $X_{old}$ the 1995 value and $A_{new}$, $A_{old}$ the two model areas (km²); the area rescaling applies to B only. The second form compares the same total tonnes. Flags: ratio outside `VALIDATION_RATIO_LOW`–`VALIDATION_RATIO_HIGH` (0.5–2), values appearing/disappearing. In a recent full run about half of the FG × metric rows were flagged (a review prompt, not a verdict). The old sheet has no landings/discards columns, so only B, P/B and Q/B are compared.
+where $X$ is B (t/km²), P/B or Q/B (1/year) of an FG, $X_{new}$ this
+model's value, $X_{old}$ the 1995 value and $A_{new}$, $A_{old}$ the two
+model areas (km²); the area rescaling applies to B only. The second form
+compares the same total tonnes. Flags: ratio outside
+`VALIDATION_RATIO_LOW`–`VALIDATION_RATIO_HIGH` (0.5–2), values
+appearing/disappearing. In a recent full run about half of the FG ×
+metric rows were flagged (a review prompt, not a verdict). The old sheet
+has no landings/discards columns, so only B, P/B and Q/B are compared.
 
 ### F vs P/Q check (`03_pbqb-traits.R`)
 
-Because $P/B = M + F$, a large $F$ raises P/B and P/Q. For every FG with $F > 0$, `F_vs_PQ_diagnostic_REVIEW.csv` gives $F$, P/B, the part without fishing ($P/B - F$), $E = F/Z$, P/Q with and without $F$, catch and B, and flags: $F > 1$; $F$ alone pushes P/Q above 0.3; $E > 0.5$ [@gulland1971]. A flagged FG points to too much catch assigned to it or too little B. Invertebrates have Q/B = 3 P/B, so their P/Q is 0.33 by construction. On the 2026-10-13 data: 14 FGs flagged, 7 with $F > 1$, and $F$ pushes P/Q above 0.3 only for groupers (0.52) and bluefin tuna (0.32).
+Because $P/B = M + F$, a large $F$ raises P/B and P/Q. For every FG with
+$F > 0$, `F_vs_PQ_diagnostic_REVIEW.csv` gives $F$, P/B, the part
+without fishing ($P/B - F$), $E = F/Z$, P/Q with and without $F$, catch
+and B, and flags: $F > 1$; $F$ alone pushes P/Q above 0.3; $E > 0.5$
+[@gulland1971]. A flagged FG points to too much catch assigned to it or
+too little B. Invertebrates have Q/B = 3 P/B, so their P/Q is 0.33 by
+construction. On the 2026-10-13 data: 14 FGs flagged, 7 with $F > 1$,
+and $F$ pushes P/Q above 0.3 only for groupers (0.52) and bluefin tuna
+(0.32).
 
 ### STEP B — consolidated checks
 
-`validation_summary_ALL.csv` indexes every REVIEW file of 01–04: P/B, Q/B and GE plausibility; P/Q outside 0.05–0.3; diet column sums ≠ 1; cannibalism > 0.1 (EwE User Guide); missing diets; EcoBase evaluations; FGs without Ecopath_B; even species splits; temporal mismatches; fleet coverage; zero-catch FGs; unmatched old FG names.
+`validation_summary_ALL.csv` indexes every REVIEW file of 01–04: P/B,
+Q/B and GE plausibility; P/Q outside 0.05–0.3; diet column sums ≠ 1;
+cannibalism \> 0.1 (EwE User Guide); missing diets; EcoBase evaluations;
+FGs without Ecopath_B; even species splits; temporal mismatches; fleet
+coverage; zero-catch FGs; unmatched old FG names.
 
-Three more checks are written by `05_validation.R` itself and added to the same summary:
+Three more checks are written by `05_validation.R` itself and added to
+the same summary:
 
-- **Fishing mortality above 1** (`F_above_1_REVIEW.csv`): FGs with $F = (C/A_{model})/B > 1$ in the Ecopath years, from `F_by_fg.csv`.
-- **Time series assessment** (`ecosim_ts_assessment_REVIEW.csv`, plot 13): for each Ecosim_ts series, the years with data, first and last year, longest gap, $CV = sd/\bar{x}$ and the largest year-to-year jump $\max(x_t/x_{t-1},\ x_{t-1}/x_t)$. Flags: fewer than 5 years, gap > 5 years, CV > 1, jump > 5×.
-- **Unsurveyed FGs vs other models** (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B next to other Mediterranean EwE models listed in `validation_reference_tables/unsurveyed_fg_other_models.csv`, each with its own area (a small coastal model has much more seagrass per km²). Flag: other value more than 10× or less than 0.1× ours. Add rows to that table as you find models.
+- **Fishing mortality above 1** (`F_above_1_REVIEW.csv`): FGs with
+  $F = (C/A_{model})/B > 1$ in the Ecopath years, from `F_by_fg.csv`.
+- **Time series assessment** (`ecosim_ts_assessment_REVIEW.csv`, plot
+  13): for each Ecosim_ts series, the years with data, first and last
+  year, longest gap, $CV = sd/\bar{x}$ and the largest year-to-year jump
+  $\max(x_t/x_{t-1},\ x_{t-1}/x_t)$. Flags: fewer than 5 years, gap \> 5
+  years, CV \> 1, jump \> 5×.
+- **Unsurveyed FGs vs other models**
+  (`unsurveyed_fg_vs_other_models_REVIEW.csv`, plot 14): this model's B
+  next to other Mediterranean EwE models listed in
+  `validation_reference_tables/unsurveyed_fg_other_models.csv`, each
+  with its own area (a small coastal model has much more seagrass per
+  km²). Flag: other value more than 10× or less than 0.1× ours. Add rows
+  to that table as you find models.
 
-The models compared so far are the 1995 Western Mediterranean model [@wmed1995model], the Gulf of Lion model [@seyer2023] and the Port-Cros model [@valls2009; @valls2012].
+The models compared so far are the 1995 Western Mediterranean model
+[@wmed1995model], the Gulf of Lion model [@seyer2023] and the Port-Cros
+model [@valls2009; @valls2012].
 
 ### Outlier removal effect (from `01_biomass.R`)
 
-`survey_outlier_effect_by_fg_year.csv` and the figure below show, per FG and year, the mean haul density before ($\bar d_{before}$) and after ($\bar d_{after}$) the haul-outlier rule (@sec-density), with removed values counted as 0, and the change $100\,(\bar d_{after} - \bar d_{before})/\bar d_{before}$. Only the 12 FGs with the largest change are plotted. These are plain haul means, not stratified densities, so they show where the rule bites, not the final biomass change.
+`survey_outlier_effect_by_fg_year.csv` and the figure below show, per FG
+and year, the mean haul density before ($\bar d_{before}$) and after
+($\bar d_{after}$) the haul-outlier rule (@sec-density), with removed
+values counted as 0, and the change
+$100\,(\bar d_{after} - \bar d_{before})/\bar d_{before}$. Only the 12
+FGs with the largest change are plotted. These are plain haul means, not
+stratified densities, so they show where the rule bites, not the final
+biomass change.
 
 ### PREBAL — biomass, P/B and Q/B against trophic level
 
-Before balancing, log biomass and log vital rates should decline steadily with trophic level, with no group far off the line [@link2010; @heymans2016]. The trophic level of each FG is computed from the `Ecopath_diet` sheet:
+Before balancing, log biomass and log vital rates should decline
+steadily with trophic level, with no group far off the line [@link2010;
+@heymans2016]. The trophic level of each FG is computed from the
+`Ecopath_diet` sheet:
 
-$$
-TL_i = 1 + \sum_j DC_{ij}\, TL_j
-$$
+$$TL_i = 1 + \sum_j DC_{ij}\, TL_j$$
 
-where $DC_{ij}$ is the fraction of prey $j$ in the diet of predator $i$ (each diet column rescaled to sum to 1), and $TL_j = 1$ for primary producers, detritus and any FG with an empty diet column. It is solved by iteration until no TL changes by more than $10^{-6}$. For each metric $X \in \{B, P/B, Q/B\}$ the pipeline fits
+where $DC_{ij}$ is the fraction of prey $j$ in the diet of predator $i$
+(each diet column rescaled to sum to 1), and $TL_j = 1$ for primary
+producers, detritus and any FG with an empty diet column. It is solved
+by iteration until no TL changes by more than $10^{-6}$. For each metric
+$X \in \{B, P/B, Q/B\}$ the pipeline fits
 
-$$
-\log_{10} X_i = a + b\, TL_i + \varepsilon_i
-$$
+$$\log_{10} X_i = a + b\, TL_i + \varepsilon_i$$
 
-and reports the change per trophic level, $100\,(10^{b} - 1)$ %, in `prebal_slopes.csv`. An FG is flagged in `prebal_REVIEW.csv` when $|\varepsilon_i| > 2\,s_\varepsilon$ ($s_\varepsilon$ = standard deviation of the residuals of that metric). Detritus and discards are excluded.
+and reports the change per trophic level, $100\,(10^{b} - 1)$ %, in
+`prebal_slopes.csv`. An FG is flagged in `prebal_REVIEW.csv` when
+$|\varepsilon_i| > 2\,s_\varepsilon$ ($s_\varepsilon$ = standard
+deviation of the residuals of that metric). Detritus and discards are
+excluded.
 
-Link (2010) suggests biomass should fall by roughly 5–10 % per TL on the log scale over the whole web; a much steeper slope points to under-estimated top predators or over-estimated low TLs. On the 2026-10-22 run: B −82 % per TL, P/B −55 % per TL, Q/B +5 % per TL. The Q/B slope is flat because the two seabird FGs have Q/B ≈ 72 /year (flagged). Groups with TL = 1 besides producers (corals and gorgonians, meso/micro zooplankton, suprabenthos) have no diet column yet, so their TL is a placeholder — check the diet matrix for them.
+Link (2010) suggests biomass should fall by roughly 5–10 % per TL on the
+log scale over the whole web; a much steeper slope points to
+under-estimated top predators or over-estimated low TLs. On the
+2026-10-22 run: B −82 % per TL, P/B −55 % per TL, Q/B +5 % per TL. The
+Q/B slope is flat because the two seabird FGs have Q/B ≈ 72 /year
+(flagged). Groups with TL = 1 besides producers (corals and gorgonians,
+meso/micro zooplankton, suprabenthos) have no diet column yet, so their
+TL is a placeholder — check the diet matrix for them.
 
 ### Data pedigree
 
-**How to read it.** The pedigree says how much each input can be trusted, not whether it is right. The higher the index, the closer the data are to a direct, local measurement of that FG in the model area; the lower, the more the value is estimated (by Ecopath itself, an empirical equation or a guess) or taken from somewhere else (another EwE model, another region, the whole Western Med). Low values are where new data would improve the model most, and where Ecopath balancing and Ecosim fitting should be allowed to move a value most (EwE uses the pedigree for that, e.g. in Monte Carlo runs). A catch-all score per FG hides which input is weak, so look at the per-input tiles, not only $P$.
+**How to read it.** The pedigree says how much each input can be
+trusted, not whether it is right. The higher the index, the closer the
+data are to a direct, local measurement of that FG in the model area;
+the lower, the more the value is estimated (by Ecopath itself, an
+empirical equation or a guess) or taken from somewhere else (another EwE
+model, another region, the whole Western Med). Low values are where new
+data would improve the model most, and where Ecopath balancing and
+Ecosim fitting should be allowed to move a value most (EwE uses the
+pedigree for that, e.g. in Monte Carlo runs). A catch-all score per FG
+hides which input is weak, so look at the per-input tiles, not only $P$.
 
-Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopath) to 1 (local, high-precision data), following the EwE pedigree categories [@christensen2004; @christensen2008]. The source is read from the workbook and matched to a category by the rules below (first match wins; edit `PEDIGREE_RULES`, or point `PEDIGREE_RULES_FILE` to a CSV with columns `input, pattern, index, category`).
+Each input of each FG gets a pedigree index from 0 (no data, estimated
+by Ecopath) to 1 (local, high-precision data), following the EwE
+pedigree categories [@christensen2004; @christensen2008]. The source is
+read from the workbook and matched to a category by the rules below
+(first match wins; edit `PEDIGREE_RULES`, or point `PEDIGREE_RULES_FILE`
+to a CSV with columns `input, pattern, index, category`).
 
 | Input | Source in the workbook | Category | Index |
-|---|---|---|---|
+|------------------|------------------|------------------|------------------|
 | B | Placeholder biomass (Expanding FGs) | Guesstimate | 0.0 |
 | B | Biomass left for Ecopath with a fixed EE | Estimated by Ecopath from the EE (indirect)\* | 0.2 |
 | B | ISIMIP ocean-model hindcast (plankton) | Approximate / indirect\* | 0.4 |
@@ -2268,28 +3307,54 @@ Each input of each FG gets a pedigree index from 0 (no data, estimated by Ecopat
 | B (custom region) | Western Med habitat biomass × share of the habitat map inside the region | Approximate | 0.4 |
 | B (custom region) | Western Med density per km² (megafauna, plankton, groups MEDITS does not sample) | From another area | 0.2 |
 
-\* Departures from the EwE table, where both "estimated by Ecopath" and "from other model" score 0: a biomass estimated from a fixed EE still rests on a chosen EE and on the predators' consumption, and the ISIMIP hindcast is forced by observed climate, so both carry some information (project decision). MEDITS biomass is classed as low precision because it depends on an assumed catchability and on the swept-area expansion (ASSUMPTION; it could be argued up to 1.0 for well-sampled demersal fish). The overall index is
+\* Departures from the EwE table, where both "estimated by Ecopath" and
+"from other model" score 0: a biomass estimated from a fixed EE still
+rests on a chosen EE and on the predators' consumption, and the ISIMIP
+hindcast is forced by observed climate, so both carry some information
+(project decision). MEDITS biomass is classed as low precision because
+it depends on an assumed catchability and on the swept-area expansion
+(ASSUMPTION; it could be argued up to 1.0 for well-sampled demersal
+fish). The overall index is
 
-$$
-P = \frac{1}{n}\sum_{i=1}^{n} \frac{1}{J_i}\sum_{j=1}^{J_i} I_{ij}
-$$
+$$P = \frac{1}{n}\sum_{i=1}^{n} \frac{1}{J_i}\sum_{j=1}^{J_i} I_{ij}$$
 
-where $I_{ij}$ is the index of input $j$ for FG $i$, $J_i$ the number of inputs with an index for FG $i$ and $n$ the number of FGs. On the 2026-10-22 run, $P \approx 0.65$. The indices are also written to the **Pedigree** sheet of `ecopath_ecosim_inputs.xlsx` (one row per FG, columns B, L, Di, PB, QB, Diet and the mean, ready to copy into the EwE pedigree table). Details per FG are in `pedigree_REVIEW.csv`; the summary row counts sources not matched by any rule plus inputs with index < 0.3.
+where $I_{ij}$ is the index of input $j$ for FG $i$, $J_i$ the number of
+inputs with an index for FG $i$ and $n$ the number of FGs. On the
+2026-10-22 run, $P \approx 0.65$. The indices are also written to the
+**Pedigree** sheet of `ecopath_ecosim_inputs.xlsx` (one row per FG,
+columns B, L, Di, PB, QB, Diet and the mean, ready to copy into the EwE
+pedigree table). Details per FG are in `pedigree_REVIEW.csv`; the
+summary row counts sources not matched by any rule plus inputs with
+index \< 0.3.
 
 ### Zooplankton field check (block 11)
 
-Field reference: [@fernandez2023] — RADMED, Alborán to Balearic Sea, 2007–2017, Bongo 250 µm, daytime oblique tows 0–100 m: total zooplankton 2–17 mg DM/m³ (mean ≈ 10).
+Field reference: [@fernandez2023] — RADMED, Alborán to Balearic Sea,
+2007–2017, Bongo 250 µm, daytime oblique tows 0–100 m: total zooplankton
+2–17 mg DM/m³ (mean ≈ 10).
 
-$$
-z_{eff} = \frac{\sum_k A_k \min(z^{mid}_k, 100)}{\sum_k A_k} = 86.7\ \text{m}, \qquad B_{tot} = \frac{DM \times z_{eff}}{DW{:}WW \times 1000}
-$$
+$$z_{eff} = \frac{\sum_k A_k \min(z^{mid}_k, 100)}{\sum_k A_k} = 86.7\ \text{m}, \qquad B_{tot} = \frac{DM \times z_{eff}}{DW{:}WW \times 1000}$$
 
-where $k$ is a depth stratum, $A_k$ its area (km²), $z^{mid}_k$ its mid-depth (m, capped at the 100 m tow depth), $z_{eff}$ the area-weighted sampled depth, $DM$ the field zooplankton concentration (mg dry mass/m³), $DW{:}WW$ the dry-to-wet weight ratio and $B_{tot}$ the total zooplankton biomass (t WW/km²: $DM \times z_{eff}$ is in mg DW/m², and 1 mg/m² = 0.001 t/km², hence the 1000). DW:WW 0.1–0.2 (ASSUMPTION). Salp upper bound: $DM \times z_{eff} / 0.0804 / 1000$ (salp DW:WW 0.0804, *Thalia democratica*, Add-my-Pet). Result: field 0.87–15 t/km² (mean 5.8); model FGs 68 + 69 + 71 + 72 ≈ 33 t/km² (meso + micro at the COBALT level, 29.6, + macro 3.15); salp bound 10.8 t/km². The net misses most microzooplankton, so the model total should sit above the field value.
+where $k$ is a depth stratum, $A_k$ its area (km²), $z^{mid}_k$ its
+mid-depth (m, capped at the 100 m tow depth), $z_{eff}$ the
+area-weighted sampled depth, $DM$ the field zooplankton concentration
+(mg dry mass/m³), $DW{:}WW$ the dry-to-wet weight ratio and $B_{tot}$
+the total zooplankton biomass (t WW/km²: $DM \times z_{eff}$ is in mg
+DW/m², and 1 mg/m² = 0.001 t/km², hence the 1000). DW:WW 0.1–0.2
+(ASSUMPTION). Salp upper bound: $DM \times z_{eff} / 0.0804 / 1000$
+(salp DW:WW 0.0804, *Thalia democratica*, Add-my-Pet). Result: field
+0.87–15 t/km² (mean 5.8); model FGs 68 + 69 + 71 + 72 ≈ 33 t/km² (meso +
+micro at the COBALT level, 29.6, + macro 3.15); salp bound 10.8 t/km².
+The net misses most microzooplankton, so the model total should sit
+above the field value.
 
 ### Outputs
 
 - `plots/validation/validation_plots_ALL.pdf` and one PNG per check.
-- `validation/comparison_with_old_westmed_estimates_REVIEW.csv`, `biomass_vs_old_model_REVIEW.csv`, `validation_summary_ALL.csv`, `zooplankton_total_field_check_REVIEW.csv`, `prebal_REVIEW.csv`, `prebal_slopes.csv`, `pedigree_REVIEW.csv`.
+- `validation/comparison_with_old_westmed_estimates_REVIEW.csv`,
+  `biomass_vs_old_model_REVIEW.csv`, `validation_summary_ALL.csv`,
+  `zooplankton_total_field_check_REVIEW.csv`, `prebal_REVIEW.csv`,
+  `prebal_slopes.csv`, `pedigree_REVIEW.csv`.
 
 ```{r}
 #| label: show-fig-biomass-vs-old
@@ -2326,30 +3391,35 @@ wm_figure("fig-pedigree", r"---(Data pedigree index by FG and input.)---", "16_p
 wm_figure("fig-outlier-effect", r"---(Mean haul density before and after haul-outlier removal, 12 FGs with the largest change.)---", "survey_outlier_before_after.png", r"---(01_biomass.R)---")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Known limitations {#sec-open-issues .unnumbered}
 
-Points to review before using the inputs in a balanced Ecopath model. Each one is written to the file in the third column at every run.
+Points to review before using the inputs in a balanced Ecopath model.
+Each one is written to the file in the third column at every run.
 
 | Area | Issue | Evidence (log / file) | Suggested next step |
-|---|---|---|---|
+|------------------|------------------|------------------|------------------|
 | Biomass | Meso + micro zooplankton at the COBALT level (29.6 t/km², whole water column), above the net-based field value | `zooplankton_mesomicro_cobalt_vs_field_REVIEW.csv` | check the zooplankton EE once Ecopath is balanced |
-| Fisheries | $F > 1$ for 7 FGs: caramote prawn 7.8, deep-water rose shrimp 3.4, groupers 1.95, mackerels 1.37, common dentex 1.19, coastal benthic cephalopods 1.15, salema 1.07 | `F_by_fg.csv` | under review; caramote prawn catch is mostly lagoon/coastal (< 10 m, outside $A_{model}$), the others need a check of catch assignment vs survey catchability |
-| Fisheries | 562 catch rows (0 t) with no fleet share; 9 FGs with < 50 % of landings in a named fleet | 02 log, `ecopath_L_fg_coverage_check.csv` | — |
+| Fisheries | $F > 1$ for 7 FGs: caramote prawn 7.8, deep-water rose shrimp 3.4, groupers 1.95, mackerels 1.37, common dentex 1.19, coastal benthic cephalopods 1.15, salema 1.07 | `F_by_fg.csv` | under review; caramote prawn catch is mostly lagoon/coastal (\< 10 m, outside $A_{model}$), the others need a check of catch assignment vs survey catchability |
+| Fisheries | 562 catch rows (0 t) with no fleet share; 9 FGs with \< 50 % of landings in a named fleet | 02 log, `ecopath_L_fg_coverage_check.csv` | — |
 | Biomass | With `STOCK_ASSESSMENT_SOURCE = "RAM"` the hake assessments end in 2014 (the default GFCM source reads them to 2024); about half the stocks inside GSAs 1–12 have no readable SAF table | `gfcm_saf_parse_REVIEW.csv` | check the stocks read and the ones filled from RAM Legacy |
 | Biomass | Jellyfish, salps, suprabenthos, benthic mollusc, other macro-benthos left to Ecopath (EE = 0.95) | 01 log | check the B Ecopath returns against the review values ([@luo2020], salp bound 10.8) |
 | Biomass | 4 FGs still on an even within-FG species split | `fg_species_biomass_needs_review.csv` | — |
 | P/B, Q/B | Some FGs without P/B or Q/B, and FGs outside P/Q 0.05–0.3 | 03 log, `F_vs_PQ_diagnostic_REVIEW.csv` | review |
 | Diet | No diet for corals and gorgonians, meso and micro zooplankton, suprabenthos | `diet_still_missing_REVIEW.csv` | fill `diet_literature_fallback.csv` by hand, e.g. from [@ribes1999] (gorgonians), [@coll2006] (zooplankton), [@banaru2013] (suprabenthos) |
-| Diet | Cannibalism > 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114 | `diet_cannibalism_REVIEW.csv` | move the self-prey to other FGs (EwE User Guide) |
+| Diet | Cannibalism \> 0.1: jellyfish 0.497, other macro-benthos 0.156, benthic mollusc 0.114 | `diet_cannibalism_REVIEW.csv` | move the self-prey to other FGs (EwE User Guide) |
 | Data | `FG_WMed_2026.csv` has no `survey_exempt` column (hard-coded list used) | 01 log | add the column |
 
----
+------------------------------------------------------------------------
 
 ## References {#sec-references .unnumbered}
 
-Numbered in order of first citation; the number in square brackets in the text points to this list. References used by the code but not cited above are listed after the cited ones. All entries are in `scripts/references.bib`; entries marked [verify] still need checking against the original.
+Numbered in order of first citation; the number in square brackets in
+the text points to this list. References used by the code but not cited
+above are listed after the cited ones. All entries are in
+`scripts/references.bib`; entries marked \[verify\] still need checking
+against the original.
 
 ::: {#refs}
 :::

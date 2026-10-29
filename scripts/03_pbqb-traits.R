@@ -2360,14 +2360,27 @@ fetch_fishlife <- function(taxonomy_dt) {
 ## Only species (with their taxonomy) not in the cache are computed; the
 ## cache is redone when the installed FishLife version changes.
 fetch_fishlife_cached <- function(taxonomy_dt) {
-  if (!nrow(taxonomy_dt) || !requireNamespace("FishLife", quietly = TRUE)) return(fetch_fishlife(taxonomy_dt))
-  ver <- as.character(utils::packageVersion("FishLife"))
+  if (!nrow(taxonomy_dt)) return(data.table())
   key <- function(d) d[, paste(Species, Genus, Family, Order, Class, sep = "|")]
   taxonomy_dt <- copy(taxonomy_dt)[, .key := key(.SD)]
   dirs <- .snapshot_dirs("fishbase_snapshot")
   cache <- NULL
   for (d in dirs) { f <- file.path(d, "fishlife_results.rds")
     if (file.exists(f)) { cache <- tryCatch(readRDS(f), error = function(e) NULL); break } }
+  ## FishLife not installed on this computer (it needs build tools, e.g. a
+  ## Windows laptop without Rtools): the FishLife values computed on
+  ## another laptop (shared cache) are still used, so P/B and M include
+  ## FishLife everywhere. Species not in the cache get no FishLife value.
+  if (!requireNamespace("FishLife", quietly = TRUE)) {
+    if (is.null(cache) || !nrow(cache)) return(fetch_fishlife(taxonomy_dt[, .(Species, Genus, Family, Order, Class)]))
+    out <- cache[.key %in% taxonomy_dt$.key][, .key := NULL]
+    out <- out[rowSums(!is.na(out[, !"Species"])) > 0]
+    message("FishLife not installed here - using the shared FishLife results (computed with FishLife ",
+            attr(cache, "fishlife_version"), "): ", nrow(out), " of ", nrow(taxonomy_dt), " species; ",
+            sum(!taxonomy_dt$.key %in% cache$.key), " species not in the cache get no FishLife value.")
+    return(out)
+  }
+  ver <- as.character(utils::packageVersion("FishLife"))
   if (is.null(cache) || !identical(attr(cache, "fishlife_version"), ver)) cache <- data.table(.key = character(0))
   todo <- taxonomy_dt[!.key %in% cache$.key]
   if (nrow(todo)) {

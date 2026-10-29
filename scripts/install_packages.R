@@ -90,9 +90,24 @@ wmed_check_packages <- function(quiet = FALSE) {
   }
 
   ## --- optional ----------------------------------------------------------
-  if (!"FishLife" %in% have)
-    say("FishLife not installed (optional: phylogenetic P/B, Q/B fallback). Needs build tools; ",
-        "install with remotes::install_url('https://github.com/James-Thorson-NOAA/FishLife/archive/HEAD.tar.gz').")
+  ## FishLife (growth and M from the phylogeny, used in 03 for P/B): tried
+  ## once from GitHub; it may need build tools (Rtools on Windows). If it
+  ## cannot be installed, 03 uses the FishLife results computed on another
+  ## laptop (shared cache in pCloud).
+  ## A failed attempt is remembered for 30 days (marker file), so runs do
+  ## not retry the GitHub install every time.
+  fl_mark <- file.path(tools::R_user_dir("wmed", "cache"), "fishlife_install_failed")
+  fl_recent <- file.exists(fl_mark) && as.numeric(difftime(Sys.time(), file.mtime(fl_mark), units = "days")) < 30
+  if (!"FishLife" %in% have && !fl_recent) {
+    say("installing FishLife from GitHub (James-Thorson-NOAA/FishLife)...")
+    ok <- tryCatch({ remotes::install_url("https://github.com/James-Thorson-NOAA/FishLife/archive/HEAD.tar.gz", upgrade = "never")
+      requireNamespace("FishLife", quietly = TRUE) }, error = function(e) FALSE)
+    if (!isTRUE(ok)) {
+      say("FishLife could not be installed here (build tools missing?) - 03 uses the shared FishLife results instead.",
+          " Not retried for 30 days (delete ", fl_mark, " to retry).")
+      try({ dir.create(dirname(fl_mark), recursive = TRUE, showWarnings = FALSE); writeLines(format(Sys.time()), fl_mark) }, silent = TRUE)
+    }
+  }
   say("all required packages are installed.")
   invisible(TRUE)
 }

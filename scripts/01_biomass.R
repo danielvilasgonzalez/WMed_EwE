@@ -1793,8 +1793,19 @@ p_by_area <- plot_fg_timeseries_by_area(
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries.png"), p_by_area, width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
 regional_title_area <- if (AREA_MODE == "westmed") "Western Med" else AREA_NAME
+## Sampling uncertainty of the index (lib: compute_survey_index_cv()),
+## drawn as a band in the two regional plots and saved for review
+fg_index_cv <- tryCatch(compute_survey_index_cv(dt, n_samples_by_stratum, strata_area_by_area),
+                        error = function(e) { message("[Uncertainty] survey index CV not computed: ", conditionMessage(e)); NULL })
+if (!is.null(fg_index_cv)) {
+  fwrite(merge(fg_index_cv, unique(fg_index_regional[, .(FG_num, FG_name)]), by = "FG_num", all.x = TRUE)[order(FG_num, Year)],
+         file.path(csv_out_dir, "survey_index_cv_by_fg_year.csv"))
+  message("[Uncertainty] MEDITS index CV by FG and year (stratified variance): median ",
+          round(stats::median(fg_index_cv$cv_index, na.rm = TRUE), 2), " -> survey_index_cv_by_fg_year.csv")
+}
 p_regional <- plot_fg_timeseries_regional(fg_index_regional,
-                                          title = paste0("MEDITS trawl survey by FG, ", regional_title_area, " (area-weighted)"), y_lab = "Area-weighted density (t/km^2)")
+                                          title = paste0("MEDITS trawl survey by FG, ", regional_title_area, " (area-weighted)"), y_lab = "Area-weighted density (t/km^2)",
+                                          cv_dt = fg_index_cv)
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regional, width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
 ## Same data as above, normalized so each FG's own series starts at 1
@@ -1803,7 +1814,7 @@ ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional.png"), p_regio
 ## absolute densities are.
 p_regional_normalized <- plot_fg_timeseries_regional(
   fg_index_regional, title = paste0("MEDITS trawl survey by FG, ", regional_title_area, " (normalized)"),
-  y_lab = "Area-weighted density (t/km^2)", normalize = TRUE)
+  y_lab = "Area-weighted density (t/km^2)", normalize = TRUE, cv_dt = fg_index_cv)
 ggsave(file.path(plot_dir, "survey_fg_density_timeseries_regional_normalized.png"), p_regional_normalized,
        width = 14, height = 10, dpi = PLOT_DPI, bg = "white")
 
