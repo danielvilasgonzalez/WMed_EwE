@@ -693,16 +693,29 @@ fwrite(bio_cmp, file.path(csv_out_dir, "biomass_vs_old_model_REVIEW.csv"))
   x_old <- rng[2] * 30; x_new <- rng[2] * 300; x_rat <- rng[2] * 3000
   pts <- melt(d, id.vars = c("label"), measure.vars = c("old", "new"), variable.name = "model", value.name = "B")[is.finite(B) & B > 0]
   pts[, model := factor(model, levels = c("old", "new"), labels = c("Old WMed 1995 model", "New pipeline"))]
+  ## Rows where new/old is outside [VALIDATION_RATIO_LOW, VALIDATION_RATIO_HIGH]
+  ## (default 0.5-2) get a shaded band and a coloured, bold ratio.
+  hi_lab <- paste0("new/old > ", VALIDATION_RATIO_HIGH); lo_lab <- paste0("new/old < ", VALIDATION_RATIO_LOW)
+  d[, flag := fifelse(!is.na(ratio) & ratio > VALIDATION_RATIO_HIGH, hi_lab,
+               fifelse(!is.na(ratio) & ratio < VALIDATION_RATIO_LOW, lo_lab, NA_character_))]
+  d[, y_pos := as.numeric(label)]
   ggplot() +
+    scale_y_discrete(limits = levels(d$label)) +
+    geom_rect(data = d[!is.na(flag)], aes(xmin = 0, xmax = Inf, ymin = y_pos - 0.5, ymax = y_pos + 0.5, fill = flag), alpha = 0.35) +
     geom_segment(data = d[is.finite(new) & is.finite(old) & new > 0 & old > 0], aes(x = old, xend = new, y = label, yend = label), colour = "grey75", linewidth = 0.5) +
     geom_point(data = pts, aes(x = B, y = label, colour = model), size = 1.8) +
     geom_text(data = d, aes(x = x_old, y = label, label = .fmt_b(old)), size = 2.1, colour = "grey35", hjust = 1) +
     geom_text(data = d, aes(x = x_new, y = label, label = .fmt_b(new)), size = 2.1, colour = "firebrick", hjust = 1) +
-    geom_text(data = d, aes(x = x_rat, y = label, label = ifelse(is.na(ratio), "", paste0("x", signif(ratio, 2)))), size = 2.1, hjust = 1) +
+    geom_text(data = d[is.na(flag)], aes(x = x_rat, y = label, label = ifelse(is.na(ratio), "", paste0("x", signif(ratio, 2)))), size = 2.1, hjust = 1) +
+    geom_text(data = d[!is.na(flag)], aes(x = x_rat, y = label, label = paste0("x", signif(ratio, 2)), colour = flag), size = 2.3, hjust = 1, fontface = "bold", show.legend = FALSE) +
     annotate("text", x = c(x_old, x_new, x_rat), y = Inf, label = c("old", "new", "new/old"), vjust = -0.4, hjust = 1, size = 2.4, fontface = "bold") +
     scale_x_log10() + coord_cartesian(clip = "off") +
-    scale_colour_manual(values = c("Old WMed 1995 model" = "grey40", "New pipeline" = "firebrick")) +
-    labs(title = title, subtitle = sub, x = "Biomass (t/km2, log scale)", y = NULL, colour = NULL) +
+    scale_colour_manual(values = setNames(c("grey40", "firebrick", "#b2182b", "#2166ac"), c("Old WMed 1995 model", "New pipeline", hi_lab, lo_lab)),
+                        breaks = c("Old WMed 1995 model", "New pipeline")) +
+    scale_fill_manual(values = setNames(c("#f4a582", "#92c5de"), c(hi_lab, lo_lab)), drop = FALSE, name = NULL) +
+    labs(title = title, subtitle = paste0(sub, "\nShaded rows: new/old above ", VALIDATION_RATIO_HIGH, " (red) or below ", VALIDATION_RATIO_LOW,
+                                          " (blue); ", sum(!is.na(d$flag)), " of ", sum(!is.na(d$ratio)), " FGs."),
+         x = "Biomass (t/km2, log scale)", y = NULL, colour = NULL) +
     theme_minimal(base_size = 8) + theme(legend.position = "top", plot.margin = margin(18, 8, 5, 5))
 }
 p_bio <- tryCatch(.bio_pair_plot("old_B_t_km2_on_new_area", "Ecopath B: new pipeline vs old WMed 1995 model (same total tonnes)",
@@ -1047,6 +1060,87 @@ validation_plots[["11_zooplankton_total_field_check"]] <- tryCatch({
          x = "t WW/km2 of model area", y = NULL) +
     theme_minimal(base_size = 9)
 }, error = function(e) { message("[05_validation.R plot] zooplankton field check skipped - ", conditionMessage(e)); NULL })
+
+## 11b) Phytoplankton B and P/B: every source side by side.
+##  - Ecopath inputs now in the workbook (Ecopath_B, Ecopath_PBQB; B from
+##    the ISIMIP COBALT section of 01b, P/B from EcoBase)
+##  - ISIMIP3a GFDL-MOM6-COBALT2, 1995 (01b; B only)
+##  - Copernicus Marine (06_environment.R): MedBFM, before 1999 PISCES
+##    scaled to MedBFM; B 1995, P/B = NPP 1994-1995 / B 1995
+##  - old WMed 1995 model (WMed_EwE.xlsx), as published (t/km2 of its
+##    own area: phytoplankton is a density, so no area rescaling)
+##  Time series: total phytoplankton B per year, ISIMIP vs Copernicus.
+##  All B in t WW/km2 (C:WW 1:9 in both model sources).
+validation_plots[["11b_phytoplankton_sources"]] <- tryCatch({
+  phy_fg <- if (!is.null(new_B)) new_B[grepl("phytoplankton", FG_name, ignore.case = TRUE), .(FG_num, FG_name)] else data.table()
+  if (!nrow(phy_fg)) stop("no phytoplankton FG in Ecopath_B")
+  phy_fg[, group := fifelse(grepl("large", FG_name, ignore.case = TRUE), "Large", fifelse(grepl("small", FG_name, ignore.case = TRUE), "Small", FG_name))]
+  rows <- list()
+  ## Ecopath inputs now
+  bb <- new_B[FG_num %in% phy_fg$FG_num, .(FG_num, B = suppressWarnings(as.numeric(Biomass)))]
+  pp <- if (!is.null(new_PBQB)) new_PBQB[FG_num %in% phy_fg$FG_num, .(FG_num, PB = suppressWarnings(as.numeric(PB_FG)))] else data.table(FG_num = integer(), PB = numeric())
+  rows$now <- merge(merge(phy_fg, bb, by = "FG_num", all.x = TRUE), pp, by = "FG_num", all.x = TRUE)[, source := "Ecopath now (B ISIMIP, P/B EcoBase)"]
+  ## ISIMIP 1995
+  isi_f <- file.path(out_dir, "biomass", "isimip3a_cobalt2_plankton_detritus_timeseries_wholegsa.csv")
+  isi <- if (file.exists(isi_f)) fread(isi_f) else NULL
+  if (!is.null(isi)) {
+    i95 <- isi[Year == 1995 & grepl("Phytoplankton", TargetGroup)]
+    rows$isimip <- data.table(group = sub("Phytoplankton", "", i95$TargetGroup), B = i95$Biomass_t_km2, PB = NA_real_,
+                              source = "ISIMIP COBALT2, 1995")
+  }
+  ## Copernicus (06_environment.R)
+  env_f <- file.path(out_dir, "environment", "ecopath_phytoplankton_B_PB.csv")
+  env <- if (file.exists(env_f)) fread(env_f) else NULL
+  if (!is.null(env)) rows$env <- data.table(group = sub("Phytoplankton", "", env$TargetGroup), B = env$Biomass_t_km2, PB = env$PB,
+                                            source = paste0("Copernicus (B ", env$B_year[1], ", P/B ", env$PB_npp_years[1], ")"))
+  else message("[05_validation.R] Phytoplankton sources: no environment/ecopath_phytoplankton_B_PB.csv yet - run 06_environment.R to add Copernicus.")
+  ## old 1995 model
+  if (exists("comparison_dt") && nrow(comparison_dt)) {
+    old <- comparison_dt[FG_num %in% phy_fg$FG_num & metric %in% c("Biomass", "PB"), .(FG_num, metric, old_value)]
+    if (nrow(old)) {
+      old <- dcast(old, FG_num ~ metric, value.var = "old_value", fun.aggregate = function(x) x[1])
+      if (!"PB" %in% names(old)) old[, PB := NA_real_]
+      if (!"Biomass" %in% names(old)) old[, Biomass := NA_real_]
+      rows$old <- merge(phy_fg, old, by = "FG_num")[, .(group, B = Biomass, PB, source = "Old 1995 model")]
+    }
+  }
+  cmp <- rbindlist(lapply(rows, function(x) x[, .(source, group, B, PB)]), fill = TRUE)
+  cmp <- rbind(cmp, cmp[, .(group = "Total", B = if (all(is.na(B))) NA_real_ else sum(B, na.rm = TRUE),
+                            PB = if (all(is.na(PB) | is.na(B))) NA_real_ else sum(PB * B, na.rm = TRUE) / sum(B[!is.na(PB)], na.rm = TRUE)),
+                        by = source])
+  cmp[, P_t_km2_yr := B * PB]
+  fwrite(cmp, file.path(csv_out_dir, "phytoplankton_sources_REVIEW.csv"))
+  message("[05_validation.R] Phytoplankton sources (total B t/km2 | P/B): ",
+          paste(cmp[group == "Total", sprintf("%s %s | %s", source, signif(B, 3), signif(PB, 3))], collapse = "; "))
+  cmp[, group := factor(group, levels = c("Large", "Small", "Total"))]
+  p_b <- ggplot(cmp[is.finite(B)], aes(x = B, y = source, colour = group)) +
+    geom_point(size = 3, position = position_dodge(width = 0.5)) +
+    labs(title = "Phytoplankton B by source", x = "B (t WW/km2)", y = NULL, colour = NULL) +
+    theme_minimal(base_size = 10) + theme(legend.position = "top")
+  p_pb <- ggplot(cmp[is.finite(PB)], aes(x = PB, y = source, colour = group)) +
+    geom_point(size = 3, position = position_dodge(width = 0.5)) +
+    labs(title = "Phytoplankton P/B by source", x = "P/B (yr-1)", y = NULL, colour = NULL) +
+    theme_minimal(base_size = 10) + theme(legend.position = "none")
+  ## annual total B: ISIMIP vs Copernicus
+  ts <- list()
+  if (!is.null(isi)) ts$isi <- isi[grepl("Phytoplankton", TargetGroup), .(B = sum(Biomass_t_km2)), by = .(year = Year)][, source := "ISIMIP3a COBALT2"]
+  ann_f <- file.path(out_dir, "environment", "environment_timeseries_annual.csv")
+  if (file.exists(ann_f)) {
+    ann <- fread(ann_f)[variable == "phyto_c"]
+    c2ww <- if (exists("PHYTO_C_TO_WW")) PHYTO_C_TO_WW else 9
+    ts$env <- ann[, .(year, B = value * c2ww, source = fifelse(grepl("PISCES", source), "Copernicus (PISCES scaled to MedBFM)", "Copernicus MedBFM"))]
+  }
+  ts <- rbindlist(ts, fill = TRUE)
+  p_ts <- if (nrow(ts)) ggplot(ts, aes(x = year, y = B, colour = source)) + geom_line() + geom_point(size = 1.2) +
+    labs(title = "Total phytoplankton B per year", x = NULL, y = "B (t WW/km2)", colour = NULL) +
+    theme_minimal(base_size = 10) + theme(legend.position = "bottom") + guides(colour = guide_legend(ncol = 1)) else NULL
+  p <- (p_b / p_pb) | p_ts
+  if (!is.null(p_ts)) p <- p + patchwork::plot_layout(widths = c(1.2, 1))
+  if (is.null(p_ts)) p <- p_b / p_pb
+  p + patchwork::plot_annotation(title = "Phytoplankton: Ecopath inputs vs ISIMIP, Copernicus and the old 1995 model",
+                                 subtitle = paste0("Copernicus (06_environment.R): MedBFM 0-200 m; before 1999 PISCES scaled to MedBFM month by month.\n",
+                                                   "Large/Small from satellite size classes, same P/B for both. B in t WW/km2 (C:WW 1:9)."))
+}, error = function(e) { message("[05_validation.R plot] phytoplankton sources skipped - ", conditionMessage(e)); NULL })
 
 ## 12) Ecosim time series: new Ecosim_ts vs the old model's "timeseries"
 ## sheet (WMed_EwE.xlsx). Series are matched by target FG (old names
@@ -1804,4 +1898,4 @@ if (exists(".orig_message", envir = .GlobalEnv, inherits = FALSE)) {
 }
 sink()
 close(.run_log_con)
-options(error = NULL)   # do not leave the log handler in the R session
+options(error = NULL)   # do not leave the log handler in the R session

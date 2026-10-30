@@ -116,7 +116,22 @@ CMEMS_VENV_DIR <- Sys.getenv("COPERNICUSMARINE_VENV", unset = path.expand("~/.co
   if (.Platform$OS.type == "windows" && nzchar(p) && grepl("WindowsApps", p, ignore.case = TRUE)) "" else p
 }
 
+## Windows: pip puts copernicusmarine.exe in the Scripts folder of the
+## Python install (or of the user site), which is often not on PATH.
+.cmems_windows_scripts <- function() {
+  if (.Platform$OS.type != "windows" || Sys.which("copernicusmarine") != "") return(FALSE)
+  roots <- c(Sys.getenv("LOCALAPPDATA"), Sys.getenv("APPDATA"))
+  cand <- unlist(lapply(roots[nzchar(roots)], function(r) c(
+    Sys.glob(file.path(r, "Programs", "Python", "*", "Scripts", "copernicusmarine.exe")),
+    Sys.glob(file.path(r, "Python", "*", "Scripts", "copernicusmarine.exe")))))
+  if (!length(cand)) return(FALSE)
+  Sys.setenv(PATH = paste(normalizePath(dirname(cand[1])), Sys.getenv("PATH"), sep = .Platform$path.sep))
+  message("[CMEMS diag] CLI check: found ", cand[1], " (added its folder to PATH for this R session).")
+  TRUE
+}
+
 ensure_copernicusmarine_cli <- function(auto_install = TRUE) {
+  if (Sys.which("copernicusmarine") == "") .cmems_windows_scripts()
   if (Sys.which("copernicusmarine") == "") .cmems_use_venv_if_present()
   ## A run started from the page (Rscript, not interactive) never installs
   ## Python packages itself: CMEMS is only a fallback / cross-check here.

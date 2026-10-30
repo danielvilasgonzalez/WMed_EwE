@@ -138,6 +138,8 @@ table td code, table th code { white-space: normal; overflow-wrap: anywhere; }
   "PQ_ratio_by_fg.png"                                = "plots/validation/PQ_ratio_by_fg.png",
   "biomass_vs_old_model_by_fg.png"                    = "plots/validation/biomass_vs_old_model_by_fg.png",
   "11_zooplankton_total_field_check.png"              = "plots/validation/11_zooplankton_total_field_check.png",
+  "11b_phytoplankton_sources.png"                     = "plots/validation/11b_phytoplankton_sources.png",
+  "environment_timeseries.png"                        = "plots/environment/environment_timeseries.png",
   "diet_matrix_heatmap.png"                           = "plots/diets/diet_matrix_heatmap.png",
   "15_prebal.png"                                     = "plots/validation/15_prebal.png",
   "16_pedigree.png"                                   = "plots/validation/16_pedigree.png",
@@ -388,11 +390,15 @@ tagList(
         fileInput("catch_upload", "Own catchability table (CATCHABILITY_FILE, optional)", accept = ".csv", width = "100%",
                   placeholder = "csv with ScientificName and q")),
       checkboxGroupInput("steps_chk", "Scripts to run (RUN_STEPS)", inline = TRUE,
-                         choices = c("01 biomass" = 1, "02 fisheries" = 2, "03 P/B, Q/B" = 3, "04 diets" = 4, "05 validation" = 5),
+                         choices = c("01 biomass" = 1, "02 fisheries" = 2, "03 P/B, Q/B" = 3, "04 diets" = 4, "05 validation" = 5,
+                                     "06 environment" = 6),
                          selected = 1:5),
       tags$div(class = "mb-2",
-        actionLink("steps_all", "all"), " \u00b7 ", actionLink("steps_none", "none"), " \u00b7 ",
-        actionLink("steps_after1", "02-05 (keep biomass)"), " \u00b7 ", actionLink("steps_only5", "only 05")),
+        actionLink("steps_all", "all 01-06"), " \u00b7 ", actionLink("steps_main", "01-05"), " \u00b7 ", actionLink("steps_none", "none"), " \u00b7 ",
+        actionLink("steps_after1", "02-05 (keep biomass)"), " \u00b7 ", actionLink("steps_only5", "only 05"), " \u00b7 ", actionLink("steps_only6", "only 06")),
+      tags$small(class = "text-muted d-block mb-1",
+        "06 environment (Copernicus: temperature, salinity, NPP, phytoplankton B and P/B) runs before 05 when both are ticked, so the validation compares it. ",
+        "Its first run downloads several GB (one copernicusmarine login needed); later runs only fetch new years."),
       uiOutput("steps_check")))),
 
   ## 4. Run ----------------------------------------------------------------
@@ -737,10 +743,14 @@ output$fg_summary <- renderUI({
 .gsa_state <- c("1" = "Spain", "2" = "Spain", "3" = "Morocco", "4" = "Algeria", "5" = "Spain", "6" = "Spain",
                 "7" = "France", "8" = "France", "9" = "Italy", "10" = "Italy", "11" = "Italy", "12" = "Tunisia")
 .unsurveyed <- c(3, 4, 12)
-## Expected minutes per script (01..05), from the 2026-10-15 run; 01 is much
-## slower the first time after a change of GSAs (bathymetry download).
-.step_min <- c(1.1, 1.5, 5.2, 1.2, 0.8)
-.step_names <- c("01 biomass", "02 fisheries", "03 P/B, Q/B", "04 diets", "05 validation")
+## Expected minutes per script (01..05): the median of the last 5 runs
+## started from this page on this laptop (out_dir/.qmd_run/step_times.csv,
+## filled from the "--- Step i/5 done in x min" lines at the end of every
+## run). Until a script has run here, the times of the Windows run of
+## 2026-10-29 are used. 01 is slower the first time after a change of GSAs
+## (bathymetry download).
+.step_min_default <- c(6.8, 11.7, 4.9, 5.1, 1.6, 15)   # 06: a rerun with the years cached; the first run takes hours
+.step_names <- c("01 biomass", "02 fisheries", "03 P/B, Q/B", "04 diets", "05 validation", "06 environment")
 
 ## --- Custom region from an uploaded shapefile / polygon file ---------------
 custom_shape <- reactiveVal(NULL)   # list(path, sf) of the uploaded region
@@ -877,7 +887,9 @@ steps_txt <- reactive({
   else if (all(diff(s) == 1)) paste0(min(s), ":", max(s))
   else paste0("c(", paste(s, collapse = ", "), ")")
 })
-observeEvent(input$steps_all,    updateCheckboxGroupInput(session, "steps_chk", selected = 1:5))
+observeEvent(input$steps_all,    updateCheckboxGroupInput(session, "steps_chk", selected = 1:6))
+observeEvent(input$steps_main,   updateCheckboxGroupInput(session, "steps_chk", selected = 1:5))
+observeEvent(input$steps_only6,  updateCheckboxGroupInput(session, "steps_chk", selected = 6))
 observeEvent(input$steps_none,   updateCheckboxGroupInput(session, "steps_chk", selected = character(0)))
 observeEvent(input$steps_after1, updateCheckboxGroupInput(session, "steps_chk", selected = 2:5))
 observeEvent(input$steps_only5,  updateCheckboxGroupInput(session, "steps_chk", selected = 5))
@@ -886,7 +898,7 @@ observeEvent(input$steps_only5,  updateCheckboxGroupInput(session, "steps_chk", 
   `3` = list(list(1, "biomass/biomass_proportion_by_species_fg.csv"), list(2, "fisheries/F_by_fg.csv")),
   `4` = list(list(1, "ecopath_ecosim_inputs.xlsx"), list(1, "biomass/biomass_proportion_by_species_fg.csv")),
   `5` = list(list(1, "ecopath_ecosim_inputs.xlsx"), list(2, "fisheries/F_by_fg.csv")))
-.step_out <- c(`1` = "biomass", `2` = "fisheries", `3` = "pbqb-traits", `4` = "diet", `5` = "validation")
+.step_out <- c(`1` = "biomass", `2` = "fisheries", `3` = "pbqb-traits", `4` = "diet", `5` = "validation", `6` = "environment")
 ## settings lines that change results (no comments, RUN_STEPS, CLEAN_START or source())
 .result_settings <- function(x) {
   x <- trimws(sub("#.*$", "", x[!grepl("^\\s*##", x)]))
@@ -1017,6 +1029,31 @@ run_note <- reactiveVal("")
 }
 .settings_lines <- function() if (file.exists(.settings_file)) readLines(.settings_file, warn = FALSE) else character(0)
 
+## Minutes each script took, per run (run = start time of the run)
+.times_file <- file.path(.run_dir, "step_times.csv")
+.step_done_min <- function() {   # minutes of the scripts done so far in this run, named by step
+  l <- if (file.exists(.progress_file)) readLines(.progress_file, warn = FALSE) else character(0)
+  l <- grep("^--- Step \\d/\\d done in [0-9.]+ min", l, value = TRUE)
+  setNames(as.numeric(sub("^--- Step \\d/\\d done in ([0-9.]+) min.*", "\\1", l)), sub("^--- Step (\\d)/\\d.*", "\\1", l))
+}
+.record_step_times <- function() {
+  m <- .step_done_min(); if (!length(m) || !file.exists(.settings_file)) return(invisible())
+  run <- format(file.mtime(.settings_file), "%Y-%m-%d %H:%M:%S")
+  old <- if (!file.exists(.times_file)) NULL else tryCatch(utils::read.csv(.times_file, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (!is.null(old) && run %in% old$run) return(invisible())
+  new <- data.frame(run = run, step = as.integer(names(m)), minutes = unname(m))
+  tryCatch(utils::write.csv(rbind(old, new), .times_file, row.names = FALSE), error = function(e) NULL)
+}
+.step_min_now <- function() {
+  d <- .step_min_default
+  h <- if (!file.exists(.times_file)) NULL else tryCatch(utils::read.csv(.times_file, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (!is.null(h) && nrow(h)) for (k in seq_along(d)) {
+    x <- utils::tail(h$minutes[h$step == k & is.finite(h$minutes)], 5)
+    if (length(x)) d[k] <- stats::median(x)
+  }
+  d
+}
+
 ## Reopened page: pick up the last run started from here (finished, failed,
 ## or still going)
 if (file.exists(.settings_file)) {
@@ -1026,6 +1063,7 @@ if (file.exists(.settings_file)) {
   if (file.exists(.status_file)) {
     run_state(if (identical(readLines(.status_file, warn = FALSE)[1], "done")) "done" else "error")
     run_finished(file.mtime(.status_file))
+    if (identical(isolate(run_state()), "done")) .record_step_times()   # a run that ended while the page was closed (isolate: no reactive context here)
   } else if (.pid_alive()) {
     run_state("running")
   } else {
@@ -1098,6 +1136,7 @@ observe({
     res <- readLines(.status_file, warn = FALSE)[1]
     run_state(if (identical(res, "done")) "done" else "error")
     run_finished(file.mtime(.status_file)); last_finished(Sys.time())
+    if (identical(res, "done")) .record_step_times()
     showNotification(if (identical(res, "done")) "Pipeline finished - plots updated." else res,
                      type = if (identical(res, "done")) "message" else "error", duration = NULL)
   } else if (file.exists(.pid_file) && !.pid_alive()) {
@@ -1115,26 +1154,31 @@ output$run_progress <- renderUI({
   if (identical(st, "idle")) {
     steps <- steps_sel()
     if (!length(steps)) return(tags$small(class = "text-danger", "Tick at least one script."))
-    return(tags$small(class = "text-muted", sprintf("Expected run time about %.0f min (%s).", sum(.step_min[steps]),
-                                                   paste(.step_names[steps], collapse = ", "))))
+    sm <- .step_min_now()
+    return(tags$small(class = "text-muted", sprintf("Expected run time about %.0f min (%s; from the last runs on this laptop).",
+                                                   sum(sm[steps]), paste(sprintf("%s %.0f", .step_names[steps], sm[steps]), collapse = ", "))))
   }
   lines <- if (file.exists(.progress_file)) readLines(.progress_file, warn = FALSE) else character(0)
-  started <- as.integer(sub("^--- Step (\\d)/5:.*", "\\1", grep("^--- Step \\d/5: ", lines, value = TRUE)))
-  finished <- as.integer(sub("^--- Step (\\d)/5 done.*", "\\1", grep("^--- Step \\d/5 done", lines, value = TRUE)))
+  started <- as.integer(sub("^--- Step (\\d)/\\d:.*", "\\1", grep("^--- Step \\d/\\d: ", lines, value = TRUE)))
+  finished <- as.integer(sub("^--- Step (\\d)/\\d done.*", "\\1", grep("^--- Step \\d/\\d done", lines, value = TRUE)))
   seen <- isolate(step_seen())
   for (k in setdiff(started, as.integer(names(seen)))) seen[[as.character(k)]] <- Sys.time()
   isolate(step_seen(seen))
-  steps <- run_steps(); w <- .step_min[steps]
+  ## time left = expected minutes of the scripts not started yet + what is
+  ## left of the expected time of the running one (at least 5 % of it)
+  sm <- .step_min_now(); took <- .step_done_min()
+  steps <- run_steps()
   current <- setdiff(started, finished); current <- if (length(current)) max(current) else NA
-  done_min <- sum(.step_min[intersect(finished, steps)])
-  cur_min <- if (!is.na(current)) min(as.numeric(difftime(Sys.time(), seen[[as.character(current)]], units = "mins")),
-                                      0.95 * .step_min[current]) else 0
-  pct <- if (st == "done") 100 else round(100 * (done_min + cur_min) / sum(w))
+  done_min <- sum(took[as.character(intersect(finished, steps))], na.rm = TRUE)
+  cur_min <- if (!is.na(current)) as.numeric(difftime(Sys.time(), seen[[as.character(current)]], units = "mins")) else 0
+  left_min <- sum(sm[setdiff(steps, c(finished, current))]) +
+              (if (!is.na(current)) max(sm[current] - cur_min, 0.05 * sm[current]) else 0)
+  pct <- if (st == "done") 100 else round(100 * (done_min + cur_min) / (done_min + cur_min + left_min))
   elapsed <- as.numeric(difftime(if (is.null(run_finished())) Sys.time() else run_finished(), run_started(), units = "mins"))
   label <- switch(st,
     running = paste0(if (!is.na(current)) paste0("Running ", .step_names[current]) else "Starting",
                      " - ", length(intersect(finished, steps)), " of ", length(steps), " script(s) done - ",
-                     sprintf("%.1f", elapsed), " min elapsed, about ", sprintf("%.0f", max(sum(w) - done_min - cur_min, 0)), " min left"),
+                     sprintf("%.1f", elapsed), " min elapsed, about ", sprintf("%.0f", left_min), " min left"),
     done = sprintf("Finished %s, in %.1f min", format(run_finished(), "%d %b %H:%M"), elapsed),
     error = "Stopped with an error - see below")
   colour <- switch(st, running = "bg-info", done = "bg-success", error = "bg-danger")
@@ -1147,7 +1191,7 @@ output$run_progress <- renderUI({
   })
   tagList(
     tags$div(style = "font-size: 1.15rem; font-weight: 600; margin-bottom: .35rem;",
-             switch(st, running = if (!is.na(current)) paste0("Step ", current, "/5: ", .step_names[current]) else "Starting...",
+             switch(st, running = if (!is.na(current)) paste0("Step ", current, "/6: ", .step_names[current]) else "Starting...",
                     done = "Finished", error = "Stopped with an error")),
     tags$div(class = "progress mb-2", style = "height: 34px; border-radius: 17px; font-size: 1.05rem;",
              tags$div(class = paste("progress-bar progress-bar-striped", colour, if (st == "running") "progress-bar-animated"),
@@ -1285,7 +1329,9 @@ output$dl_info <- renderUI({
                 "P/Q by FG"           = "validation/PQ_ratio_by_fg.png",
                 "Diet matrix"         = "diets/diet_matrix_heatmap.png",
                 "PREBAL"              = "validation/15_prebal.png",
-                "vs 1995 model"       = "validation/biomass_vs_old_model_by_fg.png")
+                "vs 1995 model"       = "validation/biomass_vs_old_model_by_fg.png",
+                "Phytoplankton sources" = "validation/11b_phytoplankton_sources.png",
+                "Environment"         = "environment/environment_timeseries.png")
 
 output$results <- renderUI({
   last_finished(); st <- run_state()
@@ -1370,7 +1416,7 @@ output$results <- renderUI({
 | Remove outliers | `DROP_OUTLIERS` (default `TRUE`) | Flagged outlier hauls removed, or only reported in `survey_outliers_flagged.csv`. |
 | Relative Ecosim series | `NORMALIZE_TS` (default `TRUE`) | Ecosim series as an index (first value = 1) or raw density. |
 | Fill missing Ecopath_B | `ECOPATH_B_FILL_MODE`, `ECOPATH_B_FILL_YEARS` (default on, 1995-2000) | An FG with no biomass in the Ecopath years gets its mean over these years (else the nearest year with data); off = nearest single year only. Expanding FGs always get 0.00001 t/km². |
-| Scripts to run | `RUN_STEPS` | Tick any of 01–05 (`1:5` all; `2:5` reuses the biomass on disk; `5` redraws the validation only; e.g. `c(1, 5)`). A script left unticked is not rerun: the ticked ones read its outputs from the previous run. The page stops a run when a ticked script needs a file that is not there yet, and warns when later outputs on disk will no longer match, or when the settings differ from those of the last run. |
+| Scripts to run | `RUN_STEPS` | Tick any of 01–06 (`1:5` the main pipeline; `6` = environmental drivers, @sec-environment, run before 05; `2:5` reuses the biomass on disk; `5` redraws the validation only; e.g. `c(1, 5)`). A script left unticked is not rerun: the ticked ones read its outputs from the previous run. The page stops a run when a ticked script needs a file that is not there yet, and warns when later outputs on disk will no longer match, or when the settings differ from those of the last run. |
 
 The model-area figure in the summary is a preview from the simplified
 map polygons (about 1 % above the real value); the A_model used in the
@@ -3348,6 +3394,16 @@ micro at the COBALT level, 29.6, + macro 3.15); salp bound 10.8 t/km².
 The net misses most microzooplankton, so the model total should sit
 above the field value.
 
+### Phytoplankton sources (block 11b)
+
+Phytoplankton B and P/B side by side: the Ecopath inputs now in the
+workbook (B from ISIMIP3a COBALT2, P/B from EcoBase), ISIMIP3a COBALT2
+1995, the Copernicus values of `06_environment.R` and the old 1995
+model as published (phytoplankton is a density, so no area rescaling).
+The right panel shows total phytoplankton B per year, ISIMIP vs
+Copernicus. Table: `validation/phytoplankton_sources_REVIEW.csv`. The
+Copernicus rows appear once 06 has run.
+
 ### Outputs
 
 - `plots/validation/validation_plots_ALL.pdf` and one PNG per check.
@@ -3368,6 +3424,13 @@ wm_figure("fig-biomass-vs-old", r"---(New vs. old (1995) biomass by FG, both val
 #| eval: true
 #| echo: false
 wm_figure("fig-zooplankton-check", r"---(Total zooplankton: model vs. field (Fernández de Puelles et al. 2023).)---", "11_zooplankton_total_field_check.png", r"---(05_validation.R)---")
+```
+
+```{r}
+#| label: show-fig-phyto-sources
+#| eval: true
+#| echo: false
+wm_figure("fig-phyto-sources", r"---(Phytoplankton B and P/B: Ecopath inputs vs ISIMIP, Copernicus (06) and the old 1995 model; total B per year, ISIMIP vs Copernicus.)---", "11b_phytoplankton_sources.png", r"---(05_validation.R, after 06_environment.R)---")
 ```
 
 ```{r}
@@ -3392,6 +3455,52 @@ wm_figure("fig-outlier-effect", r"---(Mean haul density before and after haul-ou
 ```
 
 ------------------------------------------------------------------------
+
+## Environmental drivers (06) {#sec-environment}
+
+`06_environment.R` (tick **06 environment** on the page, or
+`RUN_STEPS <- 6`) gets monthly environmental drivers from the Copernicus
+Marine Service for Ecosim and Ecospace, and the Ecopath phytoplankton
+inputs:
+
+| Variable | Source | Units |
+|---|---|---|
+| `temp_surf`, `sal_surf` | Mediterranean physics reanalysis (MEDSEA_MULTIYEAR_PHY_006_004), first level (\~1 m) | °C, PSU |
+| `temp_bot` | same, `bottomT` | °C |
+| `npp` | Mediterranean biogeochemistry reanalysis (MedBFM, MEDSEA_MULTIYEAR_BGC_006_008), `nppv` integrated 0–200 m | g C m⁻² d⁻¹ |
+| `phyto_c` | same, `phyc` integrated 0–200 m | g C m⁻² |
+
+MedBFM starts in 1999. For 1994–1998 the global Copernicus model (PISCES,
+GLOBAL_MULTIYEAR_BGC_001_029) is scaled to MedBFM, cell by cell and month
+by month: $X(y,m) = \overline{X}_{MedBFM}(m) \times
+P(y,m)/\overline{P}(m)$, where $\overline{X}_{MedBFM}(m)$ and
+$\overline{P}(m)$ are the 1999–2010 means for calendar month $m$ of
+MedBFM and PISCES, and $P(y,m)$ is PISCES in year $y$ (the ratio is kept
+within 1/4–4). So the level and seasonal cycle are MedBFM's and only the
+year-to-year change comes from PISCES.
+
+Ecopath phytoplankton: $B = \overline{phyto\_c}_{1995} \times 9 \times s$
+(t WW/km², C:WW 1:9) and $P/B = NPP_{1994-1995} / \overline{phyto\_c}_{1995}$,
+with $NPP$ the annual sum (g C m⁻² yr⁻¹) and $s$ the share of each
+group: Large = micro-, Small = nano- + picophytoplankton chlorophyll from
+satellite ocean colour, 1998–2000 (ASSUMPTION: chlorophyll share = carbon
+share; both groups get the same P/B). All values are area-weighted means
+over the model GSAs.
+
+Outputs in `out_dir/environment/`: one GeoTIFF per variable on the
+native 1/24° grid (one layer per month), monthly ASCII maps on the
+Ecospace base map `data/Bathymetry/depth_wmed.asc` (`ecospace_asc/`),
+`environment_timeseries_monthly.csv` and `_annual.csv` (with the value
+relative to 1995, the Ecosim forcing shape),
+`ecopath_phytoplankton_B_PB.csv`, and `diagnostics/` (units and depth
+levels of every file, gap-fill ratios, satellite size classes).
+
+```{r}
+#| label: show-fig-environment
+#| eval: true
+#| echo: false
+wm_figure("fig-environment", r"---(Environmental drivers over the model area: monthly values and annual means; shaded years are PISCES scaled to MedBFM.)---", "environment_timeseries.png", r"---(06_environment.R)---")
+```
 
 ## Known limitations {#sec-open-issues .unnumbered}
 

@@ -32,7 +32,9 @@ if (!exists("CLEAN_START", envir = .GlobalEnv, inherits = FALSE) || isTRUE(CLEAN
   invisible(gc())
 }
 options(warn = 1)
-## RUN_STEPS: which scripts to run (1 = 01_biomass ... 5 = 05_validation).
+## RUN_STEPS: which scripts to run (1 = 01_biomass ... 5 = 05_validation,
+## 6 = 06_environment, the Copernicus environmental drivers; 6 runs before
+## 5 when both are asked, so the validation can compare its phytoplankton).
 ## Default all; e.g. RUN_STEPS <- 5 redraws the validation plots from the
 ## outputs already on disk (used by WMed-EwEbuilder.qmd).
 if (!exists("RUN_STEPS", envir = .GlobalEnv, inherits = FALSE)) RUN_STEPS <- 1:5
@@ -192,8 +194,8 @@ if (.custom_run) {
 .progress_file <- Sys.getenv("WMED_PROGRESS_FILE", "")
 .progress <- function(txt) if (nzchar(.progress_file)) base::cat(txt, "\n", sep = "", file = .progress_file, append = TRUE)
 .run_step <- function(i, script, note = "") {
-  message(sprintf("\n--- Step %d/5: %s %s---", i, script, note))
-  .progress(sprintf("--- Step %d/5: %s", i, script))
+  message(sprintf("\n--- Step %d/6: %s %s---", i, script, note))
+  .progress(sprintf("--- Step %d/6: %s", i, script))
   t <- Sys.time()
   ## Each script sets options(error = ...) to write errors to its log; put
   ## the session's own handler back afterwards, or every later error in this
@@ -208,8 +210,8 @@ if (.custom_run) {
                   call. = FALSE)
            })
   while (sink.number() > 0) sink()
-  message(sprintf("--- Step %d/5 done in %.1f min ---", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
-  .progress(sprintf("--- Step %d/5 done in %.1f min", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
+  message(sprintf("--- Step %d/6 done in %.1f min ---", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
+  .progress(sprintf("--- Step %d/6 done in %.1f min", i, as.numeric(difftime(Sys.time(), t, units = "mins"))))
 }
 
 if (1 %in% RUN_STEPS) .run_step(1, "01_biomass.R", "[MEDITS/MEDIAS + unsurveyed groups; the first run after a strata change rebuilds the strata areas from NOAA bathymetry - needs internet] ")
@@ -217,13 +219,17 @@ if (.custom_run && any(2:5 %in% RUN_STEPS)) .set_custom_catch_gsas()
 if (2 %in% RUN_STEPS) .run_step(2, "02_fisheries.R", "[catch, landings, discards, effort, F] ")
 if (3 %in% RUN_STEPS) .run_step(3, "03_pbqb-traits.R", "[P/B, Q/B, traits; includes the EcoBase query] ")
 if (4 %in% RUN_STEPS) .run_step(4, "04_diets.R", "[diet matrix] ")
+## 06 never stops the run: a missing Copernicus login or download only skips it
+if (6 %in% RUN_STEPS)
+  tryCatch(.run_step(6, "06_environment.R", "[Copernicus: temperature, salinity, NPP, phytoplankton B and P/B; the first run downloads several GB] "),
+           error = function(e) message("06_environment.R failed (the other steps are not affected): ", conditionMessage(e)))
 
 if (!exists("RUN_VALIDATION", envir = .GlobalEnv, inherits = FALSE)) RUN_VALIDATION <- TRUE
 if (isTRUE(RUN_VALIDATION) && 5 %in% RUN_STEPS) {
   tryCatch(.run_step(5, "05_validation.R", "[comparison with the 1995 model + all checks] "),
            error = function(e) message("05_validation.R failed (steps 1-4 are complete): ", conditionMessage(e)))
 } else {
-  message("--- Step 5/5: skipped (RUN_VALIDATION = FALSE) ---")
+  if (5 %in% RUN_STEPS) message("--- Step 5/6: skipped (RUN_VALIDATION = FALSE) ---")
 }
 
 message(sprintf("\n=== Pipeline finished in %.1f min. Workbook: %s ===",
